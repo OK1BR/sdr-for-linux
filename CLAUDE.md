@@ -17,18 +17,23 @@ for piHPSDR); its pure-Cairo `panadapter`/`waterfall` renderer seeds this UI.
 **v0**: seeded from pihpsdr-client. Builds, and renders the panadapter + waterfall
 over the piHPSDR **client/server network path** (`src/client.c`).
 
-**Milestone 1 done** — live float panadapter on the real radio. The headless
-GLib-only engine under `src/engine/` now: builds WDSP (vendored `vendor/wdsp` +
-rnnoise + libspecbleach), discovers the radio (`discovery_p2.c`), runs one RX
-DDC over Protocol 2 and streams IQ (`protocol2.c` → `on_rx_iq`, verified live),
-and feeds the WDSP analyzer to produce float panadapter pixels (`analyzer.c` →
-our Cairo renderer). Milestone gates: `sdrfl-wdsp-smoke`, `sdrfl-discover`,
-`sdrfl-rxprobe`, `sdrfl-panprobe` (all verified live on the ANAN G1 at
-192.168.1.247). Details + per-step scope: [`docs/ENGINE-IMPORT.md`](docs/ENGINE-IMPORT.md),
-`docs/P2-RX-SCOPE.md`, `docs/WDSP-ANALYZER-SCOPE.md`.
+**Milestones 1 & 2 done** — you can **see and hear** the radio, direct from
+the G1, in the GTK4 window. The headless GLib-only engine under `src/engine/`:
+builds WDSP (vendored `vendor/wdsp` + rnnoise + libspecbleach), discovers the
+radio (`discovery_p2.c`), runs one RX DDC over Protocol 2 and streams IQ
+(`protocol2.c` → `on_rx_iq`), feeds the WDSP analyzer for the float panadapter
+(`analyzer.c`), **and** a WDSP demod channel (`demod.c`) whose audio goes to a
+native PipeWire sink (`audio_pw.c`) at ~15 ms latency. The app (`sdr-for-linux`)
+defaults to direct radio; `--server` is the v0 network remote head. Gates:
+`sdrfl-wdsp-smoke`, `sdrfl-discover`, `sdrfl-rxprobe`, `sdrfl-panprobe`,
+`sdrfl-audioprobe` (all verified live on the ANAN G1 at 192.168.1.247). Scope
+docs: [`docs/ENGINE-IMPORT.md`](docs/ENGINE-IMPORT.md), `docs/P2-RX-SCOPE.md`,
+`docs/WDSP-ANALYZER-SCOPE.md`, `docs/AUDIO-SCOPE.md`.
 
-Next: **Milestone 2 — demodulation + audio** (WDSP channel `OpenChannel` /
-`fexchange0`, then a Linux audio sink). See ENGINE-IMPORT.md.
+Next: **Milestone 3 — on-window controls** (tune/mode/filter/zoom from the GTK4
+window, re-tuning the running radio live). See ENGINE-IMPORT.md. Known follow-ups:
+AGC-target calibration (vs the current `SDRFL_GAIN`), audio clock-drift smoothing,
+absolute dBm panadapter cal.
 
 ## Approach (decided with Richard)
 

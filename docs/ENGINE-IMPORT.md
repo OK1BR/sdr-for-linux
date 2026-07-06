@@ -56,39 +56,48 @@ GTK), fills `rx->pixel_samples`, and our GTK4 side reads it on a tick. GLib
 **Milestone 1 done** — live float panadapter on the real radio (P2 RX → WDSP
 analyzer → our Cairo renderer, full resolution).
 
-After M1: demod + audio (`receiver.c` demod path + audio out), then controls,
-then RX2, then TX/PureSignal. Display level is auto-ranged for now; absolute dBm
-calibration (a scalar `soffset` from a known reference) is a later refinement.
+**Milestone 2 done** — demodulation + audio. `src/engine/demod.c` (WDSP channel:
+`OpenChannel` + `SetRXA*` mode/filter/AGC + `fexchange0`, second consumer of the
+analyzer's 1024-sample block) → `src/engine/audio_pw.c` (native PipeWire
+`pw_stream` sink behind an `audio.h` seam; lock-free SPSC ring, RT `on_process`).
+Backend + rate decided with Richard: **native PipeWire** (min latency) + **768 kHz
+IQ**. Gate `sdrfl-audioprobe` (+ `SDRFL_TONE` offline). Wired into the GUI: the
+direct-radio window sees **and** hears. Verified live: FT8 7.074 MHz USB, clean
+audio, 0 seq errors, **~15 ms end-to-end latency**. Scope: `docs/AUDIO-SCOPE.md`.
 
-## NEXT SESSION STARTS HERE — Milestone 2 (demodulation + audio out)
+Then: controls, then RX2, then TX/PureSignal.
 
-Milestone 1 is done: live float panadapter on the real G1. The same live IQ that
-feeds the analyzer (`protocol2.c`'s `on_rx_iq`, `double` I/Q) now needs to feed
-the **WDSP demod channel** to produce audio.
+## NEXT SESSION STARTS HERE — Milestone 3 (on-window controls)
 
-Goal: create a WDSP channel (`OpenChannel`), run the demodulator via
-`fexchange0`, set mode/filter (SSB/CW/AM), and play the audio output.
+RX is usable (see + hear) but tuning/mode/filter are env vars set at startup.
+M3 makes the GTK4 window a real control surface, driving the engine live.
 
-**Scope to map (from `receiver.c` @ 974acba, demod/audio side):**
-- Channel lifecycle: `OpenChannel(rx->id, buffer_size, dsp_size, sample_rate,
-  fft_size, out_rate, …)` (receiver.c:1001-1010) + `SetRXA*` mode/filter/AGC
-  calls. This is the side we deliberately skipped in M1 (analyzer-only).
-- Feed: `fexchange0(rx->id, iq_input_buffer, audio_output_buffer, &error)`
-  (receiver.c:1334) — the **same** `iq_input_buffer` the analyzer uses, so
-  `analyzer_feed`'s re-buffer can drive both from one place.
-- Audio out: `audio_output_buffer` → a sink. Need to pick the Linux audio path
-  (PipeWire/PulseAudio/PortAudio) — a **new platform dependency decision** for
-  Richard (distro lib per the vendoring policy, not vendored).
-- Mode/filter/AGC state: extend the lean engine state (Option B) with what the
-  channel setup reads (mode, filter low/high, agc). Present a scope + get consent
-  before the import (same as steps 1, 3, 4).
+Goal: change VFO frequency, mode, filter, and zoom/pan **from the window**,
+re-tuning the running radio without restart.
 
-**Gate idea:** headless `sdrfl-audioprobe`: discover → P2 RX → demod one SSB/CW
-signal → write a few seconds of audio to a WAV, or play it and listen. Proves
-IQ → demod → audio end-to-end.
+**Engine hooks to add (small, on top of what M1/M2 built):**
+- **Re-tune:** re-send the P2 High-Priority packet with the new DDC frequency
+  (`protocol2.c` already builds it — add `p2_set_frequency(hz)` that rebuilds +
+  sends High-Priority; the keepalive timer already re-sends). No restart needed.
+- **Mode/filter:** `demod_set_mode(mode, flo, fhi)` (already stubbed in demod.h
+  intent) → `SetRXAMode` + `RXASetPassband` on the running channel (WDSP setters
+  are safe live, receiver.c pattern).
+- **Zoom/pan:** re-call `SetAnalyzer` with new `fscLin/fscHin` (see
+  `WDSP-ANALYZER-SCOPE.md` §3) — narrows the 768 kHz span to something readable.
+  Needs the zoom/pan → afft/clip math from receiver.c:1704-1730.
 
-Also worth a small follow-up: absolute dBm calibration for the panadapter
-(measure a known-level signal, bake the `soffset` in) — currently auto-ranged.
+**GTK4 UI:** scroll/drag on the panadapter to tune (map x-pixel → Hz via the
+`cA/cB` mapping), keys or a small header bar for mode/filter/band, a VFO readout
+that updates. Keep `panadapter.c`/`waterfall.c` pure-Cairo; add input handling in
+`gui.c` (GtkGestureClick/Drag, scroll controller).
+
+**Cleanups worth folding in (from M1/M2 known issues):**
+- **AGC vs digital gain:** replace `SDRFL_GAIN` with proper AGC-target calibration
+  so levels self-balance (why is WDSP's RXA output ~30× low for us? — investigate
+  `SetRXAAGC*` / panel gain scaling).
+- **Audio clock drift** (ring 1–21 ms): adaptive resample or drop/insert to track
+  the soundcard clock.
+- **Absolute dBm panadapter cal:** bake a measured `soffset` instead of auto-range.
 
 ## Notes
 
