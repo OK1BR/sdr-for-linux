@@ -25,6 +25,8 @@ zlib_dep    = dependency('zlib')
 # WDSP's analyzer/fir also use the double-precision FFTW (fftw_* symbols).
 fftw3f_dep  = dependency('fftw3f')
 fftw3_dep   = dependency('fftw3')
+# Native PipeWire for the low-latency RX audio sink (src/engine/audio_pw.c).
+pipewire_dep = dependency('libpipewire-0.3')
 threads_dep = dependency('threads')
 m_dep       = cc.find_library('m', required : false)
 
@@ -112,6 +114,16 @@ executable('sdrfl-panprobe',
   ['src/panprobe_main.c', 'src/engine/analyzer.c'] + engine_sources + ui_sources,
   include_directories : [vendor_inc, src_inc, engine_inc],
   dependencies : [wdsp_dep, gtk_dep, glib_dep, m_dep],
+  override_options : ['c_std=gnu11'],
+  install : false,
+)
+
+# Headless Protocol-2 RX -> WDSP demod -> PipeWire audio. Milestone-2 gate.
+# TAKES THE RADIO. SDRFL_TONE=1 plays a test tone with no radio.
+executable('sdrfl-audioprobe',
+  ['src/audioprobe_main.c', 'src/engine/demod.c', 'src/engine/audio_pw.c'] + engine_sources,
+  include_directories : [vendor_inc, src_inc, engine_inc],
+  dependencies : engine_deps + [wdsp_dep, m_dep, pipewire_dep],
   override_options : ['c_std=gnu11'],
   install : false,
 )
