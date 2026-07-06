@@ -122,6 +122,12 @@ void demod_set_gain(double gain) {
   g_mutex_unlock(&d_lock);
 }
 
+void demod_set_volume(double db) {
+  g_mutex_lock(&d_lock);
+  if (d_ready) { SetRXAPanelGain1(d_id, pow(10.0, 0.05 * db)); }  /* AF gain dB → linear */
+  g_mutex_unlock(&d_lock);
+}
+
 void demod_destroy(void) {
   g_mutex_lock(&d_lock);
   if (d_ready) {

@@ -18,6 +18,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include <gtk/gtk.h>
+#include <adwaita.h>
 #include <glib-unix.h>
 #include <math.h>
 #include <stdio.h>
@@ -82,6 +83,7 @@ typedef struct {
 
   Waterfall  *wf;
   GtkWidget  *area;
+  GtkWidget  *mode_btns[7];  /* toggle per DEMOD_* id (keys ↔ buttons in sync) */
 } App;
 
 #define PANADAPTER_FRACTION 0.5
@@ -316,12 +318,13 @@ static void on_drag_update(GtkGestureDrag *g, double off_x, double off_y, gpoint
   schedule_save(app);
 }
 
-/* Keys u/l/c/a switch demod mode live (radio + audio path only). */
+/* Keys u/l/c/a switch demod mode by activating the matching strip toggle
+ * (which drives the engine), so keyboard and buttons stay in sync. */
 static gboolean on_key(GtkEventControllerKey *ctl, guint keyval, guint keycode,
                        GdkModifierType state, gpointer data) {
   (void)ctl; (void)keycode; (void)state;
   App *app = (App *)data;
-  if (!app->radio_mode || !app->audio_ok) { return FALSE; }
+  if (!app->radio_mode) { return FALSE; }
   int mode;
   switch (gdk_keyval_to_lower(keyval)) {
     case GDK_KEY_u: mode = DEMOD_USB; break;
@@ -330,29 +333,165 @@ static gboolean on_key(GtkEventControllerKey *ctl, guint keyval, guint keycode,
     case GDK_KEY_a: mode = DEMOD_AM;  break;
     default: return FALSE;
   }
+  if (app->mode_btns[mode]) {
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->mode_btns[mode]), TRUE);
+  }
+  return TRUE;
+}
+
+/* ---- control-strip callbacks (wired to the engine) ----------------------- */
+
+static void on_mode_toggled(GtkToggleButton *b, gpointer data) {
+  if (!gtk_toggle_button_get_active(b)) { return; }  /* ignore the deselect half */
+  App *app = (App *)data;
+  int mode = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "mode"));
   double flo, fhi;
   passband_for_mode(mode, &flo, &fhi);
   demod_set_mode(mode, flo, fhi);
   app->mode = mode;
   schedule_save(app);
-  printf("mode -> %d  passband [%.0f, %.0f] Hz\n", mode, flo, fhi);
-  fflush(stdout);
-  return TRUE;
+}
+
+static void on_volume_changed(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  double v = gtk_range_get_value(r);
+  demod_set_volume(v);
+  app->volume = v;
+  schedule_save(app);
+}
+
+static void on_band_clicked(GtkButton *b, gpointer data) {
+  App *app = (App *)data;
+  long long f = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "freq"));
+  app->freq = f;
+  p2_set_frequency(f);
+  schedule_save(app);
+}
+
+/* Small "label: widget" pair for the strip. */
+static GtkWidget *labeled(const char *text, GtkWidget *w) {
+  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+  GtkWidget *l = gtk_label_new(text);
+  gtk_widget_add_css_class(l, "dim");
+  gtk_box_append(GTK_BOX(box), l);
+  gtk_box_append(GTK_BOX(box), w);
+  return box;
+}
+
+/* Build the horizontal control strip and wire it to the engine. Radio mode. */
+static GtkWidget *build_controls(App *app) {
+  GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+  gtk_widget_add_css_class(bar, "controlbar");
+
+  /* Mode — segmented, grouped; keep a handle per DEMOD id for key sync. */
+  static const int         mids[]   = {DEMOD_USB, DEMOD_LSB, DEMOD_CWL, DEMOD_CWU, DEMOD_AM};
+  static const char *const mlabels[] = {"USB", "LSB", "CWL", "CWU", "AM"};
+  GtkWidget *modebox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_add_css_class(modebox, "linked");
+  GtkWidget *group = NULL;
+  for (int i = 0; i < 5; i++) {
+    GtkWidget *b = gtk_toggle_button_new_with_label(mlabels[i]);
+    gtk_widget_add_css_class(b, "mode");
+    g_object_set_data(G_OBJECT(b), "mode", GINT_TO_POINTER(mids[i]));
+    if (!group) { group = b; } else { gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(b), GTK_TOGGLE_BUTTON(group)); }
+    app->mode_btns[mids[i]] = b;
+    gtk_box_append(GTK_BOX(modebox), b);
+  }
+  if (app->mode_btns[app->mode]) {   /* reflect the resolved startup mode … */
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->mode_btns[app->mode]), TRUE);
+  }
+  for (int i = 0; i < 5; i++) {       /* … then connect, so this doesn't re-fire the engine */
+    g_signal_connect(app->mode_btns[mids[i]], "toggled", G_CALLBACK(on_mode_toggled), app);
+  }
+  gtk_box_append(GTK_BOX(bar), modebox);
+
+  /* Filter / AGC / NR·NB·ANF — visible placeholders until their engine hooks land. */
+  gtk_box_append(GTK_BOX(bar), labeled("Filter",
+      gtk_drop_down_new_from_strings((const char *[]){"2.7 k","2.4 k","1.8 k","500","250", NULL})));
+  gtk_box_append(GTK_BOX(bar), labeled("AGC",
+      gtk_drop_down_new_from_strings((const char *[]){"Med","Fast","Slow","Long","Off", NULL})));
+  GtkWidget *nrbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_add_css_class(nrbox, "linked");
+  const char *nr[] = {"NR","NB","ANF"};
+  for (int i = 0; i < 3; i++) { gtk_box_append(GTK_BOX(nrbox), gtk_toggle_button_new_with_label(nr[i])); }
+  gtk_box_append(GTK_BOX(bar), nrbox);
+
+  /* AF volume — live. */
+  GtkWidget *vol = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, -40, 0, 1);
+  gtk_range_set_value(GTK_RANGE(vol), app->volume);
+  gtk_widget_set_size_request(vol, 130, -1);
+  gtk_scale_set_draw_value(GTK_SCALE(vol), FALSE);
+  g_signal_connect(vol, "value-changed", G_CALLBACK(on_volume_changed), app);
+  gtk_box_append(GTK_BOX(bar), labeled("AF", vol));
+
+  GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_set_hexpand(spacer, TRUE);
+  gtk_box_append(GTK_BOX(bar), spacer);
+
+  /* Band buttons — jump the VFO. */
+  static const struct { const char *l; int f; } bands[] = {
+    {"160", 1840000}, {"80", 3600000}, {"40", 7074000}, {"20", 14074000},
+    {"17", 18100000}, {"15", 21074000}, {"12", 24915000}, {"10", 28074000},
+  };
+  GtkWidget *bandbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_add_css_class(bandbox, "linked");
+  for (int i = 0; i < 8; i++) {
+    GtkWidget *b = gtk_button_new_with_label(bands[i].l);
+    gtk_widget_add_css_class(b, "band");
+    g_object_set_data(G_OBJECT(b), "freq", GINT_TO_POINTER(bands[i].f));
+    g_signal_connect(b, "clicked", G_CALLBACK(on_band_clicked), app);
+    gtk_box_append(GTK_BOX(bandbox), b);
+  }
+  gtk_box_append(GTK_BOX(bar), bandbox);
+  return bar;
+}
+
+static void css_load(void) {
+  GtkCssProvider *p = gtk_css_provider_new();
+  const char *c =
+    ".controlbar { padding: 7px 10px; }"
+    ".dim { opacity: 0.6; font-size: 12px; }"
+    "button.mode, button.band { min-width: 30px; padding-left: 7px; padding-right: 7px; }"
+    "button.mode:checked { background: #1d6fa5; color: #fff; }";
+  gtk_css_provider_load_from_string(p, c);
+  gtk_style_context_add_provider_for_display(gdk_display_get_default(),
+      GTK_STYLE_PROVIDER(p), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 }
 
 static void on_activate(GtkApplication *gtkapp, gpointer data) {
   App *app = (App *)data;
+  css_load();
 
-  GtkWidget *win = gtk_application_window_new(gtkapp);
+  GtkWidget *win = adw_application_window_new(gtkapp);
   gtk_window_set_title(GTK_WINDOW(win),
                        app->radio_mode ? "SDR for Linux — radio" : "SDR for Linux — server");
-  gtk_window_set_default_size(GTK_WINDOW(win), 1300, 680);
+  gtk_window_set_default_size(GTK_WINDOW(win), 1320, 720);
+
+  GtkWidget *header = adw_header_bar_new();
+  GtkWidget *status = gtk_label_new(app->radio_mode ? "●  ANAN G1" : "●  server");
+  gtk_widget_add_css_class(status, "dim");
+  adw_header_bar_pack_start(ADW_HEADER_BAR(header), status);
+  GtkWidget *menu = gtk_menu_button_new();
+  gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(menu), "open-menu-symbolic");
+  adw_header_bar_pack_end(ADW_HEADER_BAR(header), menu);
+
+  GtkWidget *tv = adw_toolbar_view_new();
+  adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(tv), header);
 
   app->area = gtk_drawing_area_new();
   gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(app->area), draw_cb, app, NULL);
-  gtk_window_set_child(GTK_WINDOW(win), app->area);
+  gtk_widget_set_vexpand(app->area, TRUE);
 
-  /* Input controllers (self-gate on radio mode): wheel tunes, u/l/c/a set mode. */
+  GtkWidget *content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  if (app->radio_mode) {
+    gtk_box_append(GTK_BOX(content), build_controls(app));
+    gtk_box_append(GTK_BOX(content), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
+  }
+  gtk_box_append(GTK_BOX(content), app->area);
+  adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(tv), content);
+  adw_application_window_set_content(ADW_APPLICATION_WINDOW(win), tv);
+
+  /* Input controllers (self-gate on radio mode): wheel tunes, drag pans, u/l/c/a mode. */
   GtkEventControllerScroll *scroll = GTK_EVENT_CONTROLLER_SCROLL(
       gtk_event_controller_scroll_new(GTK_EVENT_CONTROLLER_SCROLL_VERTICAL));
   g_signal_connect(scroll, "scroll", G_CALLBACK(on_scroll), app);
@@ -468,7 +607,7 @@ int main(int argc, char **argv) {
     start_radio(&app);
   }
 
-  GtkApplication *gtkapp = gtk_application_new("cz.ok1br.sdr_for_linux",
+  AdwApplication *gtkapp = adw_application_new("cz.ok1br.sdr_for_linux",
                                                G_APPLICATION_DEFAULT_FLAGS);
   g_signal_connect(gtkapp, "activate", G_CALLBACK(on_activate), &app);
   g_unix_signal_add(SIGINT, on_signal, gtkapp);

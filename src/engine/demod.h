@@ -33,6 +33,9 @@ void demod_set_mode(int mode, double flo, double fhi);
 /* Set the digital master gain applied after WDSP (thread-safe). */
 void demod_set_gain(double gain);
 
+/* Set the AF volume (dB, 0..-40) live on the running channel (thread-safe). */
+void demod_set_volume(double db);
+
 void demod_destroy(void);
 
 /* Diagnostics: peak |audio| since last call (and reset); last fexchange0 error. */

@@ -17,6 +17,7 @@ add_project_arguments('-D_GNU_SOURCE', language : 'c')
 # WDSP library, portaudio/pulse) will be added here.
 cc          = meson.get_compiler('c')
 gtk_dep     = dependency('gtk4')
+adw_dep     = dependency('libadwaita-1')  # GTK4 control surface (headerbar, prefs, rows)
 glib_dep    = dependency('glib-2.0')  # engine is GLib-only (headless), no GTK
 opus_dep    = dependency('opus')
 openssl_dep = dependency('openssl')
@@ -76,7 +77,7 @@ executable('sdr-for-linux',
   include_directories : [vendor_inc, src_inc, engine_inc],
   # engine (protocol2 + analyzer + demod + PipeWire audio) alongside the v0
   # network client; WDSP's comm.h/wdsp.h need the GNU dialect (as sdrfl-wdsp-smoke).
-  dependencies : common_deps + [glib_dep, wdsp_dep, m_dep, pipewire_dep],
+  dependencies : common_deps + [adw_dep, glib_dep, wdsp_dep, m_dep, pipewire_dep],
   override_options : ['c_std=gnu11'],
   install : false,
 )
