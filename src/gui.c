@@ -55,7 +55,8 @@ typedef struct {
   /* radio (engine) path */
   int         engine_ok;    /* discovery + RX started                          */
   int         audio_ok;     /* demod + audio sink up                           */
-  long long   freq;
+  long long   freq;         /* DDC centre = tuned frequency (Model A)          */
+  int         mode;         /* current demod mode (DEMOD_*)                    */
   int         pixels;
   float       eng_raw[SPECTRUM_DATA_SIZE];
   double      soffset;
@@ -79,10 +80,28 @@ typedef struct {
 #define PANADAPTER_FRACTION 0.5
 #define EMA_FACTOR 0.55f
 
+/* Tuning step per wheel notch (Hz): plain / Ctrl (fine) / Shift (coarse). */
+#define TUNE_STEP_HZ      100
+#define TUNE_STEP_FINE    10
+#define TUNE_STEP_COARSE  1000
+
 static void feed_cb(const double *iq, int n_pairs, void *user) {
   (void)user;
   analyzer_feed(iq, n_pairs);   /* panadapter */
   demod_feed(iq, n_pairs);      /* audio */
+}
+
+/* Standard passband [flo,fhi] Hz for a demod mode (relative to the DDC centre). */
+static void passband_for_mode(int mode, double *flo, double *fhi) {
+  const double st = 600.0;
+  switch (mode) {
+    case DEMOD_USB: *flo =  150;      *fhi = 2850;      break;
+    case DEMOD_LSB: *flo = -2850;     *fhi = -150;      break;
+    case DEMOD_CWU: *flo =  st - 250; *fhi = st + 250;  break;
+    case DEMOD_CWL: *flo = -(st+250); *fhi = -(st-250); break;
+    case DEMOD_AM:  *flo = -4000;     *fhi = 4000;      break;
+    default:        *flo =  150;      *fhi = 2850;      break;
+  }
 }
 
 /* Mode + passband from SDRFL_MODE, or by band (LSB below 10 MHz, else USB). */
@@ -95,15 +114,7 @@ static int gui_pick_mode(long long freq, double *flo, double *fhi) {
   else if (m && !strcasecmp(m, "cwl")) { mode = DEMOD_CWL; }
   else if (m && !strcasecmp(m, "am"))  { mode = DEMOD_AM;  }
   else { mode = (freq < 10000000) ? DEMOD_LSB : DEMOD_USB; }
-  const double st = 600.0;
-  switch (mode) {
-    case DEMOD_USB: *flo =  150;      *fhi = 2850;      break;
-    case DEMOD_LSB: *flo = -2850;     *fhi = -150;      break;
-    case DEMOD_CWU: *flo =  st - 250; *fhi = st + 250;  break;
-    case DEMOD_CWL: *flo = -(st+250); *fhi = -(st-250); break;
-    case DEMOD_AM:  *flo = -4000;     *fhi = 4000;      break;
-    default:        *flo =  150;      *fhi = 2850;      break;
-  }
+  passband_for_mode(mode, flo, fhi);
   return mode;
 }
 
@@ -229,6 +240,50 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
   return G_SOURCE_CONTINUE;
 }
 
+/* Mouse wheel over the panadapter re-tunes the DDC (Model A: the whole span
+ * moves, passband stays centred). Ctrl = fine, Shift = coarse step. */
+static gboolean on_scroll(GtkEventControllerScroll *ctl, double dx, double dy, gpointer data) {
+  (void)dx;
+  App *app = (App *)data;
+  if (!app->radio_mode || !app->engine_ok) { return FALSE; }
+  GdkModifierType st = gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(ctl));
+  long long step = TUNE_STEP_HZ;
+  if      (st & GDK_CONTROL_MASK) { step = TUNE_STEP_FINE; }
+  else if (st & GDK_SHIFT_MASK)   { step = TUNE_STEP_COARSE; }
+  /* Wheel up (dy < 0) tunes higher. (Fractional touchpad deltas round to 0 —
+   * a later refinement can accumulate the residual; the wheel is the target.) */
+  long long delta = (long long)llround(-dy) * step;
+  if (delta == 0) { return FALSE; }
+  long long nf = app->freq + delta;
+  if (nf < 1) { nf = 1; }
+  app->freq = nf;              /* readout follows on the next tick */
+  p2_set_frequency(nf);
+  return TRUE;
+}
+
+/* Keys u/l/c/a switch demod mode live (radio + audio path only). */
+static gboolean on_key(GtkEventControllerKey *ctl, guint keyval, guint keycode,
+                       GdkModifierType state, gpointer data) {
+  (void)ctl; (void)keycode; (void)state;
+  App *app = (App *)data;
+  if (!app->radio_mode || !app->audio_ok) { return FALSE; }
+  int mode;
+  switch (gdk_keyval_to_lower(keyval)) {
+    case GDK_KEY_u: mode = DEMOD_USB; break;
+    case GDK_KEY_l: mode = DEMOD_LSB; break;
+    case GDK_KEY_c: mode = DEMOD_CWU; break;
+    case GDK_KEY_a: mode = DEMOD_AM;  break;
+    default: return FALSE;
+  }
+  double flo, fhi;
+  passband_for_mode(mode, &flo, &fhi);
+  demod_set_mode(mode, flo, fhi);
+  app->mode = mode;
+  printf("mode -> %d  passband [%.0f, %.0f] Hz\n", mode, flo, fhi);
+  fflush(stdout);
+  return TRUE;
+}
+
 static void on_activate(GtkApplication *gtkapp, gpointer data) {
   App *app = (App *)data;
 
@@ -240,6 +295,17 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
   app->area = gtk_drawing_area_new();
   gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(app->area), draw_cb, app, NULL);
   gtk_window_set_child(GTK_WINDOW(win), app->area);
+
+  /* Input controllers (self-gate on radio mode): wheel tunes, u/l/c/a set mode. */
+  GtkEventControllerScroll *scroll = GTK_EVENT_CONTROLLER_SCROLL(
+      gtk_event_controller_scroll_new(GTK_EVENT_CONTROLLER_SCROLL_VERTICAL));
+  g_signal_connect(scroll, "scroll", G_CALLBACK(on_scroll), app);
+  gtk_widget_add_controller(app->area, GTK_EVENT_CONTROLLER(scroll));
+
+  GtkEventControllerKey *keys =
+      GTK_EVENT_CONTROLLER_KEY(gtk_event_controller_key_new());
+  g_signal_connect(keys, "key-pressed", G_CALLBACK(on_key), app);
+  gtk_widget_add_controller(win, GTK_EVENT_CONTROLLER(keys));
 
   gtk_widget_add_tick_callback(app->area, tick_cb, app, NULL);
   gtk_window_present(GTK_WINDOW(win));
@@ -268,6 +334,7 @@ static void start_radio(App *app) {
   /* Audio: WDSP demod → native PipeWire sink. */
   double flo, fhi;
   int mode = gui_pick_mode(app->freq, &flo, &fhi);
+  app->mode = mode;
   double vol = (getenv("SDRFL_VOLUME") && *getenv("SDRFL_VOLUME")) ? atof(getenv("SDRFL_VOLUME")) : -10.0;
   int    lat = (getenv("SDRFL_LAT") && *getenv("SDRFL_LAT")) ? atoi(getenv("SDRFL_LAT")) : 10;
   if (audio_start(48000, 1, lat) == 0 && demod_create(0, rate, mode, flo, fhi, vol) == 0) {

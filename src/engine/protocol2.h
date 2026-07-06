@@ -42,6 +42,13 @@ int p2_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
 void p2_rx_stop(void);
 
 /*
+ * Re-tune the running DDC to `freq_hz` (thread-safe; call from the GUI thread).
+ * Non-blocking: stores the frequency and lets the keepalive timer send it in the
+ * next High-Priority packet (<=100 ms). No restart, no send-side concurrency.
+ */
+void p2_set_frequency(long long freq_hz);
+
+/*
  * Offline self-test hook: build each outgoing packet into `buf` (>= 1444 bytes)
  * using the given tune/rate, WITHOUT any socket, and return its wire length.
  * Lets a tool hexdump-verify the byte offsets against upstream with no radio.

@@ -107,6 +107,15 @@ double demod_peak(void) {
 
 int demod_last_error(void) { return d_err; }
 
+void demod_set_mode(int mode, double flo, double fhi) {
+  g_mutex_lock(&d_lock);
+  if (d_ready) {
+    SetRXAMode(d_id, mode);
+    RXASetPassband(d_id, flo, fhi);
+  }
+  g_mutex_unlock(&d_lock);
+}
+
 void demod_destroy(void) {
   g_mutex_lock(&d_lock);
   if (d_ready) {

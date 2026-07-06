@@ -63,7 +63,8 @@ static uint32_t ddc_sequence[8];
 static volatile int p2running = 0;
 
 static int       cfg_device;
-static long long cfg_freq;
+static long long cfg_freq;       /* read by the timer thread, written by p2_set_frequency */
+static GMutex    freq_lock;      /* fences cfg_freq across the GUI/timer threads */
 static int       cfg_sample_rate;
 static int       cfg_ddc;        /* DDC index for this device (0 for G1) */
 static p2_iq_cb  cfg_cb;
@@ -196,9 +197,23 @@ static void send_transmit_specific(void) {
 
 static void send_high_priority(int run) {
   unsigned char buf[HIGH_PRIORITY_LEN];
-  int len = p2_build_high_priority(buf, cfg_device, cfg_freq, run);
+  g_mutex_lock(&freq_lock);
+  long long freq = cfg_freq;
+  g_mutex_unlock(&freq_lock);
+  int len = p2_build_high_priority(buf, cfg_device, freq, run);
   send_packet(buf, len, &high_priority_addr, high_priority_len, "high-priority");
   high_priority_sequence++;
+}
+
+/*
+ * Re-tune the running DDC. Only stores the new frequency; the keepalive timer
+ * pushes it in the next High-Priority packet (<=100 ms), so all wire sends stay
+ * on the single timer thread and rapid tuning coalesces into ~10 retunes/s.
+ */
+void p2_set_frequency(long long freq_hz) {
+  g_mutex_lock(&freq_lock);
+  cfg_freq = freq_hz;
+  g_mutex_unlock(&freq_lock);
 }
 
 /* ---- incoming IQ ---------------------------------------------------------- */

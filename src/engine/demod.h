@@ -24,6 +24,12 @@ int demod_create(int id, int in_rate, int mode, double flo, double fhi, double v
  */
 void demod_feed(const double *iq, int n_pairs);
 
+/*
+ * Live mode/filter change on the running channel: SetRXAMode + RXASetPassband.
+ * Thread-safe (fenced against demod_feed); safe to call from the GUI thread.
+ */
+void demod_set_mode(int mode, double flo, double fhi);
+
 void demod_destroy(void);
 
 /* Diagnostics: peak |audio| since last call (and reset); last fexchange0 error. */
