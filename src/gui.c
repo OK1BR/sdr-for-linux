@@ -29,10 +29,14 @@
 #include "panadapter.h"
 #include "waterfall.h"
 
+#include <strings.h>
+
 #include "discovered.h"
 #include "discovery.h"
 #include "protocol2.h"
 #include "analyzer.h"
+#include "demod.h"
+#include "audio.h"
 
 #define ENGINE_PIXELS 2048
 #define ENGINE_FPS    15
@@ -50,6 +54,7 @@ typedef struct {
 
   /* radio (engine) path */
   int         engine_ok;    /* discovery + RX started                          */
+  int         audio_ok;     /* demod + audio sink up                           */
   long long   freq;
   int         pixels;
   float       eng_raw[SPECTRUM_DATA_SIZE];
@@ -76,7 +81,30 @@ typedef struct {
 
 static void feed_cb(const double *iq, int n_pairs, void *user) {
   (void)user;
-  analyzer_feed(iq, n_pairs);
+  analyzer_feed(iq, n_pairs);   /* panadapter */
+  demod_feed(iq, n_pairs);      /* audio */
+}
+
+/* Mode + passband from SDRFL_MODE, or by band (LSB below 10 MHz, else USB). */
+static int gui_pick_mode(long long freq, double *flo, double *fhi) {
+  const char *m = getenv("SDRFL_MODE");
+  int mode;
+  if      (m && !strcasecmp(m, "usb")) { mode = DEMOD_USB; }
+  else if (m && !strcasecmp(m, "lsb")) { mode = DEMOD_LSB; }
+  else if (m && !strcasecmp(m, "cwu")) { mode = DEMOD_CWU; }
+  else if (m && !strcasecmp(m, "cwl")) { mode = DEMOD_CWL; }
+  else if (m && !strcasecmp(m, "am"))  { mode = DEMOD_AM;  }
+  else { mode = (freq < 10000000) ? DEMOD_LSB : DEMOD_USB; }
+  const double st = 600.0;
+  switch (mode) {
+    case DEMOD_USB: *flo =  150;      *fhi = 2850;      break;
+    case DEMOD_LSB: *flo = -2850;     *fhi = -150;      break;
+    case DEMOD_CWU: *flo =  st - 250; *fhi = st + 250;  break;
+    case DEMOD_CWL: *flo = -(st+250); *fhi = -(st-250); break;
+    case DEMOD_AM:  *flo = -4000;     *fhi = 4000;      break;
+    default:        *flo =  150;      *fhi = 2850;      break;
+  }
+  return mode;
 }
 
 static int cmp_float(const void *a, const void *b) {
@@ -236,8 +264,21 @@ static void start_radio(App *app) {
     fprintf(stderr, "analyzer_create failed\n");
     return;
   }
+
+  /* Audio: WDSP demod → native PipeWire sink. */
+  double flo, fhi;
+  int mode = gui_pick_mode(app->freq, &flo, &fhi);
+  double vol = (getenv("SDRFL_VOLUME") && *getenv("SDRFL_VOLUME")) ? atof(getenv("SDRFL_VOLUME")) : -10.0;
+  int    lat = (getenv("SDRFL_LAT") && *getenv("SDRFL_LAT")) ? atoi(getenv("SDRFL_LAT")) : 10;
+  if (audio_start(48000, 1, lat) == 0 && demod_create(0, rate, mode, flo, fhi, vol) == 0) {
+    app->audio_ok = 1;
+  } else {
+    fprintf(stderr, "audio/demod init failed — panadapter only\n");
+  }
+
   if (p2_rx_start(dev, app->freq, rate, feed_cb, NULL) != 0) {
     fprintf(stderr, "p2_rx_start failed\n");
+    if (app->audio_ok) { demod_destroy(); audio_stop(); }
     analyzer_destroy();
     return;
   }
@@ -288,7 +329,9 @@ int main(int argc, char **argv) {
 
   g_object_unref(gtkapp);
   if (app.radio_mode) {
-    if (app.engine_ok) { p2_rx_stop(); analyzer_destroy(); }
+    if (app.engine_ok) { p2_rx_stop(); }
+    if (app.audio_ok)  { demod_destroy(); audio_stop(); }
+    if (app.engine_ok) { analyzer_destroy(); }
   } else {
     client_free(app.client);
   }
