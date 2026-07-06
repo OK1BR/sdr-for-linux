@@ -65,6 +65,7 @@ ui_sources = [
 executable('sdr-for-linux',
   [
     'src/gui.c',
+    'src/settings.c',
     'src/client.c',
     'src/protocol.c',
     'src/transport.c',

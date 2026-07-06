@@ -116,6 +116,12 @@ void demod_set_mode(int mode, double flo, double fhi) {
   g_mutex_unlock(&d_lock);
 }
 
+void demod_set_gain(double gain) {
+  g_mutex_lock(&d_lock);
+  d_gain = gain;
+  g_mutex_unlock(&d_lock);
+}
+
 void demod_destroy(void) {
   g_mutex_lock(&d_lock);
   if (d_ready) {

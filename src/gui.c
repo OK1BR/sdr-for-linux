@@ -37,6 +37,7 @@
 #include "analyzer.h"
 #include "demod.h"
 #include "audio.h"
+#include "settings.h"
 
 #define ENGINE_PIXELS 2048
 #define ENGINE_FPS    15
@@ -57,6 +58,12 @@ typedef struct {
   int         audio_ok;     /* demod + audio sink up                           */
   long long   freq;         /* DDC centre = tuned frequency (Model A)          */
   int         mode;         /* current demod mode (DEMOD_*)                    */
+  int         rate;         /* IQ sample rate = full panadapter span (Hz)      */
+  double      volume;       /* AF gain (dB)                                    */
+  double      gain;         /* digital master gain                            */
+  char        radio_ip[64]; /* resolved radio IP (for persistence)            */
+  guint       save_timer_id;/* debounced settings save (0 = none pending)     */
+  long long   drag_base_freq; /* app->freq at drag-begin (pan is absolute)     */
   int         pixels;
   float       eng_raw[SPECTRUM_DATA_SIZE];
   double      soffset;
@@ -104,18 +111,14 @@ static void passband_for_mode(int mode, double *flo, double *fhi) {
   }
 }
 
-/* Mode + passband from SDRFL_MODE, or by band (LSB below 10 MHz, else USB). */
-static int gui_pick_mode(long long freq, double *flo, double *fhi) {
-  const char *m = getenv("SDRFL_MODE");
-  int mode;
-  if      (m && !strcasecmp(m, "usb")) { mode = DEMOD_USB; }
-  else if (m && !strcasecmp(m, "lsb")) { mode = DEMOD_LSB; }
-  else if (m && !strcasecmp(m, "cwu")) { mode = DEMOD_CWU; }
-  else if (m && !strcasecmp(m, "cwl")) { mode = DEMOD_CWL; }
-  else if (m && !strcasecmp(m, "am"))  { mode = DEMOD_AM;  }
-  else { mode = (freq < 10000000) ? DEMOD_LSB : DEMOD_USB; }
-  passband_for_mode(mode, flo, fhi);
-  return mode;
+/* Parse a mode name (USB/LSB/CWU/CWL/AM) to a DEMOD_* id; -1 if unknown/NULL. */
+static int mode_from_name(const char *m) {
+  if      (m && !strcasecmp(m, "usb")) return DEMOD_USB;
+  else if (m && !strcasecmp(m, "lsb")) return DEMOD_LSB;
+  else if (m && !strcasecmp(m, "cwu")) return DEMOD_CWU;
+  else if (m && !strcasecmp(m, "cwl")) return DEMOD_CWL;
+  else if (m && !strcasecmp(m, "am"))  return DEMOD_AM;
+  return -1;
 }
 
 static int cmp_float(const void *a, const void *b) {
@@ -240,6 +243,33 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
   return G_SOURCE_CONTINUE;
 }
 
+/* ---- persistent state (see settings.h) ----------------------------------- */
+
+static void app_to_settings(const App *app, Settings *s) {
+  g_strlcpy(s->ip, app->radio_ip, sizeof(s->ip));
+  s->freq   = app->freq;
+  s->rate   = app->rate;
+  s->mode   = app->mode;
+  s->volume = app->volume;
+  s->gain   = app->gain;
+}
+
+static gboolean do_save_cb(gpointer data) {
+  App *app = (App *)data;
+  app->save_timer_id = 0;
+  Settings s;
+  app_to_settings(app, &s);
+  settings_save(&s);
+  return G_SOURCE_REMOVE;
+}
+
+/* Debounced save: write ~1 s after the last change (rapid tuning coalesces). */
+static void schedule_save(App *app) {
+  if (!app->radio_mode) { return; }
+  if (app->save_timer_id) { g_source_remove(app->save_timer_id); }
+  app->save_timer_id = g_timeout_add_seconds(1, do_save_cb, app);
+}
+
 /* Mouse wheel over the panadapter re-tunes the DDC (Model A: the whole span
  * moves, passband stays centred). Ctrl = fine, Shift = coarse step. */
 static gboolean on_scroll(GtkEventControllerScroll *ctl, double dx, double dy, gpointer data) {
@@ -258,7 +288,32 @@ static gboolean on_scroll(GtkEventControllerScroll *ctl, double dx, double dy, g
   if (nf < 1) { nf = 1; }
   app->freq = nf;              /* readout follows on the next tick */
   p2_set_frequency(nf);
+  schedule_save(app);
   return TRUE;
+}
+
+/* Left-drag grabs the spectrum and pans the DDC centre (Model A). The pan is
+ * absolute from drag-begin (freq = base − offset·Hz-per-pixel), so the grabbed
+ * point tracks the cursor smoothly with no accumulation drift. */
+static void on_drag_begin(GtkGestureDrag *g, double x, double y, gpointer data) {
+  (void)g; (void)x; (void)y;
+  App *app = (App *)data;
+  app->drag_base_freq = app->freq;
+}
+
+static void on_drag_update(GtkGestureDrag *g, double off_x, double off_y, gpointer data) {
+  (void)g; (void)off_y;
+  App *app = (App *)data;
+  if (!app->radio_mode || !app->engine_ok) { return; }
+  int w = gtk_widget_get_width(app->area);
+  if (w < 1) { return; }
+  double hz_per_px = (double)app->rate / w;
+  /* Drag right → content follows the cursor → view moves to lower frequency. */
+  long long nf = app->drag_base_freq - (long long)llround(off_x * hz_per_px);
+  if (nf < 1) { nf = 1; }
+  app->freq = nf;             /* readout follows on the next tick */
+  p2_set_frequency(nf);
+  schedule_save(app);
 }
 
 /* Keys u/l/c/a switch demod mode live (radio + audio path only). */
@@ -279,6 +334,7 @@ static gboolean on_key(GtkEventControllerKey *ctl, guint keyval, guint keycode,
   passband_for_mode(mode, &flo, &fhi);
   demod_set_mode(mode, flo, fhi);
   app->mode = mode;
+  schedule_save(app);
   printf("mode -> %d  passband [%.0f, %.0f] Hz\n", mode, flo, fhi);
   fflush(stdout);
   return TRUE;
@@ -302,6 +358,11 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
   g_signal_connect(scroll, "scroll", G_CALLBACK(on_scroll), app);
   gtk_widget_add_controller(app->area, GTK_EVENT_CONTROLLER(scroll));
 
+  GtkGesture *drag = gtk_gesture_drag_new();   /* left button by default */
+  g_signal_connect(drag, "drag-begin",  G_CALLBACK(on_drag_begin),  app);
+  g_signal_connect(drag, "drag-update", G_CALLBACK(on_drag_update), app);
+  gtk_widget_add_controller(app->area, GTK_EVENT_CONTROLLER(drag));
+
   GtkEventControllerKey *keys =
       GTK_EVENT_CONTROLLER_KEY(gtk_event_controller_key_new());
   g_signal_connect(keys, "key-pressed", G_CALLBACK(on_key), app);
@@ -311,13 +372,34 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
   gtk_window_present(GTK_WINDOW(win));
 }
 
-/* Bring up the direct-radio engine: discover → analyzer → P2 RX. */
+/* Bring up the direct-radio engine: discover → analyzer → P2 RX.
+ * State precedence: env var > saved config > built-in default. */
 static void start_radio(App *app) {
-  const char *ip = getenv("SDRFL_RADIO_IP");
-  snprintf(ipaddr_radio, sizeof(ipaddr_radio), "%s", (ip && *ip) ? ip : "192.168.1.247");
-  app->freq   = (getenv("SDRFL_FREQ") && *getenv("SDRFL_FREQ")) ? strtoll(getenv("SDRFL_FREQ"), NULL, 10) : 14100000;
-  int rate    = (getenv("SDRFL_RATE") && *getenv("SDRFL_RATE")) ? atoi(getenv("SDRFL_RATE")) : 192000;
+  Settings st = { .freq = 14100000, .rate = 192000, .mode = -1,
+                  .volume = -10.0, .gain = 8.0 };
+  g_strlcpy(st.ip, "192.168.1.247", sizeof(st.ip));
+  if (settings_load(&st)) { printf("settings: loaded %s\n", settings_path()); }
+
+  const char *e;
+  if ((e = getenv("SDRFL_RADIO_IP")) && *e) { g_strlcpy(st.ip, e, sizeof(st.ip)); }
+  if ((e = getenv("SDRFL_FREQ"))     && *e) { st.freq = strtoll(e, NULL, 10); }
+  if ((e = getenv("SDRFL_RATE"))     && *e) { st.rate = atoi(e); }
+  if ((e = getenv("SDRFL_VOLUME"))   && *e) { st.volume = atof(e); }
+  if ((e = getenv("SDRFL_GAIN"))     && *e) { st.gain = atof(e); }
+  /* Mode: env SDRFL_MODE > saved mode (if valid) > by-band default. */
+  int mode = mode_from_name(getenv("SDRFL_MODE"));
+  if (mode < 0) { mode = st.mode; }
+  if (mode < 0) { mode = (st.freq < 10000000) ? DEMOD_LSB : DEMOD_USB; }
+
+  snprintf(ipaddr_radio, sizeof(ipaddr_radio), "%s", st.ip);
+  g_strlcpy(app->radio_ip, st.ip, sizeof(app->radio_ip));
+  app->freq   = st.freq;
+  app->rate   = st.rate;
+  app->mode   = mode;
+  app->volume = st.volume;
+  app->gain   = st.gain;
   app->pixels = ENGINE_PIXELS;
+  int rate    = st.rate;
 
   printf("Discovering radio at %s ...\n", ipaddr_radio);
   p2_discovery();
@@ -333,11 +415,10 @@ static void start_radio(App *app) {
 
   /* Audio: WDSP demod → native PipeWire sink. */
   double flo, fhi;
-  int mode = gui_pick_mode(app->freq, &flo, &fhi);
-  app->mode = mode;
-  double vol = (getenv("SDRFL_VOLUME") && *getenv("SDRFL_VOLUME")) ? atof(getenv("SDRFL_VOLUME")) : -10.0;
-  int    lat = (getenv("SDRFL_LAT") && *getenv("SDRFL_LAT")) ? atoi(getenv("SDRFL_LAT")) : 10;
-  if (audio_start(48000, 1, lat) == 0 && demod_create(0, rate, mode, flo, fhi, vol) == 0) {
+  passband_for_mode(mode, &flo, &fhi);
+  int lat = (getenv("SDRFL_LAT") && *getenv("SDRFL_LAT")) ? atoi(getenv("SDRFL_LAT")) : 10;
+  if (audio_start(48000, 1, lat) == 0 && demod_create(0, rate, mode, flo, fhi, app->volume) == 0) {
+    demod_set_gain(app->gain);
     app->audio_ok = 1;
   } else {
     fprintf(stderr, "audio/demod init failed — panadapter only\n");
@@ -396,6 +477,8 @@ int main(int argc, char **argv) {
 
   g_object_unref(gtkapp);
   if (app.radio_mode) {
+    if (app.save_timer_id) { g_source_remove(app.save_timer_id); app.save_timer_id = 0; }
+    if (app.rate > 0) { Settings s; app_to_settings(&app, &s); settings_save(&s); }
     if (app.engine_ok) { p2_rx_stop(); }
     if (app.audio_ok)  { demod_destroy(); audio_stop(); }
     if (app.engine_ok) { analyzer_destroy(); }

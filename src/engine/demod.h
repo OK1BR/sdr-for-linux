@@ -30,6 +30,9 @@ void demod_feed(const double *iq, int n_pairs);
  */
 void demod_set_mode(int mode, double flo, double fhi);
 
+/* Set the digital master gain applied after WDSP (thread-safe). */
+void demod_set_gain(double gain);
+
 void demod_destroy(void);
 
 /* Diagnostics: peak |audio| since last call (and reset); last fexchange0 error. */
