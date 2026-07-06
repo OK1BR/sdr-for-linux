@@ -37,6 +37,8 @@ GTK), fills `rx->pixel_samples`, and our GTK4 side reads it on a tick. GLib
    192.168.1.247 while piHPSDR was streaming (read-only, does not disturb).
    Commit `2bd329e`.
 3. ⏳ **Protocol 2 RX.** *(next — needs the radio free for the live test)*
+   Scope mapped + planned in [`P2-RX-SCOPE.md`](P2-RX-SCOPE.md); import approach
+   **Option B** (lean RX-only `protocol2.c`) decided with Richard 2026-07-06.
 4. **WDSP analyzer.** From `receiver.c`: create the analyzer, feed RX IQ
    (`fexchange0`), pull the panadapter pixels (`Spectrum0` → `rx->pixel_samples`).
 5. **Render.** Feed `rx->pixel_samples` (float) into our `panadapter.c` /
