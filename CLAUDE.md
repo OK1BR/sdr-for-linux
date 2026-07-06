@@ -104,9 +104,16 @@ build** + vendor **Protocol-2 discovery** (find the radio on the LAN). See
 
 ```sh
 meson setup build && meson compile -C build
-# GUI (GSK_RENDERER=cairo avoids the NVIDIA+Wayland GTK4 GL crash):
-GSK_RENDERER=cairo PIHPSDR_PWD='Test5' ./build/sdr-for-linux
-# headless render check (writes a PNG, no window — good for visual checks):
+# GUI, DIRECT RADIO (default): discovery → P2 RX → WDSP analyzer → panadapter.
+# TAKES THE RADIO (piHPSDR must be closed). GSK_RENDERER=cairo avoids the
+# NVIDIA+Wayland GTK4 GL crash. Env: SDRFL_RADIO_IP/SDRFL_FREQ/SDRFL_RATE.
+GSK_RENDERER=cairo ./build/sdr-for-linux
+# GUI, network remote head onto a running piHPSDR server (v0 path):
+GSK_RENDERER=cairo PIHPSDR_PWD='Test5' ./build/sdr-for-linux --server 127.0.0.1 50000
+# headless engine gates (need the radio free): IQ probe / analyzer→panadapter PNG
+./build/sdrfl-rxprobe
+RENDER_OUT=/tmp/pan.png ./build/sdrfl-panprobe    # SDRFL_SELFTEST=1 = no radio
+# headless network render check (writes a PNG, no window):
 PIHPSDR_PWD='Test5' RENDER_OUT=/tmp/pan.png ./build/sdrfl-render-test
 ```
 
