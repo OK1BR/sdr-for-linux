@@ -52,7 +52,26 @@ the seed of this application's UI.
 ## Requirements
 
 - An HPSDR radio (e.g. Apache Labs ANAN)
-- Linux + GTK4, WDSP, OpenSSL, zlib, Opus
+- Linux, a C toolchain, and Meson
+
+The DSP engine (**WDSP**, plus **rnnoise** and **libspecbleach**) is vendored in
+`vendor/` and built from source — nothing to install. Only ubiquitous platform
+libraries come from the distribution:
+
+| Need | Arch package |
+|---|---|
+| GTK4 UI | `gtk4` |
+| Single-precision FFTW (WDSP, libspecbleach) | `fftw` |
+| Opus codec (network path) | `opus` |
+| OpenSSL (password KDF) | `openssl` |
+| zlib (network spectrum) | `zlib` |
+| Build tools | `base-devel meson` |
+
+```sh
+sudo pacman -S --needed base-devel meson gtk4 fftw opus openssl zlib
+meson setup build && meson compile -C build
+./build/sdrfl-wdsp-smoke      # WDSP build/link gate → "WDSP link OK …"
+```
 
 ## Credits
 

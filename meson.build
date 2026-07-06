@@ -15,15 +15,28 @@ add_project_arguments('-D_GNU_SOURCE', language : 'c')
 # the password KDF, zlib decompresses network spectrum. As the piHPSDR engine
 # (radio link + WDSP) is imported milestone by milestone, its deps (e.g. the
 # WDSP library, portaudio/pulse) will be added here.
+cc          = meson.get_compiler('c')
 gtk_dep     = dependency('gtk4')
 opus_dep    = dependency('opus')
 openssl_dep = dependency('openssl')
 zlib_dep    = dependency('zlib')
+# WDSP + libspecbleach need single-precision FFTW; rnnoise/WDSP need pthreads + libm.
+fftw3f_dep  = dependency('fftw3f')
+threads_dep = dependency('threads')
+m_dep       = cc.find_library('m', required : false)
 
 vendor_inc = include_directories('vendor/pihpsdr')
 src_inc    = include_directories('src')
 
 common_deps = [gtk_dep, opus_dep, openssl_dep, zlib_dep]
+
+# --- Vendored engine libraries ----------------------------------------------
+# Built from source we keep in-tree (never linked from an external checkout);
+# each dir's VENDOR.md records upstream origin + pinned commit. Order matters:
+# wdsp depends on rnnoise_dep / specbleach_dep declared by the first two.
+subdir('vendor/rnnoise')
+subdir('vendor/libspecbleach')
+subdir('vendor/wdsp')  # declares wdsp_dep
 
 ui_sources = [
   'src/panadapter.c',
@@ -43,6 +56,16 @@ executable('sdr-for-linux',
   ] + ui_sources,
   include_directories : [vendor_inc, src_inc],
   dependencies : common_deps,
+  install : false,
+)
+
+# WDSP build/link smoke check (milestone gate: proves the vendored DSP builds,
+# its headers are usable by our code, and libwdsp links end-to-end).
+executable('sdrfl-wdsp-smoke',
+  ['src/wdsp_smoke.c'],
+  dependencies : [wdsp_dep],
+  # includes WDSP's comm.h, which needs the GNU dialect (see vendor/wdsp/meson.build)
+  override_options : ['c_std=gnu11'],
   install : false,
 )
 

@@ -15,8 +15,14 @@ for piHPSDR); its pure-Cairo `panadapter`/`waterfall` renderer seeds this UI.
 ## Status (2026-07-06)
 
 **v0**: seeded from pihpsdr-client. Builds, and renders the panadapter + waterfall
-over the piHPSDR **client/server network path** (`src/client.c`). The
-direct-to-radio engine is **not yet imported**.
+over the piHPSDR **client/server network path** (`src/client.c`).
+
+**Milestone 1 in progress.** Step 1 done: **WDSP is in the meson build** — WDSP +
+its deps rnnoise & libspecbleach are vendored in-tree (`vendor/wdsp`,
+`vendor/rnnoise`, `vendor/libspecbleach`) and built as static libs; the
+`sdrfl-wdsp-smoke` gate compiles a WDSP header from our code and links `libwdsp`
+(analyzer symbols `XCreateAnalyzer`/`Spectrum0`/… present). Next: Protocol-2
+**discovery**, then RX IQ → analyzer → panadapter.
 
 ## Approach (decided with Richard)
 
@@ -25,6 +31,28 @@ incrementally, milestone by milestone** — do NOT mechanically port piHPSDR's G
 widgets (that path is months of non-compiling limbo). The engine is GLib-based,
 and **GLib is shared across GTK3/GTK4**, so engine files compile under GTK4. The
 core real work is disentangling the **engine ↔ GUI boundary**.
+
+## Vendoring policy (decided with Richard)
+
+Third-party code we depend on comes in one of two ways, and the line is
+deliberate:
+
+- **Domain / niche libraries** (things that could vanish from GitHub or that we
+  need a *specific* version of): WDSP, rnnoise, libspecbleach, and — as they are
+  imported — piHPSDR engine files. These are **vendored in-tree as source** under
+  `vendor/`, **built from that source** (never linked from an external checkout
+  or a prebuilt `.a`), and **not modified**. Each `vendor/<lib>/` carries a
+  `VENDOR.md` recording upstream origin, the pinned commit, the date vendored,
+  what we build vs skip, and **how to check upstream for updates**. Periodically
+  re-check upstream and re-sync. The repo must `git clone && meson compile` with
+  no external source.
+- **Ubiquitous platform libraries** (gtk4, fftw3, opus, openssl, zlib, the
+  toolchain/libc): taken from the distribution — they will not disappear, and we
+  *want* the distro's security-patched versions. Not vendored; listed as build
+  requirements in the README and enforced by meson.
+
+New radios / features: prefer taking proven open source from outside (vendored
+per the above) over reimplementing.
 
 ## Key technical facts (verified against piHPSDR src @ 974acba)
 
