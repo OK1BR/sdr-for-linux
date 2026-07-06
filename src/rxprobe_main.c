@@ -106,19 +106,28 @@ int main(void) {
     return 2;
   }
 
+  // Let the stream settle past the start handshake, then measure only the
+  // steady window (baseline snapshot) so the rate isn't inflated by the IQ that
+  // arrived during p2_rx_start's post-run usleep. 64-bit aligned reads of the
+  // counters race benignly with the listener — fine for a measurement.
+  usleep(200000);
   struct timespec t0, t1;
+  long long pairs0 = st.pairs;
+  double    sumsq0 = st.sumsq;
   clock_gettime(CLOCK_MONOTONIC, &t0);
   sleep(secs);
   clock_gettime(CLOCK_MONOTONIC, &t1);
+  long long pairs = st.pairs - pairs0;
+  double    sumsq = st.sumsq - sumsq0;
 
   p2_rx_stop();
 
   double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) * 1e-9;
-  double eff_rate = elapsed > 0 ? st.pairs / elapsed : 0.0;
-  double rms = st.pairs > 0 ? sqrt(st.sumsq / (double)st.pairs) : 0.0;
+  double eff_rate = elapsed > 0 ? pairs / elapsed : 0.0;
+  double rms = pairs > 0 ? sqrt(sumsq / (double)pairs) : 0.0;
 
   printf("\n--- results ---\n");
-  printf("IQ pairs collected : %lld\n", st.pairs);
+  printf("IQ pairs collected : %lld  (steady window; %lld total)\n", pairs, st.pairs);
   printf("elapsed            : %.3f s\n", elapsed);
   printf("effective rate     : %.0f Hz  (requested %d Hz)\n", eff_rate, rate);
   printf("IQ RMS             : %.6g", rms);
@@ -128,7 +137,7 @@ int main(void) {
   for (int i = 0; i < st.nfirst; i++) { printf(" (%.4f,%.4f)", st.first_i[i], st.first_q[i]); }
   printf("\n");
 
-  if (st.pairs <= 0) {
+  if (pairs <= 0) {
     fprintf(stderr, "no IQ received — check radio ownership / DDC port\n");
     return 3;
   }
