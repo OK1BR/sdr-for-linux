@@ -17,6 +17,7 @@ add_project_arguments('-D_GNU_SOURCE', language : 'c')
 # WDSP library, portaudio/pulse) will be added here.
 cc          = meson.get_compiler('c')
 gtk_dep     = dependency('gtk4')
+glib_dep    = dependency('glib-2.0')  # engine is GLib-only (headless), no GTK
 opus_dep    = dependency('opus')
 openssl_dep = dependency('openssl')
 zlib_dep    = dependency('zlib')
@@ -27,6 +28,15 @@ m_dep       = cc.find_library('m', required : false)
 
 vendor_inc = include_directories('vendor/pihpsdr')
 src_inc    = include_directories('src')
+engine_inc = include_directories('src/engine')
+
+# --- Engine (headless, GLib-only; adapted from piHPSDR) ---------------------
+# Grows milestone by milestone. First piece: Protocol-2 discovery.
+engine_sources = [
+  'src/engine/engine_state.c',
+  'src/engine/discovery_p2.c',
+]
+engine_deps = [glib_dep]
 
 common_deps = [gtk_dep, opus_dep, openssl_dep, zlib_dep]
 
@@ -66,6 +76,15 @@ executable('sdrfl-wdsp-smoke',
   dependencies : [wdsp_dep],
   # includes WDSP's comm.h, which needs the GNU dialect (see vendor/wdsp/meson.build)
   override_options : ['c_std=gnu11'],
+  install : false,
+)
+
+# Headless Protocol-2 discovery probe (finds the radio on the LAN; read-only,
+# safe to run alongside another client). Engine's first milestone gate.
+executable('sdrfl-discover',
+  ['src/discover_main.c'] + engine_sources,
+  include_directories : [vendor_inc, engine_inc],
+  dependencies : engine_deps,
   install : false,
 )
 

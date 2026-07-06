@@ -39,8 +39,28 @@ touch them, so ABI parity is preserved. `<gtk/gtk.h>` and `<opus/opus.h>` are
 kept as-is (both are real project dependencies); the header is included headless
 in the protocol modules without ever calling `gtk_init()`.
 
+## discovered.h — the discovery data contract
+
+Protocol-2 discovery (`src/engine/discovery_p2.c`, adapted from piHPSDR's
+`new_discovery.c`) fills a `DISCOVERED discovered[]` table. `discovered.h`
+defines that struct plus the device/protocol/status enums the radio reports, so
+we vendor it **verbatim** rather than re-declaring it.
+
+| | |
+|---|---|
+| Upstream | https://github.com/dl1ycf/pihpsdr |
+| Commit | `974acbac07fe7dd3e24f28f3956a9ffb3a1ebaf1` (`974acba`) |
+| File | `src/discovered.h` |
+| sha256 | `5f6fc9bd6b2935e78ec0aca97c03412631652fb3961433db60ac6d09f6a62075` |
+
+Verbatim copy — the sha256 must match upstream; do not edit. The globals it
+declares (`devices`, `discovered[]`, `selected_device`) are **defined** in
+`src/engine/engine_state.c`.
+
 ## Re-sync checklist
 
 1. `cp <pihpsdr>/src/client_server.h vendor/pihpsdr/client_server.h`
-2. Update commit, version and sha256 in the table above.
-3. `meson compile -C build` and reconnect to a server built from the same commit.
+   and `cp <pihpsdr>/src/discovered.h vendor/pihpsdr/discovered.h`
+2. Update commit, version and sha256 in the tables above.
+3. `meson compile -C build`; reconnect to a server built from the same commit,
+   and re-run `./build/sdrfl-discover`.

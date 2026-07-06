@@ -21,8 +21,14 @@ over the piHPSDR **client/server network path** (`src/client.c`).
 its deps rnnoise & libspecbleach are vendored in-tree (`vendor/wdsp`,
 `vendor/rnnoise`, `vendor/libspecbleach`) and built as static libs; the
 `sdrfl-wdsp-smoke` gate compiles a WDSP header from our code and links `libwdsp`
-(analyzer symbols `XCreateAnalyzer`/`Spectrum0`/… present). Next: Protocol-2
-**discovery**, then RX IQ → analyzer → panadapter.
+(analyzer symbols `XCreateAnalyzer`/`Spectrum0`/… present).
+
+Step 2 done: **Protocol-2 discovery.** Headless GLib-only engine layer under
+`src/engine/` (adapted from piHPSDR `new_discovery.c`; `discovered.h` vendored
+verbatim). `sdrfl-discover` finds the ANAN G1 on the LAN — verified live against
+the real radio at 192.168.1.247 **while piHPSDR was streaming** (status SENDING;
+discovery is read-only broadcast/UDP and does not disturb the operator).
+Next: Protocol-2 **RX start + IQ stream** → WDSP analyzer → panadapter.
 
 ## Approach (decided with Richard)
 
