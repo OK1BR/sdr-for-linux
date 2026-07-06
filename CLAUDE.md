@@ -17,18 +17,18 @@ for piHPSDR); its pure-Cairo `panadapter`/`waterfall` renderer seeds this UI.
 **v0**: seeded from pihpsdr-client. Builds, and renders the panadapter + waterfall
 over the piHPSDR **client/server network path** (`src/client.c`).
 
-**Milestone 1 in progress.** Step 1 done: **WDSP is in the meson build** — WDSP +
-its deps rnnoise & libspecbleach are vendored in-tree (`vendor/wdsp`,
-`vendor/rnnoise`, `vendor/libspecbleach`) and built as static libs; the
-`sdrfl-wdsp-smoke` gate compiles a WDSP header from our code and links `libwdsp`
-(analyzer symbols `XCreateAnalyzer`/`Spectrum0`/… present).
+**Milestone 1 done** — live float panadapter on the real radio. The headless
+GLib-only engine under `src/engine/` now: builds WDSP (vendored `vendor/wdsp` +
+rnnoise + libspecbleach), discovers the radio (`discovery_p2.c`), runs one RX
+DDC over Protocol 2 and streams IQ (`protocol2.c` → `on_rx_iq`, verified live),
+and feeds the WDSP analyzer to produce float panadapter pixels (`analyzer.c` →
+our Cairo renderer). Milestone gates: `sdrfl-wdsp-smoke`, `sdrfl-discover`,
+`sdrfl-rxprobe`, `sdrfl-panprobe` (all verified live on the ANAN G1 at
+192.168.1.247). Details + per-step scope: [`docs/ENGINE-IMPORT.md`](docs/ENGINE-IMPORT.md),
+`docs/P2-RX-SCOPE.md`, `docs/WDSP-ANALYZER-SCOPE.md`.
 
-Step 2 done: **Protocol-2 discovery.** Headless GLib-only engine layer under
-`src/engine/` (adapted from piHPSDR `new_discovery.c`; `discovered.h` vendored
-verbatim). `sdrfl-discover` finds the ANAN G1 on the LAN — verified live against
-the real radio at 192.168.1.247 **while piHPSDR was streaming** (status SENDING;
-discovery is read-only broadcast/UDP and does not disturb the operator).
-Next: Protocol-2 **RX start + IQ stream** → WDSP analyzer → panadapter.
+Next: **Milestone 2 — demodulation + audio** (WDSP channel `OpenChannel` /
+`fexchange0`, then a Linux audio sink). See ENGINE-IMPORT.md.
 
 ## Approach (decided with Richard)
 

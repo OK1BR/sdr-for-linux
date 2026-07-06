@@ -42,48 +42,53 @@ GTK), fills `rx->pixel_samples`, and our GTK4 side reads it on a tick. GLib
    ~191.9 kHz effective rate, IQ RMS ~−59 dBFS, clean sequence. `SDRFL_DRYRUN`
    hexdumps the packets offline. Wire-critical bytes copied verbatim from
    `new_protocol.c` @ 974acba.
-4. ⏳ **WDSP analyzer.** *(next)* From `receiver.c`: create the analyzer, feed RX IQ
-   (`fexchange0`), pull the panadapter pixels (`Spectrum0` → `rx->pixel_samples`).
-   The `on_rx_iq` callback already delivers `double` I/Q — exactly WDSP's input.
-5. **Render.** Feed `rx->pixel_samples` (float) into our `panadapter.c` /
-   `waterfall.c` (they currently take `dBm` bytes — add a float path). Full
-   resolution, no protocol limits.
+4. ✅ **WDSP analyzer.** Lean wrapper `src/engine/analyzer.c` (Option B, scope in
+   [`WDSP-ANALYZER-SCOPE.md`](WDSP-ANALYZER-SCOPE.md)): `XCreateAnalyzer` /
+   `SetAnalyzer` / `Spectrum0` / `GetPixels` only (no demod channel); `on_rx_iq`
+   `double` I/Q re-buffered to WDSP's 1024 block. Values mirror `receiver.c` @
+   974acba.
+5. ✅ **Render.** `GetPixels` `float` dBm → our `panadapter_draw()` (already had a
+   float path). Gate `sdrfl-panprobe` — verified **live** on the G1: 14.1 MHz @
+   192 kHz, 40 frames, noise floor ~−115 dBm, real 20 m signals rendered (CW
+   cluster below centre on the correct side). `SDRFL_SELFTEST` checks the
+   analyzer + feed order offline (no radio).
+
+**Milestone 1 done** — live float panadapter on the real radio (P2 RX → WDSP
+analyzer → our Cairo renderer, full resolution).
 
 After M1: demod + audio (`receiver.c` demod path + audio out), then controls,
-then RX2, then TX/PureSignal.
+then RX2, then TX/PureSignal. Display level is auto-ranged for now; absolute dBm
+calibration (a scalar `soffset` from a known reference) is a later refinement.
 
-## NEXT SESSION STARTS HERE — Milestone 1, step 4 (WDSP analyzer → panadapter)
+## NEXT SESSION STARTS HERE — Milestone 2 (demodulation + audio out)
 
-Steps 1–3 done: WDSP builds, discovery works, and `src/engine/protocol2.c`
-delivers live RX IQ via the `on_rx_iq(const double *iq, int n_pairs, void*)`
-callback (verified on the G1 with `sdrfl-rxprobe`). Step 4 turns that IQ into
-panadapter pixels using the WDSP **analyzer** — no radio needed to write it, only
-to see the final picture.
+Milestone 1 is done: live float panadapter on the real G1. The same live IQ that
+feeds the analyzer (`protocol2.c`'s `on_rx_iq`, `double` I/Q) now needs to feed
+the **WDSP demod channel** to produce audio.
 
-Goal: create a WDSP analyzer channel, feed it the `on_rx_iq` samples, and pull
-the spectrum into a `float` pixel array our `panadapter.c` can render.
+Goal: create a WDSP channel (`OpenChannel`), run the demodulator via
+`fexchange0`, set mode/filter (SSB/CW/AM), and play the audio output.
 
-**Scope to map (from `receiver.c` @ 974acba, RX/analyzer part only):**
-- Analyzer lifecycle: `XCreateAnalyzer` + `SetAnalyzer` (see `rx_create_analyzer`
-  / the analyzer setup in `receiver.c`) — FFT size, window, overlap, `rx->pixels`.
-- Feed path: upstream accumulates IQ into `rx->iq_input_buffer` and calls
-  `Spectrum0(1, rx->id, 0, 0, iq)` every `buffer_size` samples (`rx_full_buffer`,
-  receiver.c:1307/1342). Our `on_rx_iq` already hands over `double` I/Q — batch it
-  to `buffer_size` and call `Spectrum0`.
-- Output: `GetPixels(rx->id, 0, rx->pixel_samples, &flag)` → `float` dBm array of
-  length `rx->pixels`. That array is the panadapter input (full float resolution,
-  no 4096 cap, no 1 dB quantisation — see repo CLAUDE.md).
-- Also `fexchange0` for demod later (step: demod+audio) — **not** needed for the
-  panadapter; the analyzer (`Spectrum0`/`GetPixels`) is enough for step 4.
+**Scope to map (from `receiver.c` @ 974acba, demod/audio side):**
+- Channel lifecycle: `OpenChannel(rx->id, buffer_size, dsp_size, sample_rate,
+  fft_size, out_rate, …)` (receiver.c:1001-1010) + `SetRXA*` mode/filter/AGC
+  calls. This is the side we deliberately skipped in M1 (analyzer-only).
+- Feed: `fexchange0(rx->id, iq_input_buffer, audio_output_buffer, &error)`
+  (receiver.c:1334) — the **same** `iq_input_buffer` the analyzer uses, so
+  `analyzer_feed`'s re-buffer can drive both from one place.
+- Audio out: `audio_output_buffer` → a sink. Need to pick the Linux audio path
+  (PipeWire/PulseAudio/PortAudio) — a **new platform dependency decision** for
+  Richard (distro lib per the vendoring policy, not vendored).
+- Mode/filter/AGC state: extend the lean engine state (Option B) with what the
+  channel setup reads (mode, filter low/high, agc). Present a scope + get consent
+  before the import (same as steps 1, 3, 4).
 
-**Decide:** keep a minimal in-house receiver-ish state struct (as in step 3), or
-start adopting piHPSDR's `RECEIVER` for the WDSP fields (`id`, `pixels`,
-`pixel_samples`, `iq_input_buffer`, `buffer_size`, `fft_size`, window). Present
-a scope plan + get consent before the import (same as steps 1 & 3).
+**Gate idea:** headless `sdrfl-audioprobe`: discover → P2 RX → demod one SSB/CW
+signal → write a few seconds of audio to a WAV, or play it and listen. Proves
+IQ → demod → audio end-to-end.
 
-**Gate idea (`sdrfl-panprobe` or extend render-test):** discover → P2 RX →
-analyzer → dump one averaged `pixel_samples` frame to PNG (headless), like the
-existing `sdrfl-render-test` but fed by the analyzer instead of the network path.
+Also worth a small follow-up: absolute dBm calibration for the panadapter
+(measure a known-level signal, bake the `soffset` in) — currently auto-ranged.
 
 ## Notes
 
