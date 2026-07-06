@@ -35,6 +35,7 @@ engine_inc = include_directories('src/engine')
 engine_sources = [
   'src/engine/engine_state.c',
   'src/engine/discovery_p2.c',
+  'src/engine/protocol2.c',
 ]
 engine_deps = [glib_dep]
 
@@ -85,6 +86,16 @@ executable('sdrfl-discover',
   ['src/discover_main.c'] + engine_sources,
   include_directories : [vendor_inc, engine_inc],
   dependencies : engine_deps,
+  install : false,
+)
+
+# Headless Protocol-2 RX + IQ probe (starts one DDC, collects IQ, prints stats).
+# Milestone-1 step-3 gate. TAKES THE RADIO — piHPSDR must be disconnected.
+# SDRFL_DRYRUN=1 builds+hexdumps the packets offline (no socket, no radio).
+executable('sdrfl-rxprobe',
+  ['src/rxprobe_main.c'] + engine_sources,
+  include_directories : [vendor_inc, engine_inc],
+  dependencies : engine_deps + [m_dep],
   install : false,
 )
 
