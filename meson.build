@@ -66,9 +66,13 @@ executable('sdr-for-linux',
     'src/client.c',
     'src/protocol.c',
     'src/transport.c',
-  ] + ui_sources,
-  include_directories : [vendor_inc, src_inc],
-  dependencies : common_deps,
+    'src/engine/analyzer.c',
+  ] + engine_sources + ui_sources,
+  include_directories : [vendor_inc, src_inc, engine_inc],
+  # engine (protocol2 + analyzer + discovery) alongside the v0 network client;
+  # WDSP's comm.h/wdsp.h need the GNU dialect (as with sdrfl-wdsp-smoke).
+  dependencies : common_deps + [glib_dep, wdsp_dep, m_dep],
+  override_options : ['c_std=gnu11'],
   install : false,
 )
 
