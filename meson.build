@@ -22,7 +22,9 @@ opus_dep    = dependency('opus')
 openssl_dep = dependency('openssl')
 zlib_dep    = dependency('zlib')
 # WDSP + libspecbleach need single-precision FFTW; rnnoise/WDSP need pthreads + libm.
+# WDSP's analyzer/fir also use the double-precision FFTW (fftw_* symbols).
 fftw3f_dep  = dependency('fftw3f')
+fftw3_dep   = dependency('fftw3')
 threads_dep = dependency('threads')
 m_dep       = cc.find_library('m', required : false)
 
@@ -96,6 +98,17 @@ executable('sdrfl-rxprobe',
   ['src/rxprobe_main.c'] + engine_sources,
   include_directories : [vendor_inc, engine_inc],
   dependencies : engine_deps + [m_dep],
+  install : false,
+)
+
+# Headless Protocol-2 RX -> WDSP analyzer -> panadapter PNG. Milestone-1 step-4
+# gate. TAKES THE RADIO — piHPSDR must be disconnected. Links the vendored WDSP
+# (needs the GNU dialect, like sdrfl-wdsp-smoke) + our pure-Cairo renderer.
+executable('sdrfl-panprobe',
+  ['src/panprobe_main.c', 'src/engine/analyzer.c'] + engine_sources + ui_sources,
+  include_directories : [vendor_inc, src_inc, engine_inc],
+  dependencies : [wdsp_dep, gtk_dep, glib_dep, m_dep],
+  override_options : ['c_std=gnu11'],
   install : false,
 )
 

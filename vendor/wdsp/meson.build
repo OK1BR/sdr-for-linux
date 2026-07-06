@@ -88,12 +88,12 @@ libwdsp = static_library('wdsp',
   # only under `#if defined(linux)`, and the bare `linux` macro exists only in
   # the GNU dialect — strict -std=c11 would leave __declspec unhandled.
   override_options : ['warning_level=0', 'c_std=gnu11'],
-  dependencies : [fftw3f_dep, threads_dep, m_dep, rnnoise_dep, specbleach_dep],
+  dependencies : [fftw3f_dep, fftw3_dep, threads_dep, m_dep, rnnoise_dep, specbleach_dep],
   install : false,
 )
 
 wdsp_dep = declare_dependency(
   link_with : libwdsp,
   include_directories : wdsp_inc,
-  dependencies : [fftw3f_dep, threads_dep, m_dep, rnnoise_dep, specbleach_dep],
+  dependencies : [fftw3f_dep, fftw3_dep, threads_dep, m_dep, rnnoise_dep, specbleach_dep],
 )
