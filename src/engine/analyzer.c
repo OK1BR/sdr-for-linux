@@ -13,9 +13,10 @@
 #include "wdsp.h"      /* WDSP analyzer API + DETECTOR_/AVERAGE_ constants */
 #include "analyzer.h"
 
-/* XCreateAnalyzer max FFT size. 16384 = zoom-1 build (low memory); raising it
- * is all that a future zoom needs. See docs/WDSP-ANALYZER-SCOPE.md decision A. */
-#define A_MSIZE  16384
+/* XCreateAnalyzer max FFT size (= piHPSDR's). The FFT grows with zoom up to this
+ * cap, giving sharp zoom to A_MSIZE/pixels (128x at 2048 px). Bigger = deeper
+ * sharp zoom + more FFTW memory. See docs/WDSP-ANALYZER-SCOPE.md. */
+#define A_MSIZE  262144
 /* Samples per Spectrum0 call (SetAnalyzer bf_sz); piHPSDR uses rx->buffer_size. */
 #define A_BFSIZE 1024
 
@@ -52,10 +53,10 @@ static void apply_analyzer(double fsc) {
                                         keep_time * (double)a_afft * (double)a_fps);
   SetAnalyzer(a_id, 1, 1, 1, flp, a_afft, A_BFSIZE, 5, 14.0, overlap, 0,
               fsc, fsc, a_pixels, 1, 0, 0.0, 0.0, max_w);
-  /* Bandwidth normalization held constant (a_pixels) across zoom; the GUI keeps
-   * the noise floor visually put by adding 10·log10(zoom) to its soffset. */
+  /* Normalize to 1 Hz PSD (pass the true sample rate): the noise floor is then
+   * invariant to both zoom and FFT size, so no per-zoom level compensation. */
   SetDisplayNormOneHz(a_id, 0, 1);
-  SetDisplaySampleRate(a_id, a_pixels);
+  SetDisplaySampleRate(a_id, a_rate);
 }
 
 /* Detector + averaging, per receiver.c:1941-2052 (LOG_RECURSIVE, PEAK); depends
@@ -141,8 +142,9 @@ void analyzer_set_zoom(double zoom) {
   if (zoom < 1.0) { zoom = 1.0; }
   g_mutex_lock(&a_lock);
   if (a_ready) {
-    double zz = (double)a_afft * (1.0 - 1.0 / zoom);  /* total bins to clip */
-    apply_analyzer(0.5 * zz);                          /* centered (pan=0)   */
+    a_afft = clamp_afft((int)ceil((double)a_pixels * zoom)); /* grow FFT for sharp deep zoom */
+    double zz = (double)a_afft * (1.0 - 1.0 / zoom);         /* total bins to clip */
+    apply_analyzer(0.5 * zz);                                /* centered (pan=0); recomputes overlap */
     a_zoom = zoom;
   }
   g_mutex_unlock(&a_lock);

@@ -36,6 +36,9 @@ void demod_set_gain(double gain);
 /* Set the AF volume (dB, 0..-40) live on the running channel (thread-safe). */
 void demod_set_volume(double db);
 
+/* Set the filter passband [flo,fhi] Hz live (same mode); thread-safe. */
+void demod_set_passband(double flo, double fhi);
+
 void demod_destroy(void);
 
 /* Diagnostics: peak |audio| since last call (and reset); last fexchange0 error. */

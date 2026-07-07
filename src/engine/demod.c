@@ -128,6 +128,12 @@ void demod_set_volume(double db) {
   g_mutex_unlock(&d_lock);
 }
 
+void demod_set_passband(double flo, double fhi) {
+  g_mutex_lock(&d_lock);
+  if (d_ready) { RXASetPassband(d_id, flo, fhi); }
+  g_mutex_unlock(&d_lock);
+}
+
 void demod_destroy(void) {
   g_mutex_lock(&d_lock);
   if (d_ready) {

@@ -90,6 +90,9 @@ typedef struct {
   double      pending_zoom;  /* slider target; applied on the frame tick (throttle) */
   int         zoom_dirty;    /* pending_zoom needs applying                    */
   GtkWidget  *span_label;    /* footer span readout                            */
+  int         filter_idx;    /* selected preset in the current mode's table    */
+  double      flo, fhi;      /* current passband (Hz, rel. centre) — for drawing */
+  GtkWidget  *filter_dd;     /* filter dropdown (repopulated per mode)         */
 } App;
 
 #define PANADAPTER_FRACTION 0.5
@@ -106,16 +109,40 @@ static void feed_cb(const double *iq, int n_pairs, void *user) {
   demod_feed(iq, n_pairs);      /* audio */
 }
 
-/* Standard passband [flo,fhi] Hz for a demod mode (relative to the DDC centre). */
-static void passband_for_mode(int mode, double *flo, double *fhi) {
-  const double st = 600.0;
+/* Filter presets per mode — piHPSDR filter.c @ 974acba (named presets; Var later). */
+typedef struct { int low, high; const char *name; } FilterPreset;
+
+static const FilterPreset FILT_LSB[] = {
+  {-5150,-150,"5.0k"},{-4550,-150,"4.4k"},{-3950,-150,"3.8k"},{-3450,-150,"3.3k"},
+  {-3050,-150,"2.9k"},{-2850,-150,"2.7k"},{-2550,-150,"2.4k"},{-2250,-150,"2.1k"},
+  {-1950,-150,"1.8k"},{-1150,-150,"1.0k"},
+};
+static const FilterPreset FILT_USB[] = {
+  {150,5150,"5.0k"},{150,4550,"4.4k"},{150,3950,"3.8k"},{150,3450,"3.3k"},
+  {150,3050,"2.9k"},{150,2850,"2.7k"},{150,2550,"2.4k"},{150,2250,"2.1k"},
+  {150,1950,"1.8k"},{150,1150,"1.0k"},
+};
+static const FilterPreset FILT_CW[] = {   /* CWL/CWU: symmetric around the CW pitch */
+  {-500,500,"1.0k"},{-400,400,"800"},{-375,375,"750"},{-300,300,"600"},
+  {-250,250,"500"},{-200,200,"400"},{-125,125,"250"},{-50,50,"100"},
+  {-25,25,"50"},{-13,13,"25"},
+};
+static const FilterPreset FILT_AM[] = {
+  {-8000,8000,"16k"},{-6000,6000,"12k"},{-5000,5000,"10k"},{-4000,4000,"8k"},
+  {-3300,3300,"6.6k"},{-2600,2600,"5.2k"},{-2000,2000,"4.0k"},{-1550,1550,"3.1k"},
+  {-1450,1450,"2.9k"},{-1200,1200,"2.4k"},
+};
+
+/* Filter table + count + default index for a mode. */
+static const FilterPreset *mode_filters(int mode, int *n, int *deflt) {
+  *n = 10;
   switch (mode) {
-    case DEMOD_USB: *flo =  150;      *fhi = 2850;      break;
-    case DEMOD_LSB: *flo = -2850;     *fhi = -150;      break;
-    case DEMOD_CWU: *flo =  st - 250; *fhi = st + 250;  break;
-    case DEMOD_CWL: *flo = -(st+250); *fhi = -(st-250); break;
-    case DEMOD_AM:  *flo = -4000;     *fhi = 4000;      break;
-    default:        *flo =  150;      *fhi = 2850;      break;
+    case DEMOD_LSB: *deflt = 5; return FILT_LSB;   /* 2.7k */
+    case DEMOD_USB: *deflt = 5; return FILT_USB;   /* 2.7k */
+    case DEMOD_CWL:
+    case DEMOD_CWU: *deflt = 4; return FILT_CW;    /* 500  */
+    case DEMOD_AM:  *deflt = 4; return FILT_AM;    /* 6.6k */
+    default:        *deflt = 5; return FILT_USB;
   }
 }
 
@@ -163,6 +190,24 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
   cairo_rectangle(cr, 0, 0, w, ph);
   cairo_clip(cr);
   panadapter_draw(cr, w, ph, &app->frame, smoothed, low, span, NULL);
+  /* Filter passband overlay (Model A: VFO = span centre). Scales with zoom. */
+  if (app->radio_mode && app->fhi > app->flo) {
+    double hz_per_px = (double)app->rate / app->zoom / w;
+    double cx = w / 2.0;
+    double x0 = cx + app->flo / hz_per_px;
+    double x1 = cx + app->fhi / hz_per_px;
+    cairo_set_source_rgba(cr, 0.35, 0.75, 1.0, 0.12);   /* passband fill  */
+    cairo_rectangle(cr, x0, 0, x1 - x0, ph);
+    cairo_fill(cr);
+    cairo_set_source_rgba(cr, 0.55, 0.85, 1.0, 0.55);   /* passband edges */
+    cairo_set_line_width(cr, 1.0);
+    cairo_move_to(cr, x0 + 0.5, 0); cairo_line_to(cr, x0 + 0.5, ph);
+    cairo_move_to(cr, x1 - 0.5, 0); cairo_line_to(cr, x1 - 0.5, ph);
+    cairo_stroke(cr);
+    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.35);     /* VFO centre line */
+    cairo_move_to(cr, cx + 0.5, 0); cairo_line_to(cr, cx + 0.5, ph);
+    cairo_stroke(cr);
+  }
   cairo_restore(cr);
 
   waterfall_draw(app->wf, cr, 0, ph, w, h - ph);
@@ -202,9 +247,8 @@ static void tick_radio(App *app, GtkWidget *widget) {
     app->ema_w = n;
     app->cal_frames = 0;
   } else {
-    /* +10·log10(zoom) keeps the noise floor visually put as the pixel bandwidth
-     * shrinks with zoom (analyzer norm is held constant). */
-    double so = app->soffset_locked ? (app->soffset + 10.0 * log10(app->zoom)) : 0.0;
+    /* Analyzer uses 1 Hz PSD norm → floor is zoom-invariant; no compensation. */
+    double so = app->soffset_locked ? app->soffset : 0.0;
     for (int i = 0; i < n; i++) {
       app->ema[i] += EMA_FACTOR * ((float)(raw[i] + so) - app->ema[i]);
     }
@@ -356,14 +400,48 @@ static gboolean on_key(GtkEventControllerKey *ctl, guint keyval, guint keycode,
 
 /* ---- control-strip callbacks (wired to the engine) ----------------------- */
 
+/* Filter dropdown → apply the selected preset's passband live. */
+static void on_filter_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data) {
+  (void)ps;
+  App *app = (App *)data;
+  int nf, dfl;
+  const FilterPreset *ft = mode_filters(app->mode, &nf, &dfl);
+  guint idx = gtk_drop_down_get_selected(dd);
+  if ((int)idx >= nf) { return; }
+  app->filter_idx = (int)idx;
+  app->flo = ft[idx].low;
+  app->fhi = ft[idx].high;
+  demod_set_passband(app->flo, app->fhi);   /* filter isn't persisted (mode default on start) */
+}
+
+/* Rebuild the filter dropdown for the current mode and select filter_idx. */
+static void populate_filter_dd(App *app) {
+  if (!app->filter_dd) { return; }
+  int nf, dfl;
+  const FilterPreset *ft = mode_filters(app->mode, &nf, &dfl);
+  const char *names[16];
+  for (int i = 0; i < nf; i++) { names[i] = ft[i].name; }
+  names[nf] = NULL;
+  GtkStringList *m = gtk_string_list_new(names);
+  g_signal_handlers_block_by_func(app->filter_dd, (gpointer)on_filter_changed, app);
+  gtk_drop_down_set_model(GTK_DROP_DOWN(app->filter_dd), G_LIST_MODEL(m));
+  gtk_drop_down_set_selected(GTK_DROP_DOWN(app->filter_dd), app->filter_idx);
+  g_signal_handlers_unblock_by_func(app->filter_dd, (gpointer)on_filter_changed, app);
+  g_object_unref(m);
+}
+
 static void on_mode_toggled(GtkToggleButton *b, gpointer data) {
   if (!gtk_toggle_button_get_active(b)) { return; }  /* ignore the deselect half */
   App *app = (App *)data;
   int mode = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "mode"));
-  double flo, fhi;
-  passband_for_mode(mode, &flo, &fhi);
-  demod_set_mode(mode, flo, fhi);
-  app->mode = mode;
+  int nf, dfl;
+  const FilterPreset *ft = mode_filters(mode, &nf, &dfl);
+  app->mode       = mode;
+  app->filter_idx = dfl;                 /* mode's default filter */
+  app->flo = ft[dfl].low;
+  app->fhi = ft[dfl].high;
+  demod_set_mode(mode, app->flo, app->fhi);
+  populate_filter_dd(app);               /* refill dropdown for the new mode */
   schedule_save(app);
 }
 
@@ -420,9 +498,13 @@ static GtkWidget *build_controls(App *app) {
   }
   gtk_box_append(GTK_BOX(bar), modebox);
 
-  /* Filter / AGC / NR·NB·ANF — visible placeholders until their engine hooks land. */
-  gtk_box_append(GTK_BOX(bar), labeled("Filter",
-      gtk_drop_down_new_from_strings((const char *[]){"2.7 k","2.4 k","1.8 k","500","250", NULL})));
+  /* Filter — piHPSDR presets for the current mode; repopulated on mode change. */
+  app->filter_dd = gtk_drop_down_new(NULL, NULL);
+  g_signal_connect(app->filter_dd, "notify::selected", G_CALLBACK(on_filter_changed), app);
+  populate_filter_dd(app);
+  gtk_box_append(GTK_BOX(bar), labeled("Filter", app->filter_dd));
+
+  /* AGC / NR·NB·ANF — visible placeholders until their engine hooks land. */
   gtk_box_append(GTK_BOX(bar), labeled("AGC",
       gtk_drop_down_new_from_strings((const char *[]){"Med","Fast","Slow","Long","Off", NULL})));
   GtkWidget *nrbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
@@ -481,7 +563,7 @@ static GtkWidget *build_bottom_controls(App *app) {
   GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
   gtk_widget_add_css_class(bar, "controlbar");
 
-  GtkWidget *zoom = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0.0, 3.0, 0.01);
+  GtkWidget *zoom = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0.0, 7.0, 0.01);  /* 1x .. 128x */
   gtk_range_set_value(GTK_RANGE(zoom), log2(app->zoom));
   gtk_widget_set_size_request(zoom, 180, -1);
   gtk_scale_set_draw_value(GTK_SCALE(zoom), FALSE);
@@ -514,7 +596,7 @@ static void css_load(void) {
 
 /* ---- preferences dialog (AdwPreferencesDialog) --------------------------- */
 
-static const int PREF_RATES[] = {48000, 96000, 192000, 384000, 768000};
+static const int PREF_RATES[] = {48000, 96000, 192000, 384000, 768000, 1536000};
 
 static void on_pref_fps(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   (void)ps;
@@ -569,7 +651,7 @@ static AdwDialog *build_prefs(App *app) {
   gtk_editable_set_text(GTK_EDITABLE(ip), app->radio_ip);
   g_signal_connect(ip, "changed", G_CALLBACK(on_pref_ip), app);
   adw_preferences_group_add(g, ip);
-  GtkStringList *rm = gtk_string_list_new((const char *[]){"48 kHz","96 kHz","192 kHz","384 kHz","768 kHz", NULL});
+  GtkStringList *rm = gtk_string_list_new((const char *[]){"48 kHz","96 kHz","192 kHz","384 kHz","768 kHz","1536 kHz", NULL});
   guint ri = 2;
   for (guint i = 0; i < G_N_ELEMENTS(PREF_RATES); i++) { if (PREF_RATES[i] == app->rate) { ri = i; } }
   GtkWidget *rate = g_object_new(ADW_TYPE_COMBO_ROW, "title", "Sample rate", "model", rm, "selected", ri, NULL);
@@ -723,10 +805,13 @@ static void start_radio(App *app) {
     return;
   }
 
-  /* Audio: WDSP demod → native PipeWire sink. */
-  double flo, fhi;
-  passband_for_mode(mode, &flo, &fhi);
-  if (audio_start(48000, 1, app->latency) == 0 && demod_create(0, rate, mode, flo, fhi, app->volume) == 0) {
+  /* Audio: WDSP demod → native PipeWire sink. Default filter = mode's preset. */
+  int nf, dfl;
+  const FilterPreset *ft = mode_filters(mode, &nf, &dfl);
+  app->filter_idx = dfl;
+  app->flo = ft[dfl].low;
+  app->fhi = ft[dfl].high;
+  if (audio_start(48000, 1, app->latency) == 0 && demod_create(0, rate, mode, app->flo, app->fhi, app->volume) == 0) {
     demod_set_gain(app->gain);
     app->audio_ok = 1;
   } else {
