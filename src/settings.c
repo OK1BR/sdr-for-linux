@@ -48,6 +48,8 @@ int settings_load(Settings *s) {
       s->latency = g_key_file_get_integer(kf, GROUP_RX, "latency", NULL);
     if (g_key_file_has_key(kf, GROUP_DISPLAY, "fps", NULL))
       s->fps = g_key_file_get_integer(kf, GROUP_DISPLAY, "fps", NULL);
+    if (g_key_file_has_key(kf, GROUP_RX, "step", NULL))
+      s->step = g_key_file_get_integer(kf, GROUP_RX, "step", NULL);
   }
   g_key_file_free(kf);
   return ok;
@@ -66,6 +68,7 @@ int settings_save(const Settings *s) {
   g_key_file_set_double (kf, GROUP_RX,    "volume",  s->volume);
   g_key_file_set_double (kf, GROUP_RX,    "gain",    s->gain);
   g_key_file_set_integer(kf, GROUP_RX,    "latency", s->latency);
+  g_key_file_set_integer(kf, GROUP_RX,    "step",    s->step);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "fps",   s->fps);
 
   GError *e = NULL;

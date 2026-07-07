@@ -20,6 +20,7 @@ typedef struct {
   double    gain;      /* digital master gain                        */
   int       fps;       /* panadapter frame rate                      */
   int       latency;   /* audio target latency (ms)                  */
+  int       step;      /* scroll-tuning step (Hz)                    */
 } Settings;
 
 /*

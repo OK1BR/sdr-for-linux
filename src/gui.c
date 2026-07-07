@@ -88,6 +88,8 @@ typedef struct {
   GtkWidget  *area;
   GtkWidget  *mode_btns[7];  /* toggle per DEMOD_* id (keys ↔ buttons in sync) */
   double      zoom;          /* current display zoom (1 = full span)           */
+  long long   tune_step;     /* scroll-tuning step (Hz); freq snaps to it       */
+  GtkWidget  *step_dd;       /* footer step selector                           */
   GtkWidget  *span_label;    /* footer span readout                            */
   GtkWidget  *zoom_in_btn;   /* footer zoom +/- (stepped; continuous stutters) */
   GtkWidget  *zoom_out_btn;
@@ -99,10 +101,11 @@ typedef struct {
 #define PANADAPTER_FRACTION 0.5
 #define EMA_FACTOR 0.55f
 
-/* Tuning step per wheel notch (Hz): plain / Ctrl (fine) / Shift (coarse). */
-#define TUNE_STEP_HZ      100
-#define TUNE_STEP_FINE    10
-#define TUNE_STEP_COARSE  1000
+/* Scroll-tuning steps (Hz): the frequency snaps to a multiple of the active one.
+ * Labels are NULL-terminated for gtk_drop_down_new_from_strings(). */
+static const long long TUNE_STEPS[] = { 1, 10, 100, 1000, 10000 };
+static const char * const TUNE_STEP_LABELS[] = { "1 Hz", "10 Hz", "100 Hz", "1 kHz", "10 kHz", NULL };
+#define TUNE_STEP_DEFAULT 100
 
 static void feed_cb(const double *iq, int n_pairs, void *user) {
   (void)user;
@@ -309,6 +312,7 @@ static void app_to_settings(const App *app, Settings *s) {
   s->gain    = app->gain;
   s->fps     = app->fps;
   s->latency = app->latency;
+  s->step    = (int)app->tune_step;
 }
 
 static gboolean do_save_cb(gpointer data) {
@@ -328,20 +332,22 @@ static void schedule_save(App *app) {
 }
 
 /* Mouse wheel over the panadapter re-tunes the DDC (Model A: the whole span
- * moves, passband stays centred). Ctrl = fine, Shift = coarse step. */
+ * moves, passband stays centred) by the selected step. Each notch snaps to the
+ * next multiple of the step in the scroll direction, so the frequency always
+ * lands on a clean grid line (no leftover units to hand-trim later). */
 static gboolean on_scroll(GtkEventControllerScroll *ctl, double dx, double dy, gpointer data) {
-  (void)dx;
+  (void)dx; (void)ctl;
   App *app = (App *)data;
   if (!app->radio_mode || !app->engine_ok) { return FALSE; }
-  GdkModifierType st = gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(ctl));
-  long long step = TUNE_STEP_HZ;
-  if      (st & GDK_CONTROL_MASK) { step = TUNE_STEP_FINE; }
-  else if (st & GDK_SHIFT_MASK)   { step = TUNE_STEP_COARSE; }
-  /* Wheel up (dy < 0) tunes higher. (Fractional touchpad deltas round to 0 —
-   * a later refinement can accumulate the residual; the wheel is the target.) */
-  long long delta = (long long)llround(-dy) * step;
-  if (delta == 0) { return FALSE; }
-  long long nf = app->freq + delta;
+  int dir = (int)llround(-dy);        /* wheel up (dy < 0) tunes higher */
+  if (dir == 0) { return FALSE; }
+  long long step = app->tune_step > 0 ? app->tune_step : TUNE_STEP_DEFAULT;
+  long long f = app->freq;
+  /* Snap to the grid in the scroll direction (floor going up, ceil going down),
+   * then move whole steps — so nf is always a multiple of step. */
+  long long base = (dir > 0) ? (f / step) * step
+                             : ((f + step - 1) / step) * step;
+  long long nf = base + (long long)dir * step;
   if (nf < 1) { nf = 1; }
   app->freq = nf;              /* readout follows on the next tick */
   p2_set_frequency(nf);
@@ -566,6 +572,25 @@ static void on_zoom_out(GtkButton *b, gpointer data) {
 }
 
 /* Bottom bar (AdwToolbarView bottom slot): view/display controls — zoom for now. */
+/* Step selector: set the scroll step, and snap the current frequency to the
+ * nearest multiple of the new step so switching steps leaves no sub-step units. */
+static void on_step_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data) {
+  (void)ps;
+  App *app = (App *)data;
+  guint i = gtk_drop_down_get_selected(dd);
+  if (i >= G_N_ELEMENTS(TUNE_STEPS)) { return; }
+  long long step = TUNE_STEPS[i];
+  app->tune_step = step;
+  long long f = app->freq;
+  long long snapped = ((f + step / 2) / step) * step;   /* round to nearest */
+  if (snapped < 1) { snapped = step; }
+  if (snapped != f) {
+    app->freq = snapped;                 /* readout follows on the next tick */
+    if (app->engine_ok) { p2_set_frequency(snapped); }
+  }
+  schedule_save(app);
+}
+
 static GtkWidget *build_bottom_controls(App *app) {
   GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
   gtk_widget_add_css_class(bar, "controlbar");
@@ -585,6 +610,16 @@ static GtkWidget *build_bottom_controls(App *app) {
   gtk_box_append(GTK_BOX(bar), app->span_label);
   gtk_widget_set_sensitive(app->zoom_out_btn, FALSE);   /* starts at 1x */
   update_span_label(app);
+
+  GtkWidget *sdd = gtk_drop_down_new_from_strings(TUNE_STEP_LABELS);
+  guint sidx = 0;
+  for (guint i = 0; i < G_N_ELEMENTS(TUNE_STEPS); i++) {
+    if (TUNE_STEPS[i] == app->tune_step) { sidx = i; break; }
+  }
+  gtk_drop_down_set_selected(GTK_DROP_DOWN(sdd), sidx);  /* set before wiring: no retune on build */
+  g_signal_connect(sdd, "notify::selected", G_CALLBACK(on_step_changed), app);
+  app->step_dd = sdd;
+  gtk_box_append(GTK_BOX(bar), labeled("Step", sdd));
 
   GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_set_hexpand(spacer, TRUE);
@@ -773,7 +808,8 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
  * State precedence: env var > saved config > built-in default. */
 static void start_radio(App *app) {
   Settings st = { .freq = 14100000, .rate = 192000, .mode = -1,
-                  .volume = -10.0, .gain = 8.0, .fps = 25, .latency = 10 };
+                  .volume = -10.0, .gain = 8.0, .fps = 25, .latency = 10,
+                  .step = TUNE_STEP_DEFAULT };
   g_strlcpy(st.ip, "192.168.1.247", sizeof(st.ip));
   if (settings_load(&st)) { printf("settings: loaded %s\n", settings_path()); }
 
@@ -801,6 +837,10 @@ static void start_radio(App *app) {
   app->latency = st.latency;
   app->zoom   = 1.0;
   app->pixels = ENGINE_PIXELS;
+  app->tune_step = TUNE_STEP_DEFAULT;   /* keep only known step values */
+  for (guint i = 0; i < G_N_ELEMENTS(TUNE_STEPS); i++) {
+    if (TUNE_STEPS[i] == st.step) { app->tune_step = st.step; break; }
+  }
   int rate    = st.rate;
 
   printf("Discovering radio at %s ...\n", ipaddr_radio);
