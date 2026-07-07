@@ -94,6 +94,34 @@ per the above) over reimplementing.
 - **GTK3 and GTK4 cannot coexist in one process.** piHPSDR is GTK3.
 - **WDSP** is a separate GPL library (piHPSDR builds it from its `wdsp/` subdir).
 
+## ⛔ TX safety — protect the transceiver. NON-NEGOTIABLE.
+
+A wrong relay/filter state on RX costs sensitivity (see the −45 dB ANT-relay
+bug, c4b9243); **on TX it can physically destroy the PA or feed transmit RF
+back into the RX input**. Every current and future agent MUST treat the TX
+path as hazardous and observe, without exception:
+
+- **Any change touching the TX path** — MOX, PA-enable (general[58]), drive,
+  TX-specific packet, or the Alex words (ANT relays, LPF/BPF selection, T/R
+  relay, step attenuators) — must be **re-verified against piHPSDR
+  (`~/.local/opt/pihpsdr`, @974acba) and [`docs/TX-SAFETY.md`](docs/TX-SAFETY.md)
+  every time**, not assumed correct from an earlier session. Repeat the check
+  whenever these bytes are edited, moved, or re-ordered.
+- **Consistency is atomic**: one high-priority packet always carries a mutually
+  consistent {MOX, ANT, LPF, BPF, attenuator} set. Never key with a stale LPF
+  or an open antenna relay; never split that state across packets.
+- **SWR must be evaluated during TX** (ALEX fwd/rev sensors), and on high SWR
+  the software must **automatically reduce drive to zero and/or refuse TX**
+  (piHPSDR: alarm ≥ 3.0 in two consecutive readings → drive 0). TX must also
+  be refused out-of-band and with PA disabled.
+- **Protect the RX input during TX**: both step attenuators to 31 dB while
+  transmitting + correct T/R relay state, so transmitted RF can never return
+  to the ADC/RX input path.
+- TX-capable code lands **only with Richard's explicit consent** and only with
+  the full `docs/TX-SAFETY.md` checklist satisfied — it is the acceptance
+  criteria list, not a suggestion. Until then the three no-TX guarantees
+  (no MOX bit, PA-enable 0, zeroed TX-specific) must never be weakened.
+
 ## Roadmap (RX first)
 
 1. GTK4 app → HPSDR discovery → **RX IQ → WDSP analyzer → our panadapter** on the
