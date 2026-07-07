@@ -91,8 +91,8 @@ typedef struct {
   long long   tune_step;     /* scroll-tuning step (Hz); freq snaps to it       */
   GtkWidget  *step_dd;       /* footer step selector                           */
   GtkWidget  *span_label;    /* footer span readout                            */
-  GtkWidget  *zoom_in_btn;   /* footer zoom +/- (stepped; continuous stutters) */
-  GtkWidget  *zoom_out_btn;
+  double      pending_zoom;  /* slider target; applied ≤1×/frame in tick_cb    */
+  int         zoom_dirty;    /* pending_zoom needs applying                    */
   int         filter_idx;    /* selected preset in the current mode's table    */
   double      flo, fhi;      /* current passband (Hz, rel. centre) — for drawing */
   GtkWidget  *filter_dd;     /* filter dropdown (repopulated per mode)         */
@@ -291,9 +291,17 @@ static void tick_radio(App *app, GtkWidget *widget) {
   gtk_widget_queue_draw(widget);
 }
 
+static void update_span_label(App *app);   /* fwd: zoom slider updates it via tick */
+
 static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) {
   (void)clock;
   App *app = (App *)data;
+  if (app->radio_mode && app->zoom_dirty) {   /* coalesce slider events: ≤1 reconfig/frame */
+    analyzer_set_zoom(app->pending_zoom);
+    app->zoom = app->pending_zoom;
+    app->zoom_dirty = 0;
+    update_span_label(app);
+  }
   if (app->connected) {
     if (app->radio_mode) { tick_radio(app, widget); }
     else                 { tick_network(app, widget); }
@@ -313,6 +321,7 @@ static void app_to_settings(const App *app, Settings *s) {
   s->fps     = app->fps;
   s->latency = app->latency;
   s->step    = (int)app->tune_step;
+  s->zoom    = app->zoom;
 }
 
 static gboolean do_save_cb(gpointer data) {
@@ -554,21 +563,16 @@ static void update_span_label(App *app) {
   gtk_label_set_text(GTK_LABEL(app->span_label), buf);
 }
 
-/* Apply the current zoom (stepped ×2 per click — SetAnalyzer reconfig at large
- * FFT sizes is too heavy to run continuously). */
-static void zoom_apply(App *app) {
-  analyzer_set_zoom(app->zoom);
-  update_span_label(app);
-  if (app->zoom_out_btn) { gtk_widget_set_sensitive(app->zoom_out_btn, app->zoom > 1.0); }
-  if (app->zoom_in_btn)  { gtk_widget_set_sensitive(app->zoom_in_btn, app->zoom < ZOOM_MAX); }
-}
-static void on_zoom_in(GtkButton *b, gpointer data) {
-  (void)b; App *app = (App *)data;
-  if (app->zoom < ZOOM_MAX) { app->zoom *= 2.0; zoom_apply(app); }
-}
-static void on_zoom_out(GtkButton *b, gpointer data) {
-  (void)b; App *app = (App *)data;
-  if (app->zoom > 1.0) { app->zoom /= 2.0; zoom_apply(app); }
+/* Zoom slider snaps to octave detents (1×,2×,…,128×): continuous re-config while
+ * dragging looked rough, so reconfig fires only when the detent actually changes
+ * (one cheap wisdom-backed SetAnalyzer per notch). */
+static void on_zoom_changed(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  double z = pow(2.0, lround(gtk_range_get_value(r)));   /* nearest octave */
+  if (z == app->pending_zoom) { return; }
+  app->pending_zoom = z;
+  app->zoom_dirty = 1;       /* applied on the next frame tick */
+  schedule_save(app);        /* debounced; persists the applied app->zoom */
 }
 
 /* Bottom bar (AdwToolbarView bottom slot): view/display controls — zoom for now. */
@@ -595,20 +599,18 @@ static GtkWidget *build_bottom_controls(App *app) {
   GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
   gtk_widget_add_css_class(bar, "controlbar");
 
-  GtkWidget *zbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-  gtk_widget_add_css_class(zbox, "linked");
-  app->zoom_out_btn = gtk_button_new_from_icon_name("zoom-out-symbolic");
-  app->zoom_in_btn  = gtk_button_new_from_icon_name("zoom-in-symbolic");
-  g_signal_connect(app->zoom_out_btn, "clicked", G_CALLBACK(on_zoom_out), app);
-  g_signal_connect(app->zoom_in_btn,  "clicked", G_CALLBACK(on_zoom_in),  app);
-  gtk_box_append(GTK_BOX(zbox), app->zoom_out_btn);
-  gtk_box_append(GTK_BOX(zbox), app->zoom_in_btn);
-  gtk_box_append(GTK_BOX(bar), labeled("Zoom", zbox));
+  GtkWidget *zoom = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0.0, 7.0, 1.0); /* octaves 1x..128x */
+  gtk_range_set_round_digits(GTK_RANGE(zoom), 0);          /* snap the handle to detents */
+  for (int i = 0; i <= 7; i++) { gtk_scale_add_mark(GTK_SCALE(zoom), i, GTK_POS_BOTTOM, NULL); }
+  gtk_range_set_value(GTK_RANGE(zoom), log2(app->zoom));   /* reflect saved zoom (before wiring) */
+  gtk_widget_set_size_request(zoom, 200, -1);
+  gtk_scale_set_draw_value(GTK_SCALE(zoom), FALSE);
+  g_signal_connect(zoom, "value-changed", G_CALLBACK(on_zoom_changed), app);
+  gtk_box_append(GTK_BOX(bar), labeled("Zoom", zoom));
 
   app->span_label = gtk_label_new("");
   gtk_widget_add_css_class(app->span_label, "span");
   gtk_box_append(GTK_BOX(bar), app->span_label);
-  gtk_widget_set_sensitive(app->zoom_out_btn, FALSE);   /* starts at 1x */
   update_span_label(app);
 
   GtkWidget *sdd = gtk_drop_down_new_from_strings(TUNE_STEP_LABELS);
@@ -809,7 +811,7 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
 static void start_radio(App *app) {
   Settings st = { .freq = 14100000, .rate = 192000, .mode = -1,
                   .volume = -10.0, .gain = 8.0, .fps = 25, .latency = 10,
-                  .step = TUNE_STEP_DEFAULT };
+                  .step = TUNE_STEP_DEFAULT, .zoom = 1.0 };
   g_strlcpy(st.ip, "192.168.1.247", sizeof(st.ip));
   if (settings_load(&st)) { printf("settings: loaded %s\n", settings_path()); }
 
@@ -835,7 +837,12 @@ static void start_radio(App *app) {
   app->gain   = st.gain;
   app->fps    = st.fps;
   app->latency = st.latency;
-  app->zoom   = 1.0;
+  /* Snap the saved zoom to the nearest octave detent in [1, ZOOM_MAX]. */
+  app->zoom = st.zoom;
+  if (!(app->zoom >= 1.0))  { app->zoom = 1.0; }      /* NaN or < 1 */
+  if (app->zoom > ZOOM_MAX) { app->zoom = ZOOM_MAX; }
+  app->zoom = pow(2.0, lround(log2(app->zoom)));
+  app->pending_zoom = app->zoom;
   app->pixels = ENGINE_PIXELS;
   app->tune_step = TUNE_STEP_DEFAULT;   /* keep only known step values */
   for (guint i = 0; i < G_N_ELEMENTS(TUNE_STEPS); i++) {
@@ -854,6 +861,7 @@ static void start_radio(App *app) {
     fprintf(stderr, "analyzer_create failed\n");
     return;
   }
+  if (app->zoom != 1.0) { analyzer_set_zoom(app->zoom); }   /* restore saved zoom */
 
   /* Audio: WDSP demod → native PipeWire sink. Default filter = mode's preset. */
   int nf, dfl;

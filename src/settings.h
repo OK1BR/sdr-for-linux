@@ -21,6 +21,7 @@ typedef struct {
   int       fps;       /* panadapter frame rate                      */
   int       latency;   /* audio target latency (ms)                  */
   int       step;      /* scroll-tuning step (Hz)                    */
+  double    zoom;      /* panadapter zoom factor (1 = full span)     */
 } Settings;
 
 /*

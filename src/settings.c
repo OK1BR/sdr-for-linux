@@ -50,6 +50,8 @@ int settings_load(Settings *s) {
       s->fps = g_key_file_get_integer(kf, GROUP_DISPLAY, "fps", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "step", NULL))
       s->step = g_key_file_get_integer(kf, GROUP_RX, "step", NULL);
+    if (g_key_file_has_key(kf, GROUP_DISPLAY, "zoom", NULL))
+      s->zoom = g_key_file_get_double(kf, GROUP_DISPLAY, "zoom", NULL);
   }
   g_key_file_free(kf);
   return ok;
@@ -70,6 +72,7 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_RX,    "latency", s->latency);
   g_key_file_set_integer(kf, GROUP_RX,    "step",    s->step);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "fps",   s->fps);
+  g_key_file_set_double (kf, GROUP_DISPLAY, "zoom",  s->zoom);
 
   GError *e = NULL;
   int rc = g_key_file_save_to_file(kf, settings_path(), &e) ? 0 : -1;
