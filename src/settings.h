@@ -33,6 +33,7 @@ typedef struct {
   int       win_w;     /* window width (px, 0 = default)             */
   int       win_h;     /* window height (px, 0 = default)            */
   int       win_max;   /* window maximized                          */
+  char      band_levels[512]; /* per-band dB window, "key=hi/lo;..." */
   int       atten;     /* ADC0 step attenuator (dB, 0-31)            */
   int       agc;       /* AGC mode 0=off,1=long,2=slow,3=med,4=fast  */
   double    agc_gain;  /* AGC-T threshold/gain (dB)                  */

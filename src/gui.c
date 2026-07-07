@@ -48,6 +48,8 @@
 /* Where the noise floor lands after auto-levelling (dBm, inside the pan window). */
 #define TARGET_FLOOR  -115.0
 
+#define NBANDS 10   /* HF bands we remember per-band dB levels for */
+
 typedef struct {
   int         radio_mode;   /* 1 = direct radio, 0 = network server            */
 
@@ -117,6 +119,8 @@ typedef struct {
   int         select_mode;   /* right-click select cursor: left-click = tune      */
   GtkWidget  *win;           /* top-level window (for size persistence)           */
   int         win_w, win_h, win_max;  /* remembered window geometry               */
+  double      band_high[NBANDS], band_low[NBANDS];  /* per-band dB window          */
+  int         cur_band;      /* index into BANDS for app->freq (-1 = out of band) */
 } App;
 
 /* dB-scale limits for the grab-to-move axis. */
@@ -126,6 +130,43 @@ typedef struct {
 #define PAN_RANGE_MAX     160.0    /* max dB window (max zoom-out)          */
 #define PAN_DBM_CEIL       20.0    /* the top of the window can't exceed    */
 #define PAN_DBM_FLOOR    -200.0    /* the bottom of the window can't go below */
+
+/* HF bands [lo,hi] Hz + a config key. The dB window is remembered per band, so
+ * the noise-floor placement follows you across bands. Order defines the
+ * persistence layout; the key survives reordering. */
+static const struct { long long lo, hi; const char *key; } BANDS[NBANDS] = {
+  { 1800000,  2000000, "160m" }, { 3500000,  4000000, "80m" },
+  { 5250000,  5450000, "60m"  }, { 7000000,  7300000, "40m" },
+  {10100000, 10150000, "30m"  }, {14000000, 14350000, "20m" },
+  {18068000, 18168000, "17m"  }, {21000000, 21450000, "15m" },
+  {24890000, 24990000, "12m"  }, {28000000, 29700000, "10m" },
+};
+
+static int band_for_freq(long long f) {
+  for (int i = 0; i < NBANDS; i++) { if (f >= BANDS[i].lo && f <= BANDS[i].hi) { return i; } }
+  return -1;
+}
+
+/* Keep the current band's remembered levels in step with the live window. */
+static void pan_store_band(App *app) {
+  if (app->cur_band >= 0) {
+    app->band_high[app->cur_band] = app->pan_high;
+    app->band_low[app->cur_band]  = app->pan_low;
+  }
+}
+
+/* On a band change, load that band's remembered dB window (out-of-band keeps
+ * the current one). Called each tick — freq changes via buttons/tune/click. */
+static void band_apply(App *app) {
+  int b = band_for_freq(app->freq);
+  if (b == app->cur_band) { return; }
+  app->cur_band = b;
+  if (b >= 0) {
+    app->pan_high = app->band_high[b];
+    app->pan_low  = app->band_low[b];
+    if (app->area) { gtk_widget_queue_draw(app->area); }
+  }
+}
 
 /* Supply-voltage calibration: V = k * raw_adc1. No G1 divider is documented, so
  * k is anchored empirically — Richard's Microset measured 13.46 V while the G1
@@ -510,6 +551,7 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
   }
   if (app->connected) {
     if (app->radio_mode) {
+      band_apply(app);   /* swap in this band's remembered dB levels on QSY */
       /* Poll HP-status telemetry once per frame (read-and-clear → single
        * consumer). Latch the overload badges with a hold; raw analog words
        * are parsed but not shown until a live voltage calibration exists. */
@@ -569,6 +611,16 @@ static void app_to_settings(const App *app, Settings *s) {
   s->win_w   = app->win_w;
   s->win_h   = app->win_h;
   s->win_max = app->win_max;
+  /* per-band dB windows → "key=hi/lo;key=hi/lo;..." (locale-independent '.') */
+  char *bp = s->band_levels; size_t brem = sizeof(s->band_levels); bp[0] = '\0';
+  for (int i = 0; i < NBANDS; i++) {
+    char hbuf[G_ASCII_DTOSTR_BUF_SIZE], lbuf[G_ASCII_DTOSTR_BUF_SIZE];
+    g_ascii_formatd(hbuf, sizeof hbuf, "%.1f", app->band_high[i]);
+    g_ascii_formatd(lbuf, sizeof lbuf, "%.1f", app->band_low[i]);
+    int n = snprintf(bp, brem, "%s%s=%s/%s", i ? ";" : "", BANDS[i].key, hbuf, lbuf);
+    if (n < 0 || (size_t)n >= brem) { break; }
+    bp += n; brem -= (size_t)n;
+  }
 }
 
 static gboolean do_save_cb(gpointer data) {
@@ -605,6 +657,7 @@ static void pan_set_window(App *app, double high, double low) {
   high = clampd(high, PAN_DBM_FLOOR + range, PAN_DBM_CEIL);
   app->pan_high = high;
   app->pan_low  = high - range;
+  pan_store_band(app);   /* remember it for the current band */
 }
 
 /* Is the pointer over the left dB gutter (the grab zone for the vertical axis)? */
@@ -1154,7 +1207,7 @@ static void on_pref_pan_high(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   App *app = (App *)data;
   double v = adw_spin_row_get_value(r);            /* dB axis top; keep >= MIN span */
   if (v > app->pan_low + PAN_RANGE_MIN && v <= PAN_DBM_CEIL) {
-    app->pan_high = v; schedule_save(app); gtk_widget_queue_draw(app->area);
+    app->pan_high = v; pan_store_band(app); schedule_save(app); gtk_widget_queue_draw(app->area);
   }
 }
 static void on_pref_pan_low(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
@@ -1162,7 +1215,7 @@ static void on_pref_pan_low(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   App *app = (App *)data;
   double v = adw_spin_row_get_value(r);            /* dB axis bottom */
   if (v < app->pan_high - PAN_RANGE_MIN && v >= PAN_DBM_FLOOR) {
-    app->pan_low = v; schedule_save(app); gtk_widget_queue_draw(app->area);
+    app->pan_low = v; pan_store_band(app); schedule_save(app); gtk_widget_queue_draw(app->area);
   }
 }
 static void on_pref_db_grid(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
@@ -1459,11 +1512,36 @@ static void start_radio(App *app) {
   app->zoom = pow(2.0, lround(log2(app->zoom)));
   app->pending_zoom = app->zoom;
   /* dB window: validate the saved pair, else fall back to the default. */
+  app->cur_band = -1;   /* so pan_set_window's pan_store_band is a no-op until set */
   if (st.pan_high > st.pan_low && st.pan_high <= PAN_DBM_CEIL && st.pan_low >= PAN_DBM_FLOOR) {
     pan_set_window(app, st.pan_high, st.pan_low);
   } else {
     app->pan_high = PAN_HIGH_DEFAULT;
     app->pan_low  = PAN_LOW_DEFAULT;
+  }
+  /* Per-band dB windows: default every band to the global window, then apply the
+   * saved "key=hi/lo;..." overrides, and load the band app->freq is in. */
+  for (int i = 0; i < NBANDS; i++) { app->band_high[i] = app->pan_high; app->band_low[i] = app->pan_low; }
+  char blbuf[512];
+  g_strlcpy(blbuf, st.band_levels, sizeof blbuf);
+  char *blsv = NULL;
+  for (char *tok = strtok_r(blbuf, ";", &blsv); tok; tok = strtok_r(NULL, ";", &blsv)) {
+    char *eq = strchr(tok, '=');
+    char *sl = eq ? strchr(eq + 1, '/') : NULL;
+    if (!eq || !sl) { continue; }
+    *eq = '\0'; *sl = '\0';
+    double hi = g_ascii_strtod(eq + 1, NULL);   /* locale-independent */
+    double lo = g_ascii_strtod(sl + 1, NULL);
+    if (hi > lo) {
+      for (int i = 0; i < NBANDS; i++) {
+        if (strcmp(tok, BANDS[i].key) == 0) { app->band_high[i] = hi; app->band_low[i] = lo; break; }
+      }
+    }
+  }
+  app->cur_band = band_for_freq(app->freq);
+  if (app->cur_band >= 0) {
+    app->pan_high = app->band_high[app->cur_band];
+    app->pan_low  = app->band_low[app->cur_band];
   }
   app->ptr_x = 1e9;   /* until the pointer moves, wheel = tune (not gutter zoom) */
   app->show_db_grid    = st.db_grid    ? 1 : 0;
