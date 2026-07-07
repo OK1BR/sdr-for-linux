@@ -112,6 +112,7 @@ typedef struct {
   double      ptr_x, ptr_y;  /* last pointer pos over the area (scroll hit-test)  */
   int         show_db_grid, show_db_scale;     /* horizontal grid / dB labels     */
   int         show_freq_grid, show_freq_scale; /* vertical grid / freq labels      */
+  int         select_mode;   /* right-click select cursor: left-click = tune      */
 } App;
 
 /* dB-scale limits for the grab-to-move axis. */
@@ -300,6 +301,22 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
     cairo_stroke(cr);
     cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.35);     /* VFO centre line */
     cairo_move_to(cr, cx + 0.5, 0); cairo_line_to(cr, cx + 0.5, ph);
+    cairo_stroke(cr);
+  }
+  /* Select-mode filter cursor: the passband footprint (amber) at the pointer,
+   * showing where a left-click would place the filter before it recenters. */
+  if (app->select_mode && app->fhi > app->flo && app->ptr_x >= 0 && app->ptr_x <= w) {
+    double hz_per_px = (double)app->rate / app->zoom / w;
+    double gx0 = app->ptr_x + app->flo / hz_per_px;
+    double gx1 = app->ptr_x + app->fhi / hz_per_px;
+    cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, 0.12);   /* ghost fill  */
+    cairo_rectangle(cr, gx0, 0, gx1 - gx0, ph);
+    cairo_fill(cr);
+    cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, 0.55);   /* ghost edges + aim line */
+    cairo_set_line_width(cr, 1.0);
+    cairo_move_to(cr, gx0 + 0.5, 0); cairo_line_to(cr, gx0 + 0.5, ph);
+    cairo_move_to(cr, gx1 - 0.5, 0); cairo_line_to(cr, gx1 - 0.5, ph);
+    cairo_move_to(cr, app->ptr_x + 0.5, 0); cairo_line_to(cr, app->ptr_x + 0.5, ph);
     cairo_stroke(cr);
   }
   cairo_restore(cr);
@@ -631,6 +648,7 @@ static void on_drag_update(GtkGestureDrag *g, double off_x, double off_y, gpoint
     return;
   }
 
+  if (app->select_mode) { return; }   /* select mode: left = click-tune, no pan */
   if (!app->engine_ok) { return; }
   int w = gtk_widget_get_width(app->area);
   if (w < 1) { return; }
@@ -644,19 +662,48 @@ static void on_drag_update(GtkGestureDrag *g, double off_x, double off_y, gpoint
 }
 
 /* Track the pointer so on_scroll (which carries no coords) can hit-test the
- * gutter. */
+ * gutter — and, in select mode, so the filter cursor follows the mouse. */
 static void on_motion(GtkEventControllerMotion *m, double x, double y, gpointer data) {
   (void)m;
   App *app = (App *)data;
   app->ptr_x = x;
   app->ptr_y = y;
+  if (app->select_mode) { gtk_widget_queue_draw(app->area); }
 }
 
-/* Double-click in the dB gutter → auto-fit the level window. */
+/* Recenter the span on the frequency under x (Model A: not CTUN — the whole
+ * span moves so the clicked signal lands at centre). */
+static void click_tune(App *app, double x) {
+  if (!app->engine_ok) { return; }
+  int w = gtk_widget_get_width(app->area);
+  if (w < 1) { return; }
+  double hz_per_px = (double)app->rate / app->zoom / w;
+  long long nf = app->freq + (long long)llround((x - w / 2.0) * hz_per_px);
+  if (nf < 1) { nf = 1; }
+  app->freq = nf;
+  p2_set_frequency(nf);
+  schedule_save(app);
+}
+
+/* Left click: double-click the gutter → auto-fit; single click in select mode
+ * → tune to the cursor (recenter). */
 static void on_pressed(GtkGestureClick *g, int n_press, double x, double y, gpointer data) {
   (void)g;
   App *app = (App *)data;
-  if (app->radio_mode && n_press == 2 && in_gutter(app, x, y)) { pan_autofit(app); }
+  if (!app->radio_mode) { return; }
+  if (n_press == 2 && in_gutter(app, x, y)) { pan_autofit(app); return; }
+  if (app->select_mode && n_press == 1 && !in_gutter(app, x, y)) { click_tune(app, x); }
+}
+
+/* Right click toggles select mode (a filter-shaped cursor you aim at a signal;
+ * left-click then recenters on it). */
+static void on_right_pressed(GtkGestureClick *g, int n_press, double x, double y, gpointer data) {
+  (void)g; (void)n_press; (void)x; (void)y;
+  App *app = (App *)data;
+  if (!app->radio_mode) { return; }
+  app->select_mode = !app->select_mode;
+  gtk_widget_set_cursor_from_name(app->area, app->select_mode ? "crosshair" : NULL);
+  gtk_widget_queue_draw(app->area);
 }
 
 /* Keys u/l/c/a switch demod mode by activating the matching strip toggle
@@ -666,6 +713,12 @@ static gboolean on_key(GtkEventControllerKey *ctl, guint keyval, guint keycode,
   (void)ctl; (void)keycode; (void)state;
   App *app = (App *)data;
   if (!app->radio_mode) { return FALSE; }
+  if (keyval == GDK_KEY_Escape && app->select_mode) {
+    app->select_mode = 0;
+    gtk_widget_set_cursor_from_name(app->area, NULL);
+    gtk_widget_queue_draw(app->area);
+    return TRUE;
+  }
   int mode;
   switch (gdk_keyval_to_lower(keyval)) {
     case GDK_KEY_u: mode = DEMOD_USB; break;
@@ -1240,9 +1293,15 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
   g_signal_connect(motion, "motion", G_CALLBACK(on_motion), app);
   gtk_widget_add_controller(app->area, GTK_EVENT_CONTROLLER(motion));
 
-  GtkGesture *click = gtk_gesture_click_new();   /* double-click gutter → auto-fit */
+  GtkGesture *click = gtk_gesture_click_new();   /* left: dbl-click gutter → auto-fit,
+                                                  * single click (select mode) → tune */
   g_signal_connect(click, "pressed", G_CALLBACK(on_pressed), app);
   gtk_widget_add_controller(app->area, GTK_EVENT_CONTROLLER(click));
+
+  GtkGesture *rclick = gtk_gesture_click_new();  /* right: toggle select mode */
+  gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(rclick), GDK_BUTTON_SECONDARY);
+  g_signal_connect(rclick, "pressed", G_CALLBACK(on_right_pressed), app);
+  gtk_widget_add_controller(app->area, GTK_EVENT_CONTROLLER(rclick));
 
   GtkEventControllerKey *keys =
       GTK_EVENT_CONTROLLER_KEY(gtk_event_controller_key_new());
