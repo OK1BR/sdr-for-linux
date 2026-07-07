@@ -100,7 +100,13 @@ typedef struct {
   int         filter_idx;    /* selected preset in the current mode's table    */
   double      flo, fhi;      /* current passband (Hz, rel. centre) — for drawing */
   GtkWidget  *filter_dd;     /* filter dropdown (repopulated per mode)         */
+  gint64      ovl0_until;    /* ADC0-overload badge lit until (monotonic µs)   */
+  gint64      ovl1_until;    /* ADC1-overload badge lit until (monotonic µs)   */
 } App;
+
+/* How long an ADC-overload badge stays lit after a clip (µs). A clip may span
+ * just one 50 ms status packet — hold it so it's visible at any frame rate. */
+#define ADC_OVL_HOLD_US 700000
 
 #define PANADAPTER_FRACTION 0.5
 #define EMA_FACTOR 0.55f
@@ -217,6 +223,26 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
     cairo_stroke(cr);
   }
   cairo_restore(cr);
+
+  /* ADC-overload badge, top-left of the panadapter. Warns the input is
+   * clipping → add attenuation. Held ADC_OVL_HOLD_US after the last clip. */
+  gint64 now = g_get_monotonic_time();
+  int ovl0 = now < app->ovl0_until;
+  int ovl1 = now < app->ovl1_until;
+  if (ovl0 || ovl1) {
+    const char *txt = (ovl0 && ovl1) ? "ADC0+1 OVL" : ovl0 ? "ADC0 OVL" : "ADC1 OVL";
+    cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size(cr, 12.0);
+    cairo_text_extents_t ext;
+    cairo_text_extents(cr, txt, &ext);
+    const double pad = 5.0, bx = 8.0, by = 8.0;
+    cairo_set_source_rgba(cr, 0.78, 0.06, 0.06, 0.85);   /* red badge */
+    cairo_rectangle(cr, bx, by, ext.width + 2 * pad, ext.height + 2 * pad);
+    cairo_fill(cr);
+    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.96);
+    cairo_move_to(cr, bx + pad - ext.x_bearing, by + pad - ext.y_bearing);
+    cairo_show_text(cr, txt);
+  }
 
   waterfall_draw(app->wf, cr, 0, ph, w, h - ph);
 
@@ -338,8 +364,19 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
     update_span_label(app);
   }
   if (app->connected) {
-    if (app->radio_mode) { tick_radio(app, widget); }
-    else                 { tick_network(app, widget); }
+    if (app->radio_mode) {
+      /* Poll HP-status telemetry once per frame (read-and-clear → single
+       * consumer). Latch the overload badges with a hold; raw analog words
+       * are parsed but not shown until a live voltage calibration exists. */
+      p2_telemetry t;
+      p2_get_telemetry(&t);
+      gint64 now = g_get_monotonic_time();
+      if (t.adc0_overload) { app->ovl0_until = now + ADC_OVL_HOLD_US; }
+      if (t.adc1_overload) { app->ovl1_until = now + ADC_OVL_HOLD_US; }
+      tick_radio(app, widget);
+    } else {
+      tick_network(app, widget);
+    }
   }
   return G_SOURCE_CONTINUE;
 }

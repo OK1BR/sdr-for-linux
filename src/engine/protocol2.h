@@ -52,6 +52,29 @@ void p2_set_frequency(long long freq_hz);
 void p2_set_attenuation(int db);
 
 /*
+ * Read-only telemetry decoded from the radio's High-Priority *status* packet
+ * (port 1025, np.c process_high_priority @ 974acba). RX-relevant fields only —
+ * the fwd/rev/exciter power words read ~0 outside TX and are not surfaced here
+ * until the TX milestone. Purely inbound: parsing this changes nothing we send.
+ */
+typedef struct {
+  int valid;          /* 1 once at least one status packet has been parsed     */
+  int adc0_overload;  /* ADC0 clipped since the last poll (latched, read+clear) */
+  int adc1_overload;  /* ADC1 clipped since the last poll (latched, read+clear) */
+  int raw_adc0;       /* raw AIN word ADC0 (bytes 57-58) — "PA voltage" per     */
+                      /* hpsdrsim; UNCALIBRATED for the G1 (needs a live scale) */
+  int raw_adc1;       /* raw AIN word ADC1 (bytes 55-56), uncalibrated          */
+} p2_telemetry;
+
+/*
+ * Snapshot the latest telemetry (thread-safe; call from the GUI tick). The two
+ * overload flags are latched by the listener and CLEARED by this read, so each
+ * reported '1' means "clipped at least once since you last asked" — keep a
+ * single consumer. Raw analog words are read non-destructively.
+ */
+void p2_get_telemetry(p2_telemetry *out);
+
+/*
  * Offline self-test hook: build each outgoing packet into `buf` (>= 1444 bytes)
  * using the given tune/rate, WITHOUT any socket, and return its wire length.
  * Lets a tool hexdump-verify the byte offsets against upstream with no radio.

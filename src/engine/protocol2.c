@@ -17,6 +17,7 @@
  */
 #include <glib.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
@@ -61,6 +62,16 @@ static uint32_t high_priority_sequence;
 static uint32_t ddc_sequence[8];
 
 static volatile int p2running = 0;
+
+/* Inbound telemetry from the HP-status packet (port 1025). Written by the
+ * listener thread, read by the GUI via p2_get_telemetry(); shared as atomics
+ * (same pattern as cfg_atten). Overload bits are latched here and cleared on
+ * read. Read-only path — nothing here ever feeds a packet back to the radio. */
+static volatile gint tlm_valid    = 0;
+static volatile gint tlm_adc0_ovl = 0;   /* latched, read-and-cleared */
+static volatile gint tlm_adc1_ovl = 0;
+static volatile gint tlm_raw_adc0 = 0;
+static volatile gint tlm_raw_adc1 = 0;
 
 static int       cfg_device;
 static long long cfg_freq;       /* read by the timer thread, written by p2_set_frequency */
@@ -279,6 +290,16 @@ void p2_set_attenuation(int db) {
   g_atomic_int_set(&cfg_atten, db);
 }
 
+void p2_get_telemetry(p2_telemetry *out) {
+  if (!out) { return; }
+  out->valid    = g_atomic_int_get(&tlm_valid);
+  out->raw_adc0 = g_atomic_int_get(&tlm_raw_adc0);
+  out->raw_adc1 = g_atomic_int_get(&tlm_raw_adc1);
+  /* read-and-clear: g_atomic_int_and returns the value before the AND */
+  out->adc0_overload = g_atomic_int_and(&tlm_adc0_ovl, 0);
+  out->adc1_overload = g_atomic_int_and(&tlm_adc1_ovl, 0);
+}
+
 /* ---- incoming IQ ---------------------------------------------------------- */
 
 /*
@@ -308,6 +329,43 @@ static void decode_iq(const unsigned char *buffer) {
     iq[2 * i + 1] = (double)rightsample * 1.1920928955078125E-7;  // Q
   }
   if (cfg_cb) { cfg_cb(iq, samplesperframe, cfg_user); }
+}
+
+/* Decode the radio's High-Priority *status* packet (port 1025) — the RX-useful
+ * subset of np.c process_high_priority @ 974acba. We take only what makes sense
+ * on RX: the ADC-overload flags (byte 5) and the two raw analog words the
+ * firmware fills continuously (ADC0 @57-58 = "PA voltage for others" per
+ * hpsdrsim, ADC1 @55-56). The fwd/rev/exciter power words (14-15/22-23/6-7)
+ * read ~0 outside TX, so we deliberately ignore them until the TX milestone.
+ * Nothing here is ever echoed back to the radio. */
+static void parse_high_priority_status(const unsigned char *buf, int len) {
+  if (len < 60) { return; }               /* need through the analog words + byte 59 */
+
+  /* byte 5: ADC overload (np.c:2642-2643). Latch — a clip may last one 50 ms
+   * status packet, shorter than a slow GUI frame; the reader clears it. */
+  if (buf[5] & 0x01) { g_atomic_int_or(&tlm_adc0_ovl, 1); }
+  if (buf[5] & 0x02) { g_atomic_int_or(&tlm_adc1_ovl, 1); }
+
+  /* raw analog words (np.c:2661-2664), big-endian 16-bit. Uncalibrated: the
+   * raw->volts scale is model-specific and NOT known for the G1 (neither
+   * piHPSDR nor Thetis calibrate it) — surface raw, calibrate live later. */
+  g_atomic_int_set(&tlm_raw_adc1, ((buf[55] & 0xFF) << 8) | (buf[56] & 0xFF));
+  g_atomic_int_set(&tlm_raw_adc0, ((buf[57] & 0xFF) << 8) | (buf[58] & 0xFF));
+  g_atomic_int_set(&tlm_valid, 1);
+
+  /* SDRFL_DEBUG_LEVELS: ~1 Hz dump of the raw telemetry (status packets arrive
+   * ~20/s on RX). Lets a live session read the raw ADC words against a meter. */
+  static int dbg = -1;
+  if (dbg < 0) { dbg = getenv("SDRFL_DEBUG_LEVELS") != NULL; }
+  if (dbg) {
+    static int n = 0;
+    if ((n++ % 20) == 0) {
+      t_print("p2 telemetry: ADC ovl0=%d ovl1=%d  raw_adc0=%d raw_adc1=%d\n",
+              (buf[5] & 0x01), (buf[5] & 0x02) >> 1,
+              ((buf[57] & 0xFF) << 8) | (buf[58] & 0xFF),
+              ((buf[55] & 0xFF) << 8) | (buf[56] & 0xFF));
+    }
+  }
 }
 
 /* Listener thread — np.c:2074-2154. recvfrom loop, dispatch by source port. */
@@ -349,9 +407,11 @@ static gpointer listener_thread(gpointer data) {
       }
       ddc_sequence[ddc] = seq + 1;
       decode_iq(buffer);
+    } else if (sourceport == HIGH_PRIORITY_TO_HOST_PORT) {
+      parse_high_priority_status(buffer, bytesread);
     }
-    // Other ports (command-resp 1024, high-priority status 1025, mic 1026) are
-    // not needed for the IQ stream — ignore silently for now.
+    // Remaining ports (command-resp 1024, mic 1026) are not needed for RX —
+    // ignore silently.
   }
   return NULL;
 }
@@ -441,6 +501,13 @@ int p2_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
   high_priority_addr.sin_port = htons(HIGH_PRIORITY_FROM_HOST_PORT);
 
   general_sequence = rx_specific_sequence = tx_specific_sequence = high_priority_sequence = 0;
+
+  /* clear any stale telemetry from a previous session */
+  g_atomic_int_set(&tlm_valid, 0);
+  g_atomic_int_set(&tlm_adc0_ovl, 0);
+  g_atomic_int_set(&tlm_adc1_ovl, 0);
+  g_atomic_int_set(&tlm_raw_adc0, 0);
+  g_atomic_int_set(&tlm_raw_adc1, 0);
   memset((void *)ddc_sequence, 0, sizeof(ddc_sequence));
 
   p2running = 1;
