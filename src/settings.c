@@ -13,6 +13,7 @@
 #define GROUP_RADIO   "radio"
 #define GROUP_RX      "rx"
 #define GROUP_DISPLAY "display"
+#define GROUP_WINDOW  "window"
 
 static char cfg_path[1024];
 
@@ -64,6 +65,10 @@ int settings_load(Settings *s) {
       s->freq_grid = g_key_file_get_integer(kf, GROUP_DISPLAY, "freq_grid", NULL);
     if (g_key_file_has_key(kf, GROUP_DISPLAY, "freq_scale", NULL))
       s->freq_scale = g_key_file_get_integer(kf, GROUP_DISPLAY, "freq_scale", NULL);
+    if (g_key_file_has_key(kf, GROUP_DISPLAY, "filter_wf", NULL))
+      s->filter_wf = g_key_file_get_integer(kf, GROUP_DISPLAY, "filter_wf", NULL);
+    if (g_key_file_has_key(kf, GROUP_DISPLAY, "filter_op", NULL))
+      s->filter_op = g_key_file_get_integer(kf, GROUP_DISPLAY, "filter_op", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "atten", NULL))
       s->atten = g_key_file_get_integer(kf, GROUP_RX, "atten", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "agc", NULL))
@@ -78,6 +83,12 @@ int settings_load(Settings *s) {
       s->nb = g_key_file_get_integer(kf, GROUP_RX, "nb", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "anf", NULL))
       s->anf = g_key_file_get_integer(kf, GROUP_RX, "anf", NULL);
+    if (g_key_file_has_key(kf, GROUP_WINDOW, "width", NULL))
+      s->win_w = g_key_file_get_integer(kf, GROUP_WINDOW, "width", NULL);
+    if (g_key_file_has_key(kf, GROUP_WINDOW, "height", NULL))
+      s->win_h = g_key_file_get_integer(kf, GROUP_WINDOW, "height", NULL);
+    if (g_key_file_has_key(kf, GROUP_WINDOW, "maximized", NULL))
+      s->win_max = g_key_file_get_integer(kf, GROUP_WINDOW, "maximized", NULL);
   }
   g_key_file_free(kf);
   return ok;
@@ -112,6 +123,11 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_DISPLAY, "db_scale",   s->db_scale);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "freq_grid",  s->freq_grid);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "freq_scale", s->freq_scale);
+  g_key_file_set_integer(kf, GROUP_DISPLAY, "filter_wf",  s->filter_wf);
+  g_key_file_set_integer(kf, GROUP_DISPLAY, "filter_op",  s->filter_op);
+  g_key_file_set_integer(kf, GROUP_WINDOW, "width",     s->win_w);
+  g_key_file_set_integer(kf, GROUP_WINDOW, "height",    s->win_h);
+  g_key_file_set_integer(kf, GROUP_WINDOW, "maximized", s->win_max);
 
   GError *e = NULL;
   int rc = g_key_file_save_to_file(kf, settings_path(), &e) ? 0 : -1;

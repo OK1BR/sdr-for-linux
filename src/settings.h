@@ -28,6 +28,11 @@ typedef struct {
   int       db_scale;  /* show dB scale labels (left)                */
   int       freq_grid; /* show vertical (frequency) grid lines       */
   int       freq_scale;/* show frequency scale labels (top)          */
+  int       filter_wf; /* draw filter + centre on the waterfall too  */
+  int       filter_op; /* filter-overlay opacity (0-100 %)           */
+  int       win_w;     /* window width (px, 0 = default)             */
+  int       win_h;     /* window height (px, 0 = default)            */
+  int       win_max;   /* window maximized                          */
   int       atten;     /* ADC0 step attenuator (dB, 0-31)            */
   int       agc;       /* AGC mode 0=off,1=long,2=slow,3=med,4=fast  */
   double    agc_gain;  /* AGC-T threshold/gain (dB)                  */

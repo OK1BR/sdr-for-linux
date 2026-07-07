@@ -112,7 +112,11 @@ typedef struct {
   double      ptr_x, ptr_y;  /* last pointer pos over the area (scroll hit-test)  */
   int         show_db_grid, show_db_scale;     /* horizontal grid / dB labels     */
   int         show_freq_grid, show_freq_scale; /* vertical grid / freq labels      */
+  int         show_filter_wf; /* extend filter edges + centre onto the waterfall  */
+  int         filter_op;     /* filter-overlay opacity (0-100 %)                  */
   int         select_mode;   /* right-click select cursor: left-click = tune      */
+  GtkWidget  *win;           /* top-level window (for size persistence)           */
+  int         win_w, win_h, win_max;  /* remembered window geometry               */
 } App;
 
 /* dB-scale limits for the grab-to-move axis. */
@@ -285,38 +289,40 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
   if (app->radio_mode && (app->show_freq_grid || app->show_freq_scale)) {
     draw_freq_scale(cr, app, w, ph);
   }
-  /* Filter passband overlay (Model A: VFO = span centre). Scales with zoom. */
+  /* Filter passband overlay (Model A: VFO = span centre). Just the fill + the
+   * two edges here — the VFO centre is the amber line panadapter.c already draws
+   * (no second white centre). Both edges share one colour+alpha (opacity slider)
+   * and snap to pixel centres, so they render identically. */
   if (app->radio_mode && app->fhi > app->flo) {
+    double op = app->filter_op / 100.0;
     double hz_per_px = (double)app->rate / app->zoom / w;
     double cx = w / 2.0;
-    double x0 = cx + app->flo / hz_per_px;
-    double x1 = cx + app->fhi / hz_per_px;
-    cairo_set_source_rgba(cr, 0.35, 0.75, 1.0, 0.12);   /* passband fill  */
+    double x0 = floor(cx + app->flo / hz_per_px) + 0.5;
+    double x1 = floor(cx + app->fhi / hz_per_px) + 0.5;
+    cairo_set_source_rgba(cr, 0.35, 0.75, 1.0, op * 0.22);   /* passband fill */
     cairo_rectangle(cr, x0, 0, x1 - x0, ph);
     cairo_fill(cr);
-    cairo_set_source_rgba(cr, 0.55, 0.85, 1.0, 0.55);   /* passband edges */
+    cairo_set_source_rgba(cr, 0.55, 0.85, 1.0, op * 0.95);   /* both edges */
     cairo_set_line_width(cr, 1.0);
-    cairo_move_to(cr, x0 + 0.5, 0); cairo_line_to(cr, x0 + 0.5, ph);
-    cairo_move_to(cr, x1 - 0.5, 0); cairo_line_to(cr, x1 - 0.5, ph);
-    cairo_stroke(cr);
-    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.35);     /* VFO centre line */
-    cairo_move_to(cr, cx + 0.5, 0); cairo_line_to(cr, cx + 0.5, ph);
+    cairo_move_to(cr, x0, 0); cairo_line_to(cr, x0, ph);
+    cairo_move_to(cr, x1, 0); cairo_line_to(cr, x1, ph);
     cairo_stroke(cr);
   }
   /* Select-mode filter cursor: the passband footprint (amber) at the pointer,
    * showing where a left-click would place the filter before it recenters. */
   if (app->select_mode && app->fhi > app->flo && app->ptr_x >= 0 && app->ptr_x <= w) {
     double hz_per_px = (double)app->rate / app->zoom / w;
-    double gx0 = app->ptr_x + app->flo / hz_per_px;
-    double gx1 = app->ptr_x + app->fhi / hz_per_px;
+    double gx0 = floor(app->ptr_x + app->flo / hz_per_px) + 0.5;
+    double gx1 = floor(app->ptr_x + app->fhi / hz_per_px) + 0.5;
+    double gxc = floor(app->ptr_x) + 0.5;
     cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, 0.12);   /* ghost fill  */
     cairo_rectangle(cr, gx0, 0, gx1 - gx0, ph);
     cairo_fill(cr);
     cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, 0.55);   /* ghost edges + aim line */
     cairo_set_line_width(cr, 1.0);
-    cairo_move_to(cr, gx0 + 0.5, 0); cairo_line_to(cr, gx0 + 0.5, ph);
-    cairo_move_to(cr, gx1 - 0.5, 0); cairo_line_to(cr, gx1 - 0.5, ph);
-    cairo_move_to(cr, app->ptr_x + 0.5, 0); cairo_line_to(cr, app->ptr_x + 0.5, ph);
+    cairo_move_to(cr, gx0, 0); cairo_line_to(cr, gx0, ph);
+    cairo_move_to(cr, gx1, 0); cairo_line_to(cr, gx1, ph);
+    cairo_move_to(cr, gxc, 0); cairo_line_to(cr, gxc, ph);
     cairo_stroke(cr);
   }
   cairo_restore(cr);
@@ -346,6 +352,47 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
   cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.55);
   cairo_rectangle(cr, 0, ph - 1, w, 2);
   cairo_fill(cr);
+
+  /* Optionally carry the filter (both edges) + the VFO centre line down through
+   * the waterfall, so signals line up with the passband over time. Toggleable. */
+  if (app->radio_mode && app->show_filter_wf && app->fhi > app->flo) {
+    double op = app->filter_op / 100.0;
+    double hz_per_px = (double)app->rate / app->zoom / w;
+    double cx = w / 2.0;
+    double x0 = floor(cx + app->flo / hz_per_px) + 0.5;
+    double x1 = floor(cx + app->fhi / hz_per_px) + 0.5;
+    double xc = floor(cx) + 0.5;
+    cairo_set_source_rgba(cr, 0.35, 0.75, 1.0, op * 0.22);   /* fill — SAME as the spectrum */
+    cairo_rectangle(cr, x0, ph, x1 - x0, h - ph);
+    cairo_fill(cr);
+    cairo_set_line_width(cr, 1.0);
+    cairo_set_source_rgba(cr, 1.0, 0.78, 0.25, 0.45);        /* amber VFO centre — matches panadapter.c */
+    cairo_move_to(cr, xc, ph); cairo_line_to(cr, xc, h);
+    cairo_stroke(cr);
+    cairo_set_source_rgba(cr, 0.55, 0.85, 1.0, op * 0.95);   /* both edges — SAME as the spectrum */
+    cairo_move_to(cr, x0, ph); cairo_line_to(cr, x0, h);
+    cairo_move_to(cr, x1, ph); cairo_line_to(cr, x1, h);
+    cairo_stroke(cr);
+  }
+
+  /* Select-mode filter cursor carried onto the waterfall too, but only when the
+   * filter is shown there — same "Filter on waterfall" toggle governs both. */
+  if (app->select_mode && app->show_filter_wf && app->fhi > app->flo &&
+      app->ptr_x >= 0 && app->ptr_x <= w) {
+    double hz_per_px = (double)app->rate / app->zoom / w;
+    double gx0 = floor(app->ptr_x + app->flo / hz_per_px) + 0.5;
+    double gx1 = floor(app->ptr_x + app->fhi / hz_per_px) + 0.5;
+    double gxc = floor(app->ptr_x) + 0.5;
+    cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, 0.12);   /* ghost fill  */
+    cairo_rectangle(cr, gx0, ph, gx1 - gx0, h - ph);
+    cairo_fill(cr);
+    cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, 0.55);   /* ghost edges + aim line */
+    cairo_set_line_width(cr, 1.0);
+    cairo_move_to(cr, gx0, ph); cairo_line_to(cr, gx0, h);
+    cairo_move_to(cr, gx1, ph); cairo_line_to(cr, gx1, h);
+    cairo_move_to(cr, gxc, ph); cairo_line_to(cr, gxc, h);
+    cairo_stroke(cr);
+  }
 }
 
 /* Network path: pull a decoded frame and fold it into the dBm EMA. */
@@ -517,6 +564,11 @@ static void app_to_settings(const App *app, Settings *s) {
   s->db_scale   = app->show_db_scale;
   s->freq_grid  = app->show_freq_grid;
   s->freq_scale = app->show_freq_scale;
+  s->filter_wf  = app->show_filter_wf;
+  s->filter_op  = app->filter_op;
+  s->win_w   = app->win_w;
+  s->win_h   = app->win_h;
+  s->win_max = app->win_max;
 }
 
 static gboolean do_save_cb(gpointer data) {
@@ -1133,6 +1185,16 @@ static void on_pref_freq_scale(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
   app->show_freq_scale = adw_switch_row_get_active(r);
   schedule_save(app); gtk_widget_queue_draw(app->area);
 }
+static void on_pref_filter_wf(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->show_filter_wf = adw_switch_row_get_active(r);
+  schedule_save(app); gtk_widget_queue_draw(app->area);
+}
+static void on_pref_filter_op(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  app->filter_op = (int)gtk_range_get_value(r);
+  schedule_save(app); gtk_widget_queue_draw(app->area);
+}
 static void on_pref_rate(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   (void)ps;
   App *app = (App *)data;
@@ -1159,6 +1221,19 @@ static GtkWidget *pref_switch(const char *title, const char *subtitle,
   GtkWidget *row = g_object_new(ADW_TYPE_SWITCH_ROW, "title", title, "subtitle", subtitle,
                                 "active", active ? TRUE : FALSE, NULL);
   g_signal_connect(row, "notify::active", cb, app);
+  return row;
+}
+
+static GtkWidget *pref_slider(const char *title, const char *subtitle,
+                              double lo, double hi, double val, GCallback cb, App *app) {
+  GtkWidget *row = g_object_new(ADW_TYPE_ACTION_ROW, "title", title, "subtitle", subtitle, NULL);
+  GtkWidget *sc = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, lo, hi, 1);
+  gtk_range_set_value(GTK_RANGE(sc), val);
+  gtk_widget_set_size_request(sc, 170, -1);
+  gtk_widget_set_valign(sc, GTK_ALIGN_CENTER);
+  gtk_scale_set_draw_value(GTK_SCALE(sc), FALSE);
+  g_signal_connect(sc, "value-changed", cb, app);
+  adw_action_row_add_suffix(ADW_ACTION_ROW(row), sc);
   return row;
 }
 
@@ -1216,6 +1291,10 @@ static AdwDialog *build_prefs(App *app) {
       app->show_freq_grid, G_CALLBACK(on_pref_freq_grid), app));
   adw_preferences_group_add(g, pref_switch("Frequency scale", "Top frequency labels",
       app->show_freq_scale, G_CALLBACK(on_pref_freq_scale), app));
+  adw_preferences_group_add(g, pref_switch("Filter on waterfall", "Extend passband + centre down",
+      app->show_filter_wf, G_CALLBACK(on_pref_filter_wf), app));
+  adw_preferences_group_add(g, pref_slider("Filter opacity", "Passband overlay transparency",
+      0, 100, app->filter_op, G_CALLBACK(on_pref_filter_op), app));
   adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);
 
@@ -1230,14 +1309,34 @@ static void act_prefs(GSimpleAction *a, GVariant *param, gpointer data) {
   adw_dialog_present(build_prefs(app), GTK_WIDGET(win));
 }
 
+/* Persist window geometry as the user resizes / maximizes (debounced). GTK4
+ * keeps default-width/height at the current *restore* size, so this survives
+ * maximize too. */
+static void on_win_size(GObject *win, GParamSpec *ps, gpointer data) {
+  (void)ps;
+  App *app = (App *)data;
+  int w = 0, h = 0;
+  gtk_window_get_default_size(GTK_WINDOW(win), &w, &h);
+  if (w > 0 && h > 0) { app->win_w = w; app->win_h = h; }
+  app->win_max = gtk_window_is_maximized(GTK_WINDOW(win)) ? 1 : 0;
+  schedule_save(app);
+}
+
 static void on_activate(GtkApplication *gtkapp, gpointer data) {
   App *app = (App *)data;
   css_load();
 
   GtkWidget *win = adw_application_window_new(gtkapp);
+  app->win = win;
   gtk_window_set_title(GTK_WINDOW(win),
                        app->radio_mode ? "SDR for Linux — radio" : "SDR for Linux — server");
-  gtk_window_set_default_size(GTK_WINDOW(win), 1320, 720);
+  int ww = app->win_w > 0 ? app->win_w : 1320;
+  int wh = app->win_h > 0 ? app->win_h : 720;
+  gtk_window_set_default_size(GTK_WINDOW(win), ww, wh);
+  if (app->win_max) { gtk_window_maximize(GTK_WINDOW(win)); }
+  g_signal_connect(win, "notify::default-width",  G_CALLBACK(on_win_size), app);
+  g_signal_connect(win, "notify::default-height", G_CALLBACK(on_win_size), app);
+  g_signal_connect(win, "notify::maximized",      G_CALLBACK(on_win_size), app);
 
   GtkWidget *header = adw_header_bar_new();
   GtkWidget *status = gtk_label_new(app->radio_mode ? "●  ANAN G1" : "●  server");
@@ -1320,7 +1419,8 @@ static void start_radio(App *app) {
                   .step = TUNE_STEP_DEFAULT, .zoom = 1.0, .atten = 0,
                   .agc = 3, .agc_gain = 80.0, .filter = -1,
                   .pan_high = PAN_HIGH_DEFAULT, .pan_low = PAN_LOW_DEFAULT,
-                  .db_grid = 1, .db_scale = 1, .freq_grid = 1, .freq_scale = 1 };
+                  .db_grid = 1, .db_scale = 1, .freq_grid = 1, .freq_scale = 1,
+                  .filter_wf = 1, .filter_op = 60 };
   g_strlcpy(st.ip, "192.168.1.247", sizeof(st.ip));
   if (settings_load(&st)) { printf("settings: loaded %s\n", settings_path()); }
 
@@ -1370,6 +1470,11 @@ static void start_radio(App *app) {
   app->show_db_scale   = st.db_scale   ? 1 : 0;
   app->show_freq_grid  = st.freq_grid  ? 1 : 0;
   app->show_freq_scale = st.freq_scale ? 1 : 0;
+  app->show_filter_wf  = st.filter_wf  ? 1 : 0;
+  app->filter_op = (st.filter_op < 0) ? 0 : (st.filter_op > 100 ? 100 : st.filter_op);
+  app->win_w   = st.win_w   > 0 ? st.win_w : 1320;
+  app->win_h   = st.win_h   > 0 ? st.win_h : 720;
+  app->win_max = st.win_max ? 1 : 0;
   app->pixels = ENGINE_PIXELS;
   app->tune_step = TUNE_STEP_DEFAULT;   /* keep only known step values */
   for (guint i = 0; i < G_N_ELEMENTS(TUNE_STEPS); i++) {

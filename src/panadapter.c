@@ -236,8 +236,11 @@ void panadapter_draw(cairo_t *cr, int w, int h,
                      const ClientFrame *frame, const float *dbm,
                      double cmap_low, double cmap_span,
                      const char *status) {
-  /* Background. */
-  cairo_set_source_rgb(cr, 0.039, 0.055, 0.070);
+  /* Background = the palette's noise-floor colour, so the empty area matches the
+   * fill under the trace at the floor (and the waterfall) — no cool-grey seam. */
+  double br, bg, bb;
+  waterfall_palette_rgb(0.0, &br, &bg, &bb);
+  cairo_set_source_rgb(cr, br, bg, bb);
   cairo_paint(cr);
 
   draw_grid(cr, w, h);
