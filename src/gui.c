@@ -279,6 +279,34 @@ static void tick_radio(App *app, GtkWidget *widget) {
     fflush(stdout);
   }
 
+  /* SDRFL_DEBUG_LEVELS: once per second dump the RAW analyzer levels (no
+   * soffset). Note our display norm is 1 Hz PSD (SetDisplaySampleRate=rate);
+   * piHPSDR norms per pixel width (SetDisplaySampleRate=width*zoom), so
+   * piHPSDR-equivalent dBm = raw + 10*log10(rate/(zoom*n)) ... *n/n_px_pihpsdr
+   * — do the conversion offline, here we just log the raw numbers. */
+  static int dbg = -1;
+  if (dbg < 0) { dbg = getenv("SDRFL_DEBUG_LEVELS") != NULL; }
+  if (dbg) {
+    static gint64 dbg_next = 0;
+    gint64 now = g_get_monotonic_time();
+    if (now >= dbg_next) {
+      dbg_next = now + G_USEC_PER_SEC;
+      static float dsort[SPECTRUM_DATA_SIZE];
+      memcpy(dsort, raw, n * sizeof(float));
+      qsort(dsort, n, sizeof(float), cmp_float);
+      int   pk_i = 0;
+      for (int i = 1; i < n; i++) { if (raw[i] > raw[pk_i]) { pk_i = i; } }
+      double hz_per_px = (double)app->rate / app->zoom / n;
+      printf("spectrum: raw peak=%.1f @%+.1f kHz | floor20=%.1f | median=%.1f "
+             "(n=%d, zoom=%g, rate=%d, soffset=%+.1f, pixnorm_delta=%+.1f dB)\n",
+             raw[pk_i], (pk_i - n / 2) * hz_per_px / 1000.0,
+             dsort[(int)(n * 0.20)], dsort[n / 2],
+             n, app->zoom, app->rate, app->soffset,
+             10.0 * log10((double)app->rate / (app->zoom * (double)n)));
+      fflush(stdout);
+    }
+  }
+
   /* EMA now in dBm. Build metadata + waterfall bytes. */
   app->frame.width      = n;
   app->frame.vfo_a_freq = app->freq;
@@ -286,7 +314,10 @@ static void tick_radio(App *app, GtkWidget *widget) {
   static uint8_t bytes[SPECTRUM_DATA_SIZE];
   for (int i = 0; i < n; i++) {
     if (app->ema[i] > peak) { peak = app->ema[i]; }
-    double b = app->ema[i] + 200.0;
+    /* Waterfall from the analyzer pixels (WDSP averaging only) + the locked
+     * offset — NOT the extra GUI EMA the trace uses. That double smoothing was
+     * what blurred the waterfall; the raw-er feed keeps signal streaks crisp. */
+    double b = (double)raw[i] + app->soffset + 200.0;
     bytes[i] = (uint8_t)(b < 0 ? 0 : (b > 255 ? 255 : b));
   }
   app->frame.s_dbm = peak;
@@ -908,7 +939,7 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
  * State precedence: env var > saved config > built-in default. */
 static void start_radio(App *app) {
   Settings st = { .freq = 14100000, .rate = 192000, .mode = -1,
-                  .volume = -10.0, .gain = 8.0, .fps = 25, .latency = 10,
+                  .volume = -10.0, .gain = 1.0, .fps = 25, .latency = 10,
                   .step = TUNE_STEP_DEFAULT, .zoom = 1.0, .atten = 0,
                   .agc = 3, .agc_gain = 80.0, .filter = -1 };
   g_strlcpy(st.ip, "192.168.1.247", sizeof(st.ip));

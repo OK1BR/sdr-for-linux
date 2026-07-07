@@ -8,6 +8,7 @@
  */
 #include <glib.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "wdsp.h"
@@ -34,6 +35,11 @@ static double   d_gain = 1.0; /* digital master gain after WDSP (SDRFL_GAIN) */
 static int      d_agc_mode = 3;    /* 0=off,1=long,2=slow,3=med,4=fast */
 static double   d_agc_top  = 80.0; /* AGC-T threshold/gain (dB)        */
 static int      d_nr, d_nb, d_anf; /* NR (ANR) / NB (ANB) / ANF on-off */
+static int      d_rate;            /* IQ input rate (blocks/s = d_rate/1024) */
+static double   d_vol_db;          /* AF volume in dB (panel gain source)    */
+static int      d_dbg;             /* SDRFL_DEBUG_LEVELS: 1 Hz meter dump    */
+static int      d_dbg_blocks;      /* fexchange0 calls since last dump       */
+static double   d_dbg_pk;          /* raw WDSP-out peak since last dump      */
 
 /* Apply the AGC character (d_agc_mode) + threshold (d_agc_top). Mirrors piHPSDR
  * rx_set_agc: WDSP mode 5 = AGC on, 0 = off; long/slow/med/fast differ only in
@@ -89,11 +95,16 @@ int demod_create(int id, int in_rate, int mode, double flo, double fhi, double v
   d_audio = g_new0(double, 2 * d_output);
   d_mono  = g_new0(float,  d_output);
   d_fill  = 0;
-  /* WDSP's RXA audio comes out very low for us (~0.03 peak on a strong signal),
-   * so a digital master gain lifts it to a usable level. 8 is a sane default;
-   * SDRFL_GAIN overrides. (Proper AGC-target calibration is a later refinement.) */
+  /* Master gain after WDSP. With the ANT1-relay fix WDSP delivers piHPSDR-level
+   * audio (~0.8 peak on strong signals before panel gain), so the default is
+   * unity — the old x8 "deaf RX" workaround would clip. SDRFL_GAIN overrides. */
   const char *g = getenv("SDRFL_GAIN");
-  d_gain = (g && *g) ? atof(g) : 8.0;
+  d_gain = (g && *g) ? atof(g) : 1.0;
+  d_rate = in_rate;
+  d_vol_db = volume;
+  d_dbg = getenv("SDRFL_DEBUG_LEVELS") != NULL;
+  d_dbg_blocks = 0;
+  d_dbg_pk = 0.0;
 
   g_mutex_lock(&d_lock);
   /* Channel opens already running (state=1). */
@@ -132,14 +143,30 @@ void demod_feed(const double *iq, int n_pairs) {
         d_blocks++;
         if (err != 0) { d_err = err; d_ferr++; }
         for (int k = 0; k < d_output; k++) {
-          double s = d_audio[k * 2] * d_gain;     /* LEFT channel = mono, × master gain */
+          double r = d_audio[k * 2];              /* raw WDSP out (incl. panel gain) */
+          double a = r < 0 ? -r : r;
+          if (a > d_dbg_pk) { d_dbg_pk = a; }
+          double s = r * d_gain;                  /* LEFT channel = mono, × master gain */
           if (s >  1.0) { s =  1.0; }             /* clip to avoid wrap on the sink */
           if (s < -1.0) { s = -1.0; }
           d_mono[k] = (float)s;
-          double a = s < 0 ? -s : s;
+          a = s < 0 ? -s : s;
           if (a > d_peak) { d_peak = a; }
         }
         audio_push(d_mono, d_output);
+        /* SDRFL_DEBUG_LEVELS: once per second dump the WDSP meters piHPSDR shows
+         * on its RX meter (needle dBm = RXA_S_AV raw; "Gain" = -RXA_AGC_GAIN;
+         * "Out" = RXA_AGC_AV) + the raw WDSP audio peak. Directly comparable. */
+        if (d_dbg && ++d_dbg_blocks >= d_rate / D_BUFSIZE) {
+          printf("levels: S_av=%6.1f S_pk=%6.1f dBm | AGC gain=%5.1f dB out=%6.1f dB "
+                 "| wdsp_pk=%.4f (vol %.0f dB -> panel %.3f, master x%.1f)\n",
+                 GetRXAMeter(d_id, RXA_S_AV), GetRXAMeter(d_id, RXA_S_PK),
+                 -GetRXAMeter(d_id, RXA_AGC_GAIN), GetRXAMeter(d_id, RXA_AGC_AV),
+                 d_dbg_pk, d_vol_db, pow(10.0, 0.05 * d_vol_db), d_gain);
+          fflush(stdout);
+          d_dbg_blocks = 0;
+          d_dbg_pk = 0.0;
+        }
         d_fill = 0;
       }
     }
@@ -172,6 +199,7 @@ void demod_set_gain(double gain) {
 
 void demod_set_volume(double db) {
   g_mutex_lock(&d_lock);
+  d_vol_db = db;
   if (d_ready) { SetRXAPanelGain1(d_id, pow(10.0, 0.05 * db)); }  /* AF gain dB → linear */
   g_mutex_unlock(&d_lock);
 }
