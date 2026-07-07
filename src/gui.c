@@ -99,8 +99,11 @@ typedef struct {
   GtkWidget  *span_label;    /* footer span readout                            */
   double      pending_zoom;  /* slider target; applied ≤1×/frame in tick_cb    */
   int         zoom_dirty;    /* pending_zoom needs applying                    */
-  int         filter_idx;    /* selected preset in the current mode's table    */
+  int         filter_idx;    /* selected preset (0-9) or Var (10=Var1, 11=Var2)  */
   int         filter_by_mode[8]; /* remembered preset per DEMOD_* mode (-1=default)*/
+  int         var_low[8][2], var_high[8][2];  /* editable Var1/Var2 per mode (Hz)  */
+  int         drag_edge;     /* dragging a Var passband edge: 0 none, 1 low, 2 high */
+  double      drag_begin_x;  /* pointer x at drag-begin (for edge drag)           */
   double      flo, fhi;      /* current passband (Hz, rel. centre) — for drawing */
   GtkWidget  *filter_dd;     /* filter dropdown (repopulated per mode)         */
   gint64      ovl0_until;    /* ADC0-overload badge lit until (monotonic µs)   */
@@ -221,6 +224,9 @@ static void feed_cb(const double *iq, int n_pairs, void *user) {
 /* Filter presets per mode — piHPSDR filter.c @ 974acba (named presets; Var later). */
 typedef struct { int low, high; const char *name; } FilterPreset;
 
+#define NPRESET      10     /* fixed presets per mode; Var1/Var2 follow at 10, 11 */
+#define FILT_HIT_PX  7.0    /* how near a Var passband edge counts as a grab      */
+
 static const FilterPreset FILT_LSB[] = {
   {-5150,-150,"5.0k"},{-4550,-150,"4.4k"},{-3950,-150,"3.8k"},{-3450,-150,"3.3k"},
   {-3050,-150,"2.9k"},{-2850,-150,"2.7k"},{-2550,-150,"2.4k"},{-2250,-150,"2.1k"},
@@ -252,6 +258,19 @@ static const FilterPreset *mode_filters(int mode, int *n, int *deflt) {
     case DEMOD_CWU: *deflt = 4; return FILT_CW;    /* 500  */
     case DEMOD_AM:  *deflt = 4; return FILT_AM;    /* 6.6k */
     default:        *deflt = 5; return FILT_USB;
+  }
+}
+
+/* Low/high (Hz) for a filter index in a mode: fixed preset (<NPRESET) or the
+ * editable Var1/Var2 stored in the App. */
+static void filter_lohi(App *app, int mode, int idx, int *lo, int *hi) {
+  if (idx < NPRESET) {
+    int nf, dfl; const FilterPreset *ft = mode_filters(mode, &nf, &dfl);
+    if (idx < 0) { idx = dfl; }
+    *lo = ft[idx].low; *hi = ft[idx].high;
+  } else {
+    int v = (idx - NPRESET) & 1;
+    *lo = app->var_low[mode][v]; *hi = app->var_high[mode][v];
   }
 }
 
@@ -647,6 +666,15 @@ static void app_to_settings(const App *app, Settings *s) {
     if (n < 0 || (size_t)n >= mrem) { break; }
     mp += n; mrem -= (size_t)n;
   }
+  /* Var1/Var2 per mode → "modeid/v1lo/v1hi/v2lo/v2hi;..." */
+  char *vp = s->var_filt; size_t vrem = sizeof(s->var_filt); vp[0] = '\0';
+  for (int i = 0; i < 8; i++) {
+    int n = snprintf(vp, vrem, "%s%d/%d/%d/%d/%d", i ? ";" : "", i,
+                     app->var_low[i][0], app->var_high[i][0],
+                     app->var_low[i][1], app->var_high[i][1]);
+    if (n < 0 || (size_t)n >= vrem) { break; }
+    vp += n; vrem -= (size_t)n;
+  }
   s->pan_high = app->pan_high;
   s->pan_low  = app->pan_low;
   s->db_grid    = app->show_db_grid;
@@ -771,17 +799,32 @@ static gboolean on_scroll(GtkEventControllerScroll *ctl, double dx, double dy, g
   return TRUE;
 }
 
+/* Which Var passband edge is near screen-x? 0 none, 1 low, 2 high. Only Var
+ * filters (idx >= NPRESET) are draggable. */
+static int edge_hit(App *app, double x) {
+  if (app->filter_idx < NPRESET || app->fhi <= app->flo) { return 0; }
+  int w = gtk_widget_get_width(app->area);
+  if (w < 1) { return 0; }
+  double hzpp = (double)app->rate / app->zoom / w;
+  double cx = w / 2.0;
+  if (fabs(x - (cx + app->flo / hzpp)) <= FILT_HIT_PX) { return 1; }
+  if (fabs(x - (cx + app->fhi / hzpp)) <= FILT_HIT_PX) { return 2; }
+  return 0;
+}
+
 /* Left-drag grabs the spectrum and pans the DDC centre (Model A) — UNLESS it
- * started in the dB gutter, where it slides the level window vertically (same
- * "grab the content" gesture, one axis over). Both pans are absolute from
- * drag-begin, so the grabbed point tracks the cursor with no drift. */
+ * started in the dB gutter (slides the level window) or on a Var passband edge
+ * (drags that edge). Both pans are absolute from drag-begin (no drift). */
 static void on_drag_begin(GtkGestureDrag *g, double x, double y, gpointer data) {
   (void)g;
   App *app = (App *)data;
   app->drag_gutter = in_gutter(app, x, y);
+  app->drag_edge = 0;
   if (app->drag_gutter) {
     app->drag_base_high = app->pan_high;
     app->drag_base_low  = app->pan_low;
+  } else if (!app->select_mode && (app->drag_edge = edge_hit(app, x))) {
+    app->drag_begin_x = x;               /* edge follows the cursor */
   } else {
     app->drag_base_freq = app->freq;
   }
@@ -799,6 +842,28 @@ static void on_drag_update(GtkGestureDrag *g, double off_x, double off_y, gpoint
     double range = app->drag_base_high - app->drag_base_low;
     double shift = (off_y / ph) * range;  /* drag down → trace & window move down */
     pan_set_window(app, app->drag_base_high + shift, app->drag_base_low + shift);
+    gtk_widget_queue_draw(app->area);
+    return;
+  }
+
+  if (app->drag_edge) {                   /* drag a Var passband edge */
+    int w = gtk_widget_get_width(app->area);
+    if (w < 1) { return; }
+    double hzpp = (double)app->rate / app->zoom / w;
+    int f = (int)lround((app->drag_begin_x + off_x - w / 2.0) * hzpp);
+    int v = (app->filter_idx - NPRESET) & 1;
+    const int MINW = 50;                  /* keep a minimum passband width */
+    if (app->drag_edge == 1) {            /* low edge */
+      if (f > app->fhi - MINW) { f = app->fhi - MINW; }
+      if (f < -20000) { f = -20000; }
+      app->flo = f; app->var_low[app->mode][v] = f;
+    } else {                              /* high edge */
+      if (f < app->flo + MINW) { f = app->flo + MINW; }
+      if (f > 20000) { f = 20000; }
+      app->fhi = f; app->var_high[app->mode][v] = f;
+    }
+    demod_set_passband(app->flo, app->fhi);
+    schedule_save(app);
     gtk_widget_queue_draw(app->area);
     return;
   }
@@ -823,7 +888,14 @@ static void on_motion(GtkEventControllerMotion *m, double x, double y, gpointer 
   App *app = (App *)data;
   app->ptr_x = x;
   app->ptr_y = y;
-  if (app->select_mode) { gtk_widget_queue_draw(app->area); }
+  if (app->select_mode) { gtk_widget_queue_draw(app->area); return; }
+  /* Show a resize cursor over a draggable Var passband edge. */
+  static int over = -1;
+  int e = (!in_gutter(app, x, y) && edge_hit(app, x)) ? 1 : 0;
+  if (e != over) {
+    over = e;
+    gtk_widget_set_cursor_from_name(app->area, e ? "ew-resize" : NULL);
+  }
 }
 
 /* Recenter the span on the frequency under x (Model A: not CTUN — the whole
@@ -895,13 +967,13 @@ static void on_filter_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data) {
   (void)ps;
   App *app = (App *)data;
   int nf, dfl;
-  const FilterPreset *ft = mode_filters(app->mode, &nf, &dfl);
+  mode_filters(app->mode, &nf, &dfl);
   guint idx = gtk_drop_down_get_selected(dd);
-  if ((int)idx >= nf) { return; }
+  if ((int)idx >= nf + 2) { return; }          /* presets + Var1 + Var2 */
   app->filter_idx = (int)idx;
   app->filter_by_mode[app->mode] = (int)idx;   /* remember it for this mode */
-  app->flo = ft[idx].low;
-  app->fhi = ft[idx].high;
+  int lo, hi; filter_lohi(app, app->mode, (int)idx, &lo, &hi);
+  app->flo = lo; app->fhi = hi;
   demod_set_passband(app->flo, app->fhi);
   schedule_save(app);                        /* persist the chosen filter */
 }
@@ -913,7 +985,7 @@ static void populate_filter_dd(App *app) {
   const FilterPreset *ft = mode_filters(app->mode, &nf, &dfl);
   const char *names[16];
   for (int i = 0; i < nf; i++) { names[i] = ft[i].name; }
-  names[nf] = NULL;
+  names[nf] = "Var1"; names[nf + 1] = "Var2"; names[nf + 2] = NULL;  /* editable */
   GtkStringList *m = gtk_string_list_new(names);
   g_signal_handlers_block_by_func(app->filter_dd, (gpointer)on_filter_changed, app);
   gtk_drop_down_set_model(GTK_DROP_DOWN(app->filter_dd), G_LIST_MODEL(m));
@@ -927,16 +999,16 @@ static void on_mode_toggled(GtkToggleButton *b, gpointer data) {
   App *app = (App *)data;
   int mode = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "mode"));
   int nf, dfl;
-  const FilterPreset *ft = mode_filters(mode, &nf, &dfl);
+  mode_filters(mode, &nf, &dfl);
   app->mode = mode;
   if (app->cur_band >= 0) { app->band_mode[app->cur_band] = mode; }   /* band stacking */
   /* restore this mode's last-used filter (fall back to its default) */
   int fidx = app->filter_by_mode[mode];
-  if (fidx < 0 || fidx >= nf) { fidx = dfl; }
+  if (fidx < 0 || fidx >= nf + 2) { fidx = dfl; }
   app->filter_idx = fidx;
   app->filter_by_mode[mode] = fidx;
-  app->flo = ft[fidx].low;
-  app->fhi = ft[fidx].high;
+  int lo, hi; filter_lohi(app, mode, fidx, &lo, &hi);
+  app->flo = lo; app->fhi = hi;
   demod_set_mode(mode, app->flo, app->fhi);
   populate_filter_dd(app);               /* refill dropdown for the new mode */
   schedule_save(app);
@@ -1673,10 +1745,27 @@ static void start_radio(App *app) {
   }
   if (app->zoom != 1.0) { analyzer_set_zoom(app->zoom); }   /* restore saved zoom */
 
-  /* Audio: WDSP demod → native PipeWire sink. Default filter = mode's preset. */
+  /* Audio: WDSP demod → native PipeWire sink. */
   int nf, dfl;
-  const FilterPreset *ft = mode_filters(mode, &nf, &dfl);
-  app->filter_idx = (st.filter >= 0 && st.filter < nf) ? st.filter : dfl;  /* saved or mode default */
+  mode_filters(mode, &nf, &dfl);
+  /* Var1/Var2 editable filters: seed per mode (Var1 = default preset, Var2 =
+   * widest), then apply saved "modeid/v1lo/v1hi/v2lo/v2hi;..." overrides. */
+  for (int i = 0; i < 8; i++) {
+    int nn, dd; const FilterPreset *f = mode_filters(i, &nn, &dd);
+    app->var_low[i][0] = f[dd].low; app->var_high[i][0] = f[dd].high;
+    app->var_low[i][1] = f[0].low;  app->var_high[i][1] = f[0].high;
+  }
+  char vfbuf[256];
+  g_strlcpy(vfbuf, st.var_filt, sizeof vfbuf);
+  char *vfsv = NULL;
+  for (char *tok = strtok_r(vfbuf, ";", &vfsv); tok; tok = strtok_r(NULL, ";", &vfsv)) {
+    int mo, a, b, c, d;
+    if (sscanf(tok, "%d/%d/%d/%d/%d", &mo, &a, &b, &c, &d) == 5 && mo >= 0 && mo < 8 && b > a && d > c) {
+      app->var_low[mo][0] = a; app->var_high[mo][0] = b;
+      app->var_low[mo][1] = c; app->var_high[mo][1] = d;
+    }
+  }
+  app->filter_idx = (st.filter >= 0 && st.filter < nf + 2) ? st.filter : dfl;  /* saved or default */
   /* Per-mode filter memory: seed every mode with its default, the current mode
    * with the loaded filter, then apply the saved "id=idx;..." overrides. */
   for (int i = 0; i < 8; i++) { int nn, dd; mode_filters(i, &nn, &dd); app->filter_by_mode[i] = dd; }
@@ -1688,12 +1777,11 @@ static void start_radio(App *app) {
     int mid, fi;
     if (sscanf(tok, "%d=%d", &mid, &fi) == 2 && mid >= 0 && mid < 8) {
       int nn, dd; mode_filters(mid, &nn, &dd);
-      if (fi >= 0 && fi < nn) { app->filter_by_mode[mid] = fi; }
+      if (fi >= 0 && fi < nn + 2) { app->filter_by_mode[mid] = fi; }
     }
   }
   app->filter_idx = app->filter_by_mode[mode];
-  app->flo = ft[app->filter_idx].low;
-  app->fhi = ft[app->filter_idx].high;
+  { int lo, hi; filter_lohi(app, mode, app->filter_idx, &lo, &hi); app->flo = lo; app->fhi = hi; }
   if (audio_start(48000, 1, app->latency) == 0 && demod_create(0, rate, mode, app->flo, app->fhi, app->volume) == 0) {
     demod_set_gain(app->gain);
     demod_set_agc(app->agc);            /* saved AGC character + threshold */

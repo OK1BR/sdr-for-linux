@@ -93,6 +93,10 @@ int settings_load(Settings *s) {
       char *mf = g_key_file_get_string(kf, GROUP_RX, "mode_filters", NULL);
       if (mf) { g_strlcpy(s->mode_filt, mf, sizeof(s->mode_filt)); g_free(mf); }
     }
+    if (g_key_file_has_key(kf, GROUP_RX, "var_filters", NULL)) {
+      char *vf = g_key_file_get_string(kf, GROUP_RX, "var_filters", NULL);
+      if (vf) { g_strlcpy(s->var_filt, vf, sizeof(s->var_filt)); g_free(vf); }
+    }
     if (g_key_file_has_key(kf, GROUP_WINDOW, "width", NULL))
       s->win_w = g_key_file_get_integer(kf, GROUP_WINDOW, "width", NULL);
     if (g_key_file_has_key(kf, GROUP_WINDOW, "height", NULL))
@@ -126,6 +130,7 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_RX,    "nb",      s->nb);
   g_key_file_set_integer(kf, GROUP_RX,    "anf",     s->anf);
   g_key_file_set_string (kf, GROUP_RX,    "mode_filters", s->mode_filt);
+  g_key_file_set_string (kf, GROUP_RX,    "var_filters",  s->var_filt);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "fps",   s->fps);
   g_key_file_set_double (kf, GROUP_DISPLAY, "zoom",  s->zoom);
   g_key_file_set_double (kf, GROUP_DISPLAY, "pan_high", s->pan_high);
