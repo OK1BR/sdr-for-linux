@@ -67,37 +67,45 @@ audio, 0 seq errors, **~15 ms end-to-end latency**. Scope: `docs/AUDIO-SCOPE.md`
 
 Then: controls, then RX2, then TX/PureSignal.
 
-## NEXT SESSION STARTS HERE — Milestone 3 (on-window controls)
+## Milestone 3 — on-window controls (mostly DONE, 2026-07-07)
 
-RX is usable (see + hear) but tuning/mode/filter are env vars set at startup.
-M3 makes the GTK4 window a real control surface, driving the engine live.
+The GTK4 window is a live **libadwaita** control surface (framework decision +
+mockups: `docs/mockups/`). Done this session, all live-verified on the ANAN G1:
+- **Tuning:** scroll-wheel (Ctrl 10 Hz / Shift 1 kHz / else 100 Hz) + left-drag
+  pan → `p2_set_frequency()` (stores freq; keepalive timer sends it ≤100 ms, so
+  no send-side concurrency). Model A: VFO = DDC centre = span centre.
+- **Mode:** segmented USB/LSB/CWL/CWU/AM toggles + keys u/l/c/a (kept in sync) →
+  `demod_set_mode()`.
+- **Filter:** piHPSDR named presets per mode (from `filter.c`) in a dropdown →
+  `demod_set_passband()` live; **passband drawn on the spectrum** (shaded band +
+  edges + VFO centre line, scales with zoom). Var1/Var2 (draggable edges) NOT yet.
+- **Band buttons** 160–10 m → jump the VFO.
+- **Zoom:** stepped ×2 +/- buttons in a footer (`AdwToolbarView` bottom bar).
+  `analyzer_set_zoom()` re-clips `fscLin/fscHin`; FFT grows with zoom (`A_MSIZE`
+  262144) for sharp zoom to 128×; 1 Hz PSD norm → zoom-invariant floor.
+- **AF volume** slider; **settings dialog** (`AdwPreferencesDialog` from the
+  headerbar menu): IP / sample-rate (incl. **1536 kHz**, the P2 ceiling) /
+  latency = restart-to-apply; digital gain + **FPS** apply live.
+- **Persistence:** `~/.config/sdr-for-linux/config.ini` (GKeyFile) — ip/freq/
+  rate/mode/volume/gain/fps/latency; precedence env > saved > default; saved
+  debounced (~1 s) + on clean exit.
 
-Goal: change VFO frequency, mode, filter, and zoom/pan **from the window**,
-re-tuning the running radio without restart.
+**★ TOP OF NEXT SESSION — deep-zoom performance.** Zoom still **stutters at the
+larger factors** (worst at 1536 kHz; ~1 core already at 1536 k zoom=1). Growing
+the FFT to 262144 for a sharp deep zoom is too heavy. **Profile first**: is it the
+per-click `SetAnalyzer` reconfig freeze, or the steady large-FFT load each frame?
+Then pick — cap `A_MSIZE` lower / accept interpolation past a point / drop fps when
+zoomed / narrow the DDC sample-rate instead of the FFT. See `analyzer.c`
+`analyzer_set_zoom` + the gui.c footer (`on_zoom_in/out`).
 
-**Engine hooks to add (small, on top of what M1/M2 built):**
-- **Re-tune:** re-send the P2 High-Priority packet with the new DDC frequency
-  (`protocol2.c` already builds it — add `p2_set_frequency(hz)` that rebuilds +
-  sends High-Priority; the keepalive timer already re-sends). No restart needed.
-- **Mode/filter:** `demod_set_mode(mode, flo, fhi)` (already stubbed in demod.h
-  intent) → `SetRXAMode` + `RXASetPassband` on the running channel (WDSP setters
-  are safe live, receiver.c pattern).
-- **Zoom/pan:** re-call `SetAnalyzer` with new `fscLin/fscHin` (see
-  `WDSP-ANALYZER-SCOPE.md` §3) — narrows the 768 kHz span to something readable.
-  Needs the zoom/pan → afft/clip math from receiver.c:1704-1730.
+**Other M3 follow-ups:**
+- **Var1/Var2 filters** — drag the passband edges on the spectrum (hit-test + drag).
+- **AGC / NR / NB / ANF** — still visible placeholders in the top strip; wire to
+  WDSP (`SetRXAAGC*`, rnnoise/specbleach).
+- **Off-centre pan** (currently pan=0, VFO always centred).
 
-**GTK4 UI:** scroll/drag on the panadapter to tune (map x-pixel → Hz via the
-`cA/cB` mapping), keys or a small header bar for mode/filter/band, a VFO readout
-that updates. Keep `panadapter.c`/`waterfall.c` pure-Cairo; add input handling in
-`gui.c` (GtkGestureClick/Drag, scroll controller).
-
-**Cleanups worth folding in (from M1/M2 known issues):**
-- **AGC vs digital gain:** replace `SDRFL_GAIN` with proper AGC-target calibration
-  so levels self-balance (why is WDSP's RXA output ~30× low for us? — investigate
-  `SetRXAAGC*` / panel gain scaling).
-- **Audio clock drift** (ring 1–21 ms): adaptive resample or drop/insert to track
-  the soundcard clock.
-- **Absolute dBm panadapter cal:** bake a measured `soffset` instead of auto-range.
+**Cleanups (from M1/M2):** AGC-target vs `SDRFL_GAIN`; audio clock-drift
+smoothing; absolute dBm panadapter cal.
 
 ## Notes
 

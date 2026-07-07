@@ -30,10 +30,18 @@ defaults to direct radio; `--server` is the v0 network remote head. Gates:
 docs: [`docs/ENGINE-IMPORT.md`](docs/ENGINE-IMPORT.md), `docs/P2-RX-SCOPE.md`,
 `docs/WDSP-ANALYZER-SCOPE.md`, `docs/AUDIO-SCOPE.md`.
 
-Next: **Milestone 3 — on-window controls** (tune/mode/filter/zoom from the GTK4
-window, re-tuning the running radio live). See ENGINE-IMPORT.md. Known follow-ups:
-AGC-target calibration (vs the current `SDRFL_GAIN`), audio clock-drift smoothing,
-absolute dBm panadapter cal.
+**Milestone 3 mostly done (2026-07-07)** — the window is a live **libadwaita**
+control surface: scroll/drag tuning, mode toggles + keys, piHPSDR filter presets
+with the passband drawn on the spectrum, band buttons, AF volume, a footer zoom
+(+/- ×2), a settings dialog (`AdwPreferencesDialog`; live FPS/gain, restart IP/
+rate incl. **1536 kHz** P2 max), and config persistence (`~/.config/sdr-for-linux/
+config.ini`). Framework decision + throwaway design mockups in `docs/mockups/`.
+
+**★ Next session starts with: deep-zoom performance** — zoom stutters at large
+factors (growing the FFT to 262144 is too heavy); profile then rethink. Then
+Var1/Var2 filters (draggable edges), wire AGC/NR/NB/ANF (still placeholders), pan.
+See ENGINE-IMPORT.md "Milestone 3" for the full state + plan. Older follow-ups:
+AGC-target vs `SDRFL_GAIN`, audio clock-drift smoothing, absolute dBm cal.
 
 ## Approach (decided with Richard)
 
