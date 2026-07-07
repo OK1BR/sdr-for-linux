@@ -67,6 +67,7 @@ executable('sdr-for-linux',
   [
     'src/gui.c',
     'src/settings.c',
+    'src/wisdom_gate.c',
     'src/client.c',
     'src/protocol.c',
     'src/transport.c',
@@ -78,6 +79,16 @@ executable('sdr-for-linux',
   # engine (protocol2 + analyzer + demod + PipeWire audio) alongside the v0
   # network client; WDSP's comm.h/wdsp.h need the GNU dialect (as sdrfl-wdsp-smoke).
   dependencies : common_deps + [adw_dep, glib_dep, wdsp_dep, m_dep, pipewire_dep],
+  override_options : ['c_std=gnu11'],
+  install : false,
+)
+
+# First-run FFTW wisdom builder + progress window, exercised without the radio
+# (SDRFL_WISDOM_DIR overrides the cache dir so a throwaway build can be tested).
+executable('sdrfl-wisdom-test',
+  ['src/wisdom_test.c', 'src/wisdom_gate.c'],
+  include_directories : [src_inc],
+  dependencies : [adw_dep, gtk_dep, glib_dep, wdsp_dep, m_dep],
   override_options : ['c_std=gnu11'],
   install : false,
 )

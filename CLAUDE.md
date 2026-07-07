@@ -37,11 +37,20 @@ with the passband drawn on the spectrum, band buttons, AF volume, a footer zoom
 rate incl. **1536 kHz** P2 max), and config persistence (`~/.config/sdr-for-linux/
 config.ini`). Framework decision + throwaway design mockups in `docs/mockups/`.
 
-**★ Next session starts with: deep-zoom performance** — zoom stutters at large
-factors (growing the FFT to 262144 is too heavy); profile then rethink. Then
-Var1/Var2 filters (draggable edges), wire AGC/NR/NB/ANF (still placeholders), pan.
-See ENGINE-IMPORT.md "Milestone 3" for the full state + plan. Older follow-ups:
-AGC-target vs `SDRFL_GAIN`, audio clock-drift smoothing, absolute dBm cal.
+**Deep-zoom stutter fixed (2026-07-07)** — profiled: it was **not** the FFT
+compute (one 262144 transform = 0.5 % of a core) and **not** multithread-able
+(a single 1D FFT threads to only ~1.9×, erratically). The stutter was WDSP
+re-planning FFTW with `FFTW_PATIENT` whenever a zoom step crossed an FFT-size
+band — **26 s** to plan 262144 cold. Fix = FFTW **wisdom**, exactly like
+piHPSDR/Thetis: `src/wisdom_gate.c` `wisdom_ensure()` builds the plan cache once
+on first run (`~/.config/sdr-for-linux/wdspWisdom00`, ~6 min, progress window)
+and imports it instantly ever after (verified: 2nd run 0.0 s). Gate:
+`sdrfl-wisdom-test` (offline, no radio). No `vendor/wdsp` edits.
+
+**★ Next session starts with:** Var1/Var2 filters (draggable passband edges),
+wire AGC/NR/NB/ANF (still placeholders), off-centre pan. See ENGINE-IMPORT.md
+"Milestone 3". Older follow-ups: AGC-target vs `SDRFL_GAIN`, audio clock-drift
+smoothing, absolute dBm cal.
 
 ## Approach (decided with Richard)
 

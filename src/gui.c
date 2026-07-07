@@ -39,6 +39,7 @@
 #include "demod.h"
 #include "audio.h"
 #include "settings.h"
+#include "wisdom_gate.h"
 
 #define ENGINE_PIXELS 2048
 #define ENGINE_FPS    25
@@ -868,6 +869,8 @@ int main(int argc, char **argv) {
     }
   } else {
     app.radio_mode = 1;
+    wisdom_ensure();      /* first run: build FFTW wisdom (progress window) so the
+                             analyzer's PATIENT plans don't freeze on deep zoom */
     start_radio(&app);
   }
 

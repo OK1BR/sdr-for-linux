@@ -90,15 +90,32 @@ mockups: `docs/mockups/`). Done this session, all live-verified on the ANAN G1:
   rate/mode/volume/gain/fps/latency; precedence env > saved > default; saved
   debounced (~1 s) + on clean exit.
 
-**★ TOP OF NEXT SESSION — deep-zoom performance.** Zoom still **stutters at the
-larger factors** (worst at 1536 kHz; ~1 core already at 1536 k zoom=1). Growing
-the FFT to 262144 for a sharp deep zoom is too heavy. **Profile first**: is it the
-per-click `SetAnalyzer` reconfig freeze, or the steady large-FFT load each frame?
-Then pick — cap `A_MSIZE` lower / accept interpolation past a point / drop fps when
-zoomed / narrow the DDC sample-rate instead of the FFT. See `analyzer.c`
-`analyzer_set_zoom` + the gui.c footer (`on_zoom_in/out`).
+**Deep-zoom stutter — DONE (2026-07-07), via FFTW wisdom.** Profiled offline
+(Intel Ultra 7 265, replicating WDSP's exact `fftw_plan_dft_r2c_1d(..PATIENT)`):
+- The **FFT compute is negligible**: one 262144 transform executes in ~344 µs;
+  at 1536 kHz / 15 fps that's ~15 FFT/s = **0.5 % of one core**. The doc's old
+  "big FFT too heavy per frame" hypothesis was wrong. (The ~1-core at 1536 k is
+  the demod chain, not the analyzer — separate, and fine at 1/20 cores.)
+- **Multithreading is the wrong lever**: a single 1D FFT threads to only ~1.9×
+  and erratically on hybrid P/E cores (6 threads slower than 1). And WDSP's own
+  analyzer thread-pool (`QueueUserWorkItem`, serialized by the Linux
+  `pthread_join` shim) is moot for us — we run `num_fft=1, num_stitch=1`, so only
+  one FFT is ever in flight.
+- **The stutter was FFTW *planning***: `SetAnalyzer` re-plans (`analyzer.c:1216`
+  `if (sz != a->size)`) with `FFTW_PATIENT` on every zoom step that crosses an
+  FFT-size band {16k…256k}. Cold PATIENT plan of 262144 = **26 s** (×2 for
+  r2c+c2c ≈ the freeze). No wisdom was loaded → replanned from scratch each time.
+- **Fix = FFTW wisdom**, exactly as piHPSDR/Thetis/Zeus: `src/wisdom_gate.c`
+  `wisdom_ensure()` (called in `main()` before `start_radio`) runs WDSP's own
+  `WDSPwisdom()` — imports `~/.config/sdr-for-linux/wdspWisdom00` in ~ms if
+  present, else builds it once (c2c+r2c 64…262144) behind a first-run progress
+  window (spinner + weighted bar + live `wisdom_get_status()`) on a worker
+  thread. Measured: first build **~6 min** (87 % is phase-A filter c2c up to
+  262144 incl. the slow prime `size+1` plans), then **every** start imports in
+  0.0 s. Gate: `sdrfl-wisdom-test` (offline, `SDRFL_WISDOM_DIR` overrides the
+  dir). **Nothing in `vendor/wdsp` modified** (we only call `WDSPwisdom`).
 
-**Other M3 follow-ups:**
+**M3 follow-ups (next):**
 - **Var1/Var2 filters** — drag the passband edges on the spectrum (hit-test + drag).
 - **AGC / NR / NB / ANF** — still visible placeholders in the top strip; wire to
   WDSP (`SetRXAAGC*`, rnnoise/specbleach).
