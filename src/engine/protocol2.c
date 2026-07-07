@@ -98,6 +98,8 @@ int p2_build_general(unsigned char *buf) {
   buf[3] = (general_sequence      ) & 0xFF;
   buf[37] = 0x08;  // phase word (not frequency)
   buf[38] = 0x01;  // enable hardware timer
+  buf[59] = 0x01;  // enable Alex 0 — the G1's filter board is ALEX (np.c:696);
+                   // without this the RX band-pass relays never engage → no signal
   return GENERAL_LEN;
 }
 
@@ -124,7 +126,8 @@ int p2_build_receive_specific(unsigned char *buf, int device, int sample_rate) {
 /* High-Priority packet — np.c:718-1474, RX subset. Byte[4] is the run bit;
  * bytes[9..12] carry the DDC0 NCO phase (always set — the radio's automatic
  * band filter follows DDC0), and for DDC2-class devices we also write the
- * receiver's own DDC slot. All TX/ALEX/attenuator fields stay 0. */
+ * receiver's own DDC slot. alex0 (bytes 1432..1435) selects the G1's per-band RX
+ * BPF relay; all TX/attenuator fields stay 0. */
 int p2_build_high_priority(unsigned char *buf, int device, long long freq_hz, int run) {
   int ddc = ddc_for_device(device);
   long long freq = freq_hz;          // calibrated_frequency() with cal=0 is identity
@@ -146,6 +149,22 @@ int p2_build_high_priority(unsigned char *buf, int device, long long freq_hz, in
     buf[off + 2] = buf[11];
     buf[off + 3] = buf[12];
   }
+  /* G1 RX band-pass filter (np.c NEW_DEVICE_G1 case; bits from alex.h
+   * ALEX_ANAN7000_RX_*). With Alex 0 enabled (general[59]) the radio still needs
+   * the per-band RX BPF relay chosen from the RX frequency — else the ADC input
+   * path is open and no signal reaches the DDC. alex0 → bytes 1432..1435 (BE). */
+  uint32_t alex0;
+  if      (freq <  1500000LL) { alex0 = 0x00001000; }  // BYPASS_BPF
+  else if (freq <  2100000LL) { alex0 = 0x00000040; }  // 160 m
+  else if (freq <  5500000LL) { alex0 = 0x00000020; }  // 80/60 m
+  else if (freq < 11000000LL) { alex0 = 0x00000010; }  // 40/30 m
+  else if (freq < 22000000LL) { alex0 = 0x00000002; }  // 20/15 m
+  else if (freq < 35000000LL) { alex0 = 0x00000004; }  // 12/10 m
+  else                        { alex0 = 0x00000008; }  // 6 m + preamp
+  buf[1432] = (alex0 >> 24) & 0xFF;
+  buf[1433] = (alex0 >> 16) & 0xFF;
+  buf[1434] = (alex0 >>  8) & 0xFF;
+  buf[1435] = (alex0      ) & 0xFF;
   return HIGH_PRIORITY_LEN;
 }
 
