@@ -8,11 +8,38 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
-/* Visible amplitude window (dBm). */
-#define PAN_HIGH  -50.0
-#define PAN_LOW  -140.0
-#define PAN_STEP    20.0   /* dB grid spacing */
+/* Visible amplitude window (dBm) — runtime-adjustable (drag/scroll the scale,
+ * or Settings). Defaults match the old fixed window. */
+static double pan_high = -50.0;
+static double pan_low  = -140.0;
+
+void panadapter_set_range(double high, double low) {
+  if (!(high > low)) { return; }   /* reject NaN / inverted / degenerate */
+  pan_high = high;
+  pan_low  = low;
+}
+
+/* dB grid lines + scale labels, toggled independently (default on). */
+static int show_db_grid   = 1;
+static int show_db_labels = 1;
+
+void panadapter_set_grid(int show_grid, int show_labels) {
+  show_db_grid   = show_grid;
+  show_db_labels = show_labels;
+}
+
+/* dB grid spacing chosen so the window shows ~4-6 labelled lines regardless of
+ * the current range (a fixed 20 dB step goes sparse when zoomed in). */
+static double pan_grid_step(void) {
+  double range = pan_high - pan_low;
+  const double steps[] = { 5, 10, 20, 50, 100 };
+  for (unsigned i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
+    if (range / steps[i] <= 6.0) { return steps[i]; }
+  }
+  return 100.0;
+}
 
 /* Format Hz as a grouped string, e.g. 14250000 -> "14 250 000". */
 static void format_hz(long long hz, char *buf, size_t n) {
@@ -34,29 +61,35 @@ static void format_hz(long long hz, char *buf, size_t n) {
 
 /* Map a dBm value to a y pixel within [0,h]. */
 static double dbm_to_y(double dbm, int h) {
-  double t = (PAN_HIGH - dbm) / (PAN_HIGH - PAN_LOW);
+  double t = (pan_high - dbm) / (pan_high - pan_low);
   if (t < 0.0) t = 0.0;
   if (t > 1.0) t = 1.0;
   return t * h;
 }
 
 static void draw_grid(cairo_t *cr, int w, int h) {
+  if (!show_db_grid && !show_db_labels) { return; }
   cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
   cairo_set_font_size(cr, 11.0);
   cairo_set_line_width(cr, 1.0);
 
-  for (double db = PAN_HIGH; db >= PAN_LOW; db -= PAN_STEP) {
+  double step = pan_grid_step();
+  double top = floor(pan_high / step) * step;   /* align labels to the step grid */
+  for (double db = top; db >= pan_low; db -= step) {
     double y = dbm_to_y(db, h);
-    cairo_set_source_rgba(cr, 0.45, 0.55, 0.65, 0.14);
-    cairo_move_to(cr, 0, y + 0.5);
-    cairo_line_to(cr, w, y + 0.5);
-    cairo_stroke(cr);
-
-    char lbl[16];
-    snprintf(lbl, sizeof(lbl), "%d", (int)db);
-    cairo_set_source_rgba(cr, 0.55, 0.65, 0.75, 0.75);
-    cairo_move_to(cr, 4, y - 3);
-    cairo_show_text(cr, lbl);
+    if (show_db_grid) {
+      cairo_set_source_rgba(cr, 0.45, 0.55, 0.65, 0.14);
+      cairo_move_to(cr, 0, y + 0.5);
+      cairo_line_to(cr, w, y + 0.5);
+      cairo_stroke(cr);
+    }
+    if (show_db_labels) {
+      char lbl[16];
+      snprintf(lbl, sizeof(lbl), "%d", (int)db);
+      cairo_set_source_rgba(cr, 0.55, 0.65, 0.75, 0.75);
+      cairo_move_to(cr, 4, y - 3);
+      cairo_show_text(cr, lbl);
+    }
   }
 }
 
@@ -120,7 +153,7 @@ static void draw_spectrum(cairo_t *cr, const float *dbm, int n, int w, int h,
   cairo_pattern_t *grad = cairo_pattern_create_linear(0, 0, 0, h);
   for (int s = 0; s <= 24; s++) {
     double off = s / 24.0;
-    double d = PAN_HIGH - off * (PAN_HIGH - PAN_LOW);
+    double d = pan_high - off * (pan_high - pan_low);
     double r, g, b;
     waterfall_palette_rgb((d - low) / span, &r, &g, &b);
     cairo_pattern_add_color_stop_rgba(grad, off, r, g, b, 0.55);
@@ -171,21 +204,21 @@ static void draw_readouts(cairo_t *cr, const ClientFrame *f, int w) {
                      ? f->vfo_a_ctun_freq : f->vfo_a_freq;
   format_hz(freq, buf, sizeof(buf));
   cairo_set_source_rgba(cr, 0.93, 0.96, 1.0, 0.96);
-  cairo_move_to(cr, 44, 32);
+  cairo_move_to(cr, 44, 48);   /* pushed down so the top freq ruler sits above it */
   cairo_show_text(cr, buf);
 
   cairo_set_font_size(cr, 12.0);
   cairo_set_source_rgba(cr, 0.55, 0.65, 0.75, 0.8);
-  cairo_move_to(cr, 44, 48);
+  cairo_move_to(cr, 44, 64);
   cairo_show_text(cr, "Hz  ·  VFO A");
 
-  /* S-meter (dBm), top-right. */
+  /* S-meter (dBm), top-right (aligned below the ruler strip). */
   snprintf(buf, sizeof(buf), "%.0f dBm", f->s_dbm);
   cairo_set_font_size(cr, 18.0);
   cairo_text_extents_t ext;
   cairo_text_extents(cr, buf, &ext);
   cairo_set_source_rgba(cr, 0.75, 0.95, 0.7, 0.95);
-  cairo_move_to(cr, w - ext.width - 16, 30);
+  cairo_move_to(cr, w - ext.width - 16, 46);
   cairo_show_text(cr, buf);
 }
 

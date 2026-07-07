@@ -104,7 +104,23 @@ typedef struct {
   gint64      ovl1_until;    /* ADC1-overload badge lit until (monotonic µs)   */
   int         tlm_valid;     /* HP-status telemetry seen at least once          */
   double      supply_v;      /* supply voltage (V), EMA-smoothed; 0 = unknown   */
+  GtkWidget  *volt_label;    /* footer supply-voltage readout                   */
+  double      volt_shown;    /* last value pushed to volt_label (markup throttle)*/
+  double      pan_high, pan_low;              /* visible dB window (dBm)          */
+  int         drag_gutter;   /* the active drag started in the left dB gutter    */
+  double      drag_base_high, drag_base_low;  /* pan window captured at drag-begin */
+  double      ptr_x, ptr_y;  /* last pointer pos over the area (scroll hit-test)  */
+  int         show_db_grid, show_db_scale;     /* horizontal grid / dB labels     */
+  int         show_freq_grid, show_freq_scale; /* vertical grid / freq labels      */
 } App;
+
+/* dB-scale limits for the grab-to-move axis. */
+#define PAN_HIGH_DEFAULT  -50.0
+#define PAN_LOW_DEFAULT  -140.0
+#define PAN_RANGE_MIN      20.0    /* min dB window (max vertical zoom-in)  */
+#define PAN_RANGE_MAX     160.0    /* max dB window (max zoom-out)          */
+#define PAN_DBM_CEIL       20.0    /* the top of the window can't exceed    */
+#define PAN_DBM_FLOOR    -200.0    /* the bottom of the window can't go below */
 
 /* Supply-voltage calibration: V = k * raw_adc1. No G1 divider is documented, so
  * k is anchored empirically — Richard's Microset measured 13.46 V while the G1
@@ -184,9 +200,61 @@ static int cmp_float(const void *a, const void *b) {
   return (fa > fb) - (fa < fb);
 }
 
+/* Horizontal frequency graticule: faint vertical lines on "nice" frequencies
+ * across the visible span, labelled (MHz) in a ruler strip at the very top edge
+ * (above the big VFO readout). Model A: span centre = VFO = app->freq. */
+static void draw_freq_scale(cairo_t *cr, App *app, int w, int ph) {
+  if (w < 2 || app->rate <= 0 || app->zoom <= 0.0) { return; }
+  double span      = (double)app->rate / app->zoom;   /* Hz across the width */
+  double hz_per_px = span / w;
+  double left_hz   = (double)app->freq - span / 2.0;
+  double right_hz  = (double)app->freq + span / 2.0;
+
+  /* Nice tick step (1/2/5·10ⁿ) targeting ~110 px between ticks. */
+  double raw  = hz_per_px * 110.0;
+  double mag  = pow(10.0, floor(log10(raw)));
+  double nn   = raw / mag;
+  double step = (nn <= 1 ? 1 : nn <= 2 ? 2 : nn <= 5 ? 5 : 10) * mag;
+  int dec = step >= 1000000 ? 1 : step >= 100000 ? 2 : step >= 1000 ? 3 : step >= 100 ? 4 : 5;
+
+  cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_set_font_size(cr, 10.0);
+  const double ly = 13.0;   /* label baseline — top edge, above the VFO readout */
+  for (double f = ceil(left_hz / step) * step; f <= right_hz; f += step) {
+    double x = (f - left_hz) / hz_per_px;
+    if (app->show_freq_grid) {
+      cairo_set_source_rgba(cr, 0.5, 0.6, 0.7, 0.11);        /* full-height line */
+      cairo_set_line_width(cr, 1.0);
+      cairo_move_to(cr, x + 0.5, 0); cairo_line_to(cr, x + 0.5, ph);
+      cairo_stroke(cr);
+    }
+    if (!app->show_freq_scale) { continue; }
+
+    char lbl[24];
+    snprintf(lbl, sizeof lbl, "%.*f", dec, f / 1e6);
+    cairo_text_extents_t ext;
+    cairo_text_extents(cr, lbl, &ext);
+    double lx = x - ext.width / 2.0;
+    if (lx < 2) { lx = 2; }
+    if (lx + ext.width > w - 2) { lx = w - 2 - ext.width; }
+    cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.42);          /* legibility pill */
+    cairo_rectangle(cr, lx - 3, ly - ext.height - 2, ext.width + 6, ext.height + 5);
+    cairo_fill(cr);
+    cairo_set_source_rgba(cr, 0.72, 0.82, 0.94, 0.95);
+    cairo_move_to(cr, lx, ly);
+    cairo_show_text(cr, lbl);
+    cairo_set_source_rgba(cr, 0.6, 0.7, 0.85, 0.5);          /* tick under label */
+    cairo_move_to(cr, x + 0.5, ly + 4); cairo_line_to(cr, x + 0.5, ly + 9);
+    cairo_stroke(cr);
+  }
+}
+
 static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer data) {
   (void)area;
   App *app = (App *)data;
+
+  panadapter_set_range(app->pan_high, app->pan_low);   /* grab-to-move dB window */
+  panadapter_set_grid(app->show_db_grid, app->show_db_scale);
 
   if (!app->connected) {
     const char *msg = app->radio_mode ? "No radio found on the LAN"
@@ -213,6 +281,9 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
   cairo_rectangle(cr, 0, 0, w, ph);
   cairo_clip(cr);
   panadapter_draw(cr, w, ph, &app->frame, smoothed, low, span, NULL);
+  if (app->radio_mode && (app->show_freq_grid || app->show_freq_scale)) {
+    draw_freq_scale(cr, app, w, ph);
+  }
   /* Filter passband overlay (Model A: VFO = span centre). Scales with zoom. */
   if (app->radio_mode && app->fhi > app->flo) {
     double hz_per_px = (double)app->rate / app->zoom / w;
@@ -244,38 +315,13 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
     cairo_set_font_size(cr, 12.0);
     cairo_text_extents_t ext;
     cairo_text_extents(cr, txt, &ext);
-    const double pad = 5.0, bx = 8.0, by = 8.0;
+    const double pad = 5.0, bx = 8.0, by = 28.0;   /* below the freq ruler strip */
     cairo_set_source_rgba(cr, 0.78, 0.06, 0.06, 0.85);   /* red badge */
     cairo_rectangle(cr, bx, by, ext.width + 2 * pad, ext.height + 2 * pad);
     cairo_fill(cr);
     cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.96);
     cairo_move_to(cr, bx + pad - ext.x_bearing, by + pad - ext.y_bearing);
     cairo_show_text(cr, txt);
-  }
-
-  /* Supply-voltage readout, top-right of the panadapter. Green in-band, amber
-   * on a mild excursion, red on a fault. Anchored to a single multimeter point
-   * (see SUPPLY_V_PER_COUNT) — a warning gauge, not a precise DVM. */
-  if (app->radio_mode && app->supply_v > 0.0) {
-    double v = app->supply_v;
-    double r, g, b;
-    if      (v < 12.0 || v > 15.0) { r = 0.95; g = 0.15; b = 0.15; }  /* fault */
-    else if (v < 12.8 || v > 14.5) { r = 0.98; g = 0.72; b = 0.10; }  /* warn  */
-    else                           { r = 0.55; g = 0.95; b = 0.55; }  /* ok    */
-    char vb[32];
-    snprintf(vb, sizeof vb, "%.2f V", v);
-    cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
-    cairo_set_font_size(cr, 13.0);
-    cairo_text_extents_t ex;
-    cairo_text_extents(cr, vb, &ex);
-    const double pad = 5.0;
-    double bw = ex.width + 2 * pad, bx = w - bw - 8.0, by = 8.0;
-    cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.45);
-    cairo_rectangle(cr, bx, by, bw, ex.height + 2 * pad);
-    cairo_fill(cr);
-    cairo_set_source_rgba(cr, r, g, b, 0.96);
-    cairo_move_to(cr, bx + pad - ex.x_bearing, by + pad - ex.y_bearing);
-    cairo_show_text(cr, vb);
   }
 
   waterfall_draw(app->wf, cr, 0, ph, w, h - ph);
@@ -387,6 +433,7 @@ static void tick_radio(App *app, GtkWidget *widget) {
 }
 
 static void update_span_label(App *app);   /* fwd: zoom slider updates it via tick */
+static void update_volt_label(App *app);   /* fwd: defined with the footer controls */
 
 static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) {
   (void)clock;
@@ -417,6 +464,7 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
         double v = t.raw_adc1 * kcal;
         app->supply_v = (app->supply_v > 0.0)
                         ? app->supply_v + SUPPLY_V_EMA * (v - app->supply_v) : v;
+        update_volt_label(app);
       }
       tick_radio(app, widget);
     } else {
@@ -446,6 +494,12 @@ static void app_to_settings(const App *app, Settings *s) {
   s->nr      = app->nr;
   s->nb      = app->nb;
   s->anf     = app->anf;
+  s->pan_high = app->pan_high;
+  s->pan_low  = app->pan_low;
+  s->db_grid    = app->show_db_grid;
+  s->db_scale   = app->show_db_scale;
+  s->freq_grid  = app->show_freq_grid;
+  s->freq_scale = app->show_freq_scale;
 }
 
 static gboolean do_save_cb(gpointer data) {
@@ -464,14 +518,72 @@ static void schedule_save(App *app) {
   app->save_timer_id = g_timeout_add_seconds(1, do_save_cb, app);
 }
 
+/* ---- vertical dB axis — grab the scale (left gutter) --------------------- */
+
+static double clampd(double v, double lo, double hi) {
+  return v < lo ? lo : (v > hi ? hi : v);
+}
+
+/* Panadapter pixel height (the top PANADAPTER_FRACTION of the drawing area). */
+static double pan_height_px(App *app) {
+  return gtk_widget_get_height(app->area) * PANADAPTER_FRACTION;
+}
+
+/* Store a proposed [high,low] dB window, clamped to a sane range and dBm span
+ * (range preserved; the window slides within [FLOOR,CEIL]). */
+static void pan_set_window(App *app, double high, double low) {
+  double range = clampd(high - low, PAN_RANGE_MIN, PAN_RANGE_MAX);
+  high = clampd(high, PAN_DBM_FLOOR + range, PAN_DBM_CEIL);
+  app->pan_high = high;
+  app->pan_low  = high - range;
+}
+
+/* Is the pointer over the left dB gutter (the grab zone for the vertical axis)? */
+static int in_gutter(App *app, double x, double y) {
+  return x < PANADAPTER_GUTTER_W && y < pan_height_px(app);
+}
+
+/* Double-click the scale → auto-fit: put the noise floor near the bottom and
+ * keep a readable window, so the trace is well-placed as the floor drifts. */
+static void pan_autofit(App *app) {
+  int n = app->ema_w;
+  if (n < 8) { return; }
+  static float srt[SPECTRUM_DATA_SIZE];
+  memcpy(srt, app->ema, n * sizeof(float));
+  qsort(srt, n, sizeof(float), cmp_float);
+  double floor_db = srt[(int)(n * 0.20)];
+  double peak_db  = srt[n - 1];
+  double low  = floor_db - 10.0;
+  double high = peak_db + 12.0;
+  if (high - low < 50.0) { high = low + 50.0; }
+  pan_set_window(app, high, low);
+  schedule_save(app);
+  gtk_widget_queue_draw(app->area);
+}
+
 /* Mouse wheel over the panadapter re-tunes the DDC (Model A: the whole span
- * moves, passband stays centred) by the selected step. Each notch snaps to the
- * next multiple of the step in the scroll direction, so the frequency always
- * lands on a clean grid line (no leftover units to hand-trim later). */
+ * moves, passband stays centred) by the selected step — UNLESS the cursor is
+ * over the dB gutter, where it zooms the vertical axis around the cursor. Each
+ * tune notch snaps to a clean grid multiple in the scroll direction. */
 static gboolean on_scroll(GtkEventControllerScroll *ctl, double dx, double dy, gpointer data) {
   (void)dx; (void)ctl;
   App *app = (App *)data;
-  if (!app->radio_mode || !app->engine_ok) { return FALSE; }
+  if (!app->radio_mode) { return FALSE; }
+
+  if (in_gutter(app, app->ptr_x, app->ptr_y)) {   /* zoom the dB axis */
+    double ph = pan_height_px(app);
+    if (ph < 1.0 || dy == 0.0) { return FALSE; }
+    double range = app->pan_high - app->pan_low;
+    double frac  = app->ptr_y / ph;
+    double cur   = app->pan_high - frac * range;         /* dBm under the cursor */
+    double nr    = clampd(range * (dy < 0 ? 0.9 : 1.0 / 0.9), PAN_RANGE_MIN, PAN_RANGE_MAX);
+    pan_set_window(app, cur + frac * nr, cur + frac * nr - nr);
+    schedule_save(app);
+    gtk_widget_queue_draw(app->area);
+    return TRUE;
+  }
+
+  if (!app->engine_ok) { return FALSE; }
   int dir = (int)llround(-dy);        /* wheel up (dy < 0) tunes higher */
   if (dir == 0) { return FALSE; }
   long long step = app->tune_step > 0 ? app->tune_step : TUNE_STEP_DEFAULT;
@@ -488,19 +600,38 @@ static gboolean on_scroll(GtkEventControllerScroll *ctl, double dx, double dy, g
   return TRUE;
 }
 
-/* Left-drag grabs the spectrum and pans the DDC centre (Model A). The pan is
- * absolute from drag-begin (freq = base − offset·Hz-per-pixel), so the grabbed
- * point tracks the cursor smoothly with no accumulation drift. */
+/* Left-drag grabs the spectrum and pans the DDC centre (Model A) — UNLESS it
+ * started in the dB gutter, where it slides the level window vertically (same
+ * "grab the content" gesture, one axis over). Both pans are absolute from
+ * drag-begin, so the grabbed point tracks the cursor with no drift. */
 static void on_drag_begin(GtkGestureDrag *g, double x, double y, gpointer data) {
-  (void)g; (void)x; (void)y;
+  (void)g;
   App *app = (App *)data;
-  app->drag_base_freq = app->freq;
+  app->drag_gutter = in_gutter(app, x, y);
+  if (app->drag_gutter) {
+    app->drag_base_high = app->pan_high;
+    app->drag_base_low  = app->pan_low;
+  } else {
+    app->drag_base_freq = app->freq;
+  }
 }
 
 static void on_drag_update(GtkGestureDrag *g, double off_x, double off_y, gpointer data) {
-  (void)g; (void)off_y;
+  (void)g;
   App *app = (App *)data;
-  if (!app->radio_mode || !app->engine_ok) { return; }
+  if (!app->radio_mode) { return; }
+
+  if (app->drag_gutter) {                 /* vertical: slide the dB window */
+    double ph = pan_height_px(app);
+    if (ph < 1.0) { return; }
+    double range = app->drag_base_high - app->drag_base_low;
+    double shift = (off_y / ph) * range;  /* drag down → trace & window move down */
+    pan_set_window(app, app->drag_base_high + shift, app->drag_base_low + shift);
+    gtk_widget_queue_draw(app->area);
+    return;
+  }
+
+  if (!app->engine_ok) { return; }
   int w = gtk_widget_get_width(app->area);
   if (w < 1) { return; }
   double hz_per_px = (double)app->rate / app->zoom / w;   /* narrower span when zoomed */
@@ -510,6 +641,22 @@ static void on_drag_update(GtkGestureDrag *g, double off_x, double off_y, gpoint
   app->freq = nf;             /* readout follows on the next tick */
   p2_set_frequency(nf);
   schedule_save(app);
+}
+
+/* Track the pointer so on_scroll (which carries no coords) can hit-test the
+ * gutter. */
+static void on_motion(GtkEventControllerMotion *m, double x, double y, gpointer data) {
+  (void)m;
+  App *app = (App *)data;
+  app->ptr_x = x;
+  app->ptr_y = y;
+}
+
+/* Double-click in the dB gutter → auto-fit the level window. */
+static void on_pressed(GtkGestureClick *g, int n_press, double x, double y, gpointer data) {
+  (void)g;
+  App *app = (App *)data;
+  if (app->radio_mode && n_press == 2 && in_gutter(app, x, y)) { pan_autofit(app); }
 }
 
 /* Keys u/l/c/a switch demod mode by activating the matching strip toggle
@@ -774,6 +921,21 @@ static void update_span_label(App *app) {
   gtk_label_set_text(GTK_LABEL(app->span_label), buf);
 }
 
+/* Footer supply-voltage readout: green in-band, amber on a mild excursion, red
+ * on a fault. Throttled to ~0.01 V changes so it doesn't relayout every frame. */
+static void update_volt_label(App *app) {
+  if (!app->volt_label || app->supply_v <= 0.0) { return; }
+  double v = app->supply_v;
+  if (app->volt_shown > 0.0 && fabs(v - app->volt_shown) < 0.01) { return; }
+  app->volt_shown = v;
+  const char *col = (v < 12.0 || v > 15.0) ? "#f2413d"    /* fault */
+                  : (v < 12.8 || v > 14.5) ? "#fbb724"    /* warn  */
+                  :                          "#8cf08c";   /* ok    */
+  char m[96];
+  snprintf(m, sizeof m, "<span foreground='%s'><b>%.2f V</b></span>", col, v);
+  gtk_label_set_markup(GTK_LABEL(app->volt_label), m);
+}
+
 /* Zoom slider snaps to octave detents (1×,2×,…,128×): continuous re-config while
  * dragging looked rough, so reconfig fires only when the detent actually changes
  * (one cheap wisdom-backed SetAnalyzer per notch). */
@@ -837,6 +999,11 @@ static GtkWidget *build_bottom_controls(App *app) {
   GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_set_hexpand(spacer, TRUE);
   gtk_box_append(GTK_BOX(bar), spacer);
+
+  /* Supply-voltage readout, right-aligned — telemetry lives on the footer. */
+  app->volt_label = gtk_label_new("—");
+  gtk_widget_add_css_class(app->volt_label, "span");
+  gtk_box_append(GTK_BOX(bar), labeled("Supply", app->volt_label));
   return bar;
 }
 
@@ -877,6 +1044,42 @@ static void on_pref_latency(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   app->latency = (int)adw_spin_row_get_value(r);   /* applied on restart */
   schedule_save(app);
 }
+static void on_pref_pan_high(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps;
+  App *app = (App *)data;
+  double v = adw_spin_row_get_value(r);            /* dB axis top; keep >= MIN span */
+  if (v > app->pan_low + PAN_RANGE_MIN && v <= PAN_DBM_CEIL) {
+    app->pan_high = v; schedule_save(app); gtk_widget_queue_draw(app->area);
+  }
+}
+static void on_pref_pan_low(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps;
+  App *app = (App *)data;
+  double v = adw_spin_row_get_value(r);            /* dB axis bottom */
+  if (v < app->pan_high - PAN_RANGE_MIN && v >= PAN_DBM_FLOOR) {
+    app->pan_low = v; schedule_save(app); gtk_widget_queue_draw(app->area);
+  }
+}
+static void on_pref_db_grid(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->show_db_grid = adw_switch_row_get_active(r);
+  schedule_save(app); gtk_widget_queue_draw(app->area);
+}
+static void on_pref_db_scale(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->show_db_scale = adw_switch_row_get_active(r);
+  schedule_save(app); gtk_widget_queue_draw(app->area);
+}
+static void on_pref_freq_grid(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->show_freq_grid = adw_switch_row_get_active(r);
+  schedule_save(app); gtk_widget_queue_draw(app->area);
+}
+static void on_pref_freq_scale(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->show_freq_scale = adw_switch_row_get_active(r);
+  schedule_save(app); gtk_widget_queue_draw(app->area);
+}
 static void on_pref_rate(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   (void)ps;
   App *app = (App *)data;
@@ -895,6 +1098,14 @@ static GtkWidget *pref_spin(const char *title, const char *subtitle,
   GtkWidget *row = g_object_new(ADW_TYPE_SPIN_ROW, "title", title, "subtitle", subtitle,
                                 "adjustment", a, "digits", 0, NULL);
   g_signal_connect(row, "notify::value", cb, app);   /* connect after ctor → no spurious fire */
+  return row;
+}
+
+static GtkWidget *pref_switch(const char *title, const char *subtitle,
+                              int active, GCallback cb, App *app) {
+  GtkWidget *row = g_object_new(ADW_TYPE_SWITCH_ROW, "title", title, "subtitle", subtitle,
+                                "active", active ? TRUE : FALSE, NULL);
+  g_signal_connect(row, "notify::active", cb, app);
   return row;
 }
 
@@ -936,6 +1147,22 @@ static AdwDialog *build_prefs(App *app) {
   g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Panadapter", NULL));
   adw_preferences_group_add(g, pref_spin("Frame rate", "fps · applies live",
       10, 60, app->fps, G_CALLBACK(on_pref_fps), app));
+  adw_preferences_group_add(g, pref_spin("Scale top", "dBm · or drag the dB scale",
+      -30, 20, app->pan_high, G_CALLBACK(on_pref_pan_high), app));
+  adw_preferences_group_add(g, pref_spin("Scale bottom", "dBm · scroll the scale to zoom",
+      -200, -40, app->pan_low, G_CALLBACK(on_pref_pan_low), app));
+  adw_preferences_page_add(p, g);
+
+  /* Grid & scales — each toggles independently. */
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Grid & scales", NULL));
+  adw_preferences_group_add(g, pref_switch("dB grid", "Horizontal level lines",
+      app->show_db_grid, G_CALLBACK(on_pref_db_grid), app));
+  adw_preferences_group_add(g, pref_switch("dB scale", "Left dBm labels",
+      app->show_db_scale, G_CALLBACK(on_pref_db_scale), app));
+  adw_preferences_group_add(g, pref_switch("Frequency grid", "Vertical frequency lines",
+      app->show_freq_grid, G_CALLBACK(on_pref_freq_grid), app));
+  adw_preferences_group_add(g, pref_switch("Frequency scale", "Top frequency labels",
+      app->show_freq_scale, G_CALLBACK(on_pref_freq_scale), app));
   adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);
 
@@ -1008,6 +1235,15 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
   g_signal_connect(drag, "drag-update", G_CALLBACK(on_drag_update), app);
   gtk_widget_add_controller(app->area, GTK_EVENT_CONTROLLER(drag));
 
+  GtkEventControllerMotion *motion =
+      GTK_EVENT_CONTROLLER_MOTION(gtk_event_controller_motion_new());
+  g_signal_connect(motion, "motion", G_CALLBACK(on_motion), app);
+  gtk_widget_add_controller(app->area, GTK_EVENT_CONTROLLER(motion));
+
+  GtkGesture *click = gtk_gesture_click_new();   /* double-click gutter → auto-fit */
+  g_signal_connect(click, "pressed", G_CALLBACK(on_pressed), app);
+  gtk_widget_add_controller(app->area, GTK_EVENT_CONTROLLER(click));
+
   GtkEventControllerKey *keys =
       GTK_EVENT_CONTROLLER_KEY(gtk_event_controller_key_new());
   g_signal_connect(keys, "key-pressed", G_CALLBACK(on_key), app);
@@ -1023,7 +1259,9 @@ static void start_radio(App *app) {
   Settings st = { .freq = 14100000, .rate = 192000, .mode = -1,
                   .volume = -10.0, .gain = 1.0, .fps = 25, .latency = 10,
                   .step = TUNE_STEP_DEFAULT, .zoom = 1.0, .atten = 0,
-                  .agc = 3, .agc_gain = 80.0, .filter = -1 };
+                  .agc = 3, .agc_gain = 80.0, .filter = -1,
+                  .pan_high = PAN_HIGH_DEFAULT, .pan_low = PAN_LOW_DEFAULT,
+                  .db_grid = 1, .db_scale = 1, .freq_grid = 1, .freq_scale = 1 };
   g_strlcpy(st.ip, "192.168.1.247", sizeof(st.ip));
   if (settings_load(&st)) { printf("settings: loaded %s\n", settings_path()); }
 
@@ -1061,6 +1299,18 @@ static void start_radio(App *app) {
   if (app->zoom > ZOOM_MAX) { app->zoom = ZOOM_MAX; }
   app->zoom = pow(2.0, lround(log2(app->zoom)));
   app->pending_zoom = app->zoom;
+  /* dB window: validate the saved pair, else fall back to the default. */
+  if (st.pan_high > st.pan_low && st.pan_high <= PAN_DBM_CEIL && st.pan_low >= PAN_DBM_FLOOR) {
+    pan_set_window(app, st.pan_high, st.pan_low);
+  } else {
+    app->pan_high = PAN_HIGH_DEFAULT;
+    app->pan_low  = PAN_LOW_DEFAULT;
+  }
+  app->ptr_x = 1e9;   /* until the pointer moves, wheel = tune (not gutter zoom) */
+  app->show_db_grid    = st.db_grid    ? 1 : 0;
+  app->show_db_scale   = st.db_scale   ? 1 : 0;
+  app->show_freq_grid  = st.freq_grid  ? 1 : 0;
+  app->show_freq_scale = st.freq_scale ? 1 : 0;
   app->pixels = ENGINE_PIXELS;
   app->tune_step = TUNE_STEP_DEFAULT;   /* keep only known step values */
   for (guint i = 0; i < G_N_ELEMENTS(TUNE_STEPS); i++) {

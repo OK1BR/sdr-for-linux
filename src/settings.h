@@ -22,6 +22,12 @@ typedef struct {
   int       latency;   /* audio target latency (ms)                  */
   int       step;      /* scroll-tuning step (Hz)                    */
   double    zoom;      /* panadapter zoom factor (1 = full span)     */
+  double    pan_high;  /* dB scale top (dBm)                         */
+  double    pan_low;   /* dB scale bottom (dBm)                      */
+  int       db_grid;   /* show horizontal (dB) grid lines            */
+  int       db_scale;  /* show dB scale labels (left)                */
+  int       freq_grid; /* show vertical (frequency) grid lines       */
+  int       freq_scale;/* show frequency scale labels (top)          */
   int       atten;     /* ADC0 step attenuator (dB, 0-31)            */
   int       agc;       /* AGC mode 0=off,1=long,2=slow,3=med,4=fast  */
   double    agc_gain;  /* AGC-T threshold/gain (dB)                  */

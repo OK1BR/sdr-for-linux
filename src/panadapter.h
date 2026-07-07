@@ -33,4 +33,22 @@ void panadapter_draw(cairo_t *cr, int w, int h,
                      double cmap_low, double cmap_span,
                      const char *status);
 
+/*
+ * Set the visible amplitude window (dBm) for the vertical axis: `high` at the
+ * top, `low` at the bottom. Drives both the trace mapping and the dB scale
+ * labels. Persistent module state — call before panadapter_draw() each frame.
+ * `high` must be > `low`; out-of-order or degenerate values are ignored.
+ */
+void panadapter_set_range(double high, double low);
+
+/*
+ * Toggle the dB grid lines and the dB scale labels independently (persistent
+ * module state; set before panadapter_draw() each frame). Both default on.
+ */
+void panadapter_set_grid(int show_grid, int show_labels);
+
+/* Width (px) of the left dB-scale gutter — the grab zone for vertical
+ * pan/zoom. The GUI hit-tests against this so the affordance matches the draw. */
+#define PANADAPTER_GUTTER_W 46
+
 #endif /* PIHPSDR_CLIENT_PANADAPTER_H */

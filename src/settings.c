@@ -52,6 +52,18 @@ int settings_load(Settings *s) {
       s->step = g_key_file_get_integer(kf, GROUP_RX, "step", NULL);
     if (g_key_file_has_key(kf, GROUP_DISPLAY, "zoom", NULL))
       s->zoom = g_key_file_get_double(kf, GROUP_DISPLAY, "zoom", NULL);
+    if (g_key_file_has_key(kf, GROUP_DISPLAY, "pan_high", NULL))
+      s->pan_high = g_key_file_get_double(kf, GROUP_DISPLAY, "pan_high", NULL);
+    if (g_key_file_has_key(kf, GROUP_DISPLAY, "pan_low", NULL))
+      s->pan_low = g_key_file_get_double(kf, GROUP_DISPLAY, "pan_low", NULL);
+    if (g_key_file_has_key(kf, GROUP_DISPLAY, "db_grid", NULL))
+      s->db_grid = g_key_file_get_integer(kf, GROUP_DISPLAY, "db_grid", NULL);
+    if (g_key_file_has_key(kf, GROUP_DISPLAY, "db_scale", NULL))
+      s->db_scale = g_key_file_get_integer(kf, GROUP_DISPLAY, "db_scale", NULL);
+    if (g_key_file_has_key(kf, GROUP_DISPLAY, "freq_grid", NULL))
+      s->freq_grid = g_key_file_get_integer(kf, GROUP_DISPLAY, "freq_grid", NULL);
+    if (g_key_file_has_key(kf, GROUP_DISPLAY, "freq_scale", NULL))
+      s->freq_scale = g_key_file_get_integer(kf, GROUP_DISPLAY, "freq_scale", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "atten", NULL))
       s->atten = g_key_file_get_integer(kf, GROUP_RX, "atten", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "agc", NULL))
@@ -94,6 +106,12 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_RX,    "anf",     s->anf);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "fps",   s->fps);
   g_key_file_set_double (kf, GROUP_DISPLAY, "zoom",  s->zoom);
+  g_key_file_set_double (kf, GROUP_DISPLAY, "pan_high", s->pan_high);
+  g_key_file_set_double (kf, GROUP_DISPLAY, "pan_low",  s->pan_low);
+  g_key_file_set_integer(kf, GROUP_DISPLAY, "db_grid",    s->db_grid);
+  g_key_file_set_integer(kf, GROUP_DISPLAY, "db_scale",   s->db_scale);
+  g_key_file_set_integer(kf, GROUP_DISPLAY, "freq_grid",  s->freq_grid);
+  g_key_file_set_integer(kf, GROUP_DISPLAY, "freq_scale", s->freq_scale);
 
   GError *e = NULL;
   int rc = g_key_file_save_to_file(kf, settings_path(), &e) ? 0 : -1;
