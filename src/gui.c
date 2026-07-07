@@ -87,9 +87,9 @@ typedef struct {
   GtkWidget  *area;
   GtkWidget  *mode_btns[7];  /* toggle per DEMOD_* id (keys ↔ buttons in sync) */
   double      zoom;          /* current display zoom (1 = full span)           */
-  double      pending_zoom;  /* slider target; applied on the frame tick (throttle) */
-  int         zoom_dirty;    /* pending_zoom needs applying                    */
   GtkWidget  *span_label;    /* footer span readout                            */
+  GtkWidget  *zoom_in_btn;   /* footer zoom +/- (stepped; continuous stutters) */
+  GtkWidget  *zoom_out_btn;
   int         filter_idx;    /* selected preset in the current mode's table    */
   double      flo, fhi;      /* current passband (Hz, rel. centre) — for drawing */
   GtkWidget  *filter_dd;     /* filter dropdown (repopulated per mode)         */
@@ -290,11 +290,6 @@ static void tick_radio(App *app, GtkWidget *widget) {
 static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) {
   (void)clock;
   App *app = (App *)data;
-  if (app->radio_mode && app->zoom_dirty) {   /* coalesced re-config, ≤1 per frame */
-    analyzer_set_zoom(app->pending_zoom);
-    app->zoom = app->pending_zoom;
-    app->zoom_dirty = 0;
-  }
   if (app->connected) {
     if (app->radio_mode) { tick_radio(app, widget); }
     else                 { tick_network(app, widget); }
@@ -543,19 +538,30 @@ static GtkWidget *build_controls(App *app) {
   return bar;
 }
 
-/* Footer span readout follows the slider instantly (analyzer applies throttled). */
+#define ZOOM_MAX 128.0
+
 static void update_span_label(App *app) {
   if (!app->span_label) { return; }
-  char buf[32];
-  snprintf(buf, sizeof buf, "%.0f kHz", (double)app->rate / app->pending_zoom / 1000.0);
+  char buf[40];
+  snprintf(buf, sizeof buf, "%.1f kHz  ·  %g×", (double)app->rate / app->zoom / 1000.0, app->zoom);
   gtk_label_set_text(GTK_LABEL(app->span_label), buf);
 }
 
-static void on_zoom_changed(GtkRange *r, gpointer data) {
-  App *app = (App *)data;
-  app->pending_zoom = pow(2.0, gtk_range_get_value(r));  /* slider = octaves 0..3 */
-  app->zoom_dirty = 1;   /* SetAnalyzer runs coalesced on the frame tick */
+/* Apply the current zoom (stepped ×2 per click — SetAnalyzer reconfig at large
+ * FFT sizes is too heavy to run continuously). */
+static void zoom_apply(App *app) {
+  analyzer_set_zoom(app->zoom);
   update_span_label(app);
+  if (app->zoom_out_btn) { gtk_widget_set_sensitive(app->zoom_out_btn, app->zoom > 1.0); }
+  if (app->zoom_in_btn)  { gtk_widget_set_sensitive(app->zoom_in_btn, app->zoom < ZOOM_MAX); }
+}
+static void on_zoom_in(GtkButton *b, gpointer data) {
+  (void)b; App *app = (App *)data;
+  if (app->zoom < ZOOM_MAX) { app->zoom *= 2.0; zoom_apply(app); }
+}
+static void on_zoom_out(GtkButton *b, gpointer data) {
+  (void)b; App *app = (App *)data;
+  if (app->zoom > 1.0) { app->zoom /= 2.0; zoom_apply(app); }
 }
 
 /* Bottom bar (AdwToolbarView bottom slot): view/display controls — zoom for now. */
@@ -563,17 +569,21 @@ static GtkWidget *build_bottom_controls(App *app) {
   GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
   gtk_widget_add_css_class(bar, "controlbar");
 
-  GtkWidget *zoom = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0.0, 7.0, 0.01);  /* 1x .. 128x */
-  gtk_range_set_value(GTK_RANGE(zoom), log2(app->zoom));
-  gtk_widget_set_size_request(zoom, 180, -1);
-  gtk_scale_set_draw_value(GTK_SCALE(zoom), FALSE);
-  g_signal_connect(zoom, "value-changed", G_CALLBACK(on_zoom_changed), app);
-  gtk_box_append(GTK_BOX(bar), labeled("Zoom", zoom));
+  GtkWidget *zbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_add_css_class(zbox, "linked");
+  app->zoom_out_btn = gtk_button_new_from_icon_name("zoom-out-symbolic");
+  app->zoom_in_btn  = gtk_button_new_from_icon_name("zoom-in-symbolic");
+  g_signal_connect(app->zoom_out_btn, "clicked", G_CALLBACK(on_zoom_out), app);
+  g_signal_connect(app->zoom_in_btn,  "clicked", G_CALLBACK(on_zoom_in),  app);
+  gtk_box_append(GTK_BOX(zbox), app->zoom_out_btn);
+  gtk_box_append(GTK_BOX(zbox), app->zoom_in_btn);
+  gtk_box_append(GTK_BOX(bar), labeled("Zoom", zbox));
 
   app->span_label = gtk_label_new("");
   gtk_widget_add_css_class(app->span_label, "span");
-  update_span_label(app);
   gtk_box_append(GTK_BOX(bar), app->span_label);
+  gtk_widget_set_sensitive(app->zoom_out_btn, FALSE);   /* starts at 1x */
+  update_span_label(app);
 
   GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_set_hexpand(spacer, TRUE);
@@ -789,7 +799,6 @@ static void start_radio(App *app) {
   app->fps    = st.fps;
   app->latency = st.latency;
   app->zoom   = 1.0;
-  app->pending_zoom = 1.0;
   app->pixels = ENGINE_PIXELS;
   int rate    = st.rate;
 
