@@ -60,3 +60,33 @@ Relay hot-switching itself (RF ramp-down before relay movement) is sequenced
 by the P2 gateware, not the host — but ONLY if the host state is consistent:
 one high-priority packet must always carry a mutually consistent
 {MOX, ANT, LPF, BPF, attenuator} set. Never split that across packets.
+
+## Thetis cross-check (ramdor/Thetis @ 852bf0ef, audited 2026-07-07)
+
+Thetis implements the same protections differently; adopt the best of both:
+
+- [ ] **Open-antenna detection**: during MOX, if `fwd > 10 W && (fwd − rev) < 1 W`
+      → treat as open feedline: drive to minimum AND force MOX off + warn
+      (console.cs:25968-25988). Catches the "transmitting into an open relay"
+      case that SWR alone reports too slowly.
+- [ ] **SWR trip needs debouncing**: Thetis trips only after **4 consecutive**
+      over-limit polls, then scales drive by `limit/(swr+1)`; optional latch to
+      near-zero until un-MOX (console.cs:26046-26069). piHPSDR uses 2
+      consecutive readings → drive 0. Either way: never trip on one sample
+      (artifacts), never TUNE-trip.
+- [ ] **Refuse the T/R relay when PA is disabled** — Thetis guards
+      `SetTRXrelay` with `if (!pa_enabled) return` (netInterface.c:374-385).
+      Port this: the relay must not move without a PA that can be keyed.
+- [ ] **T/R sequencing delays**: TX→RX: stop TX DSP → ~10 ms (in-flight samples
+      clear) → retune DDCs → PTT/TR relay off → ~20 ms (hardware settles) →
+      re-enable receivers (console.cs:29581-29614). Mirror on RX→TX.
+- [ ] **TX attenuation lives in TX-specific bytes 57-59 too** (0-31 dB,
+      Thetis default 31; forced 31 when PureSignal off or CW/QSK) — piHPSDR
+      duplicates it in HP bytes 1442/1443 for old firmware. Send BOTH.
+- [ ] **Fwd/rev power calibration is per-model**: G1/G2 bridge 0.12 V fwd /
+      0.15 V rev (0.7 on 6 m), ref 5.0 V, ADC offsets 32/28
+      (console.cs:25009-25017) — needed before SWR numbers mean anything.
+- [ ] **Watchdog stays on**: we run General[38]=1 + HP every 100 ms (piHPSDR
+      style), so the radio auto-stops streaming AND transmitting if the host
+      dies. Thetis runs [38]=0 and relies on its 750 pkt/s audio stream —
+      do NOT copy that model; keep the watchdog armed.
