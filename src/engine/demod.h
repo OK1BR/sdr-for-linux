@@ -33,6 +33,10 @@ void demod_set_mode(int mode, double flo, double fhi);
 /* Set the digital master gain applied after WDSP (thread-safe). */
 void demod_set_gain(double gain);
 
+/* AGC character (0=off,1=long,2=slow,3=medium,4=fast) + AGC-T gain (dB). */
+void demod_set_agc(int mode);
+void demod_set_agc_gain(double db);
+
 /* Set the AF volume (dB, 0..-40) live on the running channel (thread-safe). */
 void demod_set_volume(double db);
 

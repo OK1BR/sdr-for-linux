@@ -63,6 +63,9 @@ typedef struct {
   int         rate;         /* IQ sample rate = full panadapter span (Hz)      */
   double      volume;       /* AF gain (dB)                                    */
   double      gain;         /* digital master gain                            */
+  int         atten;        /* ADC0 step attenuator (dB, 0-31)                 */
+  int         agc;          /* AGC mode 0=off,1=long,2=slow,3=med,4=fast       */
+  double      agc_gain;     /* AGC-T threshold/gain (dB)                       */
   int         fps;          /* panadapter frame rate                          */
   int         latency;      /* audio target latency (ms)                      */
   char        radio_ip[64]; /* resolved radio IP (for persistence)            */
@@ -322,6 +325,10 @@ static void app_to_settings(const App *app, Settings *s) {
   s->latency = app->latency;
   s->step    = (int)app->tune_step;
   s->zoom    = app->zoom;
+  s->atten   = app->atten;
+  s->agc     = app->agc;
+  s->agc_gain = app->agc_gain;
+  s->filter  = app->filter_idx;
 }
 
 static gboolean do_save_cb(gpointer data) {
@@ -422,7 +429,8 @@ static void on_filter_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data) {
   app->filter_idx = (int)idx;
   app->flo = ft[idx].low;
   app->fhi = ft[idx].high;
-  demod_set_passband(app->flo, app->fhi);   /* filter isn't persisted (mode default on start) */
+  demod_set_passband(app->flo, app->fhi);
+  schedule_save(app);                        /* persist the chosen filter */
 }
 
 /* Rebuild the filter dropdown for the current mode and select filter_idx. */
@@ -461,6 +469,37 @@ static void on_volume_changed(GtkRange *r, gpointer data) {
   double v = gtk_range_get_value(r);
   demod_set_volume(v);
   app->volume = v;
+  schedule_save(app);
+}
+
+/* RF front-end: ADC0 step attenuator (0-31 dB; 0 = max sensitivity). */
+static void on_atten_changed(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  int db = (int)gtk_range_get_value(r);
+  p2_set_attenuation(db);
+  app->atten = db;
+  schedule_save(app);
+}
+
+/* AGC dropdown index → mode; dropdown order is Med,Fast,Slow,Long,Off. */
+static const int AGC_MODE_OF_IDX[] = { 3, 4, 2, 1, 0 };
+
+static void on_agc_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data) {
+  (void)ps;
+  App *app = (App *)data;
+  guint i = gtk_drop_down_get_selected(dd);
+  if (i >= G_N_ELEMENTS(AGC_MODE_OF_IDX)) { return; }
+  app->agc = AGC_MODE_OF_IDX[i];
+  demod_set_agc(app->agc);
+  schedule_save(app);
+}
+
+/* AGC-T threshold/gain slider. */
+static void on_agct_changed(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  double g = gtk_range_get_value(r);
+  demod_set_agc_gain(g);
+  app->agc_gain = g;
   schedule_save(app);
 }
 
@@ -515,9 +554,34 @@ static GtkWidget *build_controls(App *app) {
   populate_filter_dd(app);
   gtk_box_append(GTK_BOX(bar), labeled("Filter", app->filter_dd));
 
-  /* AGC / NR·NB·ANF — visible placeholders until their engine hooks land. */
-  gtk_box_append(GTK_BOX(bar), labeled("AGC",
-      gtk_drop_down_new_from_strings((const char *[]){"Med","Fast","Slow","Long","Off", NULL})));
+  /* RF attenuator (front-end gain): ADC0 step attenuator, 0-31 dB, 0 = max sens. */
+  GtkWidget *att = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 31, 1);
+  gtk_range_set_value(GTK_RANGE(att), app->atten);      /* before wiring: no spurious send */
+  gtk_widget_set_size_request(att, 110, -1);
+  gtk_scale_set_draw_value(GTK_SCALE(att), TRUE);
+  gtk_scale_set_value_pos(GTK_SCALE(att), GTK_POS_RIGHT);
+  g_signal_connect(att, "value-changed", G_CALLBACK(on_atten_changed), app);
+  gtk_box_append(GTK_BOX(bar), labeled("Att", att));
+
+  /* AGC character + AGC-T (threshold/gain). NR·NB·ANF still placeholders below. */
+  GtkWidget *agc_dd = gtk_drop_down_new_from_strings(
+      (const char *[]){"Med","Fast","Slow","Long","Off", NULL});
+  guint aidx = 0;
+  for (guint i = 0; i < G_N_ELEMENTS(AGC_MODE_OF_IDX); i++) {
+    if (AGC_MODE_OF_IDX[i] == app->agc) { aidx = i; break; }
+  }
+  gtk_drop_down_set_selected(GTK_DROP_DOWN(agc_dd), aidx);   /* before wiring: no re-fire */
+  g_signal_connect(agc_dd, "notify::selected", G_CALLBACK(on_agc_changed), app);
+  gtk_box_append(GTK_BOX(bar), labeled("AGC", agc_dd));
+
+  GtkWidget *agct = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, -20, 120, 1);
+  gtk_range_set_value(GTK_RANGE(agct), app->agc_gain);       /* before wiring */
+  gtk_widget_set_size_request(agct, 110, -1);
+  gtk_scale_set_draw_value(GTK_SCALE(agct), TRUE);
+  gtk_scale_set_value_pos(GTK_SCALE(agct), GTK_POS_RIGHT);
+  g_signal_connect(agct, "value-changed", G_CALLBACK(on_agct_changed), app);
+  gtk_box_append(GTK_BOX(bar), labeled("AGC-T", agct));
+
   GtkWidget *nrbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_add_css_class(nrbox, "linked");
   const char *nr[] = {"NR","NB","ANF"};
@@ -811,7 +875,8 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
 static void start_radio(App *app) {
   Settings st = { .freq = 14100000, .rate = 192000, .mode = -1,
                   .volume = -10.0, .gain = 8.0, .fps = 25, .latency = 10,
-                  .step = TUNE_STEP_DEFAULT, .zoom = 1.0 };
+                  .step = TUNE_STEP_DEFAULT, .zoom = 1.0, .atten = 0,
+                  .agc = 3, .agc_gain = 80.0, .filter = -1 };
   g_strlcpy(st.ip, "192.168.1.247", sizeof(st.ip));
   if (settings_load(&st)) { printf("settings: loaded %s\n", settings_path()); }
 
@@ -835,6 +900,9 @@ static void start_radio(App *app) {
   app->mode   = mode;
   app->volume = st.volume;
   app->gain   = st.gain;
+  app->atten  = st.atten < 0 ? 0 : (st.atten > 31 ? 31 : st.atten);
+  app->agc    = st.agc < 0 ? 0 : (st.agc > 4 ? 4 : st.agc);
+  app->agc_gain = st.agc_gain < -20.0 ? -20.0 : (st.agc_gain > 120.0 ? 120.0 : st.agc_gain);
   app->fps    = st.fps;
   app->latency = st.latency;
   /* Snap the saved zoom to the nearest octave detent in [1, ZOOM_MAX]. */
@@ -866,16 +934,19 @@ static void start_radio(App *app) {
   /* Audio: WDSP demod → native PipeWire sink. Default filter = mode's preset. */
   int nf, dfl;
   const FilterPreset *ft = mode_filters(mode, &nf, &dfl);
-  app->filter_idx = dfl;
-  app->flo = ft[dfl].low;
-  app->fhi = ft[dfl].high;
+  app->filter_idx = (st.filter >= 0 && st.filter < nf) ? st.filter : dfl;  /* saved or mode default */
+  app->flo = ft[app->filter_idx].low;
+  app->fhi = ft[app->filter_idx].high;
   if (audio_start(48000, 1, app->latency) == 0 && demod_create(0, rate, mode, app->flo, app->fhi, app->volume) == 0) {
     demod_set_gain(app->gain);
+    demod_set_agc(app->agc);            /* saved AGC character + threshold */
+    demod_set_agc_gain(app->agc_gain);
     app->audio_ok = 1;
   } else {
     fprintf(stderr, "audio/demod init failed — panadapter only\n");
   }
 
+  p2_set_attenuation(app->atten);   /* front-end gain: goes out in the first HP packet */
   if (p2_rx_start(dev, app->freq, rate, feed_cb, NULL) != 0) {
     fprintf(stderr, "p2_rx_start failed\n");
     if (app->audio_ok) { demod_destroy(); audio_stop(); }

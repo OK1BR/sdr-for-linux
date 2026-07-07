@@ -31,6 +31,31 @@ static int      d_err;      /* last non-zero fexchange0 error             */
 static int      d_ferr;     /* count of fexchange0 calls with error       */
 static long     d_blocks;   /* fexchange0 calls                           */
 static double   d_gain = 1.0; /* digital master gain after WDSP (SDRFL_GAIN) */
+static int      d_agc_mode = 3;    /* 0=off,1=long,2=slow,3=med,4=fast */
+static double   d_agc_top  = 80.0; /* AGC-T threshold/gain (dB)        */
+
+/* Apply the AGC character (d_agc_mode) + threshold (d_agc_top). Mirrors piHPSDR
+ * rx_set_agc: WDSP mode 5 = AGC on, 0 = off; long/slow/med/fast differ only in
+ * hang/decay. Caller holds d_lock. */
+static void apply_agc(void) {
+  int id = d_id;
+  if (d_agc_mode <= 0) {                 /* off: fixed 0 dB gain */
+    SetRXAAGCFixed(id, 0.0);
+    SetRXAAGCMode(id, 0);
+    return;
+  }
+  SetRXAAGCAttack(id, 2);
+  switch (d_agc_mode) {
+    case 1: SetRXAAGCHang(id, 2000); SetRXAAGCDecay(id, 2000); break;  /* long */
+    case 2: SetRXAAGCHang(id, 1000); SetRXAAGCDecay(id, 500);  break;  /* slow */
+    case 4: SetRXAAGCHang(id, 0);    SetRXAAGCDecay(id, 50);   break;  /* fast */
+    default: SetRXAAGCHang(id, 0);   SetRXAAGCDecay(id, 250);  break;  /* medium */
+  }
+  SetRXAAGCHangThreshold(id, 0);
+  SetRXAAGCSlope(id, 35);
+  SetRXAAGCTop(id, d_agc_top);
+  SetRXAAGCMode(id, 5);
+}
 
 int demod_create(int id, int in_rate, int mode, double flo, double fhi, double volume) {
   d_id = id;
@@ -56,14 +81,7 @@ int demod_create(int id, int in_rate, int mode, double flo, double fhi, double v
   SetRXAPanelSelect(id, 3);              /* use both I and Q */
   SetRXAMode(id, mode);
   RXASetPassband(id, flo, fhi);
-  /* Medium AGC preset (receiver.c:1885-1893). */
-  SetRXAAGCMode(id, 5);
-  SetRXAAGCAttack(id, 2);
-  SetRXAAGCDecay(id, 250);
-  SetRXAAGCHang(id, 0);
-  SetRXAAGCHangThreshold(id, 0);
-  SetRXAAGCSlope(id, 35);
-  SetRXAAGCTop(id, 80.0);
+  apply_agc();                          /* AGC character + threshold (d_agc_mode/d_agc_top) */
   SetRXAPanelGain1(id, pow(10.0, 0.05 * volume));  /* AF gain dB → linear */
   d_ready = 1;
   g_mutex_unlock(&d_lock);
@@ -125,6 +143,22 @@ void demod_set_gain(double gain) {
 void demod_set_volume(double db) {
   g_mutex_lock(&d_lock);
   if (d_ready) { SetRXAPanelGain1(d_id, pow(10.0, 0.05 * db)); }  /* AF gain dB → linear */
+  g_mutex_unlock(&d_lock);
+}
+
+/* AGC character: 0=off, 1=long, 2=slow, 3=medium, 4=fast (thread-safe). */
+void demod_set_agc(int mode) {
+  g_mutex_lock(&d_lock);
+  d_agc_mode = mode;
+  if (d_ready) { apply_agc(); }
+  g_mutex_unlock(&d_lock);
+}
+
+/* AGC-T threshold/gain in dB (thread-safe; live when AGC is on). */
+void demod_set_agc_gain(double db) {
+  g_mutex_lock(&d_lock);
+  d_agc_top = db;
+  if (d_ready && d_agc_mode > 0) { SetRXAAGCTop(d_id, db); }
   g_mutex_unlock(&d_lock);
 }
 

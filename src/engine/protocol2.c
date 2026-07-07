@@ -65,6 +65,7 @@ static volatile int p2running = 0;
 static int       cfg_device;
 static long long cfg_freq;       /* read by the timer thread, written by p2_set_frequency */
 static GMutex    freq_lock;      /* fences cfg_freq across the GUI/timer threads */
+static gint      cfg_atten;      /* ADC0 step attenuator dB (0-31), atomic; HP byte 1443 */
 static int       cfg_sample_rate;
 static int       cfg_ddc;        /* DDC index for this device (0 for G1) */
 static p2_iq_cb  cfg_cb;
@@ -165,6 +166,7 @@ int p2_build_high_priority(unsigned char *buf, int device, long long freq_hz, in
   buf[1433] = (alex0 >> 16) & 0xFF;
   buf[1434] = (alex0 >>  8) & 0xFF;
   buf[1435] = (alex0      ) & 0xFF;
+  buf[1443] = (unsigned char)g_atomic_int_get(&cfg_atten);  /* ADC0 step attenuator (0-31 dB) */
   return HIGH_PRIORITY_LEN;
 }
 
@@ -233,6 +235,14 @@ void p2_set_frequency(long long freq_hz) {
   g_mutex_lock(&freq_lock);
   cfg_freq = freq_hz;
   g_mutex_unlock(&freq_lock);
+}
+
+/* Set the ADC0 step attenuator (0-31 dB); 0 = max sensitivity. Stored atomically;
+ * the keepalive timer pushes it in the next High-Priority packet (≤100 ms). */
+void p2_set_attenuation(int db) {
+  if (db < 0)  { db = 0; }
+  if (db > 31) { db = 31; }
+  g_atomic_int_set(&cfg_atten, db);
 }
 
 /* ---- incoming IQ ---------------------------------------------------------- */

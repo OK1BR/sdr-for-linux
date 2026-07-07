@@ -22,6 +22,10 @@ typedef struct {
   int       latency;   /* audio target latency (ms)                  */
   int       step;      /* scroll-tuning step (Hz)                    */
   double    zoom;      /* panadapter zoom factor (1 = full span)     */
+  int       atten;     /* ADC0 step attenuator (dB, 0-31)            */
+  int       agc;       /* AGC mode 0=off,1=long,2=slow,3=med,4=fast  */
+  double    agc_gain;  /* AGC-T threshold/gain (dB)                  */
+  int       filter;    /* filter-preset index in the mode's table (-1 = default) */
 } Settings;
 
 /*

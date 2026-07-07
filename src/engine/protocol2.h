@@ -48,6 +48,9 @@ void p2_rx_stop(void);
  */
 void p2_set_frequency(long long freq_hz);
 
+/* Set the ADC0 step attenuator in dB (0-31; 0 = max sensitivity). */
+void p2_set_attenuation(int db);
+
 /*
  * Offline self-test hook: build each outgoing packet into `buf` (>= 1444 bytes)
  * using the given tune/rate, WITHOUT any socket, and return its wire length.
