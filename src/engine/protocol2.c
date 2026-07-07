@@ -127,8 +127,8 @@ int p2_build_receive_specific(unsigned char *buf, int device, int sample_rate) {
 /* High-Priority packet — np.c:718-1474, RX subset. Byte[4] is the run bit;
  * bytes[9..12] carry the DDC0 NCO phase (always set — the radio's automatic
  * band filter follows DDC0), and for DDC2-class devices we also write the
- * receiver's own DDC slot. alex0 (bytes 1432..1435) selects the G1's per-band RX
- * BPF relay; all TX/attenuator fields stay 0. */
+ * receiver's own DDC slot. alex0/alex1 (bytes 1432..1435 / 1428..1431) carry the
+ * G1's RX BPF + TX LPF + ANT relay bits (see below); TX fields stay 0. */
 int p2_build_high_priority(unsigned char *buf, int device, long long freq_hz, int run) {
   int ddc = ddc_for_device(device);
   long long freq = freq_hz;          // calibrated_frequency() with cal=0 is identity
@@ -150,10 +150,16 @@ int p2_build_high_priority(unsigned char *buf, int device, long long freq_hz, in
     buf[off + 2] = buf[11];
     buf[off + 3] = buf[12];
   }
-  /* G1 RX band-pass filter (np.c NEW_DEVICE_G1 case; bits from alex.h
-   * ALEX_ANAN7000_RX_*). With Alex 0 enabled (general[59]) the radio still needs
-   * the per-band RX BPF relay chosen from the RX frequency — else the ADC input
-   * path is open and no signal reaches the DDC. alex0 → bytes 1432..1435 (BE). */
+  /* G1 Alex words — mirror piHPSDR np.c high_priority() for NEW_DEVICE_G1 @ RX:
+   *  - RX BPF bit per RX frequency (below);
+   *  - ONE TX LPF bit per band (np.c:1244-1259; G1 keys it to the DUC/TX VFO,
+   *    for us = the RX frequency — same band, same bit);
+   *  - ALEX_TX_ANTENNA_1 (0x01000000): the ANT1 connector relay. Set during RX
+   *    too (np.c:1385-1397) — WITHOUT it no antenna is routed to the RX path
+   *    and the radio hears only relay leakage (~46 dB down; the "deaf RX" bug).
+   *  - alex1 (bytes 1428-1431) mirrors the TX-case word: LPF + ANT1 (we omit
+   *    ALEX_TX_RELAY since we never key the PA).
+   * TODO: make the antenna (ANT1/2/3) a setting; hardcoded ANT1 for now. */
   uint32_t alex0;
   if      (freq <  1500000LL) { alex0 = 0x00001000; }  // BYPASS_BPF
   else if (freq <  2100000LL) { alex0 = 0x00000040; }  // 160 m
@@ -162,6 +168,20 @@ int p2_build_high_priority(unsigned char *buf, int device, long long freq_hz, in
   else if (freq < 22000000LL) { alex0 = 0x00000002; }  // 20/15 m
   else if (freq < 35000000LL) { alex0 = 0x00000004; }  // 12/10 m
   else                        { alex0 = 0x00000008; }  // 6 m + preamp
+  uint32_t lpf;                        /* TX LPF bank bit (np.c:1244, alex.h) */
+  if      (freq > 35600000LL) { lpf = 0x20000000; }    // 6 m bypass LPF
+  else if (freq > 24000000LL) { lpf = 0x40000000; }    // 12/10 m
+  else if (freq > 16500000LL) { lpf = 0x80000000; }    // 17/15 m
+  else if (freq >  8000000LL) { lpf = 0x00100000; }    // 30/20 m
+  else if (freq >  5000000LL) { lpf = 0x00200000; }    // 60/40 m
+  else if (freq >  2500000LL) { lpf = 0x00400000; }    // 80 m
+  else                        { lpf = 0x00800000; }    // 160 m
+  alex0 |= lpf | 0x01000000;           /* + ALEX_TX_ANTENNA_1 = ANT1 relay */
+  uint32_t alex1 = lpf | 0x01000000;   /* TX-case word: LPF + ANT1, no TX_RELAY */
+  buf[1428] = (alex1 >> 24) & 0xFF;
+  buf[1429] = (alex1 >> 16) & 0xFF;
+  buf[1430] = (alex1 >>  8) & 0xFF;
+  buf[1431] = (alex1      ) & 0xFF;
   buf[1432] = (alex0 >> 24) & 0xFF;
   buf[1433] = (alex0 >> 16) & 0xFF;
   buf[1434] = (alex0 >>  8) & 0xFF;
