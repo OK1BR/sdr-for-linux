@@ -90,3 +90,26 @@ Thetis implements the same protections differently; adopt the best of both:
       style), so the radio auto-stops streaming AND transmitting if the host
       dies. Thetis runs [38]=0 and relies on its 750 pkt/s audio stream —
       do NOT copy that model; keep the watchdog armed.
+
+## Firmware-side facts (Saturn p2app + FPGA + proto spec v4.4, audited 2026-07-07)
+
+What the radio itself guarantees when the host stops (run=0, watchdog
+timeout, or p2app exit) — and what it does NOT:
+
+- Standby drops **only** MOX/TXEN → PTT out, open-collector outputs, and the
+  T/R relay (hardware-strobed from TXEN; the client's Alex bit 27 is ignored
+  on Saturn — the FPGA replaces it with its own strobe). Anti-stuck-TX is
+  therefore firmware-guaranteed. Additionally an FPGA hardware watchdog
+  disables TX after 2 s without FIFO activity even if p2app itself hangs.
+- **ANT/BPF/LPF relays are NOT released** — they are external latched shift
+  registers, holding last state until power-off. That is why our run=0
+  shutdown packet carries zeroed Alex words: it parks the RX input
+  disconnected from the antenna (static protection). piHPSDR/Thetis do not
+  do this (antenna stays latched to the ADC after they exit).
+- p2app applies Alex/attenuator fields from a HP packet **even when the run
+  bit is 0** — command packets are state images at all times. But p2app
+  caches Alex words and skips identical rewrites; a parking zero-write is
+  only guaranteed to land if a non-zero word was written earlier in the
+  session (our 100 ms keepalives ensure that).
+- On a crash/SIGKILL (no park packet) the relays stay latched — same
+  behavior as after a piHPSDR crash; only powering the radio off clears it.

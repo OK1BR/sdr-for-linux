@@ -161,25 +161,37 @@ int p2_build_high_priority(unsigned char *buf, int device, long long freq_hz, in
    *    and the radio hears only relay leakage (~46 dB down; the "deaf RX" bug).
    *  - alex1 (bytes 1428-1431) mirrors the TX-case word: LPF + ANT1 (we omit
    *    ALEX_TX_RELAY since we never key the PA).
-   * TODO: make the antenna (ANT1/2/3) a setting; hardcoded ANT1 for now. */
-  uint32_t alex0;
-  if      (freq <  1500000LL) { alex0 = 0x00001000; }  // BYPASS_BPF
-  else if (freq <  2100000LL) { alex0 = 0x00000040; }  // 160 m
-  else if (freq <  5500000LL) { alex0 = 0x00000020; }  // 80/60 m
-  else if (freq < 11000000LL) { alex0 = 0x00000010; }  // 40/30 m
-  else if (freq < 22000000LL) { alex0 = 0x00000002; }  // 20/15 m
-  else if (freq < 35000000LL) { alex0 = 0x00000004; }  // 12/10 m
-  else                        { alex0 = 0x00000008; }  // 6 m + preamp
-  uint32_t lpf;                        /* TX LPF bank bit (np.c:1244, alex.h) */
-  if      (freq > 35600000LL) { lpf = 0x20000000; }    // 6 m bypass LPF
-  else if (freq > 24000000LL) { lpf = 0x40000000; }    // 12/10 m
-  else if (freq > 16500000LL) { lpf = 0x80000000; }    // 17/15 m
-  else if (freq >  8000000LL) { lpf = 0x00100000; }    // 30/20 m
-  else if (freq >  5000000LL) { lpf = 0x00200000; }    // 60/40 m
-  else if (freq >  2500000LL) { lpf = 0x00400000; }    // 80 m
-  else                        { lpf = 0x00800000; }    // 160 m
-  alex0 |= lpf | 0x01000000;           /* + ALEX_TX_ANTENNA_1 = ANT1 relay */
-  uint32_t alex1 = lpf | 0x01000000;   /* TX-case word: LPF + ANT1, no TX_RELAY */
+   * TODO: make the antenna (ANT1/2/3) a setting; hardcoded ANT1 for now.
+   *
+   * run=0 (shutdown) PARKS the RF path instead: both Alex words stay all-zero,
+   * which de-energizes the ANT/BPF/LPF relays and leaves the RX input
+   * disconnected from the antenna (static protection, requested by Richard).
+   * This works because p2app applies the Alex fields even with the run bit
+   * clear (Saturn P2_app/InHighPriority.c:170-208), while the firmware's own
+   * standby only releases PTT/OC + the T/R relay (openHPSDR proto spec v4.4)
+   * — piHPSDR/Thetis leave the antenna latched to the ADC after exit; we
+   * deliberately drop it. (The preceding 100 ms keepalives sent non-zero
+   * words, so p2app's write-if-changed cache never swallows this zero.) */
+  uint32_t alex0 = 0, alex1 = 0;
+  if (run) {
+    if      (freq <  1500000LL) { alex0 = 0x00001000; }  // BYPASS_BPF
+    else if (freq <  2100000LL) { alex0 = 0x00000040; }  // 160 m
+    else if (freq <  5500000LL) { alex0 = 0x00000020; }  // 80/60 m
+    else if (freq < 11000000LL) { alex0 = 0x00000010; }  // 40/30 m
+    else if (freq < 22000000LL) { alex0 = 0x00000002; }  // 20/15 m
+    else if (freq < 35000000LL) { alex0 = 0x00000004; }  // 12/10 m
+    else                        { alex0 = 0x00000008; }  // 6 m + preamp
+    uint32_t lpf;                      /* TX LPF bank bit (np.c:1244, alex.h) */
+    if      (freq > 35600000LL) { lpf = 0x20000000; }    // 6 m bypass LPF
+    else if (freq > 24000000LL) { lpf = 0x40000000; }    // 12/10 m
+    else if (freq > 16500000LL) { lpf = 0x80000000; }    // 17/15 m
+    else if (freq >  8000000LL) { lpf = 0x00100000; }    // 30/20 m
+    else if (freq >  5000000LL) { lpf = 0x00200000; }    // 60/40 m
+    else if (freq >  2500000LL) { lpf = 0x00400000; }    // 80 m
+    else                        { lpf = 0x00800000; }    // 160 m
+    alex0 |= lpf | 0x01000000;         /* + ALEX_TX_ANTENNA_1 = ANT1 relay */
+    alex1  = lpf | 0x01000000;         /* TX-case word: LPF + ANT1, no TX_RELAY */
+  }
   buf[1428] = (alex1 >> 24) & 0xFF;
   buf[1429] = (alex1 >> 16) & 0xFF;
   buf[1430] = (alex1 >>  8) & 0xFF;
@@ -453,7 +465,9 @@ void p2_rx_stop(void) {
   if (timer_tid)    { g_thread_join(timer_tid);    timer_tid = NULL; }
   if (listener_tid) { g_thread_join(listener_tid); listener_tid = NULL; }
 
-  /* Tell the radio to stop streaming (run=0); threads are gone, no race. */
+  /* Stop streaming AND park the RF path: run=0 packets carry zeroed Alex
+   * words, dropping the ANT/BPF/LPF relays so the RX input sits disconnected
+   * from the antenna while no host runs (see p2_build_high_priority). */
   send_high_priority(0);
 
   close(data_socket);
