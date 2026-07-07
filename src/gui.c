@@ -100,6 +100,7 @@ typedef struct {
   double      pending_zoom;  /* slider target; applied ≤1×/frame in tick_cb    */
   int         zoom_dirty;    /* pending_zoom needs applying                    */
   int         filter_idx;    /* selected preset in the current mode's table    */
+  int         filter_by_mode[8]; /* remembered preset per DEMOD_* mode (-1=default)*/
   double      flo, fhi;      /* current passband (Hz, rel. centre) — for drawing */
   GtkWidget  *filter_dd;     /* filter dropdown (repopulated per mode)         */
   gint64      ovl0_until;    /* ADC0-overload badge lit until (monotonic µs)   */
@@ -117,9 +118,11 @@ typedef struct {
   int         show_filter_wf; /* extend filter edges + centre onto the waterfall  */
   int         filter_op;     /* filter-overlay opacity (0-100 %)                  */
   int         select_mode;   /* right-click select cursor: left-click = tune      */
+  int         auto_level;    /* auto-track the noise floor on the dB axis          */
   GtkWidget  *win;           /* top-level window (for size persistence)           */
   int         win_w, win_h, win_max;  /* remembered window geometry               */
   double      band_high[NBANDS], band_low[NBANDS];  /* per-band dB window          */
+  int         band_mode[NBANDS];  /* per-band remembered demod mode (band stacking) */
   int         cur_band;      /* index into BANDS for app->freq (-1 = out of band) */
 } App;
 
@@ -130,6 +133,7 @@ typedef struct {
 #define PAN_RANGE_MAX     160.0    /* max dB window (max zoom-out)          */
 #define PAN_DBM_CEIL       20.0    /* the top of the window can't exceed    */
 #define PAN_DBM_FLOOR    -200.0    /* the bottom of the window can't go below */
+#define AUTO_FLOOR_FRAC    0.12    /* auto-level: keep the noise floor this far up */
 
 /* HF bands [lo,hi] Hz + a config key. The dB window is remembered per band, so
  * the noise-floor placement follows you across bands. Order defines the
@@ -164,6 +168,12 @@ static void band_apply(App *app) {
   if (b >= 0) {
     app->pan_high = app->band_high[b];
     app->pan_low  = app->band_low[b];
+    /* band stacking: restore the mode last used on this band (activating the
+     * grouped toggle drives demod + per-mode filter + stores it back — idempotent). */
+    int m = app->band_mode[b];
+    if (m >= 0 && m != app->mode && app->mode_btns[m]) {
+      gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->mode_btns[m]), TRUE);
+    }
     if (app->area) { gtk_widget_queue_draw(app->area); }
   }
 }
@@ -352,14 +362,15 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
   /* Select-mode filter cursor: the passband footprint (amber) at the pointer,
    * showing where a left-click would place the filter before it recenters. */
   if (app->select_mode && app->fhi > app->flo && app->ptr_x >= 0 && app->ptr_x <= w) {
+    double op = app->filter_op / 100.0;                 /* same transparency as the filter */
     double hz_per_px = (double)app->rate / app->zoom / w;
     double gx0 = floor(app->ptr_x + app->flo / hz_per_px) + 0.5;
     double gx1 = floor(app->ptr_x + app->fhi / hz_per_px) + 0.5;
     double gxc = floor(app->ptr_x) + 0.5;
-    cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, 0.12);   /* ghost fill  */
+    cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, op * 0.22);   /* ghost fill  */
     cairo_rectangle(cr, gx0, 0, gx1 - gx0, ph);
     cairo_fill(cr);
-    cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, 0.55);   /* ghost edges + aim line */
+    cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, op * 0.95);   /* ghost edges + aim line */
     cairo_set_line_width(cr, 1.0);
     cairo_move_to(cr, gx0, 0); cairo_line_to(cr, gx0, ph);
     cairo_move_to(cr, gx1, 0); cairo_line_to(cr, gx1, ph);
@@ -420,14 +431,15 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
    * filter is shown there — same "Filter on waterfall" toggle governs both. */
   if (app->select_mode && app->show_filter_wf && app->fhi > app->flo &&
       app->ptr_x >= 0 && app->ptr_x <= w) {
+    double op = app->filter_op / 100.0;                 /* same transparency as the filter */
     double hz_per_px = (double)app->rate / app->zoom / w;
     double gx0 = floor(app->ptr_x + app->flo / hz_per_px) + 0.5;
     double gx1 = floor(app->ptr_x + app->fhi / hz_per_px) + 0.5;
     double gxc = floor(app->ptr_x) + 0.5;
-    cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, 0.12);   /* ghost fill  */
+    cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, op * 0.22);   /* ghost fill  */
     cairo_rectangle(cr, gx0, ph, gx1 - gx0, h - ph);
     cairo_fill(cr);
-    cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, 0.55);   /* ghost edges + aim line */
+    cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, op * 0.95);   /* ghost edges + aim line */
     cairo_set_line_width(cr, 1.0);
     cairo_move_to(cr, gx0, ph); cairo_line_to(cr, gx0, h);
     cairo_move_to(cr, gx1, ph); cairo_line_to(cr, gx1, h);
@@ -573,6 +585,19 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
         update_volt_label(app);
       }
       tick_radio(app, widget);
+      if (app->auto_level) {
+        /* Track the noise floor on the dB axis, reusing the waterfall's already-
+         * smoothed floor. Keep the current range; place the floor AUTO_FLOOR_FRAC
+         * up from the bottom. */
+        double wl, ws; waterfall_range(app->wf, &wl, &ws); (void)ws;
+        double R = app->pan_high - app->pan_low;
+        if (R < PAN_RANGE_MIN) { R = PAN_RANGE_MIN; }
+        if (R > PAN_RANGE_MAX) { R = PAN_RANGE_MAX; }
+        double lo = wl - AUTO_FLOOR_FRAC * R;
+        if (lo < PAN_DBM_FLOOR)     { lo = PAN_DBM_FLOOR; }
+        if (lo > PAN_DBM_CEIL - R)  { lo = PAN_DBM_CEIL - R; }
+        app->pan_low = lo; app->pan_high = lo + R;
+      }
     } else {
       tick_network(app, widget);
     }
@@ -600,6 +625,13 @@ static void app_to_settings(const App *app, Settings *s) {
   s->nr      = app->nr;
   s->nb      = app->nb;
   s->anf     = app->anf;
+  /* per-mode filter memory → "modeid=idx;..." */
+  char *mp = s->mode_filt; size_t mrem = sizeof(s->mode_filt); mp[0] = '\0';
+  for (int i = 0; i < 8; i++) {
+    int n = snprintf(mp, mrem, "%s%d=%d", i ? ";" : "", i, app->filter_by_mode[i]);
+    if (n < 0 || (size_t)n >= mrem) { break; }
+    mp += n; mrem -= (size_t)n;
+  }
   s->pan_high = app->pan_high;
   s->pan_low  = app->pan_low;
   s->db_grid    = app->show_db_grid;
@@ -608,16 +640,18 @@ static void app_to_settings(const App *app, Settings *s) {
   s->freq_scale = app->show_freq_scale;
   s->filter_wf  = app->show_filter_wf;
   s->filter_op  = app->filter_op;
+  s->auto_level = app->auto_level;
   s->win_w   = app->win_w;
   s->win_h   = app->win_h;
   s->win_max = app->win_max;
-  /* per-band dB windows → "key=hi/lo;key=hi/lo;..." (locale-independent '.') */
+  /* per-band state → "key=hi/lo/mode;..." (locale-independent '.') */
   char *bp = s->band_levels; size_t brem = sizeof(s->band_levels); bp[0] = '\0';
   for (int i = 0; i < NBANDS; i++) {
     char hbuf[G_ASCII_DTOSTR_BUF_SIZE], lbuf[G_ASCII_DTOSTR_BUF_SIZE];
     g_ascii_formatd(hbuf, sizeof hbuf, "%.1f", app->band_high[i]);
     g_ascii_formatd(lbuf, sizeof lbuf, "%.1f", app->band_low[i]);
-    int n = snprintf(bp, brem, "%s%s=%s/%s", i ? ";" : "", BANDS[i].key, hbuf, lbuf);
+    int n = snprintf(bp, brem, "%s%s=%s/%s/%d", i ? ";" : "", BANDS[i].key,
+                     hbuf, lbuf, app->band_mode[i]);
     if (n < 0 || (size_t)n >= brem) { break; }
     bp += n; brem -= (size_t)n;
   }
@@ -744,6 +778,7 @@ static void on_drag_update(GtkGestureDrag *g, double off_x, double off_y, gpoint
   if (!app->radio_mode) { return; }
 
   if (app->drag_gutter) {                 /* vertical: slide the dB window */
+    if (app->auto_level) { return; }      /* floor is automatic — no manual pan */
     double ph = pan_height_px(app);
     if (ph < 1.0) { return; }
     double range = app->drag_base_high - app->drag_base_low;
@@ -849,6 +884,7 @@ static void on_filter_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data) {
   guint idx = gtk_drop_down_get_selected(dd);
   if ((int)idx >= nf) { return; }
   app->filter_idx = (int)idx;
+  app->filter_by_mode[app->mode] = (int)idx;   /* remember it for this mode */
   app->flo = ft[idx].low;
   app->fhi = ft[idx].high;
   demod_set_passband(app->flo, app->fhi);
@@ -877,10 +913,15 @@ static void on_mode_toggled(GtkToggleButton *b, gpointer data) {
   int mode = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "mode"));
   int nf, dfl;
   const FilterPreset *ft = mode_filters(mode, &nf, &dfl);
-  app->mode       = mode;
-  app->filter_idx = dfl;                 /* mode's default filter */
-  app->flo = ft[dfl].low;
-  app->fhi = ft[dfl].high;
+  app->mode = mode;
+  if (app->cur_band >= 0) { app->band_mode[app->cur_band] = mode; }   /* band stacking */
+  /* restore this mode's last-used filter (fall back to its default) */
+  int fidx = app->filter_by_mode[mode];
+  if (fidx < 0 || fidx >= nf) { fidx = dfl; }
+  app->filter_idx = fidx;
+  app->filter_by_mode[mode] = fidx;
+  app->flo = ft[fidx].low;
+  app->fhi = ft[fidx].high;
   demod_set_mode(mode, app->flo, app->fhi);
   populate_filter_dd(app);               /* refill dropdown for the new mode */
   schedule_save(app);
@@ -1248,6 +1289,11 @@ static void on_pref_filter_op(GtkRange *r, gpointer data) {
   app->filter_op = (int)gtk_range_get_value(r);
   schedule_save(app); gtk_widget_queue_draw(app->area);
 }
+static void on_pref_auto_level(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->auto_level = adw_switch_row_get_active(r);
+  schedule_save(app); gtk_widget_queue_draw(app->area);
+}
 static void on_pref_rate(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   (void)ps;
   App *app = (App *)data;
@@ -1332,6 +1378,8 @@ static AdwDialog *build_prefs(App *app) {
       -30, 20, app->pan_high, G_CALLBACK(on_pref_pan_high), app));
   adw_preferences_group_add(g, pref_spin("Scale bottom", "dBm · scroll the scale to zoom",
       -200, -40, app->pan_low, G_CALLBACK(on_pref_pan_low), app));
+  adw_preferences_group_add(g, pref_switch("Auto level", "Track the noise floor (like the waterfall)",
+      app->auto_level, G_CALLBACK(on_pref_auto_level), app));
   adw_preferences_page_add(p, g);
 
   /* Grid & scales — each toggles independently. */
@@ -1521,20 +1569,35 @@ static void start_radio(App *app) {
   }
   /* Per-band dB windows: default every band to the global window, then apply the
    * saved "key=hi/lo;..." overrides, and load the band app->freq is in. */
-  for (int i = 0; i < NBANDS; i++) { app->band_high[i] = app->pan_high; app->band_low[i] = app->pan_low; }
+  for (int i = 0; i < NBANDS; i++) {
+    app->band_high[i] = app->pan_high;
+    app->band_low[i]  = app->pan_low;
+    app->band_mode[i] = (BANDS[i].lo < 10000000) ? DEMOD_LSB : DEMOD_USB;  /* default */
+  }
   char blbuf[512];
   g_strlcpy(blbuf, st.band_levels, sizeof blbuf);
   char *blsv = NULL;
   for (char *tok = strtok_r(blbuf, ";", &blsv); tok; tok = strtok_r(NULL, ";", &blsv)) {
     char *eq = strchr(tok, '=');
-    char *sl = eq ? strchr(eq + 1, '/') : NULL;
-    if (!eq || !sl) { continue; }
-    *eq = '\0'; *sl = '\0';
-    double hi = g_ascii_strtod(eq + 1, NULL);   /* locale-independent */
-    double lo = g_ascii_strtod(sl + 1, NULL);
+    if (!eq) { continue; }
+    *eq = '\0';
+    char *rest = eq + 1;                       /* "hi/lo/mode" (mode optional) */
+    char *s1 = strchr(rest, '/');
+    if (!s1) { continue; }
+    *s1 = '\0';
+    char *lostr = s1 + 1;
+    char *s2 = strchr(lostr, '/');
+    int md = -1;
+    if (s2) { *s2 = '\0'; md = atoi(s2 + 1); }
+    double hi = g_ascii_strtod(rest,  NULL);   /* locale-independent */
+    double lo = g_ascii_strtod(lostr, NULL);
     if (hi > lo) {
       for (int i = 0; i < NBANDS; i++) {
-        if (strcmp(tok, BANDS[i].key) == 0) { app->band_high[i] = hi; app->band_low[i] = lo; break; }
+        if (strcmp(tok, BANDS[i].key) == 0) {
+          app->band_high[i] = hi; app->band_low[i] = lo;
+          if (md >= 0 && md < 8) { app->band_mode[i] = md; }
+          break;
+        }
       }
     }
   }
@@ -1542,6 +1605,7 @@ static void start_radio(App *app) {
   if (app->cur_band >= 0) {
     app->pan_high = app->band_high[app->cur_band];
     app->pan_low  = app->band_low[app->cur_band];
+    app->band_mode[app->cur_band] = app->mode;   /* current band matches startup mode */
   }
   app->ptr_x = 1e9;   /* until the pointer moves, wheel = tune (not gutter zoom) */
   app->show_db_grid    = st.db_grid    ? 1 : 0;
@@ -1550,6 +1614,7 @@ static void start_radio(App *app) {
   app->show_freq_scale = st.freq_scale ? 1 : 0;
   app->show_filter_wf  = st.filter_wf  ? 1 : 0;
   app->filter_op = (st.filter_op < 0) ? 0 : (st.filter_op > 100 ? 100 : st.filter_op);
+  app->auto_level = st.auto_level ? 1 : 0;
   app->win_w   = st.win_w   > 0 ? st.win_w : 1320;
   app->win_h   = st.win_h   > 0 ? st.win_h : 720;
   app->win_max = st.win_max ? 1 : 0;
@@ -1582,6 +1647,21 @@ static void start_radio(App *app) {
   int nf, dfl;
   const FilterPreset *ft = mode_filters(mode, &nf, &dfl);
   app->filter_idx = (st.filter >= 0 && st.filter < nf) ? st.filter : dfl;  /* saved or mode default */
+  /* Per-mode filter memory: seed every mode with its default, the current mode
+   * with the loaded filter, then apply the saved "id=idx;..." overrides. */
+  for (int i = 0; i < 8; i++) { int nn, dd; mode_filters(i, &nn, &dd); app->filter_by_mode[i] = dd; }
+  app->filter_by_mode[mode] = app->filter_idx;
+  char mfbuf[128];
+  g_strlcpy(mfbuf, st.mode_filt, sizeof mfbuf);
+  char *mfsv = NULL;
+  for (char *tok = strtok_r(mfbuf, ";", &mfsv); tok; tok = strtok_r(NULL, ";", &mfsv)) {
+    int mid, fi;
+    if (sscanf(tok, "%d=%d", &mid, &fi) == 2 && mid >= 0 && mid < 8) {
+      int nn, dd; mode_filters(mid, &nn, &dd);
+      if (fi >= 0 && fi < nn) { app->filter_by_mode[mid] = fi; }
+    }
+  }
+  app->filter_idx = app->filter_by_mode[mode];
   app->flo = ft[app->filter_idx].low;
   app->fhi = ft[app->filter_idx].high;
   if (audio_start(48000, 1, app->latency) == 0 && demod_create(0, rate, mode, app->flo, app->fhi, app->volume) == 0) {

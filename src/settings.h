@@ -30,6 +30,7 @@ typedef struct {
   int       freq_scale;/* show frequency scale labels (top)          */
   int       filter_wf; /* draw filter + centre on the waterfall too  */
   int       filter_op; /* filter-overlay opacity (0-100 %)           */
+  int       auto_level;/* auto-track the noise floor on the dB axis   */
   int       win_w;     /* window width (px, 0 = default)             */
   int       win_h;     /* window height (px, 0 = default)            */
   int       win_max;   /* window maximized                          */
@@ -39,6 +40,7 @@ typedef struct {
   double    agc_gain;  /* AGC-T threshold/gain (dB)                  */
   int       filter;    /* filter-preset index in the mode's table (-1 = default) */
   int       nr, nb, anf; /* noise reduction / blanker / auto-notch on-off        */
+  char      mode_filt[128]; /* per-mode filter memory, "modeid=idx;..."          */
 } Settings;
 
 /*

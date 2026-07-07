@@ -69,6 +69,8 @@ int settings_load(Settings *s) {
       s->filter_wf = g_key_file_get_integer(kf, GROUP_DISPLAY, "filter_wf", NULL);
     if (g_key_file_has_key(kf, GROUP_DISPLAY, "filter_op", NULL))
       s->filter_op = g_key_file_get_integer(kf, GROUP_DISPLAY, "filter_op", NULL);
+    if (g_key_file_has_key(kf, GROUP_DISPLAY, "auto_level", NULL))
+      s->auto_level = g_key_file_get_integer(kf, GROUP_DISPLAY, "auto_level", NULL);
     if (g_key_file_has_key(kf, GROUP_DISPLAY, "band_levels", NULL)) {
       char *bl = g_key_file_get_string(kf, GROUP_DISPLAY, "band_levels", NULL);
       if (bl) { g_strlcpy(s->band_levels, bl, sizeof(s->band_levels)); g_free(bl); }
@@ -87,6 +89,10 @@ int settings_load(Settings *s) {
       s->nb = g_key_file_get_integer(kf, GROUP_RX, "nb", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "anf", NULL))
       s->anf = g_key_file_get_integer(kf, GROUP_RX, "anf", NULL);
+    if (g_key_file_has_key(kf, GROUP_RX, "mode_filters", NULL)) {
+      char *mf = g_key_file_get_string(kf, GROUP_RX, "mode_filters", NULL);
+      if (mf) { g_strlcpy(s->mode_filt, mf, sizeof(s->mode_filt)); g_free(mf); }
+    }
     if (g_key_file_has_key(kf, GROUP_WINDOW, "width", NULL))
       s->win_w = g_key_file_get_integer(kf, GROUP_WINDOW, "width", NULL);
     if (g_key_file_has_key(kf, GROUP_WINDOW, "height", NULL))
@@ -119,6 +125,7 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_RX,    "nr",      s->nr);
   g_key_file_set_integer(kf, GROUP_RX,    "nb",      s->nb);
   g_key_file_set_integer(kf, GROUP_RX,    "anf",     s->anf);
+  g_key_file_set_string (kf, GROUP_RX,    "mode_filters", s->mode_filt);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "fps",   s->fps);
   g_key_file_set_double (kf, GROUP_DISPLAY, "zoom",  s->zoom);
   g_key_file_set_double (kf, GROUP_DISPLAY, "pan_high", s->pan_high);
@@ -129,6 +136,7 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_DISPLAY, "freq_scale", s->freq_scale);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "filter_wf",  s->filter_wf);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "filter_op",  s->filter_op);
+  g_key_file_set_integer(kf, GROUP_DISPLAY, "auto_level", s->auto_level);
   g_key_file_set_string (kf, GROUP_DISPLAY, "band_levels", s->band_levels);
   g_key_file_set_integer(kf, GROUP_WINDOW, "width",     s->win_w);
   g_key_file_set_integer(kf, GROUP_WINDOW, "height",    s->win_h);
