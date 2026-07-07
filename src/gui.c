@@ -990,6 +990,11 @@ static void start_radio(App *app) {
   p2_discovery();
   if (devices <= 0) { fprintf(stderr, "no radio found\n"); return; }
   const DISCOVERED *dev = &discovered[selected_device];
+  if (dev->status == 3) {   /* P2 discovery reply byte[4]: 2 = idle, 3 = streaming */
+    fprintf(stderr, "radio at %s is IN USE by another program (piHPSDR?) — close it first\n",
+            inet_ntoa(dev->network.address.sin_addr));
+    return;
+  }
   printf("Using %s at %s — RX %lld Hz @ %d Hz\n", dev->name,
          inet_ntoa(dev->network.address.sin_addr), app->freq, rate);
 

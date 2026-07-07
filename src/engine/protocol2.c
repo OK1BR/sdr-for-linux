@@ -89,8 +89,10 @@ static int ddc_for_device(int device) {
 
 /* ---- outgoing packet builders (no socket; hexdump-testable) -------------- */
 
-/* General packet — np.c:662-716. RX default: enable phase-word mode + HW timer;
- * PA[58] and ALEX[59] stay 0 (RX needs neither for a bare IQ stream). */
+/* General packet — np.c:662-716. Phase-word mode + HW timer + Alex-0 enable
+ * ([59]=0x01 — G1 has one Alex; ORION2/SATURN would need 0x03). PA[58] stays 0
+ * on purpose: one of the three no-TX guarantees (docs/TX-SAFETY.md); piHPSDR
+ * sends 1 here when its "PA enable" setting is on, with no effect on RX. */
 int p2_build_general(unsigned char *buf) {
   memset(buf, 0, GENERAL_LEN);
   buf[0] = (general_sequence >> 24) & 0xFF;
@@ -303,16 +305,24 @@ static gpointer listener_thread(gpointer data) {
   socklen_t length = sizeof(addr);
   unsigned char buffer[NET_BUFFER_SIZE];
 
+  int idle_ticks = 0;   /* consecutive 100 ms RCVTIMEO expiries (Thetis-style LOS) */
   while (p2running) {
     int bytesread = recvfrom(data_socket, buffer, NET_BUFFER_SIZE, 0,
                              (struct sockaddr *)&addr, &length);
     if (!p2running) { break; }
     if (bytesread < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) { continue; }  // RCVTIMEO tick
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {              // RCVTIMEO tick
+        if (++idle_ticks == 30) {
+          t_print("p2: no packets from the radio for 3 s — link lost?\n");
+        }
+        continue;
+      }
       t_perror("p2 recvfrom");
       p2running = 0;
       break;
     }
+    if (idle_ticks >= 30) { t_print("p2: radio traffic resumed\n"); }
+    idle_ticks = 0;
 
     int sourceport = ntohs(addr.sin_port);
     if (sourceport >= RX_IQ_TO_HOST_PORT_0 && sourceport <= RX_IQ_TO_HOST_PORT_0 + 7) {
@@ -334,8 +344,10 @@ static gpointer listener_thread(gpointer data) {
   return NULL;
 }
 
-/* Keepalive timer — np.c:2953-3007, TX re-sends dropped. HP every 100 ms,
- * RX-spec every 200 ms, General every 800 ms. */
+/* Keepalive timer — np.c:2953-3007, same cadence as piHPSDR: HP every 100 ms,
+ * RX-spec + TX-spec alternating every 200 ms, General every 800 ms. The
+ * periodic (zeroed) TX-specific keeps the radio's TX registers in the known
+ * TX-off state even across dropped packets. */
 static gpointer timer_thread(gpointer data) {
   (void)data;
   int cycling = 0;
@@ -344,6 +356,7 @@ static gpointer timer_thread(gpointer data) {
     cycling++;
     switch (cycling) {
     case 1: case 3: case 5: case 7:
+      send_transmit_specific();
       send_high_priority(1);
       break;
     case 2: case 4: case 6:
