@@ -66,6 +66,7 @@ typedef struct {
   int         atten;        /* ADC0 step attenuator (dB, 0-31)                 */
   int         agc;          /* AGC mode 0=off,1=long,2=slow,3=med,4=fast       */
   double      agc_gain;     /* AGC-T threshold/gain (dB)                       */
+  int         nr, nb, anf;  /* noise reduction / blanker / auto-notch on-off   */
   int         fps;          /* panadapter frame rate                          */
   int         latency;      /* audio target latency (ms)                      */
   char        radio_ip[64]; /* resolved radio IP (for persistence)            */
@@ -329,6 +330,9 @@ static void app_to_settings(const App *app, Settings *s) {
   s->agc     = app->agc;
   s->agc_gain = app->agc_gain;
   s->filter  = app->filter_idx;
+  s->nr      = app->nr;
+  s->nb      = app->nb;
+  s->anf     = app->anf;
 }
 
 static gboolean do_save_cb(gpointer data) {
@@ -503,6 +507,26 @@ static void on_agct_changed(GtkRange *r, gpointer data) {
   schedule_save(app);
 }
 
+/* Noise reduction / blanker / auto-notch toggles. */
+static void on_nr_toggled(GtkToggleButton *b, gpointer data) {
+  App *app = (App *)data;
+  app->nr = gtk_toggle_button_get_active(b);
+  demod_set_nr(app->nr);
+  schedule_save(app);
+}
+static void on_nb_toggled(GtkToggleButton *b, gpointer data) {
+  App *app = (App *)data;
+  app->nb = gtk_toggle_button_get_active(b);
+  demod_set_nb(app->nb);
+  schedule_save(app);
+}
+static void on_anf_toggled(GtkToggleButton *b, gpointer data) {
+  App *app = (App *)data;
+  app->anf = gtk_toggle_button_get_active(b);
+  demod_set_anf(app->anf);
+  schedule_save(app);
+}
+
 static void on_band_clicked(GtkButton *b, gpointer data) {
   App *app = (App *)data;
   long long f = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "freq"));
@@ -584,8 +608,18 @@ static GtkWidget *build_controls(App *app) {
 
   GtkWidget *nrbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_add_css_class(nrbox, "linked");
-  const char *nr[] = {"NR","NB","ANF"};
-  for (int i = 0; i < 3; i++) { gtk_box_append(GTK_BOX(nrbox), gtk_toggle_button_new_with_label(nr[i])); }
+  GtkWidget *nr_b  = gtk_toggle_button_new_with_label("NR");
+  GtkWidget *nb_b  = gtk_toggle_button_new_with_label("NB");
+  GtkWidget *anf_b = gtk_toggle_button_new_with_label("ANF");
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(nr_b),  app->nr);   /* before wiring */
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(nb_b),  app->nb);
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(anf_b), app->anf);
+  g_signal_connect(nr_b,  "toggled", G_CALLBACK(on_nr_toggled),  app);
+  g_signal_connect(nb_b,  "toggled", G_CALLBACK(on_nb_toggled),  app);
+  g_signal_connect(anf_b, "toggled", G_CALLBACK(on_anf_toggled), app);
+  gtk_box_append(GTK_BOX(nrbox), nr_b);
+  gtk_box_append(GTK_BOX(nrbox), nb_b);
+  gtk_box_append(GTK_BOX(nrbox), anf_b);
   gtk_box_append(GTK_BOX(bar), nrbox);
 
   /* AF volume — live. */
@@ -903,6 +937,9 @@ static void start_radio(App *app) {
   app->atten  = st.atten < 0 ? 0 : (st.atten > 31 ? 31 : st.atten);
   app->agc    = st.agc < 0 ? 0 : (st.agc > 4 ? 4 : st.agc);
   app->agc_gain = st.agc_gain < -20.0 ? -20.0 : (st.agc_gain > 120.0 ? 120.0 : st.agc_gain);
+  app->nr     = st.nr ? 1 : 0;
+  app->nb     = st.nb ? 1 : 0;
+  app->anf    = st.anf ? 1 : 0;
   app->fps    = st.fps;
   app->latency = st.latency;
   /* Snap the saved zoom to the nearest octave detent in [1, ZOOM_MAX]. */
@@ -941,6 +978,9 @@ static void start_radio(App *app) {
     demod_set_gain(app->gain);
     demod_set_agc(app->agc);            /* saved AGC character + threshold */
     demod_set_agc_gain(app->agc_gain);
+    demod_set_nr(app->nr);              /* saved NR/NB/ANF */
+    demod_set_nb(app->nb);
+    demod_set_anf(app->anf);
     app->audio_ok = 1;
   } else {
     fprintf(stderr, "audio/demod init failed — panadapter only\n");

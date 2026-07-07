@@ -33,6 +33,7 @@ static long     d_blocks;   /* fexchange0 calls                           */
 static double   d_gain = 1.0; /* digital master gain after WDSP (SDRFL_GAIN) */
 static int      d_agc_mode = 3;    /* 0=off,1=long,2=slow,3=med,4=fast */
 static double   d_agc_top  = 80.0; /* AGC-T threshold/gain (dB)        */
+static int      d_nr, d_nb, d_anf; /* NR (ANR) / NB (ANB) / ANF on-off */
 
 /* Apply the AGC character (d_agc_mode) + threshold (d_agc_top). Mirrors piHPSDR
  * rx_set_agc: WDSP mode 5 = AGC on, 0 = off; long/slow/med/fast differ only in
@@ -57,6 +58,28 @@ static void apply_agc(void) {
   SetRXAAGCMode(id, 5);
 }
 
+/* One-time NR/NB/ANF parameter setup + apply the on/off flags (piHPSDR
+ * rx_set_noise defaults: ANB slew/lead/lag 1e-5 s, thresh 4.95; ANR
+ * 64/16/16e-4/10e-7; ANF 64 taps, 16 delay, -80 dB gain, -20 dB leakage;
+ * position 1 = after AGC). NR = WDSP ANR, NB = ANB. Caller holds d_lock. */
+static void setup_noise(void) {
+  int id = d_id;
+  SetEXTANBTau(id, 0.00001);
+  SetEXTANBHangtime(id, 0.00001);
+  SetEXTANBAdvtime(id, 0.00001);
+  SetEXTANBThreshold(id, 4.95);
+  SetRXAANRVals(id, 64, 16, 16e-4, 10e-7);
+  SetRXAANRPosition(id, 1);
+  SetRXAANFTaps(id, 64);
+  SetRXAANFDelay(id, 16);
+  SetRXAANFGain(id, pow(10.0, 0.05 * -80.0));
+  SetRXAANFLeakage(id, pow(10.0, 0.05 * -20.0));
+  SetRXAANFPosition(id, 1);
+  SetEXTANBRun(id, d_nb);
+  SetRXAANRRun(id, d_nr);
+  SetRXAANFRun(id, d_anf);
+}
+
 int demod_create(int id, int in_rate, int mode, double flo, double fhi, double volume) {
   d_id = id;
   int scale = in_rate / AUDIO_RATE;
@@ -76,12 +99,18 @@ int demod_create(int id, int in_rate, int mode, double flo, double fhi, double v
   /* Channel opens already running (state=1). */
   OpenChannel(id, D_BUFSIZE, D_DSPSIZE, in_rate, AUDIO_RATE, AUDIO_RATE,
               0, 1, 0.010, 0.025, 0.0, 0.010, 1);
+  /* External noise blanker (ANB) lives OUTSIDE the RXA channel: it must be
+   * created explicitly (else the SetEXTANB setters and xanbEXT dereference a
+   * null struct and crash) and run on the IQ in the feed loop. Params per
+   * piHPSDR receiver.c:1014. */
+  create_anbEXT(id, 1, D_BUFSIZE, in_rate, 0.0001, 0.0001, 0.0001, 0.05, 20.0);
   SetRXABandpassRun(id, 1);
   SetRXAPanelRun(id, 1);
   SetRXAPanelSelect(id, 3);              /* use both I and Q */
   SetRXAMode(id, mode);
   RXASetPassband(id, flo, fhi);
   apply_agc();                          /* AGC character + threshold (d_agc_mode/d_agc_top) */
+  setup_noise();                        /* NR/NB/ANF params + on-off flags */
   SetRXAPanelGain1(id, pow(10.0, 0.05 * volume));  /* AF gain dB → linear */
   d_ready = 1;
   g_mutex_unlock(&d_lock);
@@ -98,6 +127,7 @@ void demod_feed(const double *iq, int n_pairs) {
       d_fill++;
       if (d_fill >= D_BUFSIZE) {
         int err = 0;
+        if (d_nb) { xanbEXT(d_id, d_iq, d_iq); }   /* external noise blanker (in-place) */
         fexchange0(d_id, d_iq, d_audio, &err);   /* blocks on WDSP compute (bfo=1) */
         d_blocks++;
         if (err != 0) { d_err = err; d_ferr++; }
@@ -162,6 +192,26 @@ void demod_set_agc_gain(double db) {
   g_mutex_unlock(&d_lock);
 }
 
+/* Noise reduction (ANR) / noise blanker (ANB) / auto-notch — on-off (thread-safe). */
+void demod_set_nr(int on) {
+  g_mutex_lock(&d_lock);
+  d_nr = on ? 1 : 0;
+  if (d_ready) { SetRXAANRRun(d_id, d_nr); }
+  g_mutex_unlock(&d_lock);
+}
+void demod_set_nb(int on) {
+  g_mutex_lock(&d_lock);
+  d_nb = on ? 1 : 0;
+  if (d_ready) { SetEXTANBRun(d_id, d_nb); }
+  g_mutex_unlock(&d_lock);
+}
+void demod_set_anf(int on) {
+  g_mutex_lock(&d_lock);
+  d_anf = on ? 1 : 0;
+  if (d_ready) { SetRXAANFRun(d_id, d_anf); }
+  g_mutex_unlock(&d_lock);
+}
+
 void demod_set_passband(double flo, double fhi) {
   g_mutex_lock(&d_lock);
   if (d_ready) { RXASetPassband(d_id, flo, fhi); }
@@ -172,6 +222,7 @@ void demod_destroy(void) {
   g_mutex_lock(&d_lock);
   if (d_ready) {
     CloseChannel(d_id);
+    destroy_anbEXT(d_id);       /* free the external noise blanker */
     d_ready = 0;
   }
   g_free(d_iq);    d_iq = NULL;

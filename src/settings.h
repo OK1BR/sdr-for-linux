@@ -26,6 +26,7 @@ typedef struct {
   int       agc;       /* AGC mode 0=off,1=long,2=slow,3=med,4=fast  */
   double    agc_gain;  /* AGC-T threshold/gain (dB)                  */
   int       filter;    /* filter-preset index in the mode's table (-1 = default) */
+  int       nr, nb, anf; /* noise reduction / blanker / auto-notch on-off        */
 } Settings;
 
 /*

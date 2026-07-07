@@ -60,6 +60,12 @@ int settings_load(Settings *s) {
       s->agc_gain = g_key_file_get_double(kf, GROUP_RX, "agc_gain", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "filter", NULL))
       s->filter = g_key_file_get_integer(kf, GROUP_RX, "filter", NULL);
+    if (g_key_file_has_key(kf, GROUP_RX, "nr", NULL))
+      s->nr = g_key_file_get_integer(kf, GROUP_RX, "nr", NULL);
+    if (g_key_file_has_key(kf, GROUP_RX, "nb", NULL))
+      s->nb = g_key_file_get_integer(kf, GROUP_RX, "nb", NULL);
+    if (g_key_file_has_key(kf, GROUP_RX, "anf", NULL))
+      s->anf = g_key_file_get_integer(kf, GROUP_RX, "anf", NULL);
   }
   g_key_file_free(kf);
   return ok;
@@ -83,6 +89,9 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_RX,    "agc",     s->agc);
   g_key_file_set_double (kf, GROUP_RX,    "agc_gain", s->agc_gain);
   g_key_file_set_integer(kf, GROUP_RX,    "filter",  s->filter);
+  g_key_file_set_integer(kf, GROUP_RX,    "nr",      s->nr);
+  g_key_file_set_integer(kf, GROUP_RX,    "nb",      s->nb);
+  g_key_file_set_integer(kf, GROUP_RX,    "anf",     s->anf);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "fps",   s->fps);
   g_key_file_set_double (kf, GROUP_DISPLAY, "zoom",  s->zoom);
 
