@@ -71,6 +71,10 @@ int settings_load(Settings *s) {
       s->filter_op = g_key_file_get_integer(kf, GROUP_DISPLAY, "filter_op", NULL);
     if (g_key_file_has_key(kf, GROUP_DISPLAY, "auto_level", NULL))
       s->auto_level = g_key_file_get_integer(kf, GROUP_DISPLAY, "auto_level", NULL);
+    if (g_key_file_has_key(kf, GROUP_DISPLAY, "avg_spec", NULL))
+      s->avg_spec = g_key_file_get_integer(kf, GROUP_DISPLAY, "avg_spec", NULL);
+    if (g_key_file_has_key(kf, GROUP_DISPLAY, "avg_wf", NULL))
+      s->avg_wf = g_key_file_get_integer(kf, GROUP_DISPLAY, "avg_wf", NULL);
     if (g_key_file_has_key(kf, GROUP_DISPLAY, "band_levels", NULL)) {
       char *bl = g_key_file_get_string(kf, GROUP_DISPLAY, "band_levels", NULL);
       if (bl) { g_strlcpy(s->band_levels, bl, sizeof(s->band_levels)); g_free(bl); }
@@ -142,6 +146,8 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_DISPLAY, "filter_wf",  s->filter_wf);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "filter_op",  s->filter_op);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "auto_level", s->auto_level);
+  g_key_file_set_integer(kf, GROUP_DISPLAY, "avg_spec",   s->avg_spec);
+  g_key_file_set_integer(kf, GROUP_DISPLAY, "avg_wf",     s->avg_wf);
   g_key_file_set_string (kf, GROUP_DISPLAY, "band_levels", s->band_levels);
   g_key_file_set_integer(kf, GROUP_WINDOW, "width",     s->win_w);
   g_key_file_set_integer(kf, GROUP_WINDOW, "height",    s->win_h);

@@ -62,7 +62,7 @@ static void apply_analyzer(double fsc) {
 /* Detector + averaging, per receiver.c:1941-2052 (LOG_RECURSIVE, PEAK); depends
  * on a_fps. The NONE-then-mode dance avoids a switch artifact (:1978-1980). */
 static void apply_averaging(void) {
-  double t    = 0.120;                                     /* 120 ms avg time */
+  double t    = 0.030;   /* light base only — trace & waterfall each add their own GUI EMA */
   int    navg = (int)fmax(2.0, fmin(60.0, (double)a_fps * t));
   double avb  = exp(-1.0 / ((double)a_fps * t));
   SetDisplayDetectorMode(a_id, 0, DETECTOR_MODE_PEAK);

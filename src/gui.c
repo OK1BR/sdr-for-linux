@@ -89,6 +89,10 @@ typedef struct {
   /* Time-averaged trace, held in dBm (so the renderer is source-agnostic). */
   float       ema[SPECTRUM_DATA_SIZE];
   int         ema_w;
+  float       wf_ema[SPECTRUM_DATA_SIZE];   /* separate averaging for the waterfall */
+  int         wf_ema_w;
+  int         avg_spec_ms;   /* spectrum-trace averaging time constant (ms)        */
+  int         avg_wf_ms;     /* waterfall averaging time constant (ms)             */
 
   Waterfall  *wf;
   GtkWidget  *area;
@@ -207,7 +211,18 @@ static void band_apply(App *app) {
 #define ADC_OVL_HOLD_US 700000
 
 #define PANADAPTER_FRACTION 0.5
-#define EMA_FACTOR 0.55f
+#define EMA_FACTOR 0.55f   /* network-path trace EMA (fixed) */
+
+/* EMA weight for a time constant `ms` at `fps` frames/s (log-domain, on dBm).
+ * ms <= 0 → no averaging (weight 1). */
+static float ema_factor_ms(int ms, int fps) {
+  if (ms <= 0) { return 1.0f; }
+  double dt = 1000.0 / (fps > 0 ? fps : 25);
+  double f = 1.0 - exp(-dt / (double)ms);
+  if (f > 1.0) { f = 1.0; }
+  if (f < 0.01) { f = 0.01; }
+  return (float)f;
+}
 
 /* Scroll-tuning steps (Hz): the frequency snaps to a multiple of the active one.
  * Labels are NULL-terminated for gtk_drop_down_new_from_strings(). */
@@ -564,8 +579,9 @@ static void tick_radio(App *app, GtkWidget *widget) {
   } else {
     /* Analyzer uses 1 Hz PSD norm → floor is zoom-invariant; no compensation. */
     double so = app->soffset_locked ? app->soffset : 0.0;
+    float fs = ema_factor_ms(app->avg_spec_ms, app->fps);   /* spectrum averaging */
     for (int i = 0; i < n; i++) {
-      app->ema[i] += EMA_FACTOR * ((float)(raw[i] + so) - app->ema[i]);
+      app->ema[i] += fs * ((float)(raw[i] + so) - app->ema[i]);
     }
   }
   app->cal_frames++;
@@ -614,6 +630,16 @@ static void tick_radio(App *app, GtkWidget *widget) {
     }
   }
 
+  /* Waterfall has its OWN averaging (separate time constant), independent of the
+   * trace — on the raw analyzer dBm. */
+  if (app->wf_ema_w != n) {
+    memcpy(app->wf_ema, raw, n * sizeof(float));
+    app->wf_ema_w = n;
+  } else {
+    float fw = ema_factor_ms(app->avg_wf_ms, app->fps);
+    for (int i = 0; i < n; i++) { app->wf_ema[i] += fw * (raw[i] - app->wf_ema[i]); }
+  }
+
   /* EMA now in dBm. Build metadata + waterfall bytes. */
   app->frame.width      = n;
   app->frame.vfo_a_freq = app->freq;
@@ -621,10 +647,7 @@ static void tick_radio(App *app, GtkWidget *widget) {
   static uint8_t bytes[SPECTRUM_DATA_SIZE];
   for (int i = 0; i < n; i++) {
     if (app->ema[i] > peak) { peak = app->ema[i]; }
-    /* Waterfall from the analyzer pixels (WDSP averaging only) + the locked
-     * offset — NOT the extra GUI EMA the trace uses. That double smoothing was
-     * what blurred the waterfall; the raw-er feed keeps signal streaks crisp. */
-    double b = (double)raw[i] + app->soffset + 200.0;
+    double b = (double)app->wf_ema[i] + app->soffset + 200.0;
     bytes[i] = (uint8_t)(b < 0 ? 0 : (b > 255 ? 255 : b));
   }
   app->frame.s_dbm = app->audio_ok ? demod_s_meter() : peak;  /* real WDSP S-meter */
@@ -735,6 +758,8 @@ static void app_to_settings(const App *app, Settings *s) {
   s->filter_wf  = app->show_filter_wf;
   s->filter_op  = app->filter_op;
   s->auto_level = app->auto_level;
+  s->avg_spec   = app->avg_spec_ms;
+  s->avg_wf     = app->avg_wf_ms;
   s->win_w   = app->win_w;
   s->win_h   = app->win_h;
   s->win_max = app->win_max;
@@ -1448,6 +1473,16 @@ static void on_pref_auto_level(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
   app->auto_level = adw_switch_row_get_active(r);
   schedule_save(app); gtk_widget_queue_draw(app->area);
 }
+static void on_pref_avg_spec(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->avg_spec_ms = (int)adw_spin_row_get_value(r);   /* live next frame */
+  schedule_save(app);
+}
+static void on_pref_avg_wf(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->avg_wf_ms = (int)adw_spin_row_get_value(r);
+  schedule_save(app);
+}
 static void on_pref_rate(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   (void)ps;
   App *app = (App *)data;
@@ -1534,6 +1569,15 @@ static AdwDialog *build_prefs(App *app) {
       -200, -40, app->pan_low, G_CALLBACK(on_pref_pan_low), app));
   adw_preferences_group_add(g, pref_switch("Auto level", "Track the noise floor (like the waterfall)",
       app->auto_level, G_CALLBACK(on_pref_auto_level), app));
+  adw_preferences_page_add(p, g);
+
+  /* Averaging — spectrum and waterfall independently (ms time constant). */
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Averaging",
+      "description", "Time constant in ms · 0 = none", NULL));
+  adw_preferences_group_add(g, pref_spin("Spectrum", "ms · trace smoothing",
+      0, 1000, app->avg_spec_ms, G_CALLBACK(on_pref_avg_spec), app));
+  adw_preferences_group_add(g, pref_spin("Waterfall", "ms · waterfall smoothing",
+      0, 1000, app->avg_wf_ms, G_CALLBACK(on_pref_avg_wf), app));
   adw_preferences_page_add(p, g);
 
   /* Grid & scales — each toggles independently. */
@@ -1675,7 +1719,7 @@ static void start_radio(App *app) {
                   .agc = 3, .agc_gain = 80.0, .filter = -1,
                   .pan_high = PAN_HIGH_DEFAULT, .pan_low = PAN_LOW_DEFAULT,
                   .db_grid = 1, .db_scale = 1, .freq_grid = 1, .freq_scale = 1,
-                  .filter_wf = 1, .filter_op = 60 };
+                  .filter_wf = 1, .filter_op = 60, .avg_spec = -1, .avg_wf = -1 };
   g_strlcpy(st.ip, "192.168.1.247", sizeof(st.ip));
   if (settings_load(&st)) { printf("settings: loaded %s\n", settings_path()); }
 
@@ -1778,6 +1822,8 @@ static void start_radio(App *app) {
   app->show_filter_wf  = st.filter_wf  ? 1 : 0;
   app->filter_op = (st.filter_op < 0) ? 0 : (st.filter_op > 100 ? 100 : st.filter_op);
   app->auto_level = st.auto_level ? 1 : 0;
+  app->avg_spec_ms = (st.avg_spec < 0) ? 150 : (st.avg_spec > 2000 ? 2000 : st.avg_spec);
+  app->avg_wf_ms   = (st.avg_wf   < 0) ?  40 : (st.avg_wf   > 2000 ? 2000 : st.avg_wf);
   app->win_w   = st.win_w   > 0 ? st.win_w : 1320;
   app->win_h   = st.win_h   > 0 ? st.win_h : 720;
   app->win_max = st.win_max ? 1 : 0;
