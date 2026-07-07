@@ -182,6 +182,11 @@ double demod_peak(void) {
 
 int demod_last_error(void) { return d_err; }
 
+double demod_s_meter(void) {
+  if (!d_ready) { return -200.0; }
+  return GetRXAMeter(d_id, RXA_S_PK);   /* tuned-signal strength, dBm (like piHPSDR) */
+}
+
 void demod_set_mode(int mode, double flo, double fhi) {
   g_mutex_lock(&d_lock);
   if (d_ready) {

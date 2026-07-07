@@ -199,7 +199,7 @@ static void draw_readouts(cairo_t *cr, const ClientFrame *f, int w) {
 
   /* VFO frequency (big), top-left. Prefer CTUN if it differs from the dial. */
   cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
-  cairo_set_font_size(cr, 26.0);
+  cairo_set_font_size(cr, 32.0);
   long long freq = (f->vfo_a_ctun_freq && f->vfo_a_ctun_freq != f->vfo_a_freq)
                      ? f->vfo_a_ctun_freq : f->vfo_a_freq;
   format_hz(freq, buf, sizeof(buf));
@@ -211,15 +211,8 @@ static void draw_readouts(cairo_t *cr, const ClientFrame *f, int w) {
   cairo_set_source_rgba(cr, 0.55, 0.65, 0.75, 0.8);
   cairo_move_to(cr, 44, 64);
   cairo_show_text(cr, "Hz  ·  VFO A");
-
-  /* S-meter (dBm), top-right (aligned below the ruler strip). */
-  snprintf(buf, sizeof(buf), "%.0f dBm", f->s_dbm);
-  cairo_set_font_size(cr, 18.0);
-  cairo_text_extents_t ext;
-  cairo_text_extents(cr, buf, &ext);
-  cairo_set_source_rgba(cr, 0.75, 0.95, 0.7, 0.95);
-  cairo_move_to(cr, w - ext.width - 16, 46);
-  cairo_show_text(cr, buf);
+  /* S-meter is drawn by the GUI overlay (graphical bar), not here. */
+  (void)w;
 }
 
 static void draw_status(cairo_t *cr, const char *msg, int w, int h) {

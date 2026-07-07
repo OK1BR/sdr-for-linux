@@ -338,6 +338,55 @@ static void draw_freq_scale(cairo_t *cr, App *app, int w, int ph) {
   }
 }
 
+/* Graphical S-meter, top-right of the panadapter. S1..S9 (6 dB/unit, S9 = -73
+ * dBm on HF) then +dB over S9. dBm comes from the WDSP meter (radio) or the
+ * server (network). Green up to S9, red above. */
+static void draw_s_meter(cairo_t *cr, App *app, int w) {
+  const double DBM_MIN = -121.0, DBM_S9 = -73.0, DBM_MAX = -13.0;   /* S1 … S9+60 */
+  double dbm = app->frame.s_dbm;
+  if (dbm < DBM_MIN) { dbm = DBM_MIN; }
+  double span = DBM_MAX - DBM_MIN;
+  double bw = 300, bh = 14, bx = w - bw - 16, by = 32;
+  double fillw = (dbm - DBM_MIN) / span * bw;
+  if (fillw > bw) { fillw = bw; }
+  double s9x = (DBM_S9 - DBM_MIN) / span * bw;
+
+  cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.5);           /* track */
+  cairo_rectangle(cr, bx, by, bw, bh); cairo_fill(cr);
+  cairo_set_source_rgba(cr, 0.35, 0.85, 0.42, 0.9);        /* S1..S9 green */
+  cairo_rectangle(cr, bx, by, fmin(fillw, s9x), bh); cairo_fill(cr);
+  if (fillw > s9x) {                                       /* over S9 red */
+    cairo_set_source_rgba(cr, 0.95, 0.35, 0.2, 0.9);
+    cairo_rectangle(cr, bx + s9x, by, fillw - s9x, bh); cairo_fill(cr);
+  }
+
+  cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_set_font_size(cr, 13.0);
+  const struct { double dbm; const char *l; } mk[] = {
+    {-121,"1"},{-109,"3"},{-97,"5"},{-85,"7"},{-73,"9"},{-53,"+20"},{-33,"+40"},{-13,"+60"},
+  };
+  for (int i = 0; i < 8; i++) {
+    double mx = bx + (mk[i].dbm - DBM_MIN) / span * bw;
+    cairo_set_source_rgba(cr, 0.7, 0.75, 0.85, 0.6);
+    cairo_move_to(cr, mx + 0.5, by - 4); cairo_line_to(cr, mx + 0.5, by); cairo_stroke(cr);
+    cairo_text_extents_t ex; cairo_text_extents(cr, mk[i].l, &ex);
+    cairo_move_to(cr, mx - ex.width / 2, by - 7); cairo_show_text(cr, mk[i].l);
+  }
+
+  char lbl[32];
+  double d = app->frame.s_dbm;
+  if (d <= DBM_S9) {
+    int s = (int)lround((d + 127.0) / 6.0); if (s < 1) { s = 1; }
+    snprintf(lbl, sizeof lbl, "S%d   %.0f dBm", s, d);
+  } else {
+    snprintf(lbl, sizeof lbl, "S9+%d   %.0f dBm", (int)(lround((d - DBM_S9) / 10.0) * 10), d);
+  }
+  cairo_set_font_size(cr, 16.0);
+  cairo_text_extents_t ex; cairo_text_extents(cr, lbl, &ex);
+  cairo_set_source_rgba(cr, 0.82, 0.92, 0.78, 0.95);
+  cairo_move_to(cr, bx + bw - ex.width, by + bh + 17); cairo_show_text(cr, lbl);
+}
+
 static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer data) {
   (void)area;
   App *app = (App *)data;
@@ -431,6 +480,8 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
     cairo_move_to(cr, bx + pad - ext.x_bearing, by + pad - ext.y_bearing);
     cairo_show_text(cr, txt);
   }
+
+  draw_s_meter(cr, app, w);
 
   waterfall_draw(app->wf, cr, 0, ph, w, h - ph);
 
@@ -576,7 +627,7 @@ static void tick_radio(App *app, GtkWidget *widget) {
     double b = (double)raw[i] + app->soffset + 200.0;
     bytes[i] = (uint8_t)(b < 0 ? 0 : (b > 255 ? 255 : b));
   }
-  app->frame.s_dbm = peak;
+  app->frame.s_dbm = app->audio_ok ? demod_s_meter() : peak;  /* real WDSP S-meter */
   waterfall_push(app->wf, bytes, n);
   app->have_frame = 1;
   gtk_widget_queue_draw(widget);

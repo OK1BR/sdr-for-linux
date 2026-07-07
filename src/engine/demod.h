@@ -54,4 +54,7 @@ void demod_destroy(void);
 double demod_peak(void);
 int    demod_last_error(void);
 
+/* Signal-strength S-meter of the tuned signal (dBm), read from WDSP. */
+double demod_s_meter(void);
+
 #endif /* SDRFL_ENGINE_DEMOD_H */
