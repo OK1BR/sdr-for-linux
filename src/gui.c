@@ -1105,16 +1105,26 @@ static void on_agct_changed(GtkRange *r, gpointer data) {
 }
 
 /* Noise reduction / blanker / auto-notch toggles. */
-static void on_nr_toggled(GtkToggleButton *b, gpointer data) {
+/* NR/NB are 3-way: 0 off / 1 (ANR|ANB) / 2 (NR2 EMNR | NB2 SNBA). A toggle
+ * button cycles them; the label shows the algorithm, :checked shows on. */
+static void noise_btn_update(GtkButton *b, int mode, const char *base) {
+  char lbl[8];
+  snprintf(lbl, sizeof lbl, "%s%s", base, mode == 2 ? "2" : "");
+  gtk_button_set_label(b, lbl);
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(b), mode > 0);   /* fires "toggled", not "clicked" */
+}
+static void on_nr_clicked(GtkButton *b, gpointer data) {
   App *app = (App *)data;
-  app->nr = gtk_toggle_button_get_active(b);
+  app->nr = (app->nr + 1) % 3;
   demod_set_nr(app->nr);
+  noise_btn_update(b, app->nr, "NR");
   schedule_save(app);
 }
-static void on_nb_toggled(GtkToggleButton *b, gpointer data) {
+static void on_nb_clicked(GtkButton *b, gpointer data) {
   App *app = (App *)data;
-  app->nb = gtk_toggle_button_get_active(b);
+  app->nb = (app->nb + 1) % 3;
   demod_set_nb(app->nb);
+  noise_btn_update(b, app->nb, "NB");
   schedule_save(app);
 }
 static void on_anf_toggled(GtkToggleButton *b, gpointer data) {
@@ -1211,11 +1221,11 @@ static GtkWidget *build_controls(App *app) {
   GtkWidget *nr_b  = gtk_toggle_button_new_with_label("NR");
   GtkWidget *nb_b  = gtk_toggle_button_new_with_label("NB");
   GtkWidget *anf_b = gtk_toggle_button_new_with_label("ANF");
-  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(nr_b),  app->nr);   /* before wiring */
-  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(nb_b),  app->nb);
+  noise_btn_update(GTK_BUTTON(nr_b), app->nr, "NR");   /* label + checked (before wiring) */
+  noise_btn_update(GTK_BUTTON(nb_b), app->nb, "NB");
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(anf_b), app->anf);
-  g_signal_connect(nr_b,  "toggled", G_CALLBACK(on_nr_toggled),  app);
-  g_signal_connect(nb_b,  "toggled", G_CALLBACK(on_nb_toggled),  app);
+  g_signal_connect(nr_b,  "clicked", G_CALLBACK(on_nr_clicked),  app);   /* cycles off/NR/NR2 */
+  g_signal_connect(nb_b,  "clicked", G_CALLBACK(on_nb_clicked),  app);
   g_signal_connect(anf_b, "toggled", G_CALLBACK(on_anf_toggled), app);
   gtk_box_append(GTK_BOX(nrbox), nr_b);
   gtk_box_append(GTK_BOX(nrbox), nb_b);
@@ -1692,8 +1702,8 @@ static void start_radio(App *app) {
   app->atten  = st.atten < 0 ? 0 : (st.atten > 31 ? 31 : st.atten);
   app->agc    = st.agc < 0 ? 0 : (st.agc > 4 ? 4 : st.agc);
   app->agc_gain = st.agc_gain < -20.0 ? -20.0 : (st.agc_gain > 120.0 ? 120.0 : st.agc_gain);
-  app->nr     = st.nr ? 1 : 0;
-  app->nb     = st.nb ? 1 : 0;
+  app->nr     = st.nr < 0 ? 0 : (st.nr > 2 ? 2 : st.nr);   /* 0 off / 1 NR / 2 NR2 */
+  app->nb     = st.nb < 0 ? 0 : (st.nb > 2 ? 2 : st.nb);   /* 0 off / 1 NB / 2 NB2 */
   app->anf    = st.anf ? 1 : 0;
   app->fps    = st.fps;
   app->latency = st.latency;

@@ -37,9 +37,10 @@ void demod_set_gain(double gain);
 void demod_set_agc(int mode);
 void demod_set_agc_gain(double db);
 
-/* Noise reduction (ANR) / noise blanker (ANB) / auto-notch filter — on/off. */
-void demod_set_nr(int on);
-void demod_set_nb(int on);
+/* Noise reduction: 0 off / 1 ANR (LMS) / 2 NR2 (EMNR spectral).
+ * Noise blanker: 0 off / 1 ANB / 2 NB2 (SNBA). Auto-notch: on/off. */
+void demod_set_nr(int mode);
+void demod_set_nb(int mode);
 void demod_set_anf(int on);
 
 /* Set the AF volume (dB, 0..-40) live on the running channel (thread-safe). */

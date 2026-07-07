@@ -76,13 +76,19 @@ static void setup_noise(void) {
   SetEXTANBThreshold(id, 4.95);
   SetRXAANRVals(id, 64, 16, 16e-4, 10e-7);
   SetRXAANRPosition(id, 1);
+  SetRXAEMNRgainMethod(id, 2);          /* NR2 (EMNR): gamma gain, per piHPSDR */
+  SetRXAEMNRnpeMethod(id, 0);
+  SetRXAEMNRaeRun(id, 1);
   SetRXAANFTaps(id, 64);
   SetRXAANFDelay(id, 16);
   SetRXAANFGain(id, pow(10.0, 0.05 * -80.0));
   SetRXAANFLeakage(id, pow(10.0, 0.05 * -20.0));
   SetRXAANFPosition(id, 1);
-  SetEXTANBRun(id, d_nb);
-  SetRXAANRRun(id, d_nr);
+  /* NR: 0 off / 1 ANR (LMS) / 2 NR2 (EMNR). NB: 0 off / 1 ANB / 2 NB2 (SNBA). */
+  SetEXTANBRun(id, d_nb == 1);
+  SetRXASNBARun(id, d_nb == 2);
+  SetRXAANRRun(id, d_nr == 1);
+  SetRXAEMNRRun(id, d_nr == 2);
   SetRXAANFRun(id, d_anf);
 }
 
@@ -138,7 +144,7 @@ void demod_feed(const double *iq, int n_pairs) {
       d_fill++;
       if (d_fill >= D_BUFSIZE) {
         int err = 0;
-        if (d_nb) { xanbEXT(d_id, d_iq, d_iq); }   /* external noise blanker (in-place) */
+        if (d_nb == 1) { xanbEXT(d_id, d_iq, d_iq); }   /* ext noise blanker (NB, in-place) */
         fexchange0(d_id, d_iq, d_audio, &err);   /* blocks on WDSP compute (bfo=1) */
         d_blocks++;
         if (err != 0) { d_err = err; d_ferr++; }
@@ -226,16 +232,16 @@ void demod_set_agc_gain(double db) {
 }
 
 /* Noise reduction (ANR) / noise blanker (ANB) / auto-notch — on-off (thread-safe). */
-void demod_set_nr(int on) {
+void demod_set_nr(int mode) {   /* 0 off / 1 ANR / 2 EMNR (NR2) */
   g_mutex_lock(&d_lock);
-  d_nr = on ? 1 : 0;
-  if (d_ready) { SetRXAANRRun(d_id, d_nr); }
+  d_nr = mode;
+  if (d_ready) { SetRXAANRRun(d_id, d_nr == 1); SetRXAEMNRRun(d_id, d_nr == 2); }
   g_mutex_unlock(&d_lock);
 }
-void demod_set_nb(int on) {
+void demod_set_nb(int mode) {   /* 0 off / 1 ANB / 2 SNBA (NB2) */
   g_mutex_lock(&d_lock);
-  d_nb = on ? 1 : 0;
-  if (d_ready) { SetEXTANBRun(d_id, d_nb); }
+  d_nb = mode;
+  if (d_ready) { SetEXTANBRun(d_id, d_nb == 1); SetRXASNBARun(d_id, d_nb == 2); }
   g_mutex_unlock(&d_lock);
 }
 void demod_set_anf(int on) {
