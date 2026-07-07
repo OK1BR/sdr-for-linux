@@ -102,7 +102,16 @@ typedef struct {
   GtkWidget  *filter_dd;     /* filter dropdown (repopulated per mode)         */
   gint64      ovl0_until;    /* ADC0-overload badge lit until (monotonic µs)   */
   gint64      ovl1_until;    /* ADC1-overload badge lit until (monotonic µs)   */
+  int         tlm_valid;     /* HP-status telemetry seen at least once          */
+  double      supply_v;      /* supply voltage (V), EMA-smoothed; 0 = unknown   */
 } App;
+
+/* Supply-voltage calibration: V = k * raw_adc1. No G1 divider is documented, so
+ * k is anchored empirically — Richard's Microset measured 13.46 V while the G1
+ * reported raw_adc1 ~= 797.5 (bytes 55-56). SDRFL_VOLT_CAL overrides k (V per
+ * count) for a precise re-trim without a rebuild. */
+#define SUPPLY_V_PER_COUNT (13.46 / 797.5)
+#define SUPPLY_V_EMA 0.1   /* smooths the ±1-count (~±0.017 V) raw jitter */
 
 /* How long an ADC-overload badge stays lit after a clip (µs). A clip may span
  * just one 50 ms status packet — hold it so it's visible at any frame rate. */
@@ -244,6 +253,31 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
     cairo_show_text(cr, txt);
   }
 
+  /* Supply-voltage readout, top-right of the panadapter. Green in-band, amber
+   * on a mild excursion, red on a fault. Anchored to a single multimeter point
+   * (see SUPPLY_V_PER_COUNT) — a warning gauge, not a precise DVM. */
+  if (app->radio_mode && app->supply_v > 0.0) {
+    double v = app->supply_v;
+    double r, g, b;
+    if      (v < 12.0 || v > 15.0) { r = 0.95; g = 0.15; b = 0.15; }  /* fault */
+    else if (v < 12.8 || v > 14.5) { r = 0.98; g = 0.72; b = 0.10; }  /* warn  */
+    else                           { r = 0.55; g = 0.95; b = 0.55; }  /* ok    */
+    char vb[32];
+    snprintf(vb, sizeof vb, "%.2f V", v);
+    cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size(cr, 13.0);
+    cairo_text_extents_t ex;
+    cairo_text_extents(cr, vb, &ex);
+    const double pad = 5.0;
+    double bw = ex.width + 2 * pad, bx = w - bw - 8.0, by = 8.0;
+    cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.45);
+    cairo_rectangle(cr, bx, by, bw, ex.height + 2 * pad);
+    cairo_fill(cr);
+    cairo_set_source_rgba(cr, r, g, b, 0.96);
+    cairo_move_to(cr, bx + pad - ex.x_bearing, by + pad - ex.y_bearing);
+    cairo_show_text(cr, vb);
+  }
+
   waterfall_draw(app->wf, cr, 0, ph, w, h - ph);
 
   cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.55);
@@ -373,6 +407,17 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
       gint64 now = g_get_monotonic_time();
       if (t.adc0_overload) { app->ovl0_until = now + ADC_OVL_HOLD_US; }
       if (t.adc1_overload) { app->ovl1_until = now + ADC_OVL_HOLD_US; }
+      app->tlm_valid = t.valid;
+      if (t.valid && t.raw_adc1 > 0) {
+        static double kcal = -1.0;
+        if (kcal < 0.0) {
+          const char *e = getenv("SDRFL_VOLT_CAL");
+          kcal = (e && *e) ? atof(e) : SUPPLY_V_PER_COUNT;
+        }
+        double v = t.raw_adc1 * kcal;
+        app->supply_v = (app->supply_v > 0.0)
+                        ? app->supply_v + SUPPLY_V_EMA * (v - app->supply_v) : v;
+      }
       tick_radio(app, widget);
     } else {
       tick_network(app, widget);
