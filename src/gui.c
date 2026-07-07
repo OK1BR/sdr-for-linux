@@ -41,7 +41,7 @@
 #include "settings.h"
 
 #define ENGINE_PIXELS 2048
-#define ENGINE_FPS    15
+#define ENGINE_FPS    25
 /* Frames to average before locking the display offset (~1 s at ENGINE_FPS). */
 #define SETTLE_FRAMES 15
 /* Where the noise floor lands after auto-levelling (dBm, inside the pan window). */
@@ -62,6 +62,8 @@ typedef struct {
   int         rate;         /* IQ sample rate = full panadapter span (Hz)      */
   double      volume;       /* AF gain (dB)                                    */
   double      gain;         /* digital master gain                            */
+  int         fps;          /* panadapter frame rate                          */
+  int         latency;      /* audio target latency (ms)                      */
   char        radio_ip[64]; /* resolved radio IP (for persistence)            */
   guint       save_timer_id;/* debounced settings save (0 = none pending)     */
   long long   drag_base_freq; /* app->freq at drag-begin (pan is absolute)     */
@@ -84,6 +86,10 @@ typedef struct {
   Waterfall  *wf;
   GtkWidget  *area;
   GtkWidget  *mode_btns[7];  /* toggle per DEMOD_* id (keys ↔ buttons in sync) */
+  double      zoom;          /* current display zoom (1 = full span)           */
+  double      pending_zoom;  /* slider target; applied on the frame tick (throttle) */
+  int         zoom_dirty;    /* pending_zoom needs applying                    */
+  GtkWidget  *span_label;    /* footer span readout                            */
 } App;
 
 #define PANADAPTER_FRACTION 0.5
@@ -196,7 +202,9 @@ static void tick_radio(App *app, GtkWidget *widget) {
     app->ema_w = n;
     app->cal_frames = 0;
   } else {
-    double so = app->soffset_locked ? app->soffset : 0.0;
+    /* +10·log10(zoom) keeps the noise floor visually put as the pixel bandwidth
+     * shrinks with zoom (analyzer norm is held constant). */
+    double so = app->soffset_locked ? (app->soffset + 10.0 * log10(app->zoom)) : 0.0;
     for (int i = 0; i < n; i++) {
       app->ema[i] += EMA_FACTOR * ((float)(raw[i] + so) - app->ema[i]);
     }
@@ -238,6 +246,11 @@ static void tick_radio(App *app, GtkWidget *widget) {
 static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) {
   (void)clock;
   App *app = (App *)data;
+  if (app->radio_mode && app->zoom_dirty) {   /* coalesced re-config, ≤1 per frame */
+    analyzer_set_zoom(app->pending_zoom);
+    app->zoom = app->pending_zoom;
+    app->zoom_dirty = 0;
+  }
   if (app->connected) {
     if (app->radio_mode) { tick_radio(app, widget); }
     else                 { tick_network(app, widget); }
@@ -252,8 +265,10 @@ static void app_to_settings(const App *app, Settings *s) {
   s->freq   = app->freq;
   s->rate   = app->rate;
   s->mode   = app->mode;
-  s->volume = app->volume;
-  s->gain   = app->gain;
+  s->volume  = app->volume;
+  s->gain    = app->gain;
+  s->fps     = app->fps;
+  s->latency = app->latency;
 }
 
 static gboolean do_save_cb(gpointer data) {
@@ -309,7 +324,7 @@ static void on_drag_update(GtkGestureDrag *g, double off_x, double off_y, gpoint
   if (!app->radio_mode || !app->engine_ok) { return; }
   int w = gtk_widget_get_width(app->area);
   if (w < 1) { return; }
-  double hz_per_px = (double)app->rate / w;
+  double hz_per_px = (double)app->rate / app->zoom / w;   /* narrower span when zoomed */
   /* Drag right → content follows the cursor → view moves to lower frequency. */
   long long nf = app->drag_base_freq - (long long)llround(off_x * hz_per_px);
   if (nf < 1) { nf = 1; }
@@ -446,16 +461,152 @@ static GtkWidget *build_controls(App *app) {
   return bar;
 }
 
+/* Footer span readout follows the slider instantly (analyzer applies throttled). */
+static void update_span_label(App *app) {
+  if (!app->span_label) { return; }
+  char buf[32];
+  snprintf(buf, sizeof buf, "%.0f kHz", (double)app->rate / app->pending_zoom / 1000.0);
+  gtk_label_set_text(GTK_LABEL(app->span_label), buf);
+}
+
+static void on_zoom_changed(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  app->pending_zoom = pow(2.0, gtk_range_get_value(r));  /* slider = octaves 0..3 */
+  app->zoom_dirty = 1;   /* SetAnalyzer runs coalesced on the frame tick */
+  update_span_label(app);
+}
+
+/* Bottom bar (AdwToolbarView bottom slot): view/display controls — zoom for now. */
+static GtkWidget *build_bottom_controls(App *app) {
+  GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+  gtk_widget_add_css_class(bar, "controlbar");
+
+  GtkWidget *zoom = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0.0, 3.0, 0.01);
+  gtk_range_set_value(GTK_RANGE(zoom), log2(app->zoom));
+  gtk_widget_set_size_request(zoom, 180, -1);
+  gtk_scale_set_draw_value(GTK_SCALE(zoom), FALSE);
+  g_signal_connect(zoom, "value-changed", G_CALLBACK(on_zoom_changed), app);
+  gtk_box_append(GTK_BOX(bar), labeled("Zoom", zoom));
+
+  app->span_label = gtk_label_new("");
+  gtk_widget_add_css_class(app->span_label, "span");
+  update_span_label(app);
+  gtk_box_append(GTK_BOX(bar), app->span_label);
+
+  GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_set_hexpand(spacer, TRUE);
+  gtk_box_append(GTK_BOX(bar), spacer);
+  return bar;
+}
+
 static void css_load(void) {
   GtkCssProvider *p = gtk_css_provider_new();
   const char *c =
     ".controlbar { padding: 7px 10px; }"
     ".dim { opacity: 0.6; font-size: 12px; }"
+    ".span { font-family: monospace; opacity: 0.75; }"
     "button.mode, button.band { min-width: 30px; padding-left: 7px; padding-right: 7px; }"
     "button.mode:checked { background: #1d6fa5; color: #fff; }";
   gtk_css_provider_load_from_string(p, c);
   gtk_style_context_add_provider_for_display(gdk_display_get_default(),
       GTK_STYLE_PROVIDER(p), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+}
+
+/* ---- preferences dialog (AdwPreferencesDialog) --------------------------- */
+
+static const int PREF_RATES[] = {48000, 96000, 192000, 384000, 768000};
+
+static void on_pref_fps(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps;
+  App *app = (App *)data;
+  app->fps = (int)adw_spin_row_get_value(r);
+  analyzer_set_fps(app->fps);   /* live */
+  schedule_save(app);
+}
+static void on_pref_gain(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps;
+  App *app = (App *)data;
+  app->gain = adw_spin_row_get_value(r);
+  demod_set_gain(app->gain);    /* live */
+  schedule_save(app);
+}
+static void on_pref_latency(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps;
+  App *app = (App *)data;
+  app->latency = (int)adw_spin_row_get_value(r);   /* applied on restart */
+  schedule_save(app);
+}
+static void on_pref_rate(AdwComboRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps;
+  App *app = (App *)data;
+  guint i = adw_combo_row_get_selected(r);
+  if (i < G_N_ELEMENTS(PREF_RATES)) { app->rate = PREF_RATES[i]; schedule_save(app); }  /* restart */
+}
+static void on_pref_ip(GtkEditable *e, gpointer data) {
+  App *app = (App *)data;
+  g_strlcpy(app->radio_ip, gtk_editable_get_text(e), sizeof(app->radio_ip));   /* restart */
+  schedule_save(app);
+}
+
+static GtkWidget *pref_spin(const char *title, const char *subtitle,
+                            double lo, double hi, double val, GCallback cb, App *app) {
+  GtkAdjustment *a = gtk_adjustment_new(val, lo, hi, 1, 1, 0);
+  GtkWidget *row = g_object_new(ADW_TYPE_SPIN_ROW, "title", title, "subtitle", subtitle,
+                                "adjustment", a, "digits", 0, NULL);
+  g_signal_connect(row, "notify::value", cb, app);   /* connect after ctor → no spurious fire */
+  return row;
+}
+
+static AdwDialog *build_prefs(App *app) {
+  AdwPreferencesDialog *dlg = ADW_PREFERENCES_DIALOG(adw_preferences_dialog_new());
+
+  /* Radio — all restart-to-apply. */
+  AdwPreferencesPage *p = ADW_PREFERENCES_PAGE(g_object_new(ADW_TYPE_PREFERENCES_PAGE,
+      "title", "Radio", "icon-name", "network-workgroup-symbolic", NULL));
+  AdwPreferencesGroup *g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP,
+      "title", "Connection", "description", "Applies on restart", NULL));
+  GtkWidget *ip = g_object_new(ADW_TYPE_ENTRY_ROW, "title", "Radio IP address", NULL);
+  gtk_editable_set_text(GTK_EDITABLE(ip), app->radio_ip);
+  g_signal_connect(ip, "changed", G_CALLBACK(on_pref_ip), app);
+  adw_preferences_group_add(g, ip);
+  GtkStringList *rm = gtk_string_list_new((const char *[]){"48 kHz","96 kHz","192 kHz","384 kHz","768 kHz", NULL});
+  guint ri = 2;
+  for (guint i = 0; i < G_N_ELEMENTS(PREF_RATES); i++) { if (PREF_RATES[i] == app->rate) { ri = i; } }
+  GtkWidget *rate = g_object_new(ADW_TYPE_COMBO_ROW, "title", "Sample rate", "model", rm, "selected", ri, NULL);
+  g_signal_connect(rate, "notify::selected", G_CALLBACK(on_pref_rate), app);
+  adw_preferences_group_add(g, rate);
+  adw_preferences_page_add(p, g);
+  adw_preferences_dialog_add(dlg, p);
+
+  /* Audio — gain live, latency restart. */
+  p = ADW_PREFERENCES_PAGE(g_object_new(ADW_TYPE_PREFERENCES_PAGE,
+      "title", "Audio", "icon-name", "audio-speakers-symbolic", NULL));
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Output", NULL));
+  adw_preferences_group_add(g, pref_spin("Digital master gain", "Applies live",
+      1, 32, app->gain, G_CALLBACK(on_pref_gain), app));
+  adw_preferences_group_add(g, pref_spin("Audio latency", "ms · restart to apply",
+      5, 100, app->latency, G_CALLBACK(on_pref_latency), app));
+  adw_preferences_page_add(p, g);
+  adw_preferences_dialog_add(dlg, p);
+
+  /* Display — fps live. */
+  p = ADW_PREFERENCES_PAGE(g_object_new(ADW_TYPE_PREFERENCES_PAGE,
+      "title", "Display", "icon-name", "video-display-symbolic", NULL));
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Panadapter", NULL));
+  adw_preferences_group_add(g, pref_spin("Frame rate", "fps · applies live",
+      10, 60, app->fps, G_CALLBACK(on_pref_fps), app));
+  adw_preferences_page_add(p, g);
+  adw_preferences_dialog_add(dlg, p);
+
+  return ADW_DIALOG(dlg);
+}
+
+static void act_prefs(GSimpleAction *a, GVariant *param, gpointer data) {
+  (void)a; (void)param;
+  App *app = (App *)data;
+  GtkWindow *win = gtk_application_get_active_window(
+      GTK_APPLICATION(g_application_get_default()));
+  adw_dialog_present(build_prefs(app), GTK_WIDGET(win));
 }
 
 static void on_activate(GtkApplication *gtkapp, gpointer data) {
@@ -471,9 +622,20 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
   GtkWidget *status = gtk_label_new(app->radio_mode ? "●  ANAN G1" : "●  server");
   gtk_widget_add_css_class(status, "dim");
   adw_header_bar_pack_start(ADW_HEADER_BAR(header), status);
-  GtkWidget *menu = gtk_menu_button_new();
-  gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(menu), "open-menu-symbolic");
-  adw_header_bar_pack_end(ADW_HEADER_BAR(header), menu);
+  if (app->radio_mode) {
+    GSimpleAction *pa = g_simple_action_new("preferences", NULL);
+    g_signal_connect(pa, "activate", G_CALLBACK(act_prefs), app);
+    g_action_map_add_action(G_ACTION_MAP(gtkapp), G_ACTION(pa));
+    g_object_unref(pa);
+
+    GMenu *m = g_menu_new();
+    g_menu_append(m, "Preferences", "app.preferences");
+    GtkWidget *menu = gtk_menu_button_new();
+    gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(menu), "open-menu-symbolic");
+    gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(menu), G_MENU_MODEL(m));
+    g_object_unref(m);
+    adw_header_bar_pack_end(ADW_HEADER_BAR(header), menu);
+  }
 
   GtkWidget *tv = adw_toolbar_view_new();
   adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(tv), header);
@@ -489,6 +651,9 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
   }
   gtk_box_append(GTK_BOX(content), app->area);
   adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(tv), content);
+  if (app->radio_mode) {
+    adw_toolbar_view_add_bottom_bar(ADW_TOOLBAR_VIEW(tv), build_bottom_controls(app));
+  }
   adw_application_window_set_content(ADW_APPLICATION_WINDOW(win), tv);
 
   /* Input controllers (self-gate on radio mode): wheel tunes, drag pans, u/l/c/a mode. */
@@ -515,7 +680,7 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
  * State precedence: env var > saved config > built-in default. */
 static void start_radio(App *app) {
   Settings st = { .freq = 14100000, .rate = 192000, .mode = -1,
-                  .volume = -10.0, .gain = 8.0 };
+                  .volume = -10.0, .gain = 8.0, .fps = 25, .latency = 10 };
   g_strlcpy(st.ip, "192.168.1.247", sizeof(st.ip));
   if (settings_load(&st)) { printf("settings: loaded %s\n", settings_path()); }
 
@@ -525,6 +690,8 @@ static void start_radio(App *app) {
   if ((e = getenv("SDRFL_RATE"))     && *e) { st.rate = atoi(e); }
   if ((e = getenv("SDRFL_VOLUME"))   && *e) { st.volume = atof(e); }
   if ((e = getenv("SDRFL_GAIN"))     && *e) { st.gain = atof(e); }
+  if ((e = getenv("SDRFL_FPS"))      && *e) { st.fps = atoi(e); }
+  if ((e = getenv("SDRFL_LAT"))      && *e) { st.latency = atoi(e); }
   /* Mode: env SDRFL_MODE > saved mode (if valid) > by-band default. */
   int mode = mode_from_name(getenv("SDRFL_MODE"));
   if (mode < 0) { mode = st.mode; }
@@ -537,6 +704,10 @@ static void start_radio(App *app) {
   app->mode   = mode;
   app->volume = st.volume;
   app->gain   = st.gain;
+  app->fps    = st.fps;
+  app->latency = st.latency;
+  app->zoom   = 1.0;
+  app->pending_zoom = 1.0;
   app->pixels = ENGINE_PIXELS;
   int rate    = st.rate;
 
@@ -547,7 +718,7 @@ static void start_radio(App *app) {
   printf("Using %s at %s — RX %lld Hz @ %d Hz\n", dev->name,
          inet_ntoa(dev->network.address.sin_addr), app->freq, rate);
 
-  if (analyzer_create(0, app->pixels, rate, ENGINE_FPS) != 0) {
+  if (analyzer_create(0, app->pixels, rate, app->fps) != 0) {
     fprintf(stderr, "analyzer_create failed\n");
     return;
   }
@@ -555,8 +726,7 @@ static void start_radio(App *app) {
   /* Audio: WDSP demod → native PipeWire sink. */
   double flo, fhi;
   passband_for_mode(mode, &flo, &fhi);
-  int lat = (getenv("SDRFL_LAT") && *getenv("SDRFL_LAT")) ? atoi(getenv("SDRFL_LAT")) : 10;
-  if (audio_start(48000, 1, lat) == 0 && demod_create(0, rate, mode, flo, fhi, app->volume) == 0) {
+  if (audio_start(48000, 1, app->latency) == 0 && demod_create(0, rate, mode, flo, fhi, app->volume) == 0) {
     demod_set_gain(app->gain);
     app->audio_ok = 1;
   } else {

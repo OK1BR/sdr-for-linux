@@ -10,8 +10,9 @@
 
 #include "settings.h"
 
-#define GROUP_RADIO "radio"
-#define GROUP_RX    "rx"
+#define GROUP_RADIO   "radio"
+#define GROUP_RX      "rx"
+#define GROUP_DISPLAY "display"
 
 static char cfg_path[1024];
 
@@ -43,6 +44,10 @@ int settings_load(Settings *s) {
       s->volume = g_key_file_get_double(kf, GROUP_RX, "volume", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "gain", NULL))
       s->gain = g_key_file_get_double(kf, GROUP_RX, "gain", NULL);
+    if (g_key_file_has_key(kf, GROUP_RX, "latency", NULL))
+      s->latency = g_key_file_get_integer(kf, GROUP_RX, "latency", NULL);
+    if (g_key_file_has_key(kf, GROUP_DISPLAY, "fps", NULL))
+      s->fps = g_key_file_get_integer(kf, GROUP_DISPLAY, "fps", NULL);
   }
   g_key_file_free(kf);
   return ok;
@@ -58,8 +63,10 @@ int settings_save(const Settings *s) {
   g_key_file_set_int64  (kf, GROUP_RADIO, "freq",   s->freq);
   g_key_file_set_integer(kf, GROUP_RADIO, "rate",   s->rate);
   g_key_file_set_integer(kf, GROUP_RX,    "mode",   s->mode);
-  g_key_file_set_double (kf, GROUP_RX,    "volume", s->volume);
-  g_key_file_set_double (kf, GROUP_RX,    "gain",   s->gain);
+  g_key_file_set_double (kf, GROUP_RX,    "volume",  s->volume);
+  g_key_file_set_double (kf, GROUP_RX,    "gain",    s->gain);
+  g_key_file_set_integer(kf, GROUP_RX,    "latency", s->latency);
+  g_key_file_set_integer(kf, GROUP_DISPLAY, "fps",   s->fps);
 
   GError *e = NULL;
   int rc = g_key_file_save_to_file(kf, settings_path(), &e) ? 0 : -1;

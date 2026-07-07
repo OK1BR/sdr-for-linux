@@ -18,6 +18,8 @@ typedef struct {
   int       mode;      /* demod mode (DEMOD_*)                       */
   double    volume;    /* AF gain (dB)                               */
   double    gain;      /* digital master gain                        */
+  int       fps;       /* panadapter frame rate                      */
+  int       latency;   /* audio target latency (ms)                  */
 } Settings;
 
 /*

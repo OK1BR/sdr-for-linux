@@ -33,6 +33,17 @@ void analyzer_feed(const double *iq, int n_pairs);
  */
 int analyzer_get_pixels(float *out, int pixels);
 
+/*
+ * Set the zoom factor (1 = full span; Z shows sample_rate/Z centred on the DDC).
+ * Re-configures the analyzer's span clip (fscLin/fscHin); thread-safe. Sharp up
+ * to ~afft/pixels (≈8× at 192 kHz / A_MSIZE 16384), interpolated beyond.
+ */
+void analyzer_set_zoom(double zoom);
+
+/* Change the target frame rate live (recomputes overlap + averaging; thread-safe).
+ * The redraw gate follows automatically as the analyzer emits more/fewer frames. */
+void analyzer_set_fps(int fps);
+
 /* Destroy the analyzer and free buffers. */
 void analyzer_destroy(void);
 

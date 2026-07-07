@@ -22,6 +22,9 @@
 static int      a_id;
 static int      a_pixels;
 static int      a_afft;
+static int      a_rate;    /* IQ sample rate (full span)                       */
+static int      a_fps;     /* target frames/s                                  */
+static double   a_zoom = 1.0; /* current zoom factor (1 = full span)           */
 static double  *a_acc;     /* accumulator: 2*A_BFSIZE doubles (I,Q interleaved) */
 static int      a_fill;    /* sample pairs currently in a_acc                   */
 static int      a_ready;   /* analyzer created                                  */
@@ -38,11 +41,44 @@ static int clamp_afft(int want) {
   return sz > A_MSIZE ? A_MSIZE : sz;
 }
 
+/* (Re)configure the analyzer span. fsc = bins to clip from EACH end (centered,
+ * pan=0): 0 = full span; a_afft*(1-1/zoom)/2 = zoomed. Shared by create + zoom;
+ * caller holds a_lock. Detector/averaging are set once in create and persist. */
+static void apply_analyzer(double fsc) {
+  int    flp[1]    = { 0 };
+  double keep_time = 0.1;
+  int    overlap   = (int)fmax(0.0, ceil((double)a_afft - (double)a_rate / (double)a_fps));
+  int    max_w     = a_afft + (int)fmin(keep_time * (double)a_rate,
+                                        keep_time * (double)a_afft * (double)a_fps);
+  SetAnalyzer(a_id, 1, 1, 1, flp, a_afft, A_BFSIZE, 5, 14.0, overlap, 0,
+              fsc, fsc, a_pixels, 1, 0, 0.0, 0.0, max_w);
+  /* Bandwidth normalization held constant (a_pixels) across zoom; the GUI keeps
+   * the noise floor visually put by adding 10·log10(zoom) to its soffset. */
+  SetDisplayNormOneHz(a_id, 0, 1);
+  SetDisplaySampleRate(a_id, a_pixels);
+}
+
+/* Detector + averaging, per receiver.c:1941-2052 (LOG_RECURSIVE, PEAK); depends
+ * on a_fps. The NONE-then-mode dance avoids a switch artifact (:1978-1980). */
+static void apply_averaging(void) {
+  double t    = 0.120;                                     /* 120 ms avg time */
+  int    navg = (int)fmax(2.0, fmin(60.0, (double)a_fps * t));
+  double avb  = exp(-1.0 / ((double)a_fps * t));
+  SetDisplayDetectorMode(a_id, 0, DETECTOR_MODE_PEAK);
+  SetDisplayAverageMode(a_id, 0, AVERAGE_MODE_NONE);
+  SetDisplayNumAverage(a_id, 0, navg);
+  SetDisplayAvBackmult(a_id, 0, avb);
+  SetDisplayAverageMode(a_id, 0, AVERAGE_MODE_LOG_RECURSIVE);
+}
+
 int analyzer_create(int id, int pixels, int sample_rate, int fps) {
   int rc = -1;
   a_id     = id;
   a_pixels = pixels;
   a_afft   = clamp_afft(pixels);
+  a_rate   = sample_rate;
+  a_fps    = fps;
+  a_zoom   = 1.0;
   a_acc    = g_new0(double, 2 * A_BFSIZE);
   a_fill   = 0;
 
@@ -55,45 +91,8 @@ int analyzer_create(int id, int pixels, int sample_rate, int fps) {
     return -1;
   }
 
-  int    flp[1]    = { 0 };
-  double keep_time = 0.1;
-  int    overlap   = (int)fmax(0.0, ceil((double)a_afft - (double)sample_rate / (double)fps));
-  int    max_w     = a_afft + (int)fmin(keep_time * (double)sample_rate,
-                                        keep_time * (double)a_afft * (double)fps);
-
-  /* SetAnalyzer — 19 args, values per receiver.c:1736-1755 (zoom=1, pan=0). */
-  SetAnalyzer(id,
-              1,          /* n_pixout                                          */
-              1,          /* n_fft — no spur elimination                       */
-              1,          /* typ — complex I&Q                                 */
-              flp,        /* low-side LO, no flip                              */
-              a_afft,     /* sz — FFT size                                     */
-              A_BFSIZE,   /* bf_sz — samples per Spectrum0                     */
-              5,          /* win_type — Kaiser                                 */
-              14.0,       /* pi — Kaiser beta                                  */
-              overlap,    /* ovrlp                                             */
-              0,          /* clp                                               */
-              0.0, 0.0,   /* fscLin/fscHin — full span (no zoom/pan)           */
-              pixels,     /* n_pix — output columns                            */
-              1,          /* n_stch                                            */
-              0,          /* calset                                            */
-              0.0, 0.0,   /* fmin/fmax — calibration off                       */
-              max_w);     /* max input write-ahead                             */
-
-  /* Bandwidth normalization, per receiver.c:1771-1772 (pass width*zoom=pixels). */
-  SetDisplayNormOneHz(id, 0, 1);
-  SetDisplaySampleRate(id, pixels);
-
-  /* Averaging + detector, per receiver.c:1941-2052 (LOG_RECURSIVE, PEAK). The
-   * NONE-then-mode dance avoids a switch artifact (receiver.c:1978-1980). */
-  double t    = 0.120;                                        /* 120 ms avg time */
-  int    navg = (int)fmax(2.0, fmin(60.0, (double)fps * t));
-  double avb  = exp(-1.0 / ((double)fps * t));
-  SetDisplayDetectorMode(id, 0, DETECTOR_MODE_PEAK);
-  SetDisplayAverageMode(id, 0, AVERAGE_MODE_NONE);
-  SetDisplayNumAverage(id, 0, navg);
-  SetDisplayAvBackmult(id, 0, avb);
-  SetDisplayAverageMode(id, 0, AVERAGE_MODE_LOG_RECURSIVE);
+  apply_analyzer(0.0);   /* full span (no zoom/pan) — values per receiver.c:1736-1772 */
+  apply_averaging();
 
   a_ready = 1;
   g_mutex_unlock(&a_lock);
@@ -124,6 +123,29 @@ int analyzer_get_pixels(float *out, int pixels) {
    * analyzer_destroy are serialized by the caller, so no guard needed here. */
   GetPixels(a_id, 0, out, &flag);
   return flag;
+}
+
+void analyzer_set_fps(int fps) {
+  if (fps < 1) { fps = 1; }
+  g_mutex_lock(&a_lock);
+  if (a_ready) {
+    a_fps = fps;
+    double zz = (double)a_afft * (1.0 - 1.0 / a_zoom);   /* keep current zoom */
+    apply_analyzer(0.5 * zz);   /* overlap/max_w recompute from a_fps */
+    apply_averaging();          /* navg/backmult recompute from a_fps */
+  }
+  g_mutex_unlock(&a_lock);
+}
+
+void analyzer_set_zoom(double zoom) {
+  if (zoom < 1.0) { zoom = 1.0; }
+  g_mutex_lock(&a_lock);
+  if (a_ready) {
+    double zz = (double)a_afft * (1.0 - 1.0 / zoom);  /* total bins to clip */
+    apply_analyzer(0.5 * zz);                          /* centered (pan=0)   */
+    a_zoom = zoom;
+  }
+  g_mutex_unlock(&a_lock);
 }
 
 void analyzer_destroy(void) {
