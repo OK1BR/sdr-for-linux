@@ -164,6 +164,16 @@ executable('sdrfl-swr-test',
   install : false,
 )
 
+# Offline TX safety-gate check (F4, docs/TX-DESIGN.md). Exercises each guard
+# (in-band, PA gate, SWR/open-antenna trip + latch, tune-exempt) with synthetic
+# inputs. Links the band plan for the in-band check. NO radio, NO socket.
+executable('sdrfl-txgate-test',
+  ['src/txgate_test.c', 'src/engine/tx_gate.c', 'src/bandplan.c'],
+  include_directories : [vendor_inc, src_inc, engine_inc],
+  dependencies : [m_dep],
+  install : false,
+)
+
 # Headless Protocol-2 RX -> WDSP demod -> PipeWire audio. Milestone-2 gate.
 # TAKES THE RADIO. SDRFL_TONE=1 plays a test tone with no radio.
 executable('sdrfl-audioprobe',
