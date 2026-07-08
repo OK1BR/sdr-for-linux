@@ -111,6 +111,9 @@ typedef struct {
   int         var_low[8][2], var_high[8][2];  /* editable Var1/Var2 per mode (Hz)  */
   int         drag_edge;     /* dragging a Var passband edge: 0 none, 1 low, 2 high */
   double      drag_begin_x;  /* pointer x at drag-begin (for edge drag)           */
+  double      pan;           /* off-centre pan [-1,1]: 0 = VFO centred (zoom>1 only) */
+  int         drag_pan;      /* shift+drag is panning the view (not tuning)        */
+  double      drag_base_pan; /* pan captured at drag-begin (for shift+drag)        */
   double      flo, fhi;      /* current passband (Hz, rel. centre) — for drawing */
   GtkWidget  *filter_dd;     /* filter dropdown (repopulated per mode)         */
   gint64      ovl0_until;    /* ADC0-overload badge lit until (monotonic µs)   */
@@ -313,12 +316,25 @@ static int cmp_float(const void *a, const void *b) {
 /* Horizontal frequency graticule: faint vertical lines on "nice" frequencies
  * across the visible span, labelled (MHz) in a ruler strip at the very top edge
  * (above the big VFO readout). Model A: span centre = VFO = app->freq. */
+/* Off-centre pan: the view centre is offset from the VFO by this many Hz when
+ * zoomed in and panned (app->pan in [-1,1] of the available slide). */
+static double pan_offset_hz(App *app) {
+  if (app->zoom <= 1.0) { return 0.0; }
+  return app->pan * ((double)app->rate * (1.0 - 1.0 / app->zoom) / 2.0);
+}
+/* Screen x (px) of the VFO / centre line for area width w (w/2 unless panned). */
+static double vfo_x(App *app, int w) {
+  double hz_per_px = (double)app->rate / app->zoom / w;
+  return (double)w / 2.0 - pan_offset_hz(app) / hz_per_px;
+}
+
 static void draw_freq_scale(cairo_t *cr, App *app, int w, int ph) {
   if (w < 2 || app->rate <= 0 || app->zoom <= 0.0) { return; }
   double span      = (double)app->rate / app->zoom;   /* Hz across the width */
   double hz_per_px = span / w;
-  double left_hz   = (double)app->freq - span / 2.0;
-  double right_hz  = (double)app->freq + span / 2.0;
+  double pan_off   = pan_offset_hz(app);
+  double left_hz   = (double)app->freq + pan_off - span / 2.0;
+  double right_hz  = (double)app->freq + pan_off + span / 2.0;
 
   /* Nice tick step (1/2/5·10ⁿ) targeting ~110 px between ticks. */
   double raw  = hz_per_px * 110.0;
@@ -366,8 +382,9 @@ static void draw_band_edges(cairo_t *cr, App *app, int w, int ph) {
   if (!app->show_band_edges || w < 2 || app->rate <= 0 || app->zoom <= 0.0) { return; }
   double span      = (double)app->rate / app->zoom;
   double hz_per_px = span / w;
-  double left_hz   = (double)app->freq - span / 2.0;
-  double right_hz  = (double)app->freq + span / 2.0;
+  double pan_off   = pan_offset_hz(app);
+  double left_hz   = (double)app->freq + pan_off - span / 2.0;
+  double right_hz  = (double)app->freq + pan_off + span / 2.0;
 
   bp_edge_t edges[32];
   int n = bp_edges((bp_region_t)app->bp_region, bp_country_key(app->bp_country), edges, 32);
@@ -451,12 +468,12 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
                                        : client_strerror(app->conn_err);
     char buf[160];
     snprintf(buf, sizeof(buf), "Not connected: %s", msg);
-    panadapter_draw(cr, w, h, NULL, NULL, 0, 1, buf, NULL);
+    panadapter_draw(cr, w, h, NULL, NULL, 0, 1, buf, NULL, 0.5);
     return;
   }
   if (!app->have_frame) {
     panadapter_draw(cr, w, h, NULL, NULL, 0, 1,
-                    app->radio_mode ? "Radio up — calibrating…" : "Connected — waiting for spectrum…", NULL);
+                    app->radio_mode ? "Radio up — calibrating…" : "Connected — waiting for spectrum…", NULL, 0.5);
     return;
   }
 
@@ -484,7 +501,7 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
   cairo_save(cr);
   cairo_rectangle(cr, 0, 0, w, ph);
   cairo_clip(cr);
-  panadapter_draw(cr, w, ph, &app->frame, smoothed, low, span, NULL, bname);
+  panadapter_draw(cr, w, ph, &app->frame, smoothed, low, span, NULL, bname, vfo_x(app, w) / w);
   if (app->radio_mode && (app->show_freq_grid || app->show_freq_scale)) {
     draw_freq_scale(cr, app, w, ph);
   }
@@ -498,7 +515,7 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
   if (app->radio_mode && app->fhi > app->flo) {
     double op = app->filter_op / 100.0;
     double hz_per_px = (double)app->rate / app->zoom / w;
-    double cx = w / 2.0;
+    double cx = vfo_x(app, w);
     double x0 = floor(cx + app->flo / hz_per_px) + 0.5;
     double x1 = floor(cx + app->fhi / hz_per_px) + 0.5;
     cairo_set_source_rgba(cr, 0.35, 0.75, 1.0, op * 0.22);   /* passband fill */
@@ -563,7 +580,7 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
   if (app->radio_mode && app->show_filter_wf && app->fhi > app->flo) {
     double op = app->filter_op / 100.0;
     double hz_per_px = (double)app->rate / app->zoom / w;
-    double cx = w / 2.0;
+    double cx = vfo_x(app, w);
     double x0 = floor(cx + app->flo / hz_per_px) + 0.5;
     double x1 = floor(cx + app->fhi / hz_per_px) + 0.5;
     double xc = floor(cx) + 0.5;
@@ -720,6 +737,7 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
     analyzer_set_zoom(app->pending_zoom);
     app->zoom = app->pending_zoom;
     app->zoom_dirty = 0;
+    if (app->pan != 0.0) { app->pan = 0.0; analyzer_set_pan(0.0); }   /* zoom change recentres */
     update_span_label(app);
   }
   if (app->connected) {
@@ -941,7 +959,7 @@ static int edge_hit(App *app, double x) {
   int w = gtk_widget_get_width(app->area);
   if (w < 1) { return 0; }
   double hzpp = (double)app->rate / app->zoom / w;
-  double cx = w / 2.0;
+  double cx = vfo_x(app, w);
   if (fabs(x - (cx + app->flo / hzpp)) <= FILT_HIT_PX) { return 1; }
   if (fabs(x - (cx + app->fhi / hzpp)) <= FILT_HIT_PX) { return 2; }
   return 0;
@@ -951,13 +969,17 @@ static int edge_hit(App *app, double x) {
  * started in the dB gutter (slides the level window) or on a Var passband edge
  * (drags that edge). Both pans are absolute from drag-begin (no drift). */
 static void on_drag_begin(GtkGestureDrag *g, double x, double y, gpointer data) {
-  (void)g;
   App *app = (App *)data;
+  GdkModifierType mods = gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(g));
   app->drag_gutter = in_gutter(app, x, y);
   app->drag_edge = 0;
+  app->drag_pan = 0;
   if (app->drag_gutter) {
     app->drag_base_high = app->pan_high;
     app->drag_base_low  = app->pan_low;
+  } else if ((mods & GDK_SHIFT_MASK) && app->zoom > 1.0) {   /* shift+drag = pan the view */
+    app->drag_pan = 1;
+    app->drag_base_pan = app->pan;
   } else if (!app->select_mode && (app->drag_edge = edge_hit(app, x))) {
     app->drag_begin_x = x;               /* edge follows the cursor */
   } else {
@@ -981,11 +1003,26 @@ static void on_drag_update(GtkGestureDrag *g, double off_x, double off_y, gpoint
     return;
   }
 
+  if (app->drag_pan) {                    /* shift+drag: slide the zoomed view sideways */
+    int w = gtk_widget_get_width(app->area);
+    double max_off = (double)app->rate * (1.0 - 1.0 / app->zoom) / 2.0;
+    if (w < 1 || app->zoom <= 1.0 || max_off <= 0.0) { return; }
+    double hzpp = (double)app->rate / app->zoom / w;
+    double new_hz = app->drag_base_pan * max_off - off_x * hzpp;   /* drag right → lower freq */
+    double np = new_hz / max_off;
+    if (np < -1.0) { np = -1.0; }
+    if (np >  1.0) { np =  1.0; }
+    app->pan = np;
+    analyzer_set_pan(np);
+    gtk_widget_queue_draw(app->area);
+    return;
+  }
+
   if (app->drag_edge) {                   /* drag a Var passband edge */
     int w = gtk_widget_get_width(app->area);
     if (w < 1) { return; }
     double hzpp = (double)app->rate / app->zoom / w;
-    int f = (int)lround((app->drag_begin_x + off_x - w / 2.0) * hzpp);
+    int f = (int)lround((app->drag_begin_x + off_x - vfo_x(app, w)) * hzpp);
     int v = (app->filter_idx - NPRESET) & 1;
     const int MINW = 50;                  /* keep a minimum passband width */
     if (app->drag_edge == 1) {            /* low edge */
@@ -1040,9 +1077,10 @@ static void click_tune(App *app, double x) {
   int w = gtk_widget_get_width(app->area);
   if (w < 1) { return; }
   double hz_per_px = (double)app->rate / app->zoom / w;
-  long long nf = app->freq + (long long)llround((x - w / 2.0) * hz_per_px);
+  long long nf = app->freq + (long long)llround((x - vfo_x(app, w)) * hz_per_px);
   if (nf < 1) { nf = 1; }
   app->freq = nf;
+  if (app->pan != 0.0) { app->pan = 0.0; analyzer_set_pan(0.0); }   /* recentre on the signal */
   p2_set_frequency(nf);
   schedule_save(app);
 }
@@ -1054,6 +1092,9 @@ static void on_pressed(GtkGestureClick *g, int n_press, double x, double y, gpoi
   App *app = (App *)data;
   if (!app->radio_mode) { return; }
   if (n_press == 2 && in_gutter(app, x, y)) { pan_autofit(app); return; }
+  if (n_press == 2 && !in_gutter(app, x, y) && app->pan != 0.0) {   /* recentre the pan */
+    app->pan = 0.0; analyzer_set_pan(0.0); gtk_widget_queue_draw(app->area); return;
+  }
   if (app->select_mode && n_press == 1 && !in_gutter(app, x, y)) { click_tune(app, x); }
 }
 
@@ -1233,6 +1274,7 @@ static void on_band_clicked(GtkButton *b, gpointer data) {
   int bi = band_for_freq(f);
   if (bi >= 0 && app->band_freq[bi] > 0) { f = app->band_freq[bi]; }  /* last freq on this band */
   app->freq = f;
+  if (app->pan != 0.0) { app->pan = 0.0; analyzer_set_pan(0.0); }   /* new band → recentre */
   p2_set_frequency(f);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(b), TRUE);  /* stay lit (band_apply fixes others) */
   schedule_save(app);

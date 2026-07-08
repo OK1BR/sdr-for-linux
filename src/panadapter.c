@@ -186,8 +186,9 @@ static void draw_spectrum(cairo_t *cr, const float *dbm, int n, int w, int h,
   }
 }
 
-static void draw_center_line(cairo_t *cr, int w, int h) {
-  double x = w / 2.0;
+static void draw_center_line(cairo_t *cr, int w, int h, double vfo_frac) {
+  if (vfo_frac < 0.0 || vfo_frac > 1.0) { return; }   /* VFO panned off-screen */
+  double x = vfo_frac * w;
   cairo_set_source_rgba(cr, 1.0, 0.78, 0.25, 0.45);
   cairo_set_line_width(cr, 1.0);
   cairo_move_to(cr, x + 0.5, 0);
@@ -234,7 +235,7 @@ static void draw_status(cairo_t *cr, const char *msg, int w, int h) {
 void panadapter_draw(cairo_t *cr, int w, int h,
                      const ClientFrame *frame, const float *dbm,
                      double cmap_low, double cmap_span,
-                     const char *status, const char *band) {
+                     const char *status, const char *band, double vfo_frac) {
   /* Background = the palette's noise-floor colour, so the empty area matches the
    * fill under the trace at the floor (and the waterfall) — no cool-grey seam. */
   double br, bg, bb;
@@ -261,6 +262,6 @@ void panadapter_draw(cairo_t *cr, int w, int h,
 
   if (cmap_span < 1.0) cmap_span = 1.0;
   draw_spectrum(cr, vals, frame->width, w, h, cmap_low, cmap_span);
-  draw_center_line(cr, w, h);
+  draw_center_line(cr, w, h, vfo_frac);
   draw_readouts(cr, frame, w, band);
 }

@@ -40,6 +40,14 @@ int analyzer_get_pixels(float *out, int pixels);
  */
 void analyzer_set_zoom(double zoom);
 
+/*
+ * Pan the zoomed view within the captured span: pan in [-1,1], 0 = centred on
+ * the DDC (VFO), +1 = view slid to the high-frequency edge, -1 = the low edge.
+ * No effect at zoom 1. Thread-safe; cheap (only re-splits the clip). The GUI
+ * must offset its VFO-centred overlays by the same pan.
+ */
+void analyzer_set_pan(double pan);
+
 /* Change the target frame rate live (recomputes overlap + averaging; thread-safe).
  * The redraw gate follows automatically as the analyzer emits more/fewer frames. */
 void analyzer_set_fps(int fps);

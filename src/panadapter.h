@@ -29,11 +29,13 @@
  * from waterfall_range().
  *
  * `band`, when non-NULL, is appended to the VFO readout (e.g. "… VFO A · 20m").
+ * `vfo_frac` places the VFO centre line (0..1 across the width; 0.5 = centred,
+ * off-centre when panned). Outside [0,1] the line is hidden (VFO panned away).
  */
 void panadapter_draw(cairo_t *cr, int w, int h,
                      const ClientFrame *frame, const float *dbm,
                      double cmap_low, double cmap_span,
-                     const char *status, const char *band);
+                     const char *status, const char *band, double vfo_frac);
 
 /*
  * Set the visible amplitude window (dBm) for the vertical axis: `high` at the

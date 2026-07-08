@@ -26,6 +26,7 @@ static int      a_afft;
 static int      a_rate;    /* IQ sample rate (full span)                       */
 static int      a_fps;     /* target frames/s                                  */
 static double   a_zoom = 1.0; /* current zoom factor (1 = full span)           */
+static double   a_pan  = 0.0; /* pan in [-1,1]: 0 = centred, +1 = high edge     */
 static double  *a_acc;     /* accumulator: 2*A_BFSIZE doubles (I,Q interleaved) */
 static int      a_fill;    /* sample pairs currently in a_acc                   */
 static int      a_ready;   /* analyzer created                                  */
@@ -42,17 +43,24 @@ static int clamp_afft(int want) {
   return sz > A_MSIZE ? A_MSIZE : sz;
 }
 
-/* (Re)configure the analyzer span. fsc = bins to clip from EACH end (centered,
- * pan=0): 0 = full span; a_afft*(1-1/zoom)/2 = zoomed. Shared by create + zoom;
- * caller holds a_lock. Detector/averaging are set once in create and persist. */
-static void apply_analyzer(double fsc) {
+/* (Re)configure the analyzer span from a_zoom + a_pan (caller holds a_lock).
+ * Zoom clips zz = a_afft*(1-1/zoom) bins total; pan splits them asymmetrically
+ * between the two ends (a_pan -1..+1: 0 = centred, +1 = view at the high edge).
+ * Detector/averaging are set once in create and persist. */
+static void apply_analyzer(void) {
   int    flp[1]    = { 0 };
   double keep_time = 0.1;
   int    overlap   = (int)fmax(0.0, ceil((double)a_afft - (double)a_rate / (double)a_fps));
   int    max_w     = a_afft + (int)fmin(keep_time * (double)a_rate,
                                         keep_time * (double)a_afft * (double)a_fps);
+  double zz   = (a_zoom > 1.0) ? (double)a_afft * (1.0 - 1.0 / a_zoom) : 0.0;
+  double panb = a_pan * 0.5 * zz;
+  double fscL = 0.5 * zz + panb;   /* bins clipped from the low end  */
+  double fscH = 0.5 * zz - panb;   /* bins clipped from the high end */
+  if (fscL < 0.0) { fscL = 0.0; }
+  if (fscH < 0.0) { fscH = 0.0; }
   SetAnalyzer(a_id, 1, 1, 1, flp, a_afft, A_BFSIZE, 5, 14.0, overlap, 0,
-              fsc, fsc, a_pixels, 1, 0, 0.0, 0.0, max_w);
+              fscL, fscH, a_pixels, 1, 0, 0.0, 0.0, max_w);
   /* Normalize to 1 Hz PSD (pass the true sample rate): the noise floor is then
    * invariant to both zoom and FFT size, so no per-zoom level compensation. */
   SetDisplayNormOneHz(a_id, 0, 1);
@@ -92,7 +100,7 @@ int analyzer_create(int id, int pixels, int sample_rate, int fps) {
     return -1;
   }
 
-  apply_analyzer(0.0);   /* full span (no zoom/pan) — values per receiver.c:1736-1772 */
+  apply_analyzer();      /* full span (no zoom/pan) — values per receiver.c:1736-1772 */
   apply_averaging();
 
   a_ready = 1;
@@ -131,9 +139,8 @@ void analyzer_set_fps(int fps) {
   g_mutex_lock(&a_lock);
   if (a_ready) {
     a_fps = fps;
-    double zz = (double)a_afft * (1.0 - 1.0 / a_zoom);   /* keep current zoom */
-    apply_analyzer(0.5 * zz);   /* overlap/max_w recompute from a_fps */
-    apply_averaging();          /* navg/backmult recompute from a_fps */
+    apply_analyzer();   /* keeps current zoom+pan; overlap/max_w recompute from a_fps */
+    apply_averaging();  /* navg/backmult recompute from a_fps */
   }
   g_mutex_unlock(&a_lock);
 }
@@ -143,9 +150,22 @@ void analyzer_set_zoom(double zoom) {
   g_mutex_lock(&a_lock);
   if (a_ready) {
     a_afft = clamp_afft((int)ceil((double)a_pixels * zoom)); /* grow FFT for sharp deep zoom */
-    double zz = (double)a_afft * (1.0 - 1.0 / zoom);         /* total bins to clip */
-    apply_analyzer(0.5 * zz);                                /* centered (pan=0); recomputes overlap */
     a_zoom = zoom;
+    apply_analyzer();                                        /* keeps current pan; recomputes overlap */
+  }
+  g_mutex_unlock(&a_lock);
+}
+
+/* Pan the zoomed view within the captured span: pan in [-1,1], 0 = centred,
+ * -1 = view at the low edge, +1 = the high edge. No effect at zoom 1 (nothing
+ * to slide). Cheap — only re-splits the existing clip, no FFT re-plan. */
+void analyzer_set_pan(double pan) {
+  if (pan < -1.0) { pan = -1.0; }
+  if (pan >  1.0) { pan =  1.0; }
+  g_mutex_lock(&a_lock);
+  if (a_ready) {
+    a_pan = pan;
+    apply_analyzer();
   }
   g_mutex_unlock(&a_lock);
 }
