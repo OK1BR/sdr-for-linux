@@ -65,6 +65,11 @@ typedef struct {
   int raw_adc0;       /* raw AIN word ADC0 (bytes 57-58) — "PA voltage" per     */
                       /* hpsdrsim; UNCALIBRATED for the G1 (needs a live scale) */
   int raw_adc1;       /* raw AIN word ADC1 (bytes 55-56), uncalibrated          */
+  /* TX power sensors (F3, np.c:2652-2667). 16-value moving average of the raw
+   * ALEX coupler words; ~0 on RX (no TX). Convert to watts/SWR via tx_meter.c. */
+  int fwd_raw;        /* ALEX forward-power word (bytes 14-15), averaged        */
+  int rev_raw;        /* ALEX reverse-power word (bytes 22-23), averaged        */
+  int exciter_raw;    /* exciter-power word (bytes 6-7), averaged               */
 } p2_telemetry;
 
 /*

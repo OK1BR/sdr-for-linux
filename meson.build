@@ -155,6 +155,15 @@ executable('sdrfl-txdsp-test',
   install : false,
 )
 
+# Offline TX metering + SWR gate (F3, docs/TX-DESIGN.md). Pure math on synthetic
+# ALEX coupler words — G1 watts + SWR vs piHPSDR. NO radio, NO WDSP.
+executable('sdrfl-swr-test',
+  ['src/swr_test.c', 'src/engine/tx_meter.c'],
+  include_directories : [engine_inc],
+  dependencies : [m_dep],
+  install : false,
+)
+
 # Headless Protocol-2 RX -> WDSP demod -> PipeWire audio. Milestone-2 gate.
 # TAKES THE RADIO. SDRFL_TONE=1 plays a test tone with no radio.
 executable('sdrfl-audioprobe',

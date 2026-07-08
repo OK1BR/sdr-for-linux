@@ -73,6 +73,13 @@ static volatile gint tlm_adc0_ovl = 0;   /* latched, read-and-cleared */
 static volatile gint tlm_adc1_ovl = 0;
 static volatile gint tlm_raw_adc0 = 0;
 static volatile gint tlm_raw_adc1 = 0;
+/* TX power sensors (F3) — 16-value moving averages of the ALEX coupler words.
+ * The exposed values are read by the GUI via atomics; the *_acc accumulators are
+ * touched only by the listener thread (single writer, no atomics needed). */
+static volatile gint tlm_fwd      = 0;
+static volatile gint tlm_rev      = 0;
+static volatile gint tlm_exciter  = 0;
+static int fwd_acc = 0, rev_acc = 0, ex_acc = 0;
 
 static int       cfg_device;
 static long long cfg_freq;       /* read by the timer thread, written by p2_set_frequency */
@@ -446,6 +453,9 @@ void p2_get_telemetry(p2_telemetry *out) {
   out->valid    = g_atomic_int_get(&tlm_valid);
   out->raw_adc0 = g_atomic_int_get(&tlm_raw_adc0);
   out->raw_adc1 = g_atomic_int_get(&tlm_raw_adc1);
+  out->fwd_raw     = g_atomic_int_get(&tlm_fwd);
+  out->rev_raw     = g_atomic_int_get(&tlm_rev);
+  out->exciter_raw = g_atomic_int_get(&tlm_exciter);
   /* read-and-clear: g_atomic_int_and returns the value before the AND */
   out->adc0_overload = g_atomic_int_and(&tlm_adc0_ovl, 0);
   out->adc1_overload = g_atomic_int_and(&tlm_adc1_ovl, 0);
@@ -502,6 +512,18 @@ static void parse_high_priority_status(const unsigned char *buf, int len) {
    * piHPSDR nor Thetis calibrate it) — surface raw, calibrate live later. */
   g_atomic_int_set(&tlm_raw_adc1, ((buf[55] & 0xFF) << 8) | (buf[56] & 0xFF));
   g_atomic_int_set(&tlm_raw_adc0, ((buf[57] & 0xFF) << 8) | (buf[58] & 0xFF));
+
+  /* TX power sensors (np.c:2652-2667): exciter (6/7), forward (14/15), reverse
+   * (22/23), each a 16-value moving average `acc = 15*acc/16 + val; v = acc/16`.
+   * ~0 on RX. Read-only — tx_meter.c turns these into watts + SWR. */
+  int pw;
+  pw = ((buf[ 6] & 0xFF) << 8) | (buf[ 7] & 0xFF);  ex_acc  = (15 * ex_acc)  / 16 + pw;
+  pw = ((buf[14] & 0xFF) << 8) | (buf[15] & 0xFF);  fwd_acc = (15 * fwd_acc) / 16 + pw;
+  pw = ((buf[22] & 0xFF) << 8) | (buf[23] & 0xFF);  rev_acc = (15 * rev_acc) / 16 + pw;
+  g_atomic_int_set(&tlm_exciter, ex_acc  / 16);
+  g_atomic_int_set(&tlm_fwd,     fwd_acc / 16);
+  g_atomic_int_set(&tlm_rev,     rev_acc / 16);
+
   g_atomic_int_set(&tlm_valid, 1);
 
   /* SDRFL_DEBUG_LEVELS: ~1 Hz dump of the raw telemetry (status packets arrive
@@ -511,10 +533,13 @@ static void parse_high_priority_status(const unsigned char *buf, int len) {
   if (dbg) {
     static int n = 0;
     if ((n++ % 20) == 0) {
-      t_print("p2 telemetry: ADC ovl0=%d ovl1=%d  raw_adc0=%d raw_adc1=%d\n",
+      t_print("p2 telemetry: ADC ovl0=%d ovl1=%d  raw_adc0=%d raw_adc1=%d  "
+              "fwd=%d rev=%d exc=%d\n",
               (buf[5] & 0x01), (buf[5] & 0x02) >> 1,
               ((buf[57] & 0xFF) << 8) | (buf[58] & 0xFF),
-              ((buf[55] & 0xFF) << 8) | (buf[56] & 0xFF));
+              ((buf[55] & 0xFF) << 8) | (buf[56] & 0xFF),
+              g_atomic_int_get(&tlm_fwd), g_atomic_int_get(&tlm_rev),
+              g_atomic_int_get(&tlm_exciter));
     }
   }
 }
@@ -659,6 +684,10 @@ int p2_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
   g_atomic_int_set(&tlm_adc1_ovl, 0);
   g_atomic_int_set(&tlm_raw_adc0, 0);
   g_atomic_int_set(&tlm_raw_adc1, 0);
+  g_atomic_int_set(&tlm_fwd, 0);
+  g_atomic_int_set(&tlm_rev, 0);
+  g_atomic_int_set(&tlm_exciter, 0);
+  fwd_acc = rev_acc = ex_acc = 0;
   memset((void *)ddc_sequence, 0, sizeof(ddc_sequence));
 
   p2running = 1;
