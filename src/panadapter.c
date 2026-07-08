@@ -208,13 +208,14 @@ static void draw_readouts(cairo_t *cr, const ClientFrame *f, int w, const char *
   cairo_move_to(cr, 44, 48);   /* pushed down so the top freq ruler sits above it */
   cairo_show_text(cr, buf);
 
-  /* Sub-line: "Hz · VFO A", plus the band-plan band name when supplied. */
-  char sub[48];
+  /* Sub-line under the frequency: "Hz · VFO A", plus the band-plan band +
+   * recommended mode when supplied. Enlarged for legibility. */
+  char sub[64];
   if (band && *band) { snprintf(sub, sizeof sub, "Hz  ·  VFO A  ·  %s", band); }
   else               { snprintf(sub, sizeof sub, "Hz  ·  VFO A"); }
-  cairo_set_font_size(cr, 12.0);
-  cairo_set_source_rgba(cr, 0.55, 0.65, 0.75, 0.8);
-  cairo_move_to(cr, 44, 64);
+  cairo_set_font_size(cr, 15.0);
+  cairo_set_source_rgba(cr, 0.62, 0.72, 0.85, 0.9);
+  cairo_move_to(cr, 44, 68);
   cairo_show_text(cr, sub);
   /* S-meter is drawn by the GUI overlay (graphical bar), not here. */
   (void)w;

@@ -239,3 +239,27 @@ const char *bp_segment_at(bp_region_t region, const char *country_key, int64_t f
   }
   return NULL;
 }
+
+const char *bp_mode_at(bp_region_t region, const char *country_key, int64_t f) {
+  int64_t lo, hi;
+  const char *band = bp_band_for_freq(region, country_key, f, &lo, &hi);
+  if (!band) { return NULL; }
+  int n = 0;
+  const bp_seg_t *t = find_segtab(band, &n);
+  uint16_t u = 0;
+  int found = 0;
+  for (int i = 0; i < n; i++) {
+    if (f >= t[i].lo && f < t[i].hi) { u = t[i].usage; found = 1; break; }
+  }
+  if (!found || u == 0) { return NULL; }         /* no segment data / guard */
+  if (u & BP_BEACON)          { return "Beacon"; }
+  if (u & BP_SAT)             { return "Sat"; }
+  if (u & BP_PHONE) {                            /* voice segment → the sideband */
+    if (f >= 5351500 && f <= 5366500) { return "USB"; }   /* 60 m is USB */
+    return (f < 10000000) ? "LSB" : "USB";
+  }
+  if (u & (BP_NB | BP_DIGI))  { return "Digi"; }
+  if (u & BP_CW)              { return "CW"; }
+  if (u & BP_FM)              { return "FM"; }
+  return NULL;
+}

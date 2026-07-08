@@ -359,23 +359,9 @@ static void draw_freq_scale(cairo_t *cr, App *app, int w, int ph) {
   }
 }
 
-/* Muted, semi-transparent colour per band-plan usage (for the segment ribbon).
- * Checked most-specific first: an "all modes" segment carries the PHONE bit. */
-static void seg_usage_rgb(uint16_t u, double *r, double *g, double *b) {
-  if      (u == 0)              { *r = 0.50; *g = 0.50; *b = 0.55; }  /* guard      */
-  else if (u & BP_BEACON)      { *r = 0.90; *g = 0.42; *b = 0.85; }  /* beacon  — magenta */
-  else if (u & BP_SAT)         { *r = 0.28; *g = 0.80; *b = 0.80; }  /* satellite — teal  */
-  else if (u & BP_PHONE)       { *r = 0.40; *g = 0.85; *b = 0.50; }  /* all/phone — green */
-  else if (u & (BP_NB|BP_DIGI)){ *r = 0.96; *g = 0.70; *b = 0.26; }  /* narrow/digi — amber */
-  else if (u & BP_CW)          { *r = 0.42; *g = 0.62; *b = 0.96; }  /* CW — blue   */
-  else if (u & BP_FM)          { *r = 0.66; *g = 0.50; *b = 0.96; }  /* FM — purple */
-  else                         { *r = 0.55; *g = 0.70; *b = 0.62; }
-}
-
-/* Band-plan overlay: a thin usage-coloured segment ribbon along the bottom edge
- * (in the noise-floor strip, so it never covers signals) + dashed amber lines at
- * the band edges. The band NAME is shown in the VFO readout, not here. Region +
- * national overlay come from bandplan.h; same freq→x frame as draw_freq_scale. */
+/* Band-plan overlay: dashed amber lines at the amateur band edges in view. The
+ * band name + recommended mode go in the VFO readout (see bp_mode_at), not on
+ * the spectrum. Same freq→x frame as draw_freq_scale. */
 static void draw_band_edges(cairo_t *cr, App *app, int w, int ph) {
   if (!app->show_band_edges || w < 2 || app->rate <= 0 || app->zoom <= 0.0) { return; }
   double span      = (double)app->rate / app->zoom;
@@ -386,50 +372,18 @@ static void draw_band_edges(cairo_t *cr, App *app, int w, int ph) {
   bp_edge_t edges[32];
   int n = bp_edges((bp_region_t)app->bp_region, bp_country_key(app->bp_country), edges, 32);
 
-  /* Segment ribbon along the bottom (drawn first; the edge lines sit on top).
-   * A dark backing masks the spectrum fill so the segment colours read true. */
-  const double RIB_H = 7.0;
-  double ry = (double)ph - RIB_H;
-  if (n > 0) {
-    cairo_set_source_rgba(cr, 0.03, 0.04, 0.07, 0.92);   /* dark base */
-    cairo_rectangle(cr, 0, ry, w, RIB_H);
-    cairo_fill(cr);
-  }
-  bp_seg_t segs[48];
-  for (int i = 0; i < n; i++) {
-    if ((double)edges[i].hi < left_hz || (double)edges[i].lo > right_hz) { continue; }
-    int ns = bp_segments((bp_region_t)app->bp_region, edges[i].band, segs, 48);
-    for (int s = 0; s < ns; s++) {
-      double sl = (double)segs[s].lo, sh = (double)segs[s].hi;
-      if (sh < left_hz || sl > right_hz) { continue; }
-      double x0 = (sl - left_hz) / hz_per_px; if (x0 < 0) { x0 = 0; }
-      double x1 = (sh - left_hz) / hz_per_px; if (x1 > w) { x1 = w; }
-      if (x1 <= x0) { continue; }
-      double r, g, b; seg_usage_rgb(segs[s].usage, &r, &g, &b);
-      cairo_set_source_rgba(cr, r, g, b, 0.85);
-      cairo_rectangle(cr, x0, ry, x1 - x0, RIB_H);
-      cairo_fill(cr);
-    }
-  }
-  if (n > 0) {   /* hairline setting the ribbon off from the spectrum */
-    cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.5);
-    cairo_set_line_width(cr, 1.0);
-    cairo_move_to(cr, 0, ry - 0.5); cairo_line_to(cr, w, ry - 0.5);
-    cairo_stroke(cr);
-  }
-
-  /* Dashed amber band-edge markers (full height), over the ribbon. */
+  /* Dashed amber band-edge markers (full height). */
   const double edge_dash[] = { 4.0, 3.0 };
   cairo_set_line_width(cr, 1.0);
   cairo_set_dash(cr, edge_dash, 2, 0);
-  cairo_set_source_rgba(cr, 1.0, 0.66, 0.2, 0.5);
+  cairo_set_source_rgba(cr, 1.0, 0.66, 0.2, 0.45);
   for (int i = 0; i < n; i++) {
     for (int e = 0; e < 2; e++) {
       double f = e ? (double)edges[i].hi : (double)edges[i].lo;
       if (f < left_hz || f > right_hz) { continue; }
       double x = floor((f - left_hz) / hz_per_px) + 0.5;
       cairo_move_to(cr, x, 0);
-      cairo_line_to(cr, x, ry);   /* stop at the ribbon top */
+      cairo_line_to(cr, x, ph);
       cairo_stroke(cr);
     }
   }
@@ -513,11 +467,19 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
   waterfall_range(app->wf, &low, &span);
 
   const float *smoothed = (app->ema_w == app->frame.width) ? app->ema : NULL;
-  /* Band name for the readout (only when the band-plan overlay is on). */
+  /* Band + recommended mode for the readout, e.g. "20m · USB" (band-plan on). */
   const char *bname = NULL;
+  char bandinfo[48];
   if (app->radio_mode && app->show_band_edges) {
-    bname = bp_band_for_freq((bp_region_t)app->bp_region,
-                             bp_country_key(app->bp_country), app->freq, NULL, NULL);
+    const char *bn = bp_band_for_freq((bp_region_t)app->bp_region,
+                                      bp_country_key(app->bp_country), app->freq, NULL, NULL);
+    if (bn) {
+      const char *md = bp_mode_at((bp_region_t)app->bp_region,
+                                  bp_country_key(app->bp_country), app->freq);
+      if (md) { snprintf(bandinfo, sizeof bandinfo, "%s · %s", bn, md); }
+      else    { snprintf(bandinfo, sizeof bandinfo, "%s", bn); }
+      bname = bandinfo;
+    }
   }
   cairo_save(cr);
   cairo_rectangle(cr, 0, 0, w, ph);
@@ -1845,6 +1807,9 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
     gtk_box_append(GTK_BOX(content), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
   }
   gtk_box_append(GTK_BOX(content), app->area);
+  if (app->radio_mode) {   /* thin line under the waterfall too, mirroring the top */
+    gtk_box_append(GTK_BOX(content), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
+  }
   adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(tv), content);
   if (app->radio_mode) {
     adw_toolbar_view_add_bottom_bar(ADW_TOOLBAR_VIEW(tv), build_bottom_controls(app));

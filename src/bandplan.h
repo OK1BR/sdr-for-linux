@@ -85,4 +85,11 @@ int bp_segments(bp_region_t region, const char *band, bp_seg_t *out, int max);
  */
 const char *bp_segment_at(bp_region_t region, const char *country_key, int64_t f);
 
+/*
+ * Concise recommended mode for the segment at `f` — "CW" / "Digi" / "LSB" / "USB"
+ * (voice segments resolve to the band's sideband) / "Beacon" / "Sat" / "FM", or
+ * NULL if `f` is out of band or has no segment data. For the VFO readout.
+ */
+const char *bp_mode_at(bp_region_t region, const char *country_key, int64_t f);
+
 #endif /* SDRFL_BANDPLAN_H */
