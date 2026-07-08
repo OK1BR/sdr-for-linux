@@ -27,11 +27,13 @@
  * `cmap_low` / `cmap_span` set the dBm->colour mapping (noise floor and dB
  * span) so the trace and its fill share the waterfall's hues — pass the values
  * from waterfall_range().
+ *
+ * `band`, when non-NULL, is appended to the VFO readout (e.g. "… VFO A · 20m").
  */
 void panadapter_draw(cairo_t *cr, int w, int h,
                      const ClientFrame *frame, const float *dbm,
                      double cmap_low, double cmap_span,
-                     const char *status);
+                     const char *status, const char *band);
 
 /*
  * Set the visible amplitude window (dBm) for the vertical axis: `high` at the

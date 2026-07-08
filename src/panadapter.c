@@ -195,7 +195,7 @@ static void draw_center_line(cairo_t *cr, int w, int h) {
   cairo_stroke(cr);
 }
 
-static void draw_readouts(cairo_t *cr, const ClientFrame *f, int w) {
+static void draw_readouts(cairo_t *cr, const ClientFrame *f, int w, const char *band) {
   char buf[64];
 
   /* VFO frequency (big), top-left. Prefer CTUN if it differs from the dial. */
@@ -208,10 +208,14 @@ static void draw_readouts(cairo_t *cr, const ClientFrame *f, int w) {
   cairo_move_to(cr, 44, 48);   /* pushed down so the top freq ruler sits above it */
   cairo_show_text(cr, buf);
 
+  /* Sub-line: "Hz · VFO A", plus the band-plan band name when supplied. */
+  char sub[48];
+  if (band && *band) { snprintf(sub, sizeof sub, "Hz  ·  VFO A  ·  %s", band); }
+  else               { snprintf(sub, sizeof sub, "Hz  ·  VFO A"); }
   cairo_set_font_size(cr, 12.0);
   cairo_set_source_rgba(cr, 0.55, 0.65, 0.75, 0.8);
   cairo_move_to(cr, 44, 64);
-  cairo_show_text(cr, "Hz  ·  VFO A");
+  cairo_show_text(cr, sub);
   /* S-meter is drawn by the GUI overlay (graphical bar), not here. */
   (void)w;
 }
@@ -229,7 +233,7 @@ static void draw_status(cairo_t *cr, const char *msg, int w, int h) {
 void panadapter_draw(cairo_t *cr, int w, int h,
                      const ClientFrame *frame, const float *dbm,
                      double cmap_low, double cmap_span,
-                     const char *status) {
+                     const char *status, const char *band) {
   /* Background = the palette's noise-floor colour, so the empty area matches the
    * fill under the trace at the floor (and the waterfall) — no cool-grey seam. */
   double br, bg, bb;
@@ -257,5 +261,5 @@ void panadapter_draw(cairo_t *cr, int w, int h,
   if (cmap_span < 1.0) cmap_span = 1.0;
   draw_spectrum(cr, vals, frame->width, w, h, cmap_low, cmap_span);
   draw_center_line(cr, w, h);
-  draw_readouts(cr, frame, w);
+  draw_readouts(cr, frame, w, band);
 }

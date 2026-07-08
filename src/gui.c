@@ -359,7 +359,7 @@ static void draw_freq_scale(cairo_t *cr, App *app, int w, int ph) {
 }
 
 /* Band-plan overlay: dashed amber lines at the amateur band edges that fall in
- * view, and the band name centred in each visible band's span. Region + national
+ * view (the band NAME is shown in the VFO readout, not here). Region + national
  * overlay come from bandplan.h; drawn in the same freq→x frame as draw_freq_scale. */
 static void draw_band_edges(cairo_t *cr, App *app, int w, int ph) {
   if (!app->show_band_edges || w < 2 || app->rate <= 0 || app->zoom <= 0.0) { return; }
@@ -391,23 +391,6 @@ static void draw_band_edges(cairo_t *cr, App *app, int w, int ph) {
       cairo_stroke(cr);
     }
     cairo_set_dash(cr, NULL, 0, 0);
-
-    /* Band name, centred within the visible portion of this band, near the bottom. */
-    double vlo = (double)edges[i].lo < left_hz  ? left_hz  : (double)edges[i].lo;
-    double vhi = (double)edges[i].hi > right_hz ? right_hz : (double)edges[i].hi;
-    double cx  = ((vlo + vhi) / 2.0 - left_hz) / hz_per_px;
-    cairo_text_extents_t ext;
-    cairo_text_extents(cr, edges[i].band, &ext);
-    double lx = cx - ext.width / 2.0;
-    if (lx < 2) { lx = 2; }
-    if (lx + ext.width > w - 2) { lx = w - 2 - ext.width; }
-    double ty = ph - 7.0;
-    cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.42);              /* legibility pill */
-    cairo_rectangle(cr, lx - 3, ty - ext.height - 2, ext.width + 6, ext.height + 5);
-    cairo_fill(cr);
-    cairo_set_source_rgba(cr, 1.0, 0.76, 0.36, 0.95);
-    cairo_move_to(cr, lx, ty);
-    cairo_show_text(cr, edges[i].band);
   }
 }
 
@@ -472,12 +455,12 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
                                        : client_strerror(app->conn_err);
     char buf[160];
     snprintf(buf, sizeof(buf), "Not connected: %s", msg);
-    panadapter_draw(cr, w, h, NULL, NULL, 0, 1, buf);
+    panadapter_draw(cr, w, h, NULL, NULL, 0, 1, buf, NULL);
     return;
   }
   if (!app->have_frame) {
     panadapter_draw(cr, w, h, NULL, NULL, 0, 1,
-                    app->radio_mode ? "Radio up — calibrating…" : "Connected — waiting for spectrum…");
+                    app->radio_mode ? "Radio up — calibrating…" : "Connected — waiting for spectrum…", NULL);
     return;
   }
 
@@ -488,10 +471,16 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
   waterfall_range(app->wf, &low, &span);
 
   const float *smoothed = (app->ema_w == app->frame.width) ? app->ema : NULL;
+  /* Band name for the readout (only when the band-plan overlay is on). */
+  const char *bname = NULL;
+  if (app->radio_mode && app->show_band_edges) {
+    bname = bp_band_for_freq((bp_region_t)app->bp_region,
+                             bp_country_key(app->bp_country), app->freq, NULL, NULL);
+  }
   cairo_save(cr);
   cairo_rectangle(cr, 0, 0, w, ph);
   cairo_clip(cr);
-  panadapter_draw(cr, w, ph, &app->frame, smoothed, low, span, NULL);
+  panadapter_draw(cr, w, ph, &app->frame, smoothed, low, span, NULL, bname);
   if (app->radio_mode && (app->show_freq_grid || app->show_freq_scale)) {
     draw_freq_scale(cr, app, w, ph);
   }
