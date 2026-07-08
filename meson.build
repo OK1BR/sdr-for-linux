@@ -174,6 +174,18 @@ executable('sdrfl-txgate-test',
   install : false,
 )
 
+# FIRST-KEYING probe (F5, docs/TX-DESIGN.md). KEYS THE RADIO — dummy load on ANT1,
+# piHPSDR disconnected, operator present. Safe defaults: PA off, drive 0. Links the
+# TX DSP + metering + safety gate + band plan + engine + WDSP.
+executable('sdrfl-txkey',
+  ['src/txkey_main.c', 'src/engine/tx.c', 'src/engine/tx_meter.c',
+   'src/engine/tx_gate.c', 'src/bandplan.c'] + engine_sources,
+  include_directories : [vendor_inc, src_inc, engine_inc],
+  dependencies : engine_deps + [wdsp_dep, m_dep],
+  override_options : ['c_std=gnu11'],
+  install : false,
+)
+
 # Headless Protocol-2 RX -> WDSP demod -> PipeWire audio. Milestone-2 gate.
 # TAKES THE RADIO. SDRFL_TONE=1 plays a test tone with no radio.
 executable('sdrfl-audioprobe',

@@ -66,4 +66,14 @@ void tx_gate_reset(void);
  * trip latch. Writes the result into *out. */
 void tx_gate_evaluate(const tx_gate_cfg *cfg, const tx_gate_in *in, tx_gate_result *out);
 
+/*
+ * Convert a requested power (watts) to the 0-255 exciter drive byte, using
+ * piHPSDR's calcLevel (radio.c:2879) with the per-band PA calibration (dB). This
+ * RESPECTS the PA gain: with the G1 default pa_calibration = 53 dB, rated 100 W is
+ * only byte ~51, so a raw byte near 255 would massively overdrive (and destroy)
+ * the PA. Always drive the PA through this, never a raw byte guess. Returns 0 for
+ * watts <= 0; result clamped to [0,255].
+ */
+int tx_calc_drive_byte(double watts, double pa_calibration);
+
 #endif /* SDRFL_ENGINE_TX_GATE_H */

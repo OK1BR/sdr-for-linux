@@ -145,6 +145,21 @@ int p2_build_high_priority(unsigned char *buf, int device, long long rx_freq_hz,
 int p2_build_transmit_specific(unsigned char *buf, const p2_tx_cw *cw);
 
 /*
+ * Live TX state for the running link (F5, docs/TX-DESIGN.md). Pass a non-NULL
+ * state to make the High-Priority / General / Transmit-specific packets carry TX
+ * (MOX, drive, ALEX_TX_RELAY, PA-enable, attenuators→31, nDAC=1); pass NULL to
+ * revert to the RX-only off state. Thread-safe; the keepalive timer applies it
+ * within ≤100 ms, and while a TX state is set it also refreshes the General
+ * (PA-enable) packet every cycle so PA-enable can never lag the relay.
+ *
+ * ⛔ Passing a keyed state here is what makes the radio transmit. Only the F5+
+ * keying path (through tx_gate, into a dummy load, with the full TX-SAFETY
+ * checklist satisfied and the operator present) may call this. The GUI app never
+ * calls it until the TX control surface is wired.
+ */
+void p2_set_tx_state(const p2_tx_state *tx);
+
+/*
  * ---- TX IQ path (F2, docs/TX-DESIGN.md) -----------------------------------
  *
  * The mic->DUC IQ (from the WDSP TX channel, src/engine/tx.c) is encoded to the

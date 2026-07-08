@@ -47,14 +47,14 @@ int main(void) {
   double fwd_m = tx_meter_fwd_w();
   snprintf(det, sizeof det, "swr=%.3f fwd=%.2fW", swr_m, fwd_m);
   ok("matched SWR ~ 1.0", fabs(swr_m - 1.0) < 0.05, det);
-  ok("forward power plausible (15-25 W)", fwd_m > 15.0 && fwd_m < 25.0, "");
+  ok("forward power plausible (40-55 W)", fwd_m > 40.0 && fwd_m < 55.0, "");
 
   /* ---- ~2:1 mismatch: fwd_raw=2000 rev_raw=770 → SWR ~ 2.0 ----------- */
   printf("\n[2:1] fwd_raw=2000 rev_raw=770 → SWR ~ 2.0:\n");
   double swr_2 = converge(2000, 770, 0, 60);
   snprintf(det, sizeof det, "swr=%.3f fwd=%.2fW rev=%.2fW", swr_2, tx_meter_fwd_w(), tx_meter_rev_w());
   ok("2:1 mismatch SWR ~ 2.0", swr_2 > 1.85 && swr_2 < 2.15, det);
-  ok("reverse power plausible (2-2.6 W)", tx_meter_rev_w() > 2.0 && tx_meter_rev_w() < 2.6, "");
+  ok("reverse power plausible (4.5-6 W)", tx_meter_rev_w() > 4.5 && tx_meter_rev_w() < 6.0, "");
 
   /* ---- monotonic: more reflected power → higher SWR ------------------ */
   printf("\n[monotonic] SWR rises with reflected power:\n");

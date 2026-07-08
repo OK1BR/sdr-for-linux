@@ -7,6 +7,7 @@
  * latch until release, and we also run the Thetis open-antenna test. It computes
  * only — the F5 layer decides to send.
  */
+#include <math.h>
 #include <string.h>
 
 #include "tx_gate.h"
@@ -88,4 +89,19 @@ void tx_gate_evaluate(const tx_gate_cfg *cfg, const tx_gate_in *in, tx_gate_resu
   out->state.antenna    = cfg->antenna;
   out->keyed   = 1;
   out->tripped = 0;
+}
+
+int tx_calc_drive_byte(double watts, double pa_calibration) {
+  if (watts <= 0.0) { return 0; }
+  double target_dbm   = 10.0 * log10(watts * 1000.0) - pa_calibration;
+  double target_volts = sqrt(pow(10.0, target_dbm * 0.1) * 0.05);
+  double volts        = target_volts / 0.8;
+  if (volts > 1.0) { volts = 1.0; }
+  double actual = volts * (1.0 / 0.98);
+  if (actual < 0.0) { actual = 0.0; }
+  if (actual > 1.0) { actual = 1.0; }
+  int level = (int)(actual * 255.0);
+  if (level < 0)   { level = 0; }
+  if (level > 255) { level = 255; }
+  return level;
 }

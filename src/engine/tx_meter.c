@@ -13,8 +13,13 @@
 
 #include "tx_meter.h"
 
-/* G1 (ANAN-7000 PA board, Hermes-class 3.3 V ADCs) — transmitter.c:645-662. */
-#define G1_C1        3.3     /* constant1: ADC full-scale volts   */
+/* G1 (ANAN-7000 PA board) — base constants from transmitter.c:645-662, EXCEPT C1.
+ * C1 is the slow-ADC full-scale voltage; Thetis/piHPSDR assume 3.3 V for the G1,
+ * but a live wattmeter check on this G1 (OK1BR, 20 m, byte 20 → 16 W measured vs
+ * 7 W computed) shows 5.0 V: (5.0/3.3)^2 = 2.29 ≈ the 2.26× under-read, and it
+ * scales fwd+rev together so SWR is unchanged. TODO(F6): make this a per-radio
+ * calibration setting rather than a compile-time constant. */
+#define G1_C1        5.0     /* constant1: ADC full-scale volts (calibrated, was 3.3) */
 #define G1_C2        0.12    /* constant2: forward coupler        */
 #define G1_RC2_HF    0.15    /* rconstant2 on HF                  */
 #define G1_RC2_6M    0.70    /* rconstant2 on 6 m                 */

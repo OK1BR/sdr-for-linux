@@ -85,6 +85,9 @@ static int       cfg_device;
 static long long cfg_freq;       /* read by the timer thread, written by p2_set_frequency */
 static GMutex    freq_lock;      /* fences cfg_freq across the GUI/timer threads */
 static gint      cfg_atten;      /* ADC0 step attenuator dB (0-31), atomic; HP byte 1443 */
+static p2_tx_state cfg_tx;        /* live TX state (F5); applied only when cfg_tx_on */
+static int         cfg_tx_on;     /* 0 = RX-only (the default/off), 1 = apply cfg_tx */
+static GMutex      tx_state_lock; /* fences cfg_tx across the GUI/timer threads */
 static int       cfg_sample_rate;
 static int       cfg_ddc;        /* DDC index for this device (0 for G1) */
 static p2_iq_cb  cfg_cb;
@@ -177,7 +180,9 @@ int p2_build_high_priority(unsigned char *buf, int device, long long rx_freq_hz,
   buf[2] = (high_priority_sequence >>  8) & 0xFF;
   buf[3] = (high_priority_sequence      ) & 0xFF;
   buf[4] = run ? 1 : 0;              // run bit
-  if (xmit) { buf[4] |= 0x02; }      // MOX (np.c:775). Internal-keyer CW suppression is F6.
+  if (run && xmit) { buf[4] |= 0x02; } // MOX — only with the run bit set, so a stopped/
+                                     // park packet (run=0) can never carry MOX (safety).
+                                     // (np.c:775; internal-keyer CW suppression is F6.)
   buf[ 9] = (rx_phase >> 24) & 0xFF; // DDC0 phase (band-filter follows this)
   buf[10] = (rx_phase >> 16) & 0xFF;
   buf[11] = (rx_phase >>  8) & 0xFF;
@@ -400,7 +405,10 @@ static void send_packet(const unsigned char *buf, int len,
 
 static void send_general(void) {
   unsigned char buf[GENERAL_LEN];
-  int len = p2_build_general(buf, 0);   /* pa_enabled=0 hardcoded — no-TX guarantee */
+  g_mutex_lock(&tx_state_lock);
+  int pa = cfg_tx_on ? cfg_tx.pa_enabled : 0;   /* PA-enable only from a live TX state */
+  g_mutex_unlock(&tx_state_lock);
+  int len = p2_build_general(buf, pa);
   send_packet(buf, len, &base_addr, base_len, "general");
   general_sequence++;
 }
@@ -414,7 +422,22 @@ static void send_receive_specific(void) {
 
 static void send_transmit_specific(void) {
   unsigned char buf[TX_SPECIFIC_LEN];
-  int len = p2_build_transmit_specific(buf, NULL);  /* cw=NULL → all-zero, no keyer */
+  g_mutex_lock(&tx_state_lock);
+  int on = cfg_tx_on;
+  int pa = cfg_tx.pa_enabled;
+  g_mutex_unlock(&tx_state_lock);
+  int len;
+  if (on) {
+    /* Minimal TX-specific for keying: nDAC=1 + attenuators (with PA). NO internal
+     * CW keyer (the FPGA must never key CW here) and mic PTT disabled. */
+    p2_tx_cw cw;
+    memset(&cw, 0, sizeof(cw));
+    cw.pa_enabled       = pa;
+    cw.mic_ptt_disabled = 1;
+    len = p2_build_transmit_specific(buf, &cw);
+  } else {
+    len = p2_build_transmit_specific(buf, NULL);  /* all-zero (RX, no keyer) */
+  }
   send_packet(buf, len, &transmitter_addr, transmitter_len, "tx-specific");
   tx_specific_sequence++;
 }
@@ -424,7 +447,12 @@ static void send_high_priority(int run) {
   g_mutex_lock(&freq_lock);
   long long freq = cfg_freq;
   g_mutex_unlock(&freq_lock);
-  int len = p2_build_high_priority(buf, cfg_device, freq, run, NULL);  /* tx=NULL → RX-only */
+  g_mutex_lock(&tx_state_lock);
+  int on = cfg_tx_on;
+  p2_tx_state tx = cfg_tx;
+  g_mutex_unlock(&tx_state_lock);
+  if (on && tx.tx_freq == 0) { tx.tx_freq = freq; }  /* default TX freq = RX freq (no split) */
+  int len = p2_build_high_priority(buf, cfg_device, freq, run, on ? &tx : NULL);
   send_packet(buf, len, &high_priority_addr, high_priority_len, "high-priority");
   high_priority_sequence++;
 }
@@ -446,6 +474,13 @@ void p2_set_attenuation(int db) {
   if (db < 0)  { db = 0; }
   if (db > 31) { db = 31; }
   g_atomic_int_set(&cfg_atten, db);
+}
+
+void p2_set_tx_state(const p2_tx_state *tx) {
+  g_mutex_lock(&tx_state_lock);
+  if (tx) { cfg_tx = *tx; cfg_tx_on = 1; }
+  else    { memset(&cfg_tx, 0, sizeof(cfg_tx)); cfg_tx_on = 0; }
+  g_mutex_unlock(&tx_state_lock);
 }
 
 void p2_get_telemetry(p2_telemetry *out) {
@@ -618,6 +653,12 @@ static gpointer timer_thread(gpointer data) {
       cycling = 0;
       break;
     }
+    /* While a live TX state is set, refresh General (PA-enable) every cycle so it
+     * can never lag the HP relay/MOX (case 8 already sent it this cycle). */
+    g_mutex_lock(&tx_state_lock);
+    int tx_active = cfg_tx_on;
+    g_mutex_unlock(&tx_state_lock);
+    if (tx_active && cycling != 0) { send_general(); }
     usleep(100000);
   }
   return NULL;
@@ -688,6 +729,10 @@ int p2_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
   g_atomic_int_set(&tlm_rev, 0);
   g_atomic_int_set(&tlm_exciter, 0);
   fwd_acc = rev_acc = ex_acc = 0;
+  g_mutex_lock(&tx_state_lock);          /* start RX-only: no latched TX state */
+  memset(&cfg_tx, 0, sizeof(cfg_tx));
+  cfg_tx_on = 0;
+  g_mutex_unlock(&tx_state_lock);
   memset((void *)ddc_sequence, 0, sizeof(ddc_sequence));
 
   p2running = 1;
@@ -711,6 +756,13 @@ void p2_rx_stop(void) {
   p2running = 0;
   if (timer_tid)    { g_thread_join(timer_tid);    timer_tid = NULL; }
   if (listener_tid) { g_thread_join(listener_tid); listener_tid = NULL; }
+
+  /* Safety: the shutdown packet must NEVER carry a keyed TX state — force
+   * RX-off before parking, whatever the caller left set. */
+  g_mutex_lock(&tx_state_lock);
+  memset(&cfg_tx, 0, sizeof(cfg_tx));
+  cfg_tx_on = 0;
+  g_mutex_unlock(&tx_state_lock);
 
   /* Stop streaming AND park the RF path: run=0 packets carry zeroed Alex
    * words, dropping the ANT/BPF/LPF relays so the RX input sits disconnected
