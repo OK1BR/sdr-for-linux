@@ -211,23 +211,27 @@ ANT1. Feeds the TX-antenna bits in alex0/alex1 and the existing RX ANT relay.
 Each phase is independently testable offline or with the PA disabled; keying
 happens only at F5.
 
-| Phase | Content | Gate / acceptance | RF possible? |
-|---|---|---|---|
-| **F0** | This design doc + safety checklist mapping | doc reviewed | no |
-| **F1** | TX bytes in the builders, **MOX/PA/drive hard-0**; offline `sdrfl-txprobe` hexdumps every TX byte vs piHPSDR | offline gate passes, no radio | **no** (forced-off) |
-| **F2** | WDSP TX channel + mic→DUC IQ chain + port-1029 sender; offline `sdrfl-txdsp-test` (tone in → verify IQ out) | DSP verified offline; still no MOX/PA | no |
-| **F3** | Parse fwd/rev/exciter power (read-only) + G1 SWR calc; surface on the meter (reads ~0 on RX) | matches piHPSDR meters live on RX | no (read-only) |
-| **F4** | Safety layer: in-band, PA gate, drive-0, SWR shutdown (drop-MOX policy), open-ant detect, atten-31, T/R gate — key-down still stubbed | each guard unit-tested; checklist review | no (stub) |
-| **F5** | **FIRST KEYING — TUNE into a dummy load.** Two drive sliders wired; min `tune_drive`; Richard present; watch fwd/SWR. Re-ask explicit consent; full `TX-SAFETY.md` green. | controlled tone at set power into dummy load | **YES — gated** |
-| **F6** | SSB + CW voice, PTT/MOX buttons, mic path, CW keyer, TX meters in UI | on-air with dummy load then antenna | yes |
-| **F7** | PureSignal (predistortion) — optional, later | — | yes |
+| Phase | Content | Status (commit) |
+|---|---|---|
+| **F0** | This design doc + safety checklist mapping | ✅ done (a2d32df) |
+| **F1** | TX bytes in the builders, **MOX/PA/drive hard-0**; offline `sdrfl-txprobe` | ✅ done, 41/41 (2eff0e9) |
+| **F2** | WDSP TX channel + mic→DUC IQ chain + port-1029 framer (dormant); `sdrfl-txdsp-test` | ✅ done, 12/12 (2c36926) |
+| **F3** | fwd/rev/exciter parse (read-only) + G1 watts/SWR (`tx_meter`); `sdrfl-swr-test` | ✅ done, 8/8 (4f80abd) |
+| **F4** | Safety gate `tx_gate` (in-band, PA gate, SWR/open-ant shutdown, tune-exempt); `sdrfl-txgate-test` | ✅ done, 12/12 (f11a0c4) |
+| **F5** | **FIRST KEYING** via headless `sdrfl-txkey` — TUNE into a dummy load through `tx_gate` | ✅ **done, keyed live** (d3776e5) |
+| **F6** | TX into the GUI app: **a)** controls+meter · **b)** cal settings · **c)** mic/SSB · **d)** CW | ⏳ next (F6a first) |
+| **F7** | PureSignal (predistortion) — optional, later | — |
 
-**Deferred / open (revisit at the relevant phase):**
-- Mic source for voice (F6): radio mic jack (P2 mic-to-host 1026) vs host
-  soundcard (PipeWire). TUNE needs neither.
-- Absolute power calibration (`pa_trim`, per-band `pa_calibration`) — measure live
-  against a wattmeter before the watt readout means anything.
-- CW break-in/QSK timing, sidetone.
+**F6 breakdown (next; F6a chosen to start):**
+- **F6a** — GUI TX controls: link tx.c/tx_meter/tx_gate into the app; **MOX + TUNE
+  buttons**, **two drive sliders (Drive + Tune drive) in WATTS** (via
+  `tx_calc_drive_byte`), **TX meter (fwd power + SWR)**. TUNE-first, then MOX. This
+  is where the GUI app becomes TX-capable (until now only `sdrfl-txkey` can key).
+- **F6b** — Settings: **per-band** `pa_calibration` + per-radio forward-power
+  calibration (multi-point) in `config.ini` + the settings dialog.
+- **F6c** — Mic path for SSB voice: radio mic jack (P2 mic-to-host 1026) vs host
+  soundcard (PipeWire) → `tx_dsp`. TUNE needs neither.
+- **F6d** — CW keyer, sidetone, break-in/QSK.
 
 ---
 
@@ -247,6 +251,40 @@ happens only at F5.
 
 ---
 
-*Written F0, 2026-07-08. Byte offsets cross-verified against piHPSDR @974acba by
-first-hand read (MOX/`TX_RELAY`/atten/SWR) + three-way audit (full wire format,
-TX DSP/audio/SWR, control/safety gating).*
+## 7. F5 live-keying results + calibration (ANAN G1, OK1BR, 2026-07-08)
+
+First keying done with `sdrfl-txkey` into a 50 Ω dummy load on ANT1 (20 m), piHPSDR
+disconnected, operator at the wattmeter. Staged, and each keying watched:
+
+| Step | Sent | Result |
+|---|---|---|
+| Dry key | PA **off**, drive 0 | T/R relay clicked (radio entered TX), **wattmeter 0** — keying mechanism proven with no RF |
+| First RF | PA on, byte 5 | fwd sensor 0.12 W (wattmeter didn't resolve it) |
+| Ramp | byte 20 | **wattmeter 16 W** |
+| Watts path | request 10 W (pa_cal 53 → byte 16) | **wattmeter 10 W**, SWR 1.00 |
+
+**Calibration findings (this G1):**
+- **`pa_calibration` = 53 dB (the piHPSDR default) is CORRECT here.** The watts path
+  (`tx_calc_drive_byte` = calcLevel) is accurate: request 10 W → 10 W measured. The
+  byte→watts curve is nonlinear at low drive (~byte³), so calcLevel is approximate.
+- **Forward-power sensor was 2.3× low** with the Thetis constant `C1 = 3.3`; the fix
+  is `C1 = 5.0` in `tx_meter.c` (this G1's slow-ADC ref is 5.0 V; `(5.0/3.3)² = 2.29
+  ≈ 2.26` measured; scales fwd+rev together so **SWR is unchanged**). Still ~18 % low
+  at 10 W → refine with a multi-point per-radio calibration in **F6b**.
+
+**Safety lessons (do not forget):**
+- **Never trust the uncalibrated sensor to lower a safety margin.** The agent
+  wrongly derived `pa_cal = 44` from the under-reading sensor; the auto-mode
+  classifier **blocked** that keying and was right — 44 would have sent ~25 W for a
+  "10 W" request. Keep `pa_cal` at the safe default and let the operator confirm any
+  value that raises drive.
+- **Raw drive bytes are dangerous** — rated 100 W ≈ byte 51 at `pa_cal 53`, so a
+  byte near 255 ≈ 25× overdrive. Drive the PA only through `tx_calc_drive_byte`
+  (watts). The `sdrfl-txkey` raw-byte ramp exists only for calibration, hard-capped.
+- `pa_calibration` is **per-band** — F6b must store it per band.
+
+---
+
+*Written F0, updated through F5, 2026-07-08. Byte offsets cross-verified against
+piHPSDR @974acba by first-hand read (MOX/`TX_RELAY`/atten/SWR) + three-way audit,
+then validated by live keying into a dummy load (§7).*
