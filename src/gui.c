@@ -39,6 +39,7 @@
 #include "demod.h"
 #include "audio.h"
 #include "settings.h"
+#include "bandplan.h"
 #include "wisdom_gate.h"
 
 #define ENGINE_PIXELS 2048
@@ -127,6 +128,9 @@ typedef struct {
   int         filter_op;     /* filter-overlay opacity (0-100 %)                  */
   int         select_mode;   /* right-click select cursor: left-click = tune      */
   int         auto_level;    /* auto-track the noise floor on the dB axis          */
+  int         bp_region;     /* band-plan region index (0=R1) — see bandplan.h     */
+  int         bp_country;    /* band-plan country/overlay index (0=none)           */
+  int         show_band_edges; /* draw band-plan edges + band name on the spectrum */
   GtkWidget  *win;           /* top-level window (for size persistence)           */
   int         win_w, win_h, win_max;  /* remembered window geometry               */
   double      band_high[NBANDS], band_low[NBANDS];  /* per-band dB window          */
@@ -354,6 +358,59 @@ static void draw_freq_scale(cairo_t *cr, App *app, int w, int ph) {
   }
 }
 
+/* Band-plan overlay: dashed amber lines at the amateur band edges that fall in
+ * view, and the band name centred in each visible band's span. Region + national
+ * overlay come from bandplan.h; drawn in the same freq→x frame as draw_freq_scale. */
+static void draw_band_edges(cairo_t *cr, App *app, int w, int ph) {
+  if (!app->show_band_edges || w < 2 || app->rate <= 0 || app->zoom <= 0.0) { return; }
+  double span      = (double)app->rate / app->zoom;
+  double hz_per_px = span / w;
+  double left_hz   = (double)app->freq - span / 2.0;
+  double right_hz  = (double)app->freq + span / 2.0;
+
+  bp_edge_t edges[32];
+  int n = bp_edges((bp_region_t)app->bp_region, bp_country_key(app->bp_country), edges, 32);
+
+  cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+  cairo_set_font_size(cr, 11.0);
+  const double edge_dash[] = { 4.0, 3.0 };
+
+  for (int i = 0; i < n; i++) {
+    if ((double)edges[i].hi < left_hz || (double)edges[i].lo > right_hz) { continue; }  /* off-screen */
+
+    /* Dashed vertical marker at each band edge that is actually in view. */
+    cairo_set_line_width(cr, 1.0);
+    cairo_set_dash(cr, edge_dash, 2, 0);
+    cairo_set_source_rgba(cr, 1.0, 0.66, 0.2, 0.5);
+    for (int e = 0; e < 2; e++) {
+      double f = e ? (double)edges[i].hi : (double)edges[i].lo;
+      if (f < left_hz || f > right_hz) { continue; }
+      double x = floor((f - left_hz) / hz_per_px) + 0.5;
+      cairo_move_to(cr, x, 0);
+      cairo_line_to(cr, x, ph);
+      cairo_stroke(cr);
+    }
+    cairo_set_dash(cr, NULL, 0, 0);
+
+    /* Band name, centred within the visible portion of this band, near the bottom. */
+    double vlo = (double)edges[i].lo < left_hz  ? left_hz  : (double)edges[i].lo;
+    double vhi = (double)edges[i].hi > right_hz ? right_hz : (double)edges[i].hi;
+    double cx  = ((vlo + vhi) / 2.0 - left_hz) / hz_per_px;
+    cairo_text_extents_t ext;
+    cairo_text_extents(cr, edges[i].band, &ext);
+    double lx = cx - ext.width / 2.0;
+    if (lx < 2) { lx = 2; }
+    if (lx + ext.width > w - 2) { lx = w - 2 - ext.width; }
+    double ty = ph - 7.0;
+    cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.42);              /* legibility pill */
+    cairo_rectangle(cr, lx - 3, ty - ext.height - 2, ext.width + 6, ext.height + 5);
+    cairo_fill(cr);
+    cairo_set_source_rgba(cr, 1.0, 0.76, 0.36, 0.95);
+    cairo_move_to(cr, lx, ty);
+    cairo_show_text(cr, edges[i].band);
+  }
+}
+
 /* Graphical S-meter, top-right of the panadapter. S1..S9 (6 dB/unit, S9 = -73
  * dBm on HF) then +dB over S9. dBm comes from the WDSP meter (radio) or the
  * server (network). Green up to S9, red above. */
@@ -437,6 +494,9 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
   panadapter_draw(cr, w, ph, &app->frame, smoothed, low, span, NULL);
   if (app->radio_mode && (app->show_freq_grid || app->show_freq_scale)) {
     draw_freq_scale(cr, app, w, ph);
+  }
+  if (app->radio_mode) {
+    draw_band_edges(cr, app, w, ph);
   }
   /* Filter passband overlay (Model A: VFO = span centre). Just the fill + the
    * two edges here — the VFO centre is the amber line panadapter.c already draws
@@ -762,6 +822,9 @@ static void app_to_settings(const App *app, Settings *s) {
   s->avg_spec   = app->avg_spec_ms;
   s->avg_wf     = app->avg_wf_ms;
   s->palette    = app->palette;
+  s->band_edges = app->show_band_edges;
+  g_strlcpy(s->region,  bp_region_key(app->bp_region),   sizeof(s->region));
+  g_strlcpy(s->country, bp_country_key(app->bp_country), sizeof(s->country));
   s->win_w   = app->win_w;
   s->win_h   = app->win_h;
   s->win_max = app->win_max;
@@ -1495,6 +1558,24 @@ static void on_pref_palette(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   schedule_save(app);
   if (app->area) { gtk_widget_queue_draw(app->area); }   /* repaint the spectrum too */
 }
+static void on_pref_region(AdwComboRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->bp_region = (int)adw_combo_row_get_selected(r);
+  schedule_save(app);
+  if (app->area) { gtk_widget_queue_draw(app->area); }
+}
+static void on_pref_country(AdwComboRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->bp_country = (int)adw_combo_row_get_selected(r);
+  schedule_save(app);
+  if (app->area) { gtk_widget_queue_draw(app->area); }
+}
+static void on_pref_band_edges(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->show_band_edges = adw_switch_row_get_active(r);
+  schedule_save(app);
+  if (app->area) { gtk_widget_queue_draw(app->area); }
+}
 static void on_pref_rate(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   (void)ps;
   App *app = (App *)data;
@@ -1595,6 +1676,32 @@ static AdwDialog *build_prefs(App *app) {
       "subtitle", "Waterfall + spectrum palette", "model", pl, "selected", psel, NULL);
   g_signal_connect(pal, "notify::selected", G_CALLBACK(on_pref_palette), app);
   adw_preferences_group_add(g, pal);
+  adw_preferences_page_add(p, g);
+
+  /* Band plan — region + national overlay drive the band-edge overlay. */
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Band plan", NULL));
+  int nreg = bp_region_count();
+  const char **rnames = g_new0(const char *, nreg + 1);
+  for (int i = 0; i < nreg; i++) { rnames[i] = bp_region_name(i); }
+  GtkStringList *rl = gtk_string_list_new(rnames);
+  g_free(rnames);
+  guint rsel = (app->bp_region >= 0 && app->bp_region < nreg) ? (guint)app->bp_region : 0;
+  GtkWidget *reg = g_object_new(ADW_TYPE_COMBO_ROW, "title", "Region",
+      "subtitle", "IARU region for band edges", "model", rl, "selected", rsel, NULL);
+  g_signal_connect(reg, "notify::selected", G_CALLBACK(on_pref_region), app);
+  adw_preferences_group_add(g, reg);
+  int ncty = bp_country_count();
+  const char **cnames = g_new0(const char *, ncty + 1);
+  for (int i = 0; i < ncty; i++) { cnames[i] = bp_country_name(i); }
+  GtkStringList *cl = gtk_string_list_new(cnames);
+  g_free(cnames);
+  guint csel = (app->bp_country >= 0 && app->bp_country < ncty) ? (guint)app->bp_country : 0;
+  GtkWidget *cty = g_object_new(ADW_TYPE_COMBO_ROW, "title", "Country",
+      "subtitle", "National allocation overrides", "model", cl, "selected", csel, NULL);
+  g_signal_connect(cty, "notify::selected", G_CALLBACK(on_pref_country), app);
+  adw_preferences_group_add(g, cty);
+  adw_preferences_group_add(g, pref_switch("Show band edges", "Band limits + name on the spectrum",
+      app->show_band_edges, G_CALLBACK(on_pref_band_edges), app));
   adw_preferences_page_add(p, g);
 
   /* Averaging — spectrum and waterfall independently (ms time constant). */
@@ -1746,8 +1853,10 @@ static void start_radio(App *app) {
                   .pan_high = PAN_HIGH_DEFAULT, .pan_low = PAN_LOW_DEFAULT,
                   .db_grid = 1, .db_scale = 1, .freq_grid = 1, .freq_scale = 1,
                   .filter_wf = 1, .filter_op = 60, .avg_spec = -1, .avg_wf = -1,
-                  .palette = 0 };
+                  .palette = 0, .band_edges = 1 };
   g_strlcpy(st.ip, "192.168.1.247", sizeof(st.ip));
+  g_strlcpy(st.region,  "R1", sizeof(st.region));   /* IARU R1 default; country = none */
+  g_strlcpy(st.country, "",   sizeof(st.country));
   if (settings_load(&st)) { printf("settings: loaded %s\n", settings_path()); }
 
   const char *e;
@@ -1853,6 +1962,9 @@ static void start_radio(App *app) {
   app->avg_wf_ms   = (st.avg_wf   < 0) ?  40 : (st.avg_wf   > 2000 ? 2000 : st.avg_wf);
   app->palette = (st.palette < 0 || st.palette >= waterfall_palette_count()) ? 0 : st.palette;
   waterfall_set_palette(app->wf, app->palette);   /* app->wf created in main() before activation */
+  app->show_band_edges = st.band_edges ? 1 : 0;
+  { int r = bp_region_from_key(st.region);  app->bp_region  = r >= 0 ? r : 0; }
+  { int c = bp_country_from_key(st.country); app->bp_country = c >= 0 ? c : 0; }
   app->win_w   = st.win_w   > 0 ? st.win_w : 1320;
   app->win_h   = st.win_h   > 0 ? st.win_h : 720;
   app->win_max = st.win_max ? 1 : 0;

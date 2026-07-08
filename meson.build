@@ -67,6 +67,7 @@ executable('sdr-for-linux',
   [
     'src/gui.c',
     'src/settings.c',
+    'src/bandplan.c',
     'src/wisdom_gate.c',
     'src/client.c',
     'src/protocol.c',

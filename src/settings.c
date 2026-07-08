@@ -77,6 +77,16 @@ int settings_load(Settings *s) {
       s->avg_wf = g_key_file_get_integer(kf, GROUP_DISPLAY, "avg_wf", NULL);
     if (g_key_file_has_key(kf, GROUP_DISPLAY, "palette", NULL))
       s->palette = g_key_file_get_integer(kf, GROUP_DISPLAY, "palette", NULL);
+    if (g_key_file_has_key(kf, GROUP_DISPLAY, "band_edges", NULL))
+      s->band_edges = g_key_file_get_integer(kf, GROUP_DISPLAY, "band_edges", NULL);
+    if (g_key_file_has_key(kf, GROUP_RX, "region", NULL)) {
+      char *r = g_key_file_get_string(kf, GROUP_RX, "region", NULL);
+      if (r) { g_strlcpy(s->region, r, sizeof(s->region)); g_free(r); }
+    }
+    if (g_key_file_has_key(kf, GROUP_RX, "country", NULL)) {
+      char *c = g_key_file_get_string(kf, GROUP_RX, "country", NULL);
+      if (c) { g_strlcpy(s->country, c, sizeof(s->country)); g_free(c); }
+    }
     if (g_key_file_has_key(kf, GROUP_DISPLAY, "band_levels", NULL)) {
       char *bl = g_key_file_get_string(kf, GROUP_DISPLAY, "band_levels", NULL);
       if (bl) { g_strlcpy(s->band_levels, bl, sizeof(s->band_levels)); g_free(bl); }
@@ -151,6 +161,9 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_DISPLAY, "avg_spec",   s->avg_spec);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "avg_wf",     s->avg_wf);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "palette",    s->palette);
+  g_key_file_set_integer(kf, GROUP_DISPLAY, "band_edges", s->band_edges);
+  g_key_file_set_string (kf, GROUP_RX,      "region",     s->region);
+  g_key_file_set_string (kf, GROUP_RX,      "country",    s->country);
   g_key_file_set_string (kf, GROUP_DISPLAY, "band_levels", s->band_levels);
   g_key_file_set_integer(kf, GROUP_WINDOW, "width",     s->win_w);
   g_key_file_set_integer(kf, GROUP_WINDOW, "height",    s->win_h);

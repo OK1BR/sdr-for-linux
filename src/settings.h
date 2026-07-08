@@ -34,6 +34,9 @@ typedef struct {
   int       avg_spec;  /* spectrum-trace averaging time constant (ms) */
   int       avg_wf;    /* waterfall averaging time constant (ms)      */
   int       palette;   /* colour scheme index (waterfall + spectrum)  */
+  char      region[8]; /* band-plan region key: "R1" / "R2" / "R3"    */
+  char      country[8];/* band-plan national overlay: "" / "CZ" / "US"*/
+  int       band_edges;/* draw band-plan edges + band name overlay    */
   int       win_w;     /* window width (px, 0 = default)             */
   int       win_h;     /* window height (px, 0 = default)            */
   int       win_max;   /* window maximized                          */
