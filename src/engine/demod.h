@@ -37,7 +37,8 @@ void demod_set_gain(double gain);
 void demod_set_agc(int mode);
 void demod_set_agc_gain(double db);
 
-/* Noise reduction: 0 off / 1 ANR (LMS) / 2 NR2 (EMNR spectral).
+/* Noise reduction: 0 off / 1 ANR (LMS) / 2 NR2 (EMNR spectral) /
+ *                  3 NR3 (RNNoise, RNN) / 4 NR4 (libspecbleach, spectral).
  * Noise blanker: 0 off / 1 ANB / 2 NB2 (SNBA). Auto-notch: on/off. */
 void demod_set_nr(int mode);
 void demod_set_nb(int mode);

@@ -84,11 +84,16 @@ static void setup_noise(void) {
   SetRXAANFGain(id, pow(10.0, 0.05 * -80.0));
   SetRXAANFLeakage(id, pow(10.0, 0.05 * -20.0));
   SetRXAANFPosition(id, 1);
-  /* NR: 0 off / 1 ANR (LMS) / 2 NR2 (EMNR). NB: 0 off / 1 ANB / 2 NB2 (SNBA). */
+  /* NR: 0 off / 1 ANR (LMS) / 2 NR2 (EMNR) / 3 NR3 (RNNoise) / 4 NR4 (specbleach).
+   * NB: 0 off / 1 ANB / 2 NB2 (SNBA). RNNR/SBNR are created by OpenChannel (WDSP
+   * RXA.c) with sane defaults (sbnr: 10 dB reduction, 20 ms adaptive frame); we
+   * only flip their run flags. */
   SetEXTANBRun(id, d_nb == 1);
   SetRXASNBARun(id, d_nb == 2);
   SetRXAANRRun(id, d_nr == 1);
   SetRXAEMNRRun(id, d_nr == 2);
+  SetRXARNNRRun(id, d_nr == 3);
+  SetRXASBNRRun(id, d_nr == 4);
   SetRXAANFRun(id, d_anf);
 }
 
@@ -232,10 +237,15 @@ void demod_set_agc_gain(double db) {
 }
 
 /* Noise reduction (ANR) / noise blanker (ANB) / auto-notch — on-off (thread-safe). */
-void demod_set_nr(int mode) {   /* 0 off / 1 ANR / 2 EMNR (NR2) */
+void demod_set_nr(int mode) {   /* 0 off / 1 ANR / 2 EMNR(NR2) / 3 RNNoise(NR3) / 4 specbleach(NR4) */
   g_mutex_lock(&d_lock);
   d_nr = mode;
-  if (d_ready) { SetRXAANRRun(d_id, d_nr == 1); SetRXAEMNRRun(d_id, d_nr == 2); }
+  if (d_ready) {
+    SetRXAANRRun(d_id, d_nr == 1);
+    SetRXAEMNRRun(d_id, d_nr == 2);
+    SetRXARNNRRun(d_id, d_nr == 3);
+    SetRXASBNRRun(d_id, d_nr == 4);
+  }
   g_mutex_unlock(&d_lock);
 }
 void demod_set_nb(int mode) {   /* 0 off / 1 ANB / 2 SNBA (NB2) */

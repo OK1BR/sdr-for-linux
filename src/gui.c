@@ -1132,17 +1132,20 @@ static void on_agct_changed(GtkRange *r, gpointer data) {
 }
 
 /* Noise reduction / blanker / auto-notch toggles. */
-/* NR/NB are 3-way: 0 off / 1 (ANR|ANB) / 2 (NR2 EMNR | NB2 SNBA). A toggle
- * button cycles them; the label shows the algorithm, :checked shows on. */
+/* NR cycles off/NR/NR2/NR3/NR4 (ANR, EMNR, RNNoise, specbleach); NB cycles
+ * off/NB/NB2 (ANB, SNBA). A toggle button cycles; the label shows the algorithm
+ * (suffix = the mode number for 2+), :checked shows on. */
 static void noise_btn_update(GtkButton *b, int mode, const char *base) {
   char lbl[8];
-  snprintf(lbl, sizeof lbl, "%s%s", base, mode == 2 ? "2" : "");
+  char suf[2] = "";
+  if (mode >= 2 && mode <= 9) { suf[0] = (char)('0' + mode); }   /* single-digit mode suffix */
+  snprintf(lbl, sizeof lbl, "%s%s", base, suf);
   gtk_button_set_label(b, lbl);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(b), mode > 0);   /* fires "toggled", not "clicked" */
 }
 static void on_nr_clicked(GtkButton *b, gpointer data) {
   App *app = (App *)data;
-  app->nr = (app->nr + 1) % 3;
+  app->nr = (app->nr + 1) % 5;   /* off / NR / NR2 / NR3 / NR4 */
   demod_set_nr(app->nr);
   noise_btn_update(b, app->nr, "NR");
   schedule_save(app);
@@ -1770,7 +1773,7 @@ static void start_radio(App *app) {
   app->atten  = st.atten < 0 ? 0 : (st.atten > 31 ? 31 : st.atten);
   app->agc    = st.agc < 0 ? 0 : (st.agc > 4 ? 4 : st.agc);
   app->agc_gain = st.agc_gain < -20.0 ? -20.0 : (st.agc_gain > 120.0 ? 120.0 : st.agc_gain);
-  app->nr     = st.nr < 0 ? 0 : (st.nr > 2 ? 2 : st.nr);   /* 0 off / 1 NR / 2 NR2 */
+  app->nr     = st.nr < 0 ? 0 : (st.nr > 4 ? 4 : st.nr);   /* 0 off /1 NR /2 NR2 /3 NR3 /4 NR4 */
   app->nb     = st.nb < 0 ? 0 : (st.nb > 2 ? 2 : st.nb);   /* 0 off / 1 NB / 2 NB2 */
   app->anf    = st.anf ? 1 : 0;
   app->fps    = st.fps;
