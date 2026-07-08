@@ -44,17 +44,18 @@ static const PalStop pal_classic[] = {
   {0.58,   0, 200, 120}, {0.74, 180, 220,   0}, {0.88, 255, 165,   0},
   {1.00, 255,  40,  30},
 };
-/* Mono white: neutral greyscale, black -> white (Richard's favourite). */
+/* Mono white: neutral greyscale, black -> white (Richard's favourite). High
+ * contrast: the noise floor is held near black, signals ramp hard to pure white. */
 static const PalStop pal_mono_white[] = {
-  {0.00, 0, 0, 0}, {0.35, 68, 68, 68}, {0.72, 168, 168, 168}, {1.00, 255, 255, 255},
+  {0.00, 0, 0, 0}, {0.30, 6, 6, 6}, {0.58, 90, 90, 90}, {0.80, 210, 210, 210}, {1.00, 255, 255, 255},
 };
-/* Mono green: retro phosphor. */
+/* Mono green: retro phosphor — near-black floor, bright green signals. */
 static const PalStop pal_mono_green[] = {
-  {0.00, 0, 3, 0}, {0.35, 0, 70, 18}, {0.70, 40, 190, 60}, {1.00, 200, 255, 190},
+  {0.00, 0, 2, 0}, {0.30, 0, 34, 6}, {0.60, 0, 150, 40}, {0.82, 130, 240, 95}, {1.00, 225, 255, 205},
 };
-/* Mono amber: warm monochrome. */
+/* Mono amber: warm monochrome — near-black floor, bright amber signals. */
 static const PalStop pal_mono_amber[] = {
-  {0.00, 3, 1, 0}, {0.35, 90, 45, 0}, {0.70, 220, 140, 15}, {1.00, 255, 240, 205},
+  {0.00, 2, 1, 0}, {0.30, 40, 18, 0}, {0.60, 165, 90, 4}, {0.82, 248, 190, 55}, {1.00, 255, 245, 215},
 };
 /* Inferno: perceptually-uniform black -> purple -> red -> orange -> yellow. */
 static const PalStop pal_inferno[] = {

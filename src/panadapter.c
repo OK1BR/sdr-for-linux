@@ -175,8 +175,9 @@ static void draw_spectrum(cairo_t *cr, const float *dbm, int n, int w, int h,
     /* colour by the brighter of the two endpoints so peaks stay vivid */
     double dc = (d > pd) ? d : pd;
     waterfall_palette_rgb((dc - low) / span, &r, &g, &b);
-    /* lift toward white a touch so the line reads above the fill */
-    cairo_set_source_rgba(cr, 0.35 + 0.65 * r, 0.35 + 0.65 * g, 0.35 + 0.65 * b, 0.98);
+    /* lift strongly toward white so the trace reads bright/near-white above the
+     * fill (peaks saturate to white); keeps the palette's hue direction. */
+    cairo_set_source_rgba(cr, 0.5 + 0.5 * r, 0.5 + 0.5 * g, 0.5 + 0.5 * b, 0.98);
     cairo_move_to(cr, x - 1, py);
     cairo_line_to(cr, x, y);
     cairo_stroke(cr);
