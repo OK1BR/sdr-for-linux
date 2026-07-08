@@ -15,6 +15,7 @@
 #ifndef SDRFL_ENGINE_PROTOCOL2_H
 #define SDRFL_ENGINE_PROTOCOL2_H
 
+#include <stdint.h>
 #include "discovered.h" /* DISCOVERED, NEW_DEVICE_* */
 
 /*
@@ -137,5 +138,50 @@ int p2_build_receive_specific(unsigned char *buf, int device, int sample_rate);
 int p2_build_high_priority(unsigned char *buf, int device, long long rx_freq_hz,
                            int run, const p2_tx_state *tx);
 int p2_build_transmit_specific(unsigned char *buf, const p2_tx_cw *cw);
+
+/*
+ * ---- TX IQ path (F2, docs/TX-DESIGN.md) -----------------------------------
+ *
+ * The mic->DUC IQ (from the WDSP TX channel, src/engine/tx.c) is encoded to the
+ * P2 wire form and framed into port-1029 packets. F2 builds and offline-tests
+ * this; it is NOT run by the live engine until the F5 keying milestone — nothing
+ * calls the framer or the socket emitter in F1-F4, so no TX IQ leaves the host.
+ */
+#define P2_TX_IQ_SAMPLES 240   /* IQ pairs per TX-IQ packet (1440-byte payload) */
+
+/*
+ * Encode `n_pairs` interleaved IQ doubles (~[-1,1)) to the P2 TX wire form: 6
+ * bytes per pair — 24-bit big-endian signed I then Q, with piHPSDR's full-scale
+ * mapping (np.c:2919). Writes n_pairs*6 bytes to `out`; returns bytes written.
+ */
+int p2_tx_iq_encode(const double *iq, int n_pairs, unsigned char *out);
+
+/* Emitter for one complete 1444-byte TX-IQ packet (4-byte BE sequence + 1440-byte
+ * payload). The framer calls this once per full packet. */
+typedef void (*p2_tx_iq_emit)(const unsigned char *pkt, int len, void *user);
+
+/*
+ * Stateful framer: accumulates encoded IQ into 240-sample (1440-byte) packets,
+ * prepends the running sequence, and emits each full packet via `emit`. Leftover
+ * samples are held for the next push. Zero-initialised by p2_tx_iq_framer_init.
+ */
+typedef struct {
+  unsigned char payload[P2_TX_IQ_SAMPLES * 6];
+  int           fill;      /* IQ pairs currently in payload (0..239)   */
+  uint32_t      seq;       /* next packet sequence number              */
+  p2_tx_iq_emit emit;
+  void         *user;
+} p2_tx_iq_framer;
+
+void p2_tx_iq_framer_init(p2_tx_iq_framer *f, p2_tx_iq_emit emit, void *user);
+void p2_tx_iq_framer_push(p2_tx_iq_framer *f, const double *iq, int n_pairs);
+
+/*
+ * Dormant live emitter (F5): send one framed packet to the radio's TX-IQ port
+ * 1029 over the engine's data socket. NOT called anywhere in F1-F4 — it exists so
+ * F5 only has to wire tx.c -> framer(this) and start a feed under the full
+ * TX-SAFETY checklist. A no-op if the data socket is not open.
+ */
+void p2_tx_iq_socket_emit(const unsigned char *pkt, int len, void *user);
 
 #endif /* SDRFL_ENGINE_PROTOCOL2_H */

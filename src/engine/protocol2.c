@@ -36,6 +36,7 @@
 #define RECEIVER_SPECIFIC_REGISTERS_FROM_HOST_PORT    1025
 #define TRANSMITTER_SPECIFIC_REGISTERS_FROM_HOST_PORT 1026
 #define HIGH_PRIORITY_FROM_HOST_PORT                  1027
+#define TX_IQ_FROM_HOST_PORT                          1029  /* F2/F5: TX IQ to radio */
 #define COMMAND_RESPONSE_TO_HOST_PORT                 1024
 #define HIGH_PRIORITY_TO_HOST_PORT                    1025
 #define MIC_LINE_TO_HOST_PORT                         1026
@@ -321,6 +322,59 @@ int p2_build_transmit_specific(unsigned char *buf, const p2_tx_cw *cw) {
    * protecting the RX ADC (duplicated from the HP packet for old firmware). */
   if (cw->pa_enabled) { buf[58] = 31; buf[59] = 31; }
   return TX_SPECIFIC_LEN;
+}
+
+/* ---- TX IQ path (F2, docs/TX-DESIGN.md) --------------------------------- */
+
+/* Encode one IQ pair to 6 wire bytes: 24-bit BE signed I then Q, with piHPSDR's
+ * full-scale mapping (np.c:2919). The 8388523.114 factor bakes in ~0.99999
+ * headroom; the -8388607 recenters the 0..2^24 result to signed 24-bit. */
+static void encode_iq_pair(double I, double Q, unsigned char *b) {
+  int is = (int)(I * 8388523.114 + 8388607.5) - 8388607;
+  int qs = (int)(Q * 8388523.114 + 8388607.5) - 8388607;
+  b[0] = (is >> 16) & 0xFF; b[1] = (is >> 8) & 0xFF; b[2] = is & 0xFF;
+  b[3] = (qs >> 16) & 0xFF; b[4] = (qs >> 8) & 0xFF; b[5] = qs & 0xFF;
+}
+
+int p2_tx_iq_encode(const double *iq, int n_pairs, unsigned char *out) {
+  for (int i = 0; i < n_pairs; i++) {
+    encode_iq_pair(iq[2 * i], iq[2 * i + 1], out + i * 6);
+  }
+  return n_pairs * 6;
+}
+
+void p2_tx_iq_framer_init(p2_tx_iq_framer *f, p2_tx_iq_emit emit, void *user) {
+  memset(f, 0, sizeof(*f));
+  f->emit = emit;
+  f->user = user;
+}
+
+void p2_tx_iq_framer_push(p2_tx_iq_framer *f, const double *iq, int n_pairs) {
+  for (int i = 0; i < n_pairs; i++) {
+    encode_iq_pair(iq[2 * i], iq[2 * i + 1], f->payload + f->fill * 6);
+    f->fill++;
+    if (f->fill >= P2_TX_IQ_SAMPLES) {
+      unsigned char pkt[4 + P2_TX_IQ_SAMPLES * 6];   /* 1444 */
+      pkt[0] = (f->seq >> 24) & 0xFF;
+      pkt[1] = (f->seq >> 16) & 0xFF;
+      pkt[2] = (f->seq >>  8) & 0xFF;
+      pkt[3] = (f->seq      ) & 0xFF;
+      memcpy(pkt + 4, f->payload, P2_TX_IQ_SAMPLES * 6);
+      if (f->emit) { f->emit(pkt, (int)sizeof(pkt), f->user); }
+      f->seq++;
+      f->fill = 0;
+    }
+  }
+}
+
+/* Dormant live emitter (F5): send to the radio's TX-IQ port 1029 via the engine
+ * data socket. NOT called in F1-F4. */
+void p2_tx_iq_socket_emit(const unsigned char *pkt, int len, void *user) {
+  (void)user;
+  if (data_socket < 0) { return; }
+  struct sockaddr_in a = base_addr;      /* radio IP (set by p2_rx_start) */
+  a.sin_port = htons(TX_IQ_FROM_HOST_PORT);
+  sendto(data_socket, pkt, len, 0, (struct sockaddr *)&a, base_len);
 }
 
 /* ---- send wrappers (build + sendto + seq++) ----------------------------- */

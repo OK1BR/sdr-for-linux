@@ -144,6 +144,17 @@ executable('sdrfl-panprobe',
   install : false,
 )
 
+# Offline TX DSP + IQ-encoding gate (F2, docs/TX-DESIGN.md). Feeds a tone into the
+# WDSP TX channel and checks the SSB IQ output + the 24-bit encoder + the framer.
+# Links WDSP (GNU dialect). NO radio, NO socket.
+executable('sdrfl-txdsp-test',
+  ['src/txdsp_test.c', 'src/engine/tx.c'] + engine_sources,
+  include_directories : [vendor_inc, src_inc, engine_inc],
+  dependencies : engine_deps + [wdsp_dep, m_dep],
+  override_options : ['c_std=gnu11'],
+  install : false,
+)
+
 # Headless Protocol-2 RX -> WDSP demod -> PipeWire audio. Milestone-2 gate.
 # TAKES THE RADIO. SDRFL_TONE=1 plays a test tone with no radio.
 executable('sdrfl-audioprobe',

@@ -1,0 +1,55 @@
+/*
+ * sdr-for-linux — WDSP TX DSP channel (headless, GLib-only). F2, docs/TX-DESIGN.md.
+ *
+ * Builds the exciter chain: mic 48 kHz mono -> WDSP TXA (mode + bandpass + ALC)
+ * -> 192 kHz IQ at the DUC rate, delivered to a callback. This is PURE DSP: no
+ * MOX, no PA, no keying — it merely turns audio into the IQ the radio's DUC would
+ * up-convert. Mirrors piHPSDR transmitter.c @974acba (OpenChannel :1307, the
+ * fixed SetTXA* config :1323-1356, fexchange0 :1665).
+ *
+ * ⛔ The live engine does NOT run this until the F5 keying milestone; in F1-F4 it
+ * exists only for the offline sdrfl-txdsp-test gate. Producing IQ here cannot key
+ * the radio (that needs the MOX bit + PA, which stay off — docs/TX-SAFETY.md).
+ */
+#ifndef SDRFL_ENGINE_TX_H
+#define SDRFL_ENGINE_TX_H
+
+/*
+ * TX IQ callback: interleaved I/Q doubles [I0,Q0,I1,Q1,...], `n_pairs` pairs, at
+ * the DUC output rate (192 kHz). Called from whatever thread feeds the mic.
+ */
+typedef void (*tx_iq_cb)(const double *iq, int n_pairs, void *user);
+
+/*
+ * Create the TX channel (WDSP id chosen internally, distinct from the RX channel).
+ * `mode` is a WDSP mode (DEMOD_USB=1, DEMOD_LSB=0, …); flo/fhi is the TX passband
+ * in Hz (e.g. 150/2850). Decoded IQ is delivered to `cb`/`user`. The channel is
+ * created STOPPED — call tx_dsp_run(1) before feeding. Returns 0 on success.
+ */
+int tx_dsp_create(int mode, double flo, double fhi, tx_iq_cb cb, void *user);
+
+/* Start (1) / stop (0) the WDSP TX channel (SetChannelState). Off after create. */
+void tx_dsp_run(int on);
+
+/*
+ * Feed `n` mono mic samples (floats ~[-1,1]) at 48 kHz. Accumulates to the WDSP
+ * block size (512), runs fexchange0, and delivers each 192 kHz IQ block to the
+ * callback. A no-op until tx_dsp_create() has run.
+ */
+void tx_dsp_feed_mic(const float *mic, int n);
+
+void tx_dsp_set_mode(int mode, double flo, double fhi);
+void tx_dsp_set_mic_gain(double db);        /* mic gain in dB (SetTXAPanelGain1) */
+
+/*
+ * TUNE tone via the WDSP post generator (transmitter.c:2872). on=1 injects a
+ * full-scale single carrier at `offset_hz` from the dial (0 = carrier at dial);
+ * on=0 stops it. Used at F5 for TUNE; the tone power is set by the drive byte,
+ * not this magnitude.
+ */
+void tx_dsp_tune_tone(int on, double offset_hz);
+
+int  tx_dsp_last_error(void);               /* last non-zero fexchange0 error */
+void tx_dsp_destroy(void);
+
+#endif /* SDRFL_ENGINE_TX_H */
