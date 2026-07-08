@@ -101,10 +101,12 @@ static int ddc_for_device(int device) {
 /* ---- outgoing packet builders (no socket; hexdump-testable) -------------- */
 
 /* General packet — np.c:662-716. Phase-word mode + HW timer + Alex-0 enable
- * ([59]=0x01 — G1 has one Alex; ORION2/SATURN would need 0x03). PA[58] stays 0
- * on purpose: one of the three no-TX guarantees (docs/TX-SAFETY.md); piHPSDR
- * sends 1 here when its "PA enable" setting is on, with no effect on RX. */
-int p2_build_general(unsigned char *buf) {
+ * ([59]=0x01 — G1 has one Alex; ORION2/SATURN would need 0x03). Byte [58] is the
+ * firmware PA-enable (np.c:679-685): piHPSDR sends 1 when its "PA enable" setting
+ * is on AND the TX band's disablePA is clear. The LIVE engine hardcodes
+ * pa_enabled=0 here (send_general) — one of the three no-TX guarantees
+ * (docs/TX-SAFETY.md); only sdrfl-txprobe passes 1, offline, to verify the byte. */
+int p2_build_general(unsigned char *buf, int pa_enabled) {
   memset(buf, 0, GENERAL_LEN);
   buf[0] = (general_sequence >> 24) & 0xFF;
   buf[1] = (general_sequence >> 16) & 0xFF;
@@ -112,6 +114,7 @@ int p2_build_general(unsigned char *buf) {
   buf[3] = (general_sequence      ) & 0xFF;
   buf[37] = 0x08;  // phase word (not frequency)
   buf[38] = 0x01;  // enable hardware timer
+  buf[58] = pa_enabled ? 0x01 : 0x00;  // PA enable (np.c:684). LIVE = 0 (no-TX guarantee)
   buf[59] = 0x01;  // enable Alex 0 — the G1's filter board is ALEX (np.c:696);
                    // without this the RX band-pass relays never engage → no signal
   return GENERAL_LEN;
@@ -137,25 +140,40 @@ int p2_build_receive_specific(unsigned char *buf, int device, int sample_rate) {
   return RX_SPECIFIC_LEN;
 }
 
-/* High-Priority packet — np.c:718-1474, RX subset. Byte[4] is the run bit;
- * bytes[9..12] carry the DDC0 NCO phase (always set — the radio's automatic
- * band filter follows DDC0), and for DDC2-class devices we also write the
- * receiver's own DDC slot. alex0/alex1 (bytes 1432..1435 / 1428..1431) carry the
- * G1's RX BPF + TX LPF + ANT relay bits (see below); TX fields stay 0. */
-int p2_build_high_priority(unsigned char *buf, int device, long long freq_hz, int run) {
+/* High-Priority packet — np.c:718-1474. Byte[4] carries the run bit (0x01) and,
+ * when transmitting, the MOX bit (0x02); bytes[9..12] carry the DDC0 NCO phase
+ * (the radio's automatic band filter follows DDC0). alex0/alex1 (bytes 1432..1435
+ * / 1428..1431) carry the G1's RX BPF + TX LPF + ANT relay + (TX) T/R relay bits.
+ *
+ * `tx` is the transmit state (docs/TX-DESIGN.md §F1). The LIVE engine ALWAYS
+ * passes tx=NULL → xmit/pa_on are 0, every TX-only byte below is 0, and the
+ * packet is byte-identical to the verified RX build (no MOX, no TX_RELAY, drive
+ * 0). Only sdrfl-txprobe passes a non-NULL state, offline, to verify the layout.
+ * When tx==NULL the DUC / TX-LPF frequency falls back to the RX frequency. */
+int p2_build_high_priority(unsigned char *buf, int device, long long rx_freq_hz,
+                           int run, const p2_tx_state *tx) {
   int ddc = ddc_for_device(device);
-  long long freq = freq_hz;          // calibrated_frequency() with cal=0 is identity
-  uint32_t phase = (uint32_t)(((double)freq) * P2_PHASE_SCALE);
+  long long rx_freq = rx_freq_hz;    // calibrated_frequency() with cal=0 is identity
+
+  /* TX gating — all 0 when tx==NULL (the live path). */
+  int xmit    = tx && (tx->mox || tx->tune);       // keyed?
+  int pa_on   = tx && tx->pa_enabled;              // PA enabled for the TX band?
+  long long tx_freq = tx ? tx->tx_freq : rx_freq;  // DUC (TX) freq; RX freq if no split
+  int antenna = tx ? tx->antenna : 0;              // 0/1/2 → ANT1/2/3
+  if (antenna < 0 || antenna > 2) { antenna = 0; } // paranoia (np.c:1371): never open relay
+
+  uint32_t rx_phase = (uint32_t)(((double)rx_freq) * P2_PHASE_SCALE);
   memset(buf, 0, HIGH_PRIORITY_LEN);
   buf[0] = (high_priority_sequence >> 24) & 0xFF;
   buf[1] = (high_priority_sequence >> 16) & 0xFF;
   buf[2] = (high_priority_sequence >>  8) & 0xFF;
   buf[3] = (high_priority_sequence      ) & 0xFF;
-  buf[4] = run ? 1 : 0;              // run bit (MOX bit 0x02 never set — RX only)
-  buf[ 9] = (phase >> 24) & 0xFF;    // DDC0 phase (band-filter follows this)
-  buf[10] = (phase >> 16) & 0xFF;
-  buf[11] = (phase >>  8) & 0xFF;
-  buf[12] = (phase      ) & 0xFF;
+  buf[4] = run ? 1 : 0;              // run bit
+  if (xmit) { buf[4] |= 0x02; }      // MOX (np.c:775). Internal-keyer CW suppression is F6.
+  buf[ 9] = (rx_phase >> 24) & 0xFF; // DDC0 phase (band-filter follows this)
+  buf[10] = (rx_phase >> 16) & 0xFF;
+  buf[11] = (rx_phase >>  8) & 0xFF;
+  buf[12] = (rx_phase      ) & 0xFF;
   if (ddc != 0) {                    // ORION-class: also program the real DDC slot
     int off = 9 + ddc * 4;
     buf[off + 0] = buf[ 9];
@@ -163,16 +181,37 @@ int p2_build_high_priority(unsigned char *buf, int device, long long freq_hz, in
     buf[off + 2] = buf[11];
     buf[off + 3] = buf[12];
   }
-  /* G1 Alex words — mirror piHPSDR np.c high_priority() for NEW_DEVICE_G1 @ RX:
-   *  - RX BPF bit per RX frequency (below);
-   *  - ONE TX LPF bit per band (np.c:1244-1259; G1 keys it to the DUC/TX VFO,
-   *    for us = the RX frequency — same band, same bit);
-   *  - ALEX_TX_ANTENNA_1 (0x01000000): the ANT1 connector relay. Set during RX
-   *    too (np.c:1385-1397) — WITHOUT it no antenna is routed to the RX path
-   *    and the radio hears only relay leakage (~46 dB down; the "deaf RX" bug).
-   *  - alex1 (bytes 1428-1431) mirrors the TX-case word: LPF + ANT1 (we omit
-   *    ALEX_TX_RELAY since we never key the PA).
-   * TODO: make the antenna (ANT1/2/3) a setting; hardcoded ANT1 for now.
+
+  /* DUC (TX NCO) phase — bytes 329-332 (np.c:866). Written only when keyed, so
+   * the RX packet keeps these 0 (piHPSDR writes it always; we defer that to F5
+   * to keep the RX build byte-identical). */
+  if (xmit) {
+    uint32_t duc = (uint32_t)(((double)tx_freq) * P2_PHASE_SCALE);
+    buf[329] = (duc >> 24) & 0xFF;
+    buf[330] = (duc >> 16) & 0xFF;
+    buf[331] = (duc >>  8) & 0xFF;
+    buf[332] = (duc      ) & 0xFF;
+  }
+
+  /* Exciter drive — byte 345 (np.c:896-900). 0 unless keyed AND in-band (the
+   * fast off-band kill). Live: xmit=0 → 0. */
+  {
+    int drive = (xmit && tx->in_band) ? tx->drive : 0;
+    if (drive < 0)   { drive = 0; }
+    if (drive > 255) { drive = 255; }
+    buf[345] = (unsigned char)drive;
+  }
+  /* G1 Alex words — np.c high_priority() for NEW_DEVICE_G1:
+   *  - RX BPF bit from the RX frequency (below);
+   *  - TX LPF bit from the DUC (TX) frequency = tx_freq (= RX freq when not
+   *    split), np.c:1244/1263;
+   *  - ALEX_TX_ANTENNA_n (0x01/02/04 000000): the antenna connector relay. Set
+   *    during RX too (np.c:1385-1397) — WITHOUT it no antenna is routed to the RX
+   *    path and the radio hears only relay leakage (~46 dB down; the "deaf RX"
+   *    bug, c4b9243);
+   *  - ALEX_TX_RELAY (0x08000000, T/R to TX): alex0 only when keyed, alex1 always
+   *    — and ONLY when the PA is enabled (np.c:1024-1032). Live (tx=NULL) →
+   *    pa_on=0 → never emitted (a no-TX guarantee).
    *
    * run=0 (shutdown) PARKS the RF path instead: both Alex words stay all-zero,
    * which de-energizes the ANT/BPF/LPF relays and leaves the RX input
@@ -185,23 +224,28 @@ int p2_build_high_priority(unsigned char *buf, int device, long long freq_hz, in
    * words, so p2app's write-if-changed cache never swallows this zero.) */
   uint32_t alex0 = 0, alex1 = 0;
   if (run) {
-    if      (freq <  1500000LL) { alex0 = 0x00001000; }  // BYPASS_BPF
-    else if (freq <  2100000LL) { alex0 = 0x00000040; }  // 160 m
-    else if (freq <  5500000LL) { alex0 = 0x00000020; }  // 80/60 m
-    else if (freq < 11000000LL) { alex0 = 0x00000010; }  // 40/30 m
-    else if (freq < 22000000LL) { alex0 = 0x00000002; }  // 20/15 m
-    else if (freq < 35000000LL) { alex0 = 0x00000004; }  // 12/10 m
-    else                        { alex0 = 0x00000008; }  // 6 m + preamp
-    uint32_t lpf;                      /* TX LPF bank bit (np.c:1244, alex.h) */
-    if      (freq > 35600000LL) { lpf = 0x20000000; }    // 6 m bypass LPF
-    else if (freq > 24000000LL) { lpf = 0x40000000; }    // 12/10 m
-    else if (freq > 16500000LL) { lpf = 0x80000000; }    // 17/15 m
-    else if (freq >  8000000LL) { lpf = 0x00100000; }    // 30/20 m
-    else if (freq >  5000000LL) { lpf = 0x00200000; }    // 60/40 m
-    else if (freq >  2500000LL) { lpf = 0x00400000; }    // 80 m
-    else                        { lpf = 0x00800000; }    // 160 m
-    alex0 |= lpf | 0x01000000;         /* + ALEX_TX_ANTENNA_1 = ANT1 relay */
-    alex1  = lpf | 0x01000000;         /* TX-case word: LPF + ANT1, no TX_RELAY */
+    if      (rx_freq <  1500000LL) { alex0 = 0x00001000; }  // BYPASS_BPF
+    else if (rx_freq <  2100000LL) { alex0 = 0x00000040; }  // 160 m
+    else if (rx_freq <  5500000LL) { alex0 = 0x00000020; }  // 80/60 m
+    else if (rx_freq < 11000000LL) { alex0 = 0x00000010; }  // 40/30 m
+    else if (rx_freq < 22000000LL) { alex0 = 0x00000002; }  // 20/15 m
+    else if (rx_freq < 35000000LL) { alex0 = 0x00000004; }  // 12/10 m
+    else                           { alex0 = 0x00000008; }  // 6 m + preamp
+    uint32_t lpf;                      /* TX LPF bank bit from tx_freq (np.c:1244) */
+    if      (tx_freq > 35600000LL) { lpf = 0x20000000; }    // 6 m bypass LPF
+    else if (tx_freq > 24000000LL) { lpf = 0x40000000; }    // 12/10 m
+    else if (tx_freq > 16500000LL) { lpf = 0x80000000; }    // 17/15 m
+    else if (tx_freq >  8000000LL) { lpf = 0x00100000; }    // 30/20 m
+    else if (tx_freq >  5000000LL) { lpf = 0x00200000; }    // 60/40 m
+    else if (tx_freq >  2500000LL) { lpf = 0x00400000; }    // 80 m
+    else                           { lpf = 0x00800000; }    // 160 m
+    uint32_t ant = 0x01000000u << antenna;   /* ALEX_TX_ANTENNA_1/2/3 */
+    alex0 |= lpf | ant;
+    alex1  = lpf | ant;
+    if (pa_on) {                       /* T/R relay to TX — only with PA enabled */
+      if (xmit) { alex0 |= 0x08000000u; }    // ALEX_TX_RELAY (alex0 only when keyed)
+      alex1 |= 0x08000000u;                  // TX-case word carries it always
+    }
   }
   buf[1428] = (alex1 >> 24) & 0xFF;
   buf[1429] = (alex1 >> 16) & 0xFF;
@@ -211,18 +255,71 @@ int p2_build_high_priority(unsigned char *buf, int device, long long freq_hz, in
   buf[1433] = (alex0 >> 16) & 0xFF;
   buf[1434] = (alex0 >>  8) & 0xFF;
   buf[1435] = (alex0      ) & 0xFF;
-  buf[1443] = (unsigned char)g_atomic_int_get(&cfg_atten);  /* ADC0 step attenuator (0-31 dB) */
+
+  /* Step attenuators — ADC0 (byte 1443) = configured value; ADC1 (byte 1442) 0.
+   * On TX with PA both forced to 31 dB to protect the RX ADC (np.c:1442-1445).
+   * Live: xmit && pa_on is false → the RX attenuation is preserved unchanged. */
+  {
+    int atten0 = g_atomic_int_get(&cfg_atten);
+    int atten1 = 0;
+    if (xmit && pa_on) { atten0 = 31; atten1 = 31; }
+    buf[1442] = (unsigned char)atten1;
+    buf[1443] = (unsigned char)atten0;
+  }
   return HIGH_PRIORITY_LEN;
 }
 
-/* Transmit-specific packet — np.c:1476. We never transmit, but upstream's start
- * handshake sends one, so we send a zeroed (TX-off) copy for parity. */
-static int build_transmit_specific(unsigned char *buf) {
+/* Transmit-specific packet — np.c:1476-1607. Carries DAC count + the CW keyer
+ * and mic/line-in configuration (no MOX, no drive — those are HP-only).
+ *
+ * ⛔ cw==NULL builds the ALL-ZERO packet the LIVE engine sends today: nDAC=0 and,
+ * crucially, byte[5]=0 → the in-radio CW keyer is DISABLED, so the FPGA cannot
+ * key CW locally from the key jack even if a paddle is plugged in. The live path
+ * (send_transmit_specific) always passes NULL. Only sdrfl-txprobe passes a
+ * non-NULL config, offline, to verify the byte layout — never wire a non-NULL
+ * config into a live send before F6 (docs/TX-DESIGN.md, docs/TX-SAFETY.md). */
+int p2_build_transmit_specific(unsigned char *buf, const p2_tx_cw *cw) {
   memset(buf, 0, TX_SPECIFIC_LEN);
   buf[0] = (tx_specific_sequence >> 24) & 0xFF;
   buf[1] = (tx_specific_sequence >> 16) & 0xFF;
   buf[2] = (tx_specific_sequence >>  8) & 0xFF;
   buf[3] = (tx_specific_sequence      ) & 0xFF;
+  if (!cw) { return TX_SPECIFIC_LEN; }   /* live TX-off: all-zero, no keyer enable */
+
+  buf[4] = 1;                            // number of DACs (np.c:1486)
+
+  /* CW keyer config — byte 5 bitfield (np.c:1489-1519). */
+  unsigned char cwb = 0;
+  if (cw->cw_internal)    { cwb |= 0x02; }   // enable in-radio keyer
+  if (cw->cw_reversed)    { cwb |= 0x04; }
+  cwb |= cw->cw_mode_b ? 0x28 : 0x08;        // keyer mode B (0x28) vs A (0x08)
+  if (cw->cw_sidetone_on) { cwb |= 0x10; }
+  if (cw->cw_spacing)     { cwb |= 0x40; }
+  if (cw->cw_breakin)     { cwb |= 0x80; }
+  buf[5]  = cwb;
+  buf[6]  = (unsigned char)(cw->cw_sidetone_vol & 0x7F);      // sidetone volume
+  buf[7]  = (cw->cw_sidetone_freq >> 8) & 0xFF;               // sidetone freq (BE)
+  buf[8]  = (cw->cw_sidetone_freq     ) & 0xFF;
+  buf[9]  = (unsigned char)(cw->cw_speed  & 0xFF);            // keyer speed (WPM)
+  buf[10] = (unsigned char)(cw->cw_weight & 0xFF);            // keyer weight
+  buf[11] = (cw->cw_hang_ms >> 8) & 0xFF;                     // hang time (BE, ms)
+  buf[12] = (cw->cw_hang_ms     ) & 0xFF;
+  buf[13] = (unsigned char)(cw->cw_ptt_delay  & 0xFF);        // RF/PTT delay
+  buf[17] = (unsigned char)(cw->cw_ramp_width & 0xFF);        // CW ramp width
+
+  /* Mic / line-in / PTT config — byte 50 bitfield + byte 51 gain (np.c:1543-1572). */
+  unsigned char mic = 0;
+  if (cw->mic_linein)       { mic |= 0x01; }
+  if (cw->mic_boost)        { mic |= 0x02; }
+  if (cw->mic_ptt_disabled) { mic |= 0x04; }
+  if (cw->mic_ptt_tip)      { mic |= 0x08; }
+  if (cw->mic_bias)         { mic |= 0x10; }
+  buf[50] = mic;
+  buf[51] = (unsigned char)((int)((cw->linein_gain_db + 34.0) * 0.6739 + 0.5) & 0xFF);
+
+  /* Step attenuators during TX — 31 dB both when the PA is enabled (np.c:1579),
+   * protecting the RX ADC (duplicated from the HP packet for old firmware). */
+  if (cw->pa_enabled) { buf[58] = 31; buf[59] = 31; }
   return TX_SPECIFIC_LEN;
 }
 
@@ -242,7 +339,7 @@ static void send_packet(const unsigned char *buf, int len,
 
 static void send_general(void) {
   unsigned char buf[GENERAL_LEN];
-  int len = p2_build_general(buf);
+  int len = p2_build_general(buf, 0);   /* pa_enabled=0 hardcoded — no-TX guarantee */
   send_packet(buf, len, &base_addr, base_len, "general");
   general_sequence++;
 }
@@ -256,7 +353,7 @@ static void send_receive_specific(void) {
 
 static void send_transmit_specific(void) {
   unsigned char buf[TX_SPECIFIC_LEN];
-  int len = build_transmit_specific(buf);
+  int len = p2_build_transmit_specific(buf, NULL);  /* cw=NULL → all-zero, no keyer */
   send_packet(buf, len, &transmitter_addr, transmitter_len, "tx-specific");
   tx_specific_sequence++;
 }
@@ -266,7 +363,7 @@ static void send_high_priority(int run) {
   g_mutex_lock(&freq_lock);
   long long freq = cfg_freq;
   g_mutex_unlock(&freq_lock);
-  int len = p2_build_high_priority(buf, cfg_device, freq, run);
+  int len = p2_build_high_priority(buf, cfg_device, freq, run, NULL);  /* tx=NULL → RX-only */
   send_packet(buf, len, &high_priority_addr, high_priority_len, "high-priority");
   high_priority_sequence++;
 }

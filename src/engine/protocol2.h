@@ -75,13 +75,67 @@ typedef struct {
 void p2_get_telemetry(p2_telemetry *out);
 
 /*
- * Offline self-test hook: build each outgoing packet into `buf` (>= 1444 bytes)
- * using the given tune/rate, WITHOUT any socket, and return its wire length.
- * Lets a tool hexdump-verify the byte offsets against upstream with no radio.
- * `ddc` is the DDC index for `device` (0 for HERMES-class incl. ANAN G1).
+ * ---- TX byte construction (F1, docs/TX-DESIGN.md) -------------------------
+ *
+ * ⛔ SAFETY: these structs let the builders CONSTRUCT the TX bytes; they do NOT
+ * transmit. The live engine ALWAYS passes NULL / pa_enabled=0 (see the hardcoded
+ * off call sites in protocol2.c) → the RX packets stay byte-identical to the
+ * verified RX build and no MOX/PA/drive/TX_RELAY can leave the host. Only the
+ * offline sdrfl-txprobe gate passes a non-NULL "hot" state, and only to hexdump-
+ * verify the layout against piHPSDR — never over a socket. Do NOT wire a non-off
+ * state into any live send before the F4/F5 safety milestones (docs/TX-SAFETY.md).
  */
-int p2_build_general(unsigned char *buf);
+
+/* High-Priority TX state. tx_freq is the DUC (TX) frequency; drive is the 0-255
+ * exciter level (forced 0 unless in_band). antenna 0/1/2 → ALEX_TX_ANTENNA_1/2/3. */
+typedef struct {
+  int       mox;         /* key the exciter → HP[4] |= 0x02 (non-CW)              */
+  int       tune;        /* TUNE active — also keys (drive from the tune source)   */
+  int       pa_enabled;  /* PA on for the TX band → gates ALEX_TX_RELAY + atten-31 */
+  int       in_band;     /* tx_freq inside a ham band (else drive forced to 0)     */
+  int       drive;       /* exciter drive 0-255 → HP[345]                          */
+  long long tx_freq;     /* DUC (TX) frequency Hz → HP[329-332] + TX-LPF selection */
+  int       antenna;     /* 0/1/2 → ALEX_TX_ANTENNA_1/2/3 (clamped to ANT1 if bad) */
+} p2_tx_state;
+
+/* Transmit-specific config (CW keyer + mic/line). NULL → the all-zero TX-off
+ * packet the live path sends today (no internal keyer → the FPGA cannot key CW). */
+typedef struct {
+  int pa_enabled;        /* → step attenuators 58/59 = 31 dB during TX            */
+  /* CW keyer — byte 5 bitfield + parameters */
+  int cw_internal;       /* 0x02 enable the in-radio (FPGA) keyer                  */
+  int cw_reversed;       /* 0x04 dot/dash reversed                                 */
+  int cw_mode_b;         /* keyer mode B (0x28) vs mode A (0x08)                   */
+  int cw_sidetone_on;    /* 0x10                                                   */
+  int cw_spacing;        /* 0x40 strict spacing                                    */
+  int cw_breakin;        /* 0x80                                                   */
+  int cw_sidetone_vol;   /* byte 6, 0-127                                          */
+  int cw_sidetone_freq;  /* bytes 7-8 (Hz, BE)                                     */
+  int cw_speed;          /* byte 9 (WPM)                                           */
+  int cw_weight;         /* byte 10                                                */
+  int cw_hang_ms;        /* bytes 11-12 (BE)                                       */
+  int cw_ptt_delay;      /* byte 13 (RF/PTT delay)                                 */
+  int cw_ramp_width;     /* byte 17                                                */
+  /* mic / line-in / PTT — byte 50 bitfield + byte 51 gain */
+  int mic_linein;        /* 0x01 line-in selected (vs mic)                         */
+  int mic_boost;         /* 0x02 +20 dB mic boost                                  */
+  int mic_ptt_disabled;  /* 0x04                                                   */
+  int mic_ptt_tip;       /* 0x08 tip/ring select                                   */
+  int mic_bias;          /* 0x10 mic bias                                          */
+  int linein_gain_db;    /* byte 51 = (gain+34)*0.6739+0.5, 0-31                   */
+} p2_tx_cw;
+
+/*
+ * Offline self-test hook: build each outgoing packet into `buf` (>= 1444 bytes)
+ * WITHOUT any socket, and return its wire length. Lets a tool hexdump-verify the
+ * byte offsets against upstream with no radio. The live engine passes the off
+ * arguments (pa_enabled=0, tx=NULL, cw=NULL); the TX arguments are exercised only
+ * by sdrfl-txprobe.
+ */
+int p2_build_general(unsigned char *buf, int pa_enabled);
 int p2_build_receive_specific(unsigned char *buf, int device, int sample_rate);
-int p2_build_high_priority(unsigned char *buf, int device, long long freq_hz, int run);
+int p2_build_high_priority(unsigned char *buf, int device, long long rx_freq_hz,
+                           int run, const p2_tx_state *tx);
+int p2_build_transmit_specific(unsigned char *buf, const p2_tx_cw *cw);
 
 #endif /* SDRFL_ENGINE_PROTOCOL2_H */

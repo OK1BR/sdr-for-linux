@@ -123,6 +123,16 @@ executable('sdrfl-rxprobe',
   install : false,
 )
 
+# Offline TX byte-layout gate (F1, docs/TX-DESIGN.md). Builds the General/HP/TX-
+# specific packets with a hot TX state and asserts every TX byte vs piHPSDR; also
+# proves the OFF state carries no MOX/TX_RELAY/drive. NO radio, NO socket.
+executable('sdrfl-txprobe',
+  ['src/txprobe_main.c'] + engine_sources,
+  include_directories : [vendor_inc, engine_inc],
+  dependencies : engine_deps + [m_dep],
+  install : false,
+)
+
 # Headless Protocol-2 RX -> WDSP analyzer -> panadapter PNG. Milestone-1 step-4
 # gate. TAKES THE RADIO — piHPSDR must be disconnected. Links the vendored WDSP
 # (needs the GNU dialect, like sdrfl-wdsp-smoke) + our pure-Cairo renderer.
