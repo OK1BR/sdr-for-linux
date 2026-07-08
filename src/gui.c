@@ -409,7 +409,7 @@ static void draw_band_edges(cairo_t *cr, App *app, int w, int ph) {
 
 /* Graphical S-meter, top-right of the panadapter. S1..S9 (6 dB/unit, S9 = -73
  * dBm on HF) then +dB over S9. dBm comes from the WDSP meter (radio) or the
- * server (network). Green up to S9, red above. */
+ * server (network). Fill is coloured by the active palette (like spectrum/wf). */
 static void draw_s_meter(cairo_t *cr, App *app, int w) {
   const double DBM_MIN = -121.0, DBM_S9 = -73.0, DBM_MAX = -13.0;   /* S1 … S9+60 */
   double dbm = app->frame.s_dbm;
@@ -418,16 +418,22 @@ static void draw_s_meter(cairo_t *cr, App *app, int w) {
   double bw = 300, bh = 14, bx = w - bw - 16, by = 32;
   double fillw = (dbm - DBM_MIN) / span * bw;
   if (fillw > bw) { fillw = bw; }
-  double s9x = (DBM_S9 - DBM_MIN) / span * bw;
-
   cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.5);           /* track */
   cairo_rectangle(cr, bx, by, bw, bh); cairo_fill(cr);
-  cairo_set_source_rgba(cr, 0.35, 0.85, 0.42, 0.9);        /* S1..S9 green */
-  cairo_rectangle(cr, bx, by, fmin(fillw, s9x), bh); cairo_fill(cr);
-  if (fillw > s9x) {                                       /* over S9 red */
-    cairo_set_source_rgba(cr, 0.95, 0.35, 0.2, 0.9);
-    cairo_rectangle(cr, bx + s9x, by, fillw - s9x, bh); cairo_fill(cr);
+  /* Fill coloured by the active palette (same scheme as the spectrum + waterfall):
+   * a horizontal gradient over the whole bar, painted up to the current level. */
+  cairo_pattern_t *grad = cairo_pattern_create_linear(bx, 0, bx + bw, 0);
+  for (int s = 0; s <= 12; s++) {
+    double t = s / 12.0, r, g, b;
+    waterfall_palette_rgb(t, &r, &g, &b);
+    cairo_pattern_add_color_stop_rgba(grad, t, r, g, b, 0.92);
   }
+  cairo_save(cr);
+  cairo_rectangle(cr, bx, by, fillw, bh); cairo_clip(cr);
+  cairo_set_source(cr, grad);
+  cairo_rectangle(cr, bx, by, bw, bh); cairo_fill(cr);
+  cairo_restore(cr);
+  cairo_pattern_destroy(grad);
 
   cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
   cairo_set_font_size(cr, 13.0);
