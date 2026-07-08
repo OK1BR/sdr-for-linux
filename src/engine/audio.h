@@ -6,7 +6,8 @@
  * low latency; the seam lets us swap backends without touching demod code.
  *
  * The DSP thread calls audio_push() (non-blocking); a backend thread drains to
- * the device. Mono float @ the given rate.
+ * the device. Interleaved float @ the given rate (1 or 2 channels — stereo
+ * carries the WDSP binaural output).
  */
 #ifndef SDRFL_ENGINE_AUDIO_H
 #define SDRFL_ENGINE_AUDIO_H
@@ -18,8 +19,10 @@
 int audio_start(int rate, int channels, int latency_ms);
 
 /*
- * Push `frames` mono float samples to the sink. Non-blocking (lock-free ring);
- * drops the excess on overflow. Call from the DSP/feed thread — never blocks it.
+ * Push `frames` interleaved float frames to the sink (channels-per-frame as
+ * given to audio_start; e.g. stereo = 2*frames floats, L/R interleaved).
+ * Non-blocking (lock-free ring); drops the excess on overflow. Call from the
+ * DSP/feed thread — never blocks it.
  */
 void audio_push(const float *samples, int frames);
 

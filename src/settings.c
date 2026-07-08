@@ -105,6 +105,8 @@ int settings_load(Settings *s) {
       s->nb = g_key_file_get_integer(kf, GROUP_RX, "nb", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "anf", NULL))
       s->anf = g_key_file_get_integer(kf, GROUP_RX, "anf", NULL);
+    if (g_key_file_has_key(kf, GROUP_RX, "binaural", NULL))
+      s->binaural = g_key_file_get_integer(kf, GROUP_RX, "binaural", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "mode_filters", NULL)) {
       char *mf = g_key_file_get_string(kf, GROUP_RX, "mode_filters", NULL);
       if (mf) { g_strlcpy(s->mode_filt, mf, sizeof(s->mode_filt)); g_free(mf); }
@@ -145,6 +147,7 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_RX,    "nr",      s->nr);
   g_key_file_set_integer(kf, GROUP_RX,    "nb",      s->nb);
   g_key_file_set_integer(kf, GROUP_RX,    "anf",     s->anf);
+  g_key_file_set_integer(kf, GROUP_RX,    "binaural", s->binaural);
   g_key_file_set_string (kf, GROUP_RX,    "mode_filters", s->mode_filt);
   g_key_file_set_string (kf, GROUP_RX,    "var_filters",  s->var_filt);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "fps",   s->fps);

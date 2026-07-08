@@ -70,6 +70,7 @@ typedef struct {
   int         agc;          /* AGC mode 0=off,1=long,2=slow,3=med,4=fast       */
   double      agc_gain;     /* AGC-T threshold/gain (dB)                       */
   int         nr, nb, anf;  /* noise reduction / blanker / auto-notch on-off   */
+  int         binaural;     /* binaural stereo audio output on-off             */
   int         fps;          /* panadapter frame rate                          */
   int         latency;      /* audio target latency (ms)                      */
   char        radio_ip[64]; /* resolved radio IP (for persistence)            */
@@ -783,6 +784,7 @@ static void app_to_settings(const App *app, Settings *s) {
   s->nr      = app->nr;
   s->nb      = app->nb;
   s->anf     = app->anf;
+  s->binaural = app->binaural;
   /* per-mode filter memory → "modeid=idx;..." */
   char *mp = s->mode_filt; size_t mrem = sizeof(s->mode_filt); mp[0] = '\0';
   for (int i = 0; i < 8; i++) {
@@ -1215,6 +1217,12 @@ static void on_anf_toggled(GtkToggleButton *b, gpointer data) {
   demod_set_anf(app->anf);
   schedule_save(app);
 }
+static void on_bin_toggled(GtkToggleButton *b, gpointer data) {
+  App *app = (App *)data;
+  app->binaural = gtk_toggle_button_get_active(b);
+  demod_set_binaural(app->binaural);   /* live: flips the WDSP panel copy */
+  schedule_save(app);
+}
 
 static void on_band_clicked(GtkButton *b, gpointer data) {
   App *app = (App *)data;
@@ -1303,15 +1311,20 @@ static GtkWidget *build_controls(App *app) {
   GtkWidget *nr_b  = gtk_toggle_button_new_with_label("NR");
   GtkWidget *nb_b  = gtk_toggle_button_new_with_label("NB");
   GtkWidget *anf_b = gtk_toggle_button_new_with_label("ANF");
+  GtkWidget *bin_b = gtk_toggle_button_new_with_label("BIN");
   noise_btn_update(GTK_BUTTON(nr_b), app->nr, "NR");   /* label + checked (before wiring) */
   noise_btn_update(GTK_BUTTON(nb_b), app->nb, "NB");
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(anf_b), app->anf);
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(bin_b), app->binaural);
+  gtk_widget_set_tooltip_text(bin_b, "Binaural stereo audio");
   g_signal_connect(nr_b,  "clicked", G_CALLBACK(on_nr_clicked),  app);   /* cycles off/NR/NR2 */
   g_signal_connect(nb_b,  "clicked", G_CALLBACK(on_nb_clicked),  app);
   g_signal_connect(anf_b, "toggled", G_CALLBACK(on_anf_toggled), app);
+  g_signal_connect(bin_b, "toggled", G_CALLBACK(on_bin_toggled), app);
   gtk_box_append(GTK_BOX(nrbox), nr_b);
   gtk_box_append(GTK_BOX(nrbox), nb_b);
   gtk_box_append(GTK_BOX(nrbox), anf_b);
+  gtk_box_append(GTK_BOX(nrbox), bin_b);
   gtk_box_append(GTK_BOX(bar), nrbox);
 
   /* AF volume — live. */
@@ -1874,6 +1887,7 @@ static void start_radio(App *app) {
   app->nr     = st.nr < 0 ? 0 : (st.nr > 4 ? 4 : st.nr);   /* 0 off /1 NR /2 NR2 /3 NR3 /4 NR4 */
   app->nb     = st.nb < 0 ? 0 : (st.nb > 2 ? 2 : st.nb);   /* 0 off / 1 NB / 2 NB2 */
   app->anf    = st.anf ? 1 : 0;
+  app->binaural = st.binaural ? 1 : 0;
   app->fps    = st.fps;
   app->latency = st.latency;
   /* Snap the saved zoom to the nearest octave detent in [1, ZOOM_MAX]. */
@@ -2019,13 +2033,14 @@ static void start_radio(App *app) {
   }
   app->filter_idx = app->filter_by_mode[mode];
   { int lo, hi; filter_lohi(app, mode, app->filter_idx, &lo, &hi); app->flo = lo; app->fhi = hi; }
-  if (audio_start(48000, 1, app->latency) == 0 && demod_create(0, rate, mode, app->flo, app->fhi, app->volume) == 0) {
+  if (audio_start(48000, 2, app->latency) == 0 && demod_create(0, rate, mode, app->flo, app->fhi, app->volume) == 0) {
     demod_set_gain(app->gain);
     demod_set_agc(app->agc);            /* saved AGC character + threshold */
     demod_set_agc_gain(app->agc_gain);
     demod_set_nr(app->nr);              /* saved NR/NB/ANF */
     demod_set_nb(app->nb);
     demod_set_anf(app->anf);
+    demod_set_binaural(app->binaural);
     app->audio_ok = 1;
   } else {
     fprintf(stderr, "audio/demod init failed — panadapter only\n");

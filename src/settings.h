@@ -46,6 +46,7 @@ typedef struct {
   double    agc_gain;  /* AGC-T threshold/gain (dB)                  */
   int       filter;    /* filter-preset index in the mode's table (-1 = default) */
   int       nr, nb, anf; /* noise reduction / blanker / auto-notch on-off        */
+  int       binaural;    /* binaural stereo audio output on-off                  */
   char      mode_filt[128]; /* per-mode filter memory, "modeid=idx;..."          */
   char      var_filt[256];  /* Var1/Var2 per mode, "modeid/v1lo/v1hi/v2lo/v2hi;.."*/
 } Settings;

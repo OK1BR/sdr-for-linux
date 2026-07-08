@@ -2,9 +2,11 @@
  * sdr-for-linux — native PipeWire audio sink (low latency). See audio.h.
  *
  * A pw_thread_loop drives a playback pw_stream; its RT `on_process` callback
- * pulls mono float samples from a lock-free SPSC ring that the DSP thread fills
- * via audio_push(). No blocking on the DSP thread, no lock in the RT callback.
- * PW_KEY_NODE_LATENCY requests a small quantum for minimum latency.
+ * pulls interleaved float frames from a lock-free SPSC ring that the DSP thread
+ * fills via audio_push(). No blocking on the DSP thread, no lock in the RT
+ * callback. PW_KEY_NODE_LATENCY requests a small quantum for minimum latency.
+ * The ring is interleaved by channel (a_channels, 1 or 2) so the demodulator can
+ * feed genuine stereo (binaural) without a second buffer.
  */
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/format-utils.h>
@@ -15,14 +17,16 @@
 
 #include "audio.h"
 
-/* Mono ring, power of two. 16384 @ 48k = 341 ms of headroom; we keep it far
- * emptier than that — it only needs to absorb scheduling jitter. */
+/* Interleaved ring, power-of-two frames. 16384 @ 48k = 341 ms of headroom; we
+ * keep it far emptier — it only absorbs scheduling jitter. Slots are MAX_CH
+ * wide; a_channels (1 or 2) tells how many are live. */
 #define RING_FRAMES 16384u
 #define RING_MASK   (RING_FRAMES - 1u)
+#define MAX_CH      2
 
-static float          a_ring[RING_FRAMES];
-static atomic_uint    a_head;   /* producer write index (free-running)  */
-static atomic_uint    a_tail;   /* consumer read index (free-running)   */
+static float          a_ring[RING_FRAMES * MAX_CH];   /* interleaved by channel */
+static atomic_uint    a_head;   /* producer frame index (free-running)  */
+static atomic_uint    a_tail;   /* consumer frame index (free-running)  */
 
 static struct pw_thread_loop *a_loop;
 static struct pw_stream       *a_stream;
@@ -47,8 +51,8 @@ static void on_process(void *userdata) {
   unsigned avail = h - t;
 
   for (uint32_t i = 0; i < nframes; i++) {
-    float v = (i < avail) ? a_ring[(t + i) & RING_MASK] : 0.0f;  /* underrun → silence */
-    for (int c = 0; c < a_channels; c++) { *dst++ = v; }
+    const float *src = (i < avail) ? &a_ring[((t + i) & RING_MASK) * MAX_CH] : NULL;
+    for (int c = 0; c < a_channels; c++) { *dst++ = src ? src[c] : 0.0f; }  /* underrun → silence */
   }
   unsigned consumed = (avail < nframes) ? avail : nframes;
   atomic_store_explicit(&a_tail, t + consumed, memory_order_release);
@@ -64,7 +68,7 @@ static const struct pw_stream_events stream_events = {
   .process = on_process,
 };
 
-/* --- producer: push mono floats (DSP thread) ------------------------------ */
+/* --- producer: push interleaved frames (DSP thread) ----------------------- */
 void audio_push(const float *samples, int frames) {
   if (!a_stream || frames <= 0) { return; }
   unsigned h = atomic_load_explicit(&a_head, memory_order_relaxed);
@@ -72,7 +76,10 @@ void audio_push(const float *samples, int frames) {
   unsigned space = RING_FRAMES - (h - t);
   unsigned n = (unsigned)frames;
   if (n > space) { n = space; }          /* full → drop the excess */
-  for (unsigned i = 0; i < n; i++) { a_ring[(h + i) & RING_MASK] = samples[i]; }
+  for (unsigned i = 0; i < n; i++) {
+    float *slot = &a_ring[((h + i) & RING_MASK) * MAX_CH];
+    for (int c = 0; c < a_channels; c++) { slot[c] = samples[(size_t)i * a_channels + c]; }
+  }
   atomic_store_explicit(&a_head, h + n, memory_order_release);
 }
 
@@ -84,7 +91,8 @@ int audio_queued(void) {
 
 /* --- lifecycle ------------------------------------------------------------ */
 int audio_start(int rate, int channels, int latency_ms) {
-  a_channels = channels;
+  a_channels = (channels < 1) ? 1 : (channels > MAX_CH ? MAX_CH : channels);
+  channels = a_channels;
   atomic_store(&a_head, 0);
   atomic_store(&a_tail, 0);
 

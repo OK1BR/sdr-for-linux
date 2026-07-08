@@ -104,7 +104,7 @@ int main(void) {
   printf("RX %lld Hz @ %d Hz, mode %s (%.0f..%.0f Hz), vol %.0f dB, audio lat %d ms\n",
          freq, rate, mname, flo, fhi, vol, lat);
 
-  if (audio_start(AUDIO_RATE, 1, lat) != 0) { fprintf(stderr, "audio_start failed\n"); return 2; }
+  if (audio_start(AUDIO_RATE, 2, lat) != 0) { fprintf(stderr, "audio_start failed\n"); return 2; }  /* stereo: demod feeds L/R */
   if (demod_create(0, rate, mode, flo, fhi, vol) != 0) { fprintf(stderr, "demod_create failed\n"); audio_stop(); return 3; }
   if (p2_rx_start(dev, freq, rate, feed_cb, NULL) != 0) {
     fprintf(stderr, "p2_rx_start failed\n");

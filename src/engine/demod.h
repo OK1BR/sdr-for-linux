@@ -44,6 +44,9 @@ void demod_set_nr(int mode);
 void demod_set_nb(int mode);
 void demod_set_anf(int on);
 
+/* Binaural stereo audio: 0 = mono (L=R), 1 = binaural (L=I, R=Q). Live. */
+void demod_set_binaural(int on);
+
 /* Set the AF volume (dB, 0..-40) live on the running channel (thread-safe). */
 void demod_set_volume(double db);
 

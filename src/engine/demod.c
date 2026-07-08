@@ -2,9 +2,10 @@
  * sdr-for-linux — WDSP demodulator wrapper. See demod.h.
  *
  * Mirrors piHPSDR receiver.c @ 974acba: OpenChannel (:1001) + the RXA setters
- * (:1019-1047) + fexchange0 (:1334). We take the demodulated LEFT channel as
- * mono and hand it to the audio sink. WDSP resamples the input IQ rate down to
- * 48 kHz internally, so the audio output is always 48 kHz.
+ * (:1019-1047) + fexchange0 (:1334). We hand both demodulated channels (L/R) to
+ * the (always-stereo) audio sink; with binaural off the WDSP panel makes L=R so
+ * it plays as mono, with binaural on L=I / R=Q for the spatial effect. WDSP
+ * resamples the input IQ rate down to 48 kHz internally, so audio out is 48 kHz.
  */
 #include <glib.h>
 #include <math.h>
@@ -24,7 +25,7 @@ static int      d_ready;
 static double  *d_iq;       /* accumulator, 2*D_BUFSIZE interleaved I/Q   */
 static int      d_fill;     /* pairs currently accumulated                */
 static double  *d_audio;    /* fexchange0 output, 2*d_output interleaved  */
-static float   *d_mono;     /* d_output mono floats for the sink          */
+static float   *d_out;      /* d_output interleaved L/R floats for the sink */
 static int      d_output;   /* audio frames per block = 1024/(rate/48k)   */
 static GMutex   d_lock;     /* fences feed vs create/destroy              */
 static double   d_peak;     /* max |audio| since last demod_peak()        */
@@ -35,6 +36,7 @@ static double   d_gain = 1.0; /* digital master gain after WDSP (SDRFL_GAIN) */
 static int      d_agc_mode = 3;    /* 0=off,1=long,2=slow,3=med,4=fast */
 static double   d_agc_top  = 80.0; /* AGC-T threshold/gain (dB)        */
 static int      d_nr, d_nb, d_anf; /* NR (ANR) / NB (ANB) / ANF on-off */
+static int      d_binaural;        /* binaural stereo output (WDSP panel copy) */
 static int      d_rate;            /* IQ input rate (blocks/s = d_rate/1024) */
 static double   d_vol_db;          /* AF volume in dB (panel gain source)    */
 static int      d_dbg;             /* SDRFL_DEBUG_LEVELS: 1 Hz meter dump    */
@@ -104,7 +106,7 @@ int demod_create(int id, int in_rate, int mode, double flo, double fhi, double v
   d_output = D_BUFSIZE / scale;          /* 64 @768k, 256 @192k */
   d_iq    = g_new0(double, 2 * D_BUFSIZE);
   d_audio = g_new0(double, 2 * d_output);
-  d_mono  = g_new0(float,  d_output);
+  d_out   = g_new0(float,  2 * d_output);   /* interleaved L/R for the sink */
   d_fill  = 0;
   /* Master gain after WDSP. With the ANT1-relay fix WDSP delivers piHPSDR-level
    * audio (~0.8 peak on strong signals before panel gain), so the default is
@@ -129,6 +131,7 @@ int demod_create(int id, int in_rate, int mode, double flo, double fhi, double v
   SetRXABandpassRun(id, 1);
   SetRXAPanelRun(id, 1);
   SetRXAPanelSelect(id, 3);              /* use both I and Q */
+  SetRXAPanelBinaural(id, d_binaural);   /* copy=1 (L=R, mono) off / copy=0 (L=I,R=Q) on */
   SetRXAMode(id, mode);
   RXASetPassband(id, flo, fhi);
   apply_agc();                          /* AGC character + threshold (d_agc_mode/d_agc_top) */
@@ -154,17 +157,21 @@ void demod_feed(const double *iq, int n_pairs) {
         d_blocks++;
         if (err != 0) { d_err = err; d_ferr++; }
         for (int k = 0; k < d_output; k++) {
-          double r = d_audio[k * 2];              /* raw WDSP out (incl. panel gain) */
-          double a = r < 0 ? -r : r;
+          double rl = d_audio[k * 2];             /* raw WDSP out L (I)            */
+          double rr = d_audio[k * 2 + 1];         /* raw WDSP out R (Q; == L unless binaural) */
+          double a = rl < 0 ? -rl : rl;
           if (a > d_dbg_pk) { d_dbg_pk = a; }
-          double s = r * d_gain;                  /* LEFT channel = mono, × master gain */
-          if (s >  1.0) { s =  1.0; }             /* clip to avoid wrap on the sink */
-          if (s < -1.0) { s = -1.0; }
-          d_mono[k] = (float)s;
-          a = s < 0 ? -s : s;
+          double sl = rl * d_gain, sr = rr * d_gain;   /* × master gain */
+          if (sl >  1.0) { sl =  1.0; }           /* clip to avoid wrap on the sink */
+          if (sl < -1.0) { sl = -1.0; }
+          if (sr >  1.0) { sr =  1.0; }
+          if (sr < -1.0) { sr = -1.0; }
+          d_out[k * 2]     = (float)sl;           /* interleaved L/R */
+          d_out[k * 2 + 1] = (float)sr;
+          a = sl < 0 ? -sl : sl;
           if (a > d_peak) { d_peak = a; }
         }
-        audio_push(d_mono, d_output);
+        audio_push(d_out, d_output);
         /* SDRFL_DEBUG_LEVELS: once per second dump the WDSP meters piHPSDR shows
          * on its RX meter (needle dBm = RXA_S_AV raw; "Gain" = -RXA_AGC_GAIN;
          * "Out" = RXA_AGC_AV) + the raw WDSP audio peak. Directly comparable. */
@@ -260,6 +267,14 @@ void demod_set_anf(int on) {
   if (d_ready) { SetRXAANFRun(d_id, d_anf); }
   g_mutex_unlock(&d_lock);
 }
+/* Binaural stereo output: 0 = mono (L=R), 1 = binaural (L=I, R=Q). WDSP's panel
+ * does the split via copy=1-bin; the sink is always stereo so this is live. */
+void demod_set_binaural(int on) {
+  g_mutex_lock(&d_lock);
+  d_binaural = on ? 1 : 0;
+  if (d_ready) { SetRXAPanelBinaural(d_id, d_binaural); }
+  g_mutex_unlock(&d_lock);
+}
 
 void demod_set_passband(double flo, double fhi) {
   g_mutex_lock(&d_lock);
@@ -276,6 +291,6 @@ void demod_destroy(void) {
   }
   g_free(d_iq);    d_iq = NULL;
   g_free(d_audio); d_audio = NULL;
-  g_free(d_mono);  d_mono = NULL;
+  g_free(d_out);   d_out = NULL;
   g_mutex_unlock(&d_lock);
 }
