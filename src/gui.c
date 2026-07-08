@@ -1697,10 +1697,10 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);
 
-  /* Display — fps live. */
+  /* Spectrum — how the trace + waterfall look (fps live). */
   p = ADW_PREFERENCES_PAGE(g_object_new(ADW_TYPE_PREFERENCES_PAGE,
-      "title", "Display", "icon-name", "video-display-symbolic", NULL));
-  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Panadapter", NULL));
+      "title", "Spectrum", "icon-name", "video-display-symbolic", NULL));
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Levels", NULL));
   adw_preferences_group_add(g, pref_spin("Frame rate", "fps · applies live",
       10, 60, app->fps, G_CALLBACK(on_pref_fps), app));
   adw_preferences_group_add(g, pref_spin("Scale top", "dBm · or drag the dB scale",
@@ -1709,6 +1709,15 @@ static AdwDialog *build_prefs(App *app) {
       -200, -40, app->pan_low, G_CALLBACK(on_pref_pan_low), app));
   adw_preferences_group_add(g, pref_switch("Auto level", "Track the noise floor (like the waterfall)",
       app->auto_level, G_CALLBACK(on_pref_auto_level), app));
+  adw_preferences_page_add(p, g);
+
+  /* Averaging — spectrum and waterfall independently (ms time constant). */
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Averaging",
+      "description", "Time constant in ms · 0 = none", NULL));
+  adw_preferences_group_add(g, pref_spin("Spectrum", "ms · trace smoothing",
+      0, 1000, app->avg_spec_ms, G_CALLBACK(on_pref_avg_spec), app));
+  adw_preferences_group_add(g, pref_spin("Waterfall", "ms · waterfall smoothing",
+      0, 1000, app->avg_wf_ms, G_CALLBACK(on_pref_avg_wf), app));
   adw_preferences_page_add(p, g);
 
   /* Colour scheme — one palette drives both the waterfall and the spectrum. */
@@ -1723,6 +1732,29 @@ static AdwDialog *build_prefs(App *app) {
       "subtitle", "Waterfall + spectrum palette", "model", pl, "selected", psel, NULL);
   g_signal_connect(pal, "notify::selected", G_CALLBACK(on_pref_palette), app);
   adw_preferences_group_add(g, pal);
+  adw_preferences_page_add(p, g);
+  adw_preferences_dialog_add(dlg, p);
+
+  /* Overlays — grid, filter + band plan drawn on top of the spectrum. */
+  p = ADW_PREFERENCES_PAGE(g_object_new(ADW_TYPE_PREFERENCES_PAGE,
+      "title", "Overlays", "icon-name", "view-list-symbolic", NULL));
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Grid &amp; scales", NULL));
+  adw_preferences_group_add(g, pref_switch("dB grid", "Horizontal level lines",
+      app->show_db_grid, G_CALLBACK(on_pref_db_grid), app));
+  adw_preferences_group_add(g, pref_switch("dB scale", "Left dBm labels",
+      app->show_db_scale, G_CALLBACK(on_pref_db_scale), app));
+  adw_preferences_group_add(g, pref_switch("Frequency grid", "Vertical frequency lines",
+      app->show_freq_grid, G_CALLBACK(on_pref_freq_grid), app));
+  adw_preferences_group_add(g, pref_switch("Frequency scale", "Top frequency labels",
+      app->show_freq_scale, G_CALLBACK(on_pref_freq_scale), app));
+  adw_preferences_page_add(p, g);
+
+  /* Filter overlay. */
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Filter", NULL));
+  adw_preferences_group_add(g, pref_switch("Filter on waterfall", "Extend passband + centre down",
+      app->show_filter_wf, G_CALLBACK(on_pref_filter_wf), app));
+  adw_preferences_group_add(g, pref_slider("Filter opacity", "Passband overlay transparency",
+      0, 100, app->filter_op, G_CALLBACK(on_pref_filter_op), app));
   adw_preferences_page_add(p, g);
 
   /* Band plan — region + national overlay drive the band-edge overlay. */
@@ -1749,31 +1781,6 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, cty);
   adw_preferences_group_add(g, pref_switch("Show band plan", "Edges, usage segments + band name",
       app->show_band_edges, G_CALLBACK(on_pref_band_edges), app));
-  adw_preferences_page_add(p, g);
-
-  /* Averaging — spectrum and waterfall independently (ms time constant). */
-  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Averaging",
-      "description", "Time constant in ms · 0 = none", NULL));
-  adw_preferences_group_add(g, pref_spin("Spectrum", "ms · trace smoothing",
-      0, 1000, app->avg_spec_ms, G_CALLBACK(on_pref_avg_spec), app));
-  adw_preferences_group_add(g, pref_spin("Waterfall", "ms · waterfall smoothing",
-      0, 1000, app->avg_wf_ms, G_CALLBACK(on_pref_avg_wf), app));
-  adw_preferences_page_add(p, g);
-
-  /* Grid & scales — each toggles independently. */
-  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Grid & scales", NULL));
-  adw_preferences_group_add(g, pref_switch("dB grid", "Horizontal level lines",
-      app->show_db_grid, G_CALLBACK(on_pref_db_grid), app));
-  adw_preferences_group_add(g, pref_switch("dB scale", "Left dBm labels",
-      app->show_db_scale, G_CALLBACK(on_pref_db_scale), app));
-  adw_preferences_group_add(g, pref_switch("Frequency grid", "Vertical frequency lines",
-      app->show_freq_grid, G_CALLBACK(on_pref_freq_grid), app));
-  adw_preferences_group_add(g, pref_switch("Frequency scale", "Top frequency labels",
-      app->show_freq_scale, G_CALLBACK(on_pref_freq_scale), app));
-  adw_preferences_group_add(g, pref_switch("Filter on waterfall", "Extend passband + centre down",
-      app->show_filter_wf, G_CALLBACK(on_pref_filter_wf), app));
-  adw_preferences_group_add(g, pref_slider("Filter opacity", "Passband overlay transparency",
-      0, 100, app->filter_op, G_CALLBACK(on_pref_filter_op), app));
   adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);
 
