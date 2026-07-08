@@ -359,9 +359,23 @@ static void draw_freq_scale(cairo_t *cr, App *app, int w, int ph) {
   }
 }
 
-/* Band-plan overlay: dashed amber lines at the amateur band edges that fall in
- * view (the band NAME is shown in the VFO readout, not here). Region + national
- * overlay come from bandplan.h; drawn in the same freq→x frame as draw_freq_scale. */
+/* Muted, semi-transparent colour per band-plan usage (for the segment ribbon).
+ * Checked most-specific first: an "all modes" segment carries the PHONE bit. */
+static void seg_usage_rgb(uint16_t u, double *r, double *g, double *b) {
+  if      (u == 0)              { *r = 0.50; *g = 0.50; *b = 0.55; }  /* guard      */
+  else if (u & BP_BEACON)      { *r = 0.90; *g = 0.42; *b = 0.85; }  /* beacon  — magenta */
+  else if (u & BP_SAT)         { *r = 0.28; *g = 0.80; *b = 0.80; }  /* satellite — teal  */
+  else if (u & BP_PHONE)       { *r = 0.40; *g = 0.85; *b = 0.50; }  /* all/phone — green */
+  else if (u & (BP_NB|BP_DIGI)){ *r = 0.96; *g = 0.70; *b = 0.26; }  /* narrow/digi — amber */
+  else if (u & BP_CW)          { *r = 0.42; *g = 0.62; *b = 0.96; }  /* CW — blue   */
+  else if (u & BP_FM)          { *r = 0.66; *g = 0.50; *b = 0.96; }  /* FM — purple */
+  else                         { *r = 0.55; *g = 0.70; *b = 0.62; }
+}
+
+/* Band-plan overlay: a thin usage-coloured segment ribbon along the bottom edge
+ * (in the noise-floor strip, so it never covers signals) + dashed amber lines at
+ * the band edges. The band NAME is shown in the VFO readout, not here. Region +
+ * national overlay come from bandplan.h; same freq→x frame as draw_freq_scale. */
 static void draw_band_edges(cairo_t *cr, App *app, int w, int ph) {
   if (!app->show_band_edges || w < 2 || app->rate <= 0 || app->zoom <= 0.0) { return; }
   double span      = (double)app->rate / app->zoom;
@@ -372,27 +386,54 @@ static void draw_band_edges(cairo_t *cr, App *app, int w, int ph) {
   bp_edge_t edges[32];
   int n = bp_edges((bp_region_t)app->bp_region, bp_country_key(app->bp_country), edges, 32);
 
-  cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
-  cairo_set_font_size(cr, 11.0);
-  const double edge_dash[] = { 4.0, 3.0 };
-
+  /* Segment ribbon along the bottom (drawn first; the edge lines sit on top).
+   * A dark backing masks the spectrum fill so the segment colours read true. */
+  const double RIB_H = 7.0;
+  double ry = (double)ph - RIB_H;
+  if (n > 0) {
+    cairo_set_source_rgba(cr, 0.03, 0.04, 0.07, 0.92);   /* dark base */
+    cairo_rectangle(cr, 0, ry, w, RIB_H);
+    cairo_fill(cr);
+  }
+  bp_seg_t segs[48];
   for (int i = 0; i < n; i++) {
-    if ((double)edges[i].hi < left_hz || (double)edges[i].lo > right_hz) { continue; }  /* off-screen */
-
-    /* Dashed vertical marker at each band edge that is actually in view. */
+    if ((double)edges[i].hi < left_hz || (double)edges[i].lo > right_hz) { continue; }
+    int ns = bp_segments((bp_region_t)app->bp_region, edges[i].band, segs, 48);
+    for (int s = 0; s < ns; s++) {
+      double sl = (double)segs[s].lo, sh = (double)segs[s].hi;
+      if (sh < left_hz || sl > right_hz) { continue; }
+      double x0 = (sl - left_hz) / hz_per_px; if (x0 < 0) { x0 = 0; }
+      double x1 = (sh - left_hz) / hz_per_px; if (x1 > w) { x1 = w; }
+      if (x1 <= x0) { continue; }
+      double r, g, b; seg_usage_rgb(segs[s].usage, &r, &g, &b);
+      cairo_set_source_rgba(cr, r, g, b, 0.85);
+      cairo_rectangle(cr, x0, ry, x1 - x0, RIB_H);
+      cairo_fill(cr);
+    }
+  }
+  if (n > 0) {   /* hairline setting the ribbon off from the spectrum */
+    cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.5);
     cairo_set_line_width(cr, 1.0);
-    cairo_set_dash(cr, edge_dash, 2, 0);
-    cairo_set_source_rgba(cr, 1.0, 0.66, 0.2, 0.5);
+    cairo_move_to(cr, 0, ry - 0.5); cairo_line_to(cr, w, ry - 0.5);
+    cairo_stroke(cr);
+  }
+
+  /* Dashed amber band-edge markers (full height), over the ribbon. */
+  const double edge_dash[] = { 4.0, 3.0 };
+  cairo_set_line_width(cr, 1.0);
+  cairo_set_dash(cr, edge_dash, 2, 0);
+  cairo_set_source_rgba(cr, 1.0, 0.66, 0.2, 0.5);
+  for (int i = 0; i < n; i++) {
     for (int e = 0; e < 2; e++) {
       double f = e ? (double)edges[i].hi : (double)edges[i].lo;
       if (f < left_hz || f > right_hz) { continue; }
       double x = floor((f - left_hz) / hz_per_px) + 0.5;
       cairo_move_to(cr, x, 0);
-      cairo_line_to(cr, x, ph);
+      cairo_line_to(cr, x, ry);   /* stop at the ribbon top */
       cairo_stroke(cr);
     }
-    cairo_set_dash(cr, NULL, 0, 0);
   }
+  cairo_set_dash(cr, NULL, 0, 0);
 }
 
 /* Graphical S-meter, top-right of the panadapter. S1..S9 (6 dB/unit, S9 = -73
@@ -1702,7 +1743,7 @@ static AdwDialog *build_prefs(App *app) {
       "subtitle", "National allocation overrides", "model", cl, "selected", csel, NULL);
   g_signal_connect(cty, "notify::selected", G_CALLBACK(on_pref_country), app);
   adw_preferences_group_add(g, cty);
-  adw_preferences_group_add(g, pref_switch("Show band edges", "Band limits + name on the spectrum",
+  adw_preferences_group_add(g, pref_switch("Show band plan", "Edges, usage segments + band name",
       app->show_band_edges, G_CALLBACK(on_pref_band_edges), app));
   adw_preferences_page_add(p, g);
 
