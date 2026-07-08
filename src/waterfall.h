@@ -37,4 +37,15 @@ void waterfall_palette_rgb(double t, double *r, double *g, double *b);
  * the top of the palette. Lets the panadapter map dBm -> colour identically. */
 void waterfall_range(const Waterfall *wf, double *low, double *span);
 
+/*
+ * Selectable colour schemes. The selected palette backs waterfall_palette_rgb()
+ * (and therefore both the waterfall and the panadapter). Index 0 is "Classic".
+ */
+int         waterfall_palette_count(void);
+const char *waterfall_palette_name(int idx);   /* "" if out of range */
+int         waterfall_get_palette(void);
+/* Select palette `idx`: rebuilds `wf`'s LUT and recolours its whole history in
+ * place. Pass wf = NULL to only set the global (e.g. before a waterfall exists). */
+void        waterfall_set_palette(Waterfall *wf, int idx);
+
 #endif /* PIHPSDR_CLIENT_WATERFALL_H */

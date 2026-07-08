@@ -33,6 +33,7 @@ typedef struct {
   int       auto_level;/* auto-track the noise floor on the dB axis   */
   int       avg_spec;  /* spectrum-trace averaging time constant (ms) */
   int       avg_wf;    /* waterfall averaging time constant (ms)      */
+  int       palette;   /* colour scheme index (waterfall + spectrum)  */
   int       win_w;     /* window width (px, 0 = default)             */
   int       win_h;     /* window height (px, 0 = default)            */
   int       win_max;   /* window maximized                          */

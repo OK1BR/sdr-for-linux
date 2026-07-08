@@ -93,6 +93,7 @@ typedef struct {
   int         wf_ema_w;
   int         avg_spec_ms;   /* spectrum-trace averaging time constant (ms)        */
   int         avg_wf_ms;     /* waterfall averaging time constant (ms)             */
+  int         palette;       /* colour-scheme index (waterfall + spectrum)         */
 
   Waterfall  *wf;
   GtkWidget  *area;
@@ -760,6 +761,7 @@ static void app_to_settings(const App *app, Settings *s) {
   s->auto_level = app->auto_level;
   s->avg_spec   = app->avg_spec_ms;
   s->avg_wf     = app->avg_wf_ms;
+  s->palette    = app->palette;
   s->win_w   = app->win_w;
   s->win_h   = app->win_h;
   s->win_max = app->win_max;
@@ -1483,6 +1485,13 @@ static void on_pref_avg_wf(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   app->avg_wf_ms = (int)adw_spin_row_get_value(r);
   schedule_save(app);
 }
+static void on_pref_palette(AdwComboRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->palette = (int)adw_combo_row_get_selected(r);
+  waterfall_set_palette(app->wf, app->palette);   /* recolours the whole waterfall live */
+  schedule_save(app);
+  if (app->area) { gtk_widget_queue_draw(app->area); }   /* repaint the spectrum too */
+}
 static void on_pref_rate(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   (void)ps;
   App *app = (App *)data;
@@ -1569,6 +1578,20 @@ static AdwDialog *build_prefs(App *app) {
       -200, -40, app->pan_low, G_CALLBACK(on_pref_pan_low), app));
   adw_preferences_group_add(g, pref_switch("Auto level", "Track the noise floor (like the waterfall)",
       app->auto_level, G_CALLBACK(on_pref_auto_level), app));
+  adw_preferences_page_add(p, g);
+
+  /* Colour scheme — one palette drives both the waterfall and the spectrum. */
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Colours", NULL));
+  int npal = waterfall_palette_count();
+  const char **pnames = g_new0(const char *, npal + 1);
+  for (int i = 0; i < npal; i++) { pnames[i] = waterfall_palette_name(i); }
+  GtkStringList *pl = gtk_string_list_new(pnames);
+  g_free(pnames);
+  guint psel = (app->palette >= 0 && app->palette < npal) ? (guint)app->palette : 0;
+  GtkWidget *pal = g_object_new(ADW_TYPE_COMBO_ROW, "title", "Colour scheme",
+      "subtitle", "Waterfall + spectrum palette", "model", pl, "selected", psel, NULL);
+  g_signal_connect(pal, "notify::selected", G_CALLBACK(on_pref_palette), app);
+  adw_preferences_group_add(g, pal);
   adw_preferences_page_add(p, g);
 
   /* Averaging — spectrum and waterfall independently (ms time constant). */
@@ -1719,7 +1742,8 @@ static void start_radio(App *app) {
                   .agc = 3, .agc_gain = 80.0, .filter = -1,
                   .pan_high = PAN_HIGH_DEFAULT, .pan_low = PAN_LOW_DEFAULT,
                   .db_grid = 1, .db_scale = 1, .freq_grid = 1, .freq_scale = 1,
-                  .filter_wf = 1, .filter_op = 60, .avg_spec = -1, .avg_wf = -1 };
+                  .filter_wf = 1, .filter_op = 60, .avg_spec = -1, .avg_wf = -1,
+                  .palette = 0 };
   g_strlcpy(st.ip, "192.168.1.247", sizeof(st.ip));
   if (settings_load(&st)) { printf("settings: loaded %s\n", settings_path()); }
 
@@ -1824,6 +1848,8 @@ static void start_radio(App *app) {
   app->auto_level = st.auto_level ? 1 : 0;
   app->avg_spec_ms = (st.avg_spec < 0) ? 150 : (st.avg_spec > 2000 ? 2000 : st.avg_spec);
   app->avg_wf_ms   = (st.avg_wf   < 0) ?  40 : (st.avg_wf   > 2000 ? 2000 : st.avg_wf);
+  app->palette = (st.palette < 0 || st.palette >= waterfall_palette_count()) ? 0 : st.palette;
+  waterfall_set_palette(app->wf, app->palette);   /* app->wf created in main() before activation */
   app->win_w   = st.win_w   > 0 ? st.win_w : 1320;
   app->win_h   = st.win_h   > 0 ? st.win_h : 720;
   app->win_max = st.win_max ? 1 : 0;
