@@ -1687,6 +1687,15 @@ static gboolean on_key(GtkEventControllerKey *ctl, guint keyval, guint keycode,
     gtk_widget_queue_draw(app->area);
     return TRUE;
   }
+  /* CW test trigger (F6d-1b, TEMPORARY — the real CW source is TCI in F6d-2): in a
+   * CW mode, 'k' queues a short test string; the TX runtime's break-in keys it
+   * through tx_gate (so PA-off / out-of-band still produce no RF). Esc aborts. */
+  if (gdk_keyval_to_lower(keyval) == GDK_KEY_k &&
+      app->tx_ready && (app->mode == DEMOD_CWL || app->mode == DEMOD_CWU)) {
+    tx_run_cw_send("V V V TEST DE OK1BR ");
+    return TRUE;
+  }
+  if (keyval == GDK_KEY_Escape && app->tx_ready) { tx_run_cw_abort(); return TRUE; }
   int mode;
   switch (gdk_keyval_to_lower(keyval)) {
     case GDK_KEY_u: mode = DEMOD_USB; break;
@@ -1752,6 +1761,7 @@ static void on_mode_toggled(GtkToggleButton *b, gpointer data) {
   app->flo = lo; app->fhi = hi;
   demod_set_mode(mode, app->flo, app->fhi);
   populate_filter_dd(app);               /* refill dropdown for the new mode */
+  tx_push_cfg(app);                      /* TX runtime learns the mode (CW break-in gates on it) */
   tx_update_mic(app);                    /* voice mode → mic ready; CW/data → mic closed */
   schedule_save(app);
 }

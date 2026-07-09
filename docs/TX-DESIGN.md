@@ -374,10 +374,18 @@ no trips). What landed:
     ramp, capped inside a dot at high WPM). Gate `sdrfl-cw-test` proves the timing
     with no radio: dot = sr·1.2/WPM and the **PARIS word rate = exactly 50 dots**
     (0 sample error) at 12/20/25/30/40 WPM. NEVER keys — pure generator.
-  - **F6d-1b (next, hazardous)** — feed `cw_gen` into the TX runtime: on key-active,
-    assert MOX + drive (via `tx_gate`), emit the shaped IQ; break-in/hang-time T/R;
-    host sidetone; 20 s key-down cutoff. First keying = "TEST" into a 50 Ω dummy
-    load, operator present. Full TX-SAFETY re-check.
+  - **F6d-1b done (offline-verified) — cw_gen wired into the TX runtime.** In a CW
+    mode, a break-in state machine in the tx_run feed thread derives "want key" from
+    the generator's activity (content → key; hang after the last element), the gate
+    turns it into a real MOX assertion (drive, ANT, LPF, atten-31, SWR protection —
+    identical to voice MOX, already verified), and the feed loop emits the shaped
+    carrier IQ directly (`I = 0.896·env, Q = 0`, no WDSP). 20 s continuous-key
+    cutoff. API: `tx_run_cw_send/abort/set_cw`. **Temporary trigger for the live
+    test:** in a CW mode the key **'k'** queues "V V V TEST DE OK1BR" (Esc aborts) —
+    to be replaced by the TCI source (F6d-2). Builds; all offline gates pass (cw
+    timing, txprobe OFF-state clean, txgate, swr, txdsp). **★ Live test pending:**
+    first CW keying into a 50 Ω dummy load, operator at the wattmeter (watch `tx:
+    KEY CW` + fwd/SWR). Sidetone + WPM/persistence UI = F6d-1c.
   - **F6d-2** — **TCI** server endpoint as the CW source (bootstraps a slice of the
     otherwise-deferred TCI transport); the contest program sends CW over TCI.
 

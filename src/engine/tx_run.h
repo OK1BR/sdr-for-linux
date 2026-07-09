@@ -88,6 +88,17 @@ void tx_run_set_mic_gain(double db);
 void tx_run_set_span(double span_hz);
 
 /*
+ * CW (F6d). Queue Morse for `text` (appended); the TX runtime's break-in logic
+ * keys the exciter through tx_gate while there's Morse to send, then holds MOX for
+ * the hang time. tx_run_cw_abort() drops the queue. tx_run_set_cw() sets speed
+ * (WPM), weight (0-100), rise/fall ramp (ms) and break-in hang (ms). All safe if
+ * TX isn't up (no-ops). Keying still only happens in a CW mode + through the gate.
+ */
+void tx_run_cw_send(const char *text);
+void tx_run_cw_abort(void);
+void tx_run_set_cw(int wpm, double weight, double ramp_ms, int hang_ms);
+
+/*
  * Request keying. want_mox / want_tune are the operator's intent; the safety gate
  * decides whether it actually keys. (0,0) = unkey. Thread-safe.
  */

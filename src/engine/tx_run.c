@@ -22,6 +22,11 @@
 #include "tx_analyzer.h"
 #include "tx_run.h"
 #include "mic_pw.h"   /* live host-soundcard mic → exciter while MOX is keyed (F6c) */
+#include "cw_gen.h"   /* CW Morse envelope → keyed carrier (F6d)                    */
+
+#define TX_MODE_IS_CW(m) ((m) == 3 || (m) == 4)   /* DEMOD_CWL / DEMOD_CWU */
+#define CW_IQ_AMP        0.896   /* DC-signal gain comp for the radio's DUC CFIR (piHPSDR) */
+#define CW_CUTOFF_US     (20 * 1000000LL)   /* 20 s continuous-key hardware backstop */
 
 #define TX_IQ_RATE   192000  /* WDSP TX channel output rate (matches tx.c)     */
 #define TX_IQ_BLOCK  2048    /* IQ pairs per on_tx_iq block (512*192k/48k)     */
@@ -49,6 +54,12 @@ static GThread          *s_thread;
 static volatile int      s_running;        /* g_atomic */
 static volatile int      s_want_mox;       /* g_atomic */
 static volatile int      s_want_tune;      /* g_atomic */
+static volatile int      s_want_cw;        /* g_atomic: CW break-in wants key (feed thread) */
+static volatile int      s_mode;           /* g_atomic: current WDSP/demod mode           */
+
+static cw_gen           *s_cw;             /* CW envelope generator (192k), under s_cw_lock */
+static GMutex            s_cw_lock;
+static volatile int      s_cw_hang_ms = 250;   /* g_atomic: break-in hang time (ms)         */
 
 static tx_cfg_i          s_cfg;            /* under s_cfg_lock */
 static GMutex            s_cfg_lock;
@@ -76,8 +87,12 @@ static void publish(const tx_run_status *st) {
 
 /* One meter+gate slot (~20 Hz). Returns the keyed decision and applies all wire
  * state (p2_set_tx_state) + DSP transitions (tone/run) on key/unkey edges. */
-static int gate_slot(int *prev_keyed, int *prev_want, const float *silence, int *keyed_mox) {
-  int want_mox  = g_atomic_int_get(&s_want_mox);
+static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
+                     int *keyed_mox, int *keyed_cw) {
+  int is_cw     = TX_MODE_IS_CW(g_atomic_int_get(&s_mode));
+  int want_cw   = g_atomic_int_get(&s_want_cw);      /* CW break-in (feed thread) */
+  /* CW keys through the exciter exactly like MOX (MOX bit + drive, SWR-protected). */
+  int want_mox  = g_atomic_int_get(&s_want_mox) || (is_cw && want_cw);
   int want_tune = g_atomic_int_get(&s_want_tune);
   int want      = want_mox || want_tune;
 
@@ -116,18 +131,20 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence, int 
   tx_gate_evaluate(&gc, &in, &r);
   int keyed = r.keyed;
 
+  int cw_key = is_cw && r.state.mox && !r.state.tune;   /* MOX-keyed in a CW mode = CW */
   if (keyed && !*prev_keyed) {
     /* KEY ON: bring up the DSP first, then assert the gate-approved wire state.
      * (IQ starts on the next feed; the radio ignores it until MOX/relay land, so
-     * no RF can precede a consistent TX state.) */
+     * no RF can precede a consistent TX state.) CW bypasses WDSP — the feed loop
+     * emits the shaped carrier IQ directly; here we just assert the wire state. */
     tx_dsp_set_mode(cfg.mode, TX_FLO, TX_FHI);
-    tx_dsp_tune_tone(r.state.tune ? 1 : 0, 0.0);   /* TUNE = post-gen carrier; MOX = live mic */
-    if (r.state.mox) { mic_flush(); }              /* drop stale idle audio → start on fresh voice */
+    tx_dsp_tune_tone(r.state.tune ? 1 : 0, 0.0);   /* TUNE = post-gen carrier */
+    if (r.state.mox && !cw_key) { mic_flush(); }   /* voice: start on fresh mic audio */
     tx_dsp_run(1);
     p2_set_tx_state(&r.state);
     fprintf(stderr, "tx: KEY %s  freq=%lld Hz  PA=%s  ANT%d  drive=%d/255\n",
-            r.state.tune ? "TUNE" : "MOX", freq, r.state.pa_enabled ? "ON" : "off",
-            cfg.antenna + 1, r.state.drive);
+            r.state.tune ? "TUNE" : (cw_key ? "CW" : "MOX"), freq,
+            r.state.pa_enabled ? "ON" : "off", cfg.antenna + 1, r.state.drive);
     fflush(stderr);
   } else if (!keyed && *prev_keyed) {
     /* KEY OFF (operator release OR protection trip): drop MOX first, stop the
@@ -164,7 +181,8 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence, int 
   g_strlcpy(st.reason, r.reason ? r.reason : "", sizeof st.reason);
   publish(&st);
 
-  if (keyed_mox) { *keyed_mox = st.mox; }   /* feed loop pulls the mic only when MOX-keyed */
+  if (keyed_mox) { *keyed_mox = st.mox && !is_cw; }   /* voice mic path */
+  if (keyed_cw)  { *keyed_cw  = st.mox &&  is_cw; }    /* CW shaped-carrier path */
   *prev_keyed = keyed;
   *prev_want  = want;
   return keyed;
@@ -172,22 +190,61 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence, int 
 
 static gpointer tx_thread(gpointer u) {
   (void)u;
-  float silence[FEED_BLOCK];
-  float mic[FEED_BLOCK];
+  float  silence[FEED_BLOCK];
+  float  mic[FEED_BLOCK];
+  float  cwenv[TX_IQ_BLOCK];       /* CW envelope @192k */
+  double cwiq[2 * TX_IQ_BLOCK];    /* CW IQ (I=amp·env, Q=0) */
   memset(silence, 0, sizeof silence);
-  int prev_keyed = 0, prev_want = 0, keyed = 0, keyed_mox = 0;
-  gint64 last_gate = 0, next_feed = 0;
+  int prev_keyed = 0, prev_want = 0, keyed = 0, keyed_mox = 0, keyed_cw = 0;
+  gint64 last_gate = 0, next_feed = 0, cw_hang_deadline = 0, cw_key_on = 0;
 
   while (g_atomic_int_get(&s_running)) {
     gint64 now = g_get_monotonic_time();
+
+    /* CW break-in bookkeeping (feed thread owns cw_gen). While there is queued/
+     * unfinished Morse we want to key; after the last element we hold for the hang
+     * time. The gate turns this into a real MOX assertion (SWR-protected). */
+    int cw_mode = TX_MODE_IS_CW(g_atomic_int_get(&s_mode));
+    int cw_content = 0;
+    if (cw_mode) {
+      g_mutex_lock(&s_cw_lock);
+      cw_content = s_cw && !cw_gen_idle(s_cw);
+      g_mutex_unlock(&s_cw_lock);
+    }
+    if (cw_content) { cw_hang_deadline = now + (gint64)g_atomic_int_get(&s_cw_hang_ms) * 1000; }
+    g_atomic_int_set(&s_want_cw, cw_mode && (now < cw_hang_deadline) ? 1 : 0);
+
     if (now - last_gate >= GATE_US) {
       last_gate = now;
-      keyed = gate_slot(&prev_keyed, &prev_want, silence, &keyed_mox);
+      keyed = gate_slot(&prev_keyed, &prev_want, silence, &keyed_mox, &keyed_cw);
       if (keyed && next_feed == 0) { next_feed = g_get_monotonic_time(); }
       if (!keyed) { next_feed = 0; }
     }
+
+    /* 20 s continuous-key hardware backstop: abort the Morse so break-in unkeys. */
+    if (keyed_cw) {
+      if (cw_key_on == 0) { cw_key_on = now; }
+      else if (now - cw_key_on > CW_CUTOFF_US) {
+        g_mutex_lock(&s_cw_lock); if (s_cw) { cw_gen_flush(s_cw); } g_mutex_unlock(&s_cw_lock);
+        fprintf(stderr, "tx: CW 20 s cutoff — flushed\n"); fflush(stderr);
+      }
+    } else { cw_key_on = 0; }
+
     if (keyed) {
-      if (keyed_mox) {
+      if (keyed_cw) {
+        /* CW: pull the shaped envelope and emit it as a keyed carrier IQ
+         * (I = amp·env, Q = 0) straight to the framer — no WDSP. During the hang
+         * the generator is idle so env = 0 (carrier off, T/R still held). */
+        g_mutex_lock(&s_cw_lock);
+        if (s_cw) { cw_gen_pull(s_cw, cwenv, TX_IQ_BLOCK); }
+        else      { memset(cwenv, 0, sizeof cwenv); }
+        g_mutex_unlock(&s_cw_lock);
+        for (int i = 0; i < TX_IQ_BLOCK; i++) {
+          cwiq[2 * i]     = CW_IQ_AMP * (double)cwenv[i];
+          cwiq[2 * i + 1] = 0.0;
+        }
+        on_tx_iq(cwiq, TX_IQ_BLOCK, NULL);
+      } else if (keyed_mox) {
         /* MOX/voice: pull live mic; pad any underrun with silence so the exciter
          * never stalls (PACE_US real-time cadence must be met every block). */
         int got = mic_pull(mic, FEED_BLOCK);
@@ -226,6 +283,15 @@ int tx_run_start(long long tx_freq_hz, int pan_pixels, int fps) {
 
   g_atomic_int_set(&s_want_mox, 0);
   g_atomic_int_set(&s_want_tune, 0);
+  g_atomic_int_set(&s_want_cw, 0);
+  g_atomic_int_set(&s_mode, TX_MODE_DFLT);
+
+  /* CW envelope generator @192k (the TX IQ rate) — safe defaults; GUI pushes the
+   * operator's WPM/weight/ramp. It only makes an envelope; it never keys. */
+  g_mutex_lock(&s_cw_lock);
+  if (!s_cw) { s_cw = cw_gen_new(TX_IQ_RATE, 20, 50.0, 9.0); }
+  else       { cw_gen_flush(s_cw); }
+  g_mutex_unlock(&s_cw_lock);
 
   tx_run_status st; memset(&st, 0, sizeof st); st.running = 1; st.allowed = 1;
   publish(&st);
@@ -248,12 +314,16 @@ void tx_run_stop(void) {
   if (!s_thread) { return; }
   g_atomic_int_set(&s_want_mox, 0);
   g_atomic_int_set(&s_want_tune, 0);
+  g_atomic_int_set(&s_want_cw, 0);
   g_atomic_int_set(&s_running, 0);
   g_thread_join(s_thread);
   s_thread = NULL;
   p2_set_tx_state(NULL);   /* belt-and-braces: ensure the wire state is RX-only */
   tx_dsp_destroy();
   tx_analyzer_destroy();
+  g_mutex_lock(&s_cw_lock);
+  cw_gen_free(s_cw); s_cw = NULL;
+  g_mutex_unlock(&s_cw_lock);
   tx_run_status st; memset(&st, 0, sizeof st);
   publish(&st);
 }
@@ -278,6 +348,28 @@ void tx_run_set_cfg(const tx_run_cfg *cfg) {
   g_strlcpy(s_cfg.country_key, cfg->country_key ? cfg->country_key : "", sizeof s_cfg.country_key);
   for (int i = 0; i < 11; i++) { s_cfg.pa_trim[i] = cfg->pa_trim[i]; }
   g_mutex_unlock(&s_cfg_lock);
+  g_atomic_int_set(&s_mode, cfg->mode);   /* CW break-in gates on the mode (feed thread) */
+}
+
+/* --- CW (F6d) — queue Morse text; break-in in the feed thread does the keying. --- */
+void tx_run_cw_send(const char *text) {
+  if (!text) { return; }
+  g_mutex_lock(&s_cw_lock);
+  if (s_cw) { cw_gen_send_text(s_cw, text); }
+  g_mutex_unlock(&s_cw_lock);
+}
+
+void tx_run_cw_abort(void) {
+  g_mutex_lock(&s_cw_lock);
+  if (s_cw) { cw_gen_flush(s_cw); }
+  g_mutex_unlock(&s_cw_lock);
+}
+
+void tx_run_set_cw(int wpm, double weight, double ramp_ms, int hang_ms) {
+  g_mutex_lock(&s_cw_lock);
+  if (s_cw) { cw_gen_set_speed(s_cw, wpm, weight); cw_gen_set_ramp(s_cw, ramp_ms); }
+  g_mutex_unlock(&s_cw_lock);
+  g_atomic_int_set(&s_cw_hang_ms, hang_ms > 0 ? hang_ms : 0);
 }
 
 void tx_run_set_freq(long long tx_freq_hz) {
