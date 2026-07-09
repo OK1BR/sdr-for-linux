@@ -19,30 +19,47 @@
 static int     t_pixels;
 static int     t_afft;
 static int     t_bf;        /* Spectrum0 block size (pairs) */
+static int     t_iq_rate;   /* TX IQ rate (Hz) — clip reference */
+static int     t_fps;
+static double  t_span;      /* current display span (Hz) */
 static double *t_acc;       /* accumulator 2*t_bf doubles */
 static int     t_fill;
 static int     t_ready;
 static GMutex  t_lock;
 
+/* (Re)configure the WDSP analyzer for a `span_hz`-wide window: pick afft so the
+ * surviving bins ≈ the pixel count (sharp at any zoom, like piHPSDR re-zoom),
+ * clip the rest of the 192 kHz IQ. Same FFT sizes as the RX analyzer, so FFTW
+ * wisdom covers them → no re-plan stutter. Must hold t_lock. */
+static void tx_ana_configure(double span_hz) {
+  if (span_hz > (double)t_iq_rate) { span_hz = (double)t_iq_rate; }   /* can't exceed the TX IQ */
+  if (span_hz < 300.0)             { span_hz = 300.0; }
+  t_span = span_hz;
+  int want = (int)(((long)t_iq_rate * (long)t_pixels) / (long)span_hz);
+  if      (want <=  16384) { t_afft =  16384; }
+  else if (want <=  32768) { t_afft =  32768; }
+  else if (want <=  65536) { t_afft =  65536; }
+  else if (want <= 131072) { t_afft = 131072; }
+  else                     { t_afft = 262144; }
+
+  double clipf   = (double)t_afft * (0.5 - (span_hz * 0.5) / (double)t_iq_rate);  /* each side */
+  double keep_t  = 0.1;
+  int    overlap = (int)fmax(0.0, ceil((double)t_afft - (double)t_iq_rate / (double)t_fps));
+  int    max_w   = t_afft + (int)fmin(keep_t * (double)t_iq_rate,
+                                      keep_t * (double)t_afft * (double)t_fps);
+  int    flp[1]  = { 0 };
+  SetAnalyzer(TXA_DISP, 1, 1, 1 /*complex*/, flp, t_afft, t_bf, 5 /*window*/, 14.0,
+              overlap, 0, clipf, clipf, t_pixels, 1, 0, 0.0, 0.0, max_w);
+}
+
 int tx_analyzer_create(int pixels, int iq_rate, int bf_size, int fps) {
   int rc = -1;
   if (pixels <= 0 || iq_rate <= 0 || bf_size <= 0) { return -1; }
-  t_pixels = pixels;
-  t_bf     = bf_size;
+  t_pixels  = pixels;
+  t_bf      = bf_size;
+  t_iq_rate = iq_rate;
   if (fps < 1) { fps = 1; }
-
-  /* afft such that surviving bins (24 kHz worth) ≈ pixels, clamped like piHPSDR. */
-  int want = (int)(((long)iq_rate * (long)pixels) / (long)TXA_SPAN);
-  if      (want <= 16384) { t_afft = 16384; }
-  else if (want <= 32768) { t_afft = 32768; }
-  else                    { t_afft = 65536; }
-
-  double clipf     = (double)t_afft * (0.5 - 12000.0 / (double)iq_rate);  /* each side */
-  double keep_time = 0.1;
-  int    overlap   = (int)fmax(0.0, ceil((double)t_afft - (double)iq_rate / (double)fps));
-  int    max_w     = t_afft + (int)fmin(keep_time * (double)iq_rate,
-                                        keep_time * (double)t_afft * (double)fps);
-  int    flp[1]    = { 0 };
+  t_fps     = fps;
 
   t_acc  = g_new0(double, 2 * t_bf);
   t_fill = 0;
@@ -54,8 +71,7 @@ int tx_analyzer_create(int pixels, int iq_rate, int bf_size, int fps) {
     g_free(t_acc); t_acc = NULL;
     return -1;
   }
-  SetAnalyzer(TXA_DISP, 1, 1, 1 /*complex*/, flp, t_afft, t_bf, 5 /*window*/, 14.0,
-              overlap, 0, clipf, clipf, t_pixels, 1, 0, 0.0, 0.0, max_w);
+  tx_ana_configure((double)iq_rate);   /* default: full TX IQ; the GUI sets the zoomed span */
   SetDisplayNormOneHz(TXA_DISP, 0, 1);
   SetDisplaySampleRate(TXA_DISP, iq_rate);
   /* Detector + light averaging, as for the RX analyzer (the GUI adds its own EMA). */
@@ -95,6 +111,14 @@ int tx_analyzer_get_pixels(float *out, int pixels) {
   GetPixels(TXA_DISP, 0, out, &flag);
   return flag;
 }
+
+void tx_analyzer_set_span(double span_hz) {
+  g_mutex_lock(&t_lock);
+  if (t_ready && span_hz > 0.0) { tx_ana_configure(span_hz); }
+  g_mutex_unlock(&t_lock);
+}
+
+double tx_analyzer_base_span(void) { return (double)t_iq_rate; }   /* max span = full TX IQ */
 
 void tx_analyzer_destroy(void) {
   g_mutex_lock(&t_lock);

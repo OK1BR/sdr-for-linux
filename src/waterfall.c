@@ -27,6 +27,8 @@ struct Waterfall {
                               a palette switch can recolour the whole history */
   double           auto_low;   /* tracked noise floor (dBm) */
   int              auto_init;
+  int              manual;     /* 1 = pinned to man_low/man_span, no auto-track */
+  double           man_low, man_span;
 };
 
 /* -------- Selectable colour palettes ---------------------------------------
@@ -138,8 +140,15 @@ void waterfall_set_palette(Waterfall *wf, int idx) {
 }
 
 void waterfall_range(const Waterfall *wf, double *low, double *span) {
+  if (wf->manual) { *low = wf->man_low; *span = wf->man_span; return; }
   *low = wf->auto_init ? wf->auto_low : -120.0;
   *span = WF_SPAN;
+}
+
+void waterfall_set_manual_range(Waterfall *wf, double low, double span) {
+  if (!wf) { return; }
+  if (span > 0.0) { wf->manual = 1; wf->man_low = low; wf->man_span = span; }
+  else            { wf->manual = 0; }
 }
 
 Waterfall *waterfall_new(void) {
@@ -189,27 +198,31 @@ void waterfall_push(Waterfall *wf, const uint8_t *dbm, int n) {
   ensure_surface(wf, n);
 
   /* Estimate the noise floor from this frame (WF_NOISE_PCT-th percentile) via
-   * a coarse histogram, then track it slowly so the mapping stays stable. */
-  int hist[140];
-  memset(hist, 0, sizeof(hist));
-  const double hlo = -160.0, hbin = 1.0; /* 1 dB bins over -160..-20 */
-  for (int x = 0; x < n; x++) {
-    int b = (int)(((double)dbm[x] - 200.0) - hlo);
-    if (b < 0) b = 0;
-    if (b > 139) b = 139;
-    hist[b]++;
-  }
-  int target = n * WF_NOISE_PCT / 100, cum = 0, pb = 0;
-  for (int b = 0; b < 140; b++) {
-    cum += hist[b];
-    if (cum >= target) { pb = b; break; }
-  }
-  double noise = hlo + pb + 0.5;
-  if (!wf->auto_init) {
-    wf->auto_low = noise;
-    wf->auto_init = 1;
-  } else {
-    wf->auto_low += WF_LOW_SMOOTH * (noise - wf->auto_low);
+   * a coarse histogram, then track it slowly so the mapping stays stable. Skipped
+   * when a manual range is pinned (the TX waterfall following the operator's dB
+   * window) — the colour map is fixed, not floor-tracked. */
+  if (!wf->manual) {
+    int hist[140];
+    memset(hist, 0, sizeof(hist));
+    const double hlo = -160.0; /* 1 dB bins over -160..-20 */
+    for (int x = 0; x < n; x++) {
+      int b = (int)(((double)dbm[x] - 200.0) - hlo);
+      if (b < 0) b = 0;
+      if (b > 139) b = 139;
+      hist[b]++;
+    }
+    int target = n * WF_NOISE_PCT / 100, cum = 0, pb = 0;
+    for (int b = 0; b < 140; b++) {
+      cum += hist[b];
+      if (cum >= target) { pb = b; break; }
+    }
+    double noise = hlo + pb + 0.5;
+    if (!wf->auto_init) {
+      wf->auto_low = noise;
+      wf->auto_init = 1;
+    } else {
+      wf->auto_low += WF_LOW_SMOOTH * (noise - wf->auto_low);
+    }
   }
 
   cairo_surface_flush(wf->surf);
@@ -225,8 +238,8 @@ void waterfall_push(Waterfall *wf, const uint8_t *dbm, int n) {
   }
 
   uint32_t *row = (uint32_t *)base;
-  const double low = wf->auto_low;
-  const double scale = 255.0 / WF_SPAN;
+  const double low = wf->manual ? wf->man_low : wf->auto_low;
+  const double scale = 255.0 / (wf->manual ? wf->man_span : WF_SPAN);
   for (int x = 0; x < n; x++) {
     double d = (double)dbm[x] - 200.0;
     int idx = (int)((d - low) * scale);

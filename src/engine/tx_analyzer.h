@@ -27,6 +27,11 @@ void tx_analyzer_feed(const double *iq, int n_pairs);
 /* Copy the latest TX pixel frame (dB) into out[0..pixels-1]. Returns 1 if fresh. */
 int  tx_analyzer_get_pixels(float *out, int pixels);
 
+/* Re-zoom the TX window to `span_hz` wide (clamped to [300, base]); reconfigures
+ * the WDSP analyzer (afft chosen for sharpness). Safe to call live from the GUI. */
+void   tx_analyzer_set_span(double span_hz);
+double tx_analyzer_base_span(void);   /* the full (zoom-1) span, Hz */
+
 void tx_analyzer_destroy(void);
 
 #endif /* SDRFL_ENGINE_TX_ANALYZER_H */

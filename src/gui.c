@@ -145,6 +145,14 @@ typedef struct {
   double      pan_high, pan_low;              /* visible dB window (dBm)          */
   int         drag_gutter;   /* the active drag started in the left dB gutter    */
   double      drag_base_high, drag_base_low;  /* pan window captured at drag-begin */
+  /* Right-button drag = zoom (dB range in the gutter, freq span on the body); a
+   * right-click with no motion still toggles select mode. */
+  int         rdrag_gutter;  /* right-drag started in the dB gutter               */
+  double      rdrag_base_high, rdrag_base_low; /* dB window at right-drag begin    */
+  double      rdrag_anchor_frac;               /* cursor y fraction at begin (anchor)*/
+  double      rdrag_base_zoom;                 /* app->zoom at right-drag begin      */
+  int         rdrag_zoomed;                    /* right-drag actually zoomed (vs a click)*/
+  GtkWidget  *zoom_scale;    /* footer zoom slider (kept in sync by right-drag)   */
   double      ptr_x, ptr_y;  /* last pointer pos over the area (scroll hit-test)  */
   int         show_db_grid, show_db_scale;     /* horizontal grid / dB labels     */
   int         show_freq_grid, show_freq_scale; /* vertical grid / freq labels      */
@@ -192,6 +200,8 @@ typedef struct {
   float       tx_raw[SPECTRUM_DATA_SIZE];  /* latest TX analyzer pixels (dB)         */
   float       tx_ema[SPECTRUM_DATA_SIZE];  /* smoothed TX trace (dB)                 */
   int         tx_ema_w;      /* width of tx_ema (0 = no frame yet)                   */
+  double      tx_pan_high, tx_pan_low;  /* TX panadapter dB window (manual, draggable)*/
+  int         tx_pan_init;   /* one-shot autofit has placed the TX window this run   */
   ClientFrame tx_frame;      /* metadata for the TX readout (carrier freq)           */
   double      tx_fwd_shown;  /* fwd power last drawn in the TX banner                */
   Waterfall  *tx_wf;         /* TX waterfall (transmitted spectrum history)          */
@@ -204,6 +214,7 @@ typedef struct {
 #define PAN_LOW_DEFAULT  -140.0
 #define PAN_RANGE_MIN      20.0    /* min dB window (max vertical zoom-in)  */
 #define PAN_RANGE_MAX     160.0    /* max dB window (max zoom-out)          */
+#define ZOOM_MAX          128.0    /* max frequency zoom (octave 7)         */
 #define PAN_DBM_CEIL       20.0    /* the top of the window can't exceed    */
 #define PAN_DBM_FLOOR    -200.0    /* the bottom of the window can't go below */
 #define AUTO_FLOOR_FRAC    0.12    /* auto-level: keep the noise floor this far up */
@@ -621,13 +632,21 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
   cairo_move_to(cr, bx + bw - ex.width, ay + h_alc + 20); cairo_show_text(cr, lbl);
 }
 
-/* TX panadapter (F6a): the transmitted spectrum in a fixed 24 kHz window centred
- * on the carrier — panadapter (top) + waterfall (bottom), like the RX view but
- * with a top ±kHz ruler, big red power/SWR numbers, and a red power meter. Auto-
- * ranges around the carrier peak (TX levels aren't dBm-calibrated). */
-#define TX_PAN_SPAN_HZ 24000.0
+/* TX panadapter (F6a): the transmitted spectrum, panadapter (top) + waterfall
+ * (bottom), like the RX view — with big red power/SWR numbers and a level meter.
+ * The frequency axis MATCHES the RX one (span = rate/zoom), capped at the TX DUC
+ * IQ bandwidth (192 kHz) since that's all the TX stream carries. */
+#define TX_IQ_BW 192000.0      /* TX DUC IQ bandwidth = widest possible TX span (Hz) */
 #define MIC_GAIN_MIN (-12.0)   /* TX mic-gain slider range, dB (piHPSDR default 0) */
 #define MIC_GAIN_MAX  40.0
+
+/* TX display span (Hz): the RX span (rate/zoom), capped at what the TX IQ holds. */
+static double tx_span_hz(App *app) {
+  double z = app->zoom > 0.0 ? app->zoom : 1.0;
+  double s = (double)app->rate / z;
+  return s < TX_IQ_BW ? s : TX_IQ_BW;
+}
+
 static void draw_tx(cairo_t *cr, int w, int h, App *app) {
   int n = app->pixels;
   if (app->tx_ema_w != n) {
@@ -637,9 +656,9 @@ static void draw_tx(cairo_t *cr, int w, int h, App *app) {
   tx_run_status ts; tx_run_get_status(&ts);
   int ph = (int)(h * PANADAPTER_FRACTION);
   if (ph < 1) { ph = 1; }
-  double peak = app->tx_ema[0];
-  for (int i = 1; i < n; i++) { if (app->tx_ema[i] > peak) { peak = app->tx_ema[i]; } }
-  double high = peak + 10.0, low = peak - 90.0;
+  /* Fixed, operator-draggable dB window (F6c-3, like RX) — no per-frame auto-range,
+   * so the scale no longer jumps. tick_tx one-shot-fits it on the first TX frame. */
+  double high = app->tx_pan_high, low = app->tx_pan_low;
   panadapter_set_range(high, low);
   panadapter_set_grid(app->show_db_grid, app->show_db_scale);
 
@@ -652,20 +671,29 @@ static void draw_tx(cairo_t *cr, int w, int h, App *app) {
   panadapter_draw(cr, w, ph, &app->tx_frame, app->tx_ema, low, high - low, NULL, NULL, 0.5);
   panadapter_set_readout(1);
 
-  /* 24 kHz frequency ruler at the TOP (like the RX ruler): faint full-height
-   * grid + labelled ±kHz ticks with legibility pills. */
-  double pxhz = (double)w / TX_PAN_SPAN_HZ, cx = w / 2.0;
+  /* Frequency ruler at the TOP (like the RX ruler), now zoom-aware: the span
+   * follows app->zoom (base 24 kHz / zoom), with a nice-number kHz tick step. */
+  double tx_span = tx_span_hz(app);
+  double half_khz = tx_span / 2000.0;
+  double pxhz = (double)w / tx_span, cx = w / 2.0;
+  /* nice tick step (kHz): ~6 divisions over the span, snapped to 1/2/5·10^k. */
+  double raw  = (tx_span / 1000.0) / 6.0;
+  double pten = pow(10.0, floor(log10(raw)));
+  double frac = raw / pten;
+  double step = (frac < 1.5 ? 1.0 : frac < 3.5 ? 2.0 : frac < 7.5 ? 5.0 : 10.0) * pten;
   cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
   cairo_set_font_size(cr, 10.0);
   const double ly = 13.0;
   cairo_set_line_width(cr, 1.0);
-  for (int khz = -10; khz <= 10; khz += 5) {
+  for (double khz = -floor(half_khz / step) * step; khz <= half_khz + 1e-6; khz += step) {
     double x = floor(cx + khz * 1000.0 * pxhz) + 0.5;
-    if (app->show_freq_grid && khz != 0) {
+    if (app->show_freq_grid && fabs(khz) > 1e-6) {
       cairo_set_source_rgba(cr, 0.5, 0.6, 0.7, 0.11);        /* neutral, like the RX ruler */
       cairo_move_to(cr, x, 0); cairo_line_to(cr, x, ph); cairo_stroke(cr);
     }
-    char lbl[8]; snprintf(lbl, sizeof lbl, khz == 0 ? "0" : "%+d", khz);
+    char lbl[16];
+    if (fabs(khz) < 1e-6) { snprintf(lbl, sizeof lbl, "0"); }
+    else { snprintf(lbl, sizeof lbl, "%+g", khz); }
     cairo_text_extents_t ex; cairo_text_extents(cr, lbl, &ex);
     double lx = x - ex.width / 2.0;
     cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.42);
@@ -675,7 +703,7 @@ static void draw_tx(cairo_t *cr, int w, int h, App *app) {
     cairo_move_to(cr, lx, ly); cairo_show_text(cr, lbl);
   }
   cairo_set_source_rgba(cr, 0.72, 0.82, 0.94, 0.7);
-  cairo_move_to(cr, cx + 10 * 1000.0 * pxhz + 8, ly); cairo_show_text(cr, "kHz");
+  cairo_move_to(cr, cx + half_khz * 1000.0 * pxhz + 8, ly); cairo_show_text(cr, "kHz");
   cairo_restore(cr);
 
   /* TX waterfall (bottom): transmitted-spectrum history. */
@@ -980,6 +1008,8 @@ static void tick_radio(App *app, GtkWidget *widget) {
   gtk_widget_queue_draw(widget);
 }
 
+static void tx_pan_autofit(App *app);   /* fwd: one-shot TX dB-window fit (below) */
+
 /* TX path: pull one TX-analyzer frame (spectrum of what we transmit) and fold it
  * into the TX trace EMA. Draws the TX panadapter over the full area (no RX, no
  * waterfall) while keyed — piHPSDR non-duplex behaviour. */
@@ -993,6 +1023,9 @@ static void tick_tx(App *app, GtkWidget *widget) {
     } else {
       for (int i = 0; i < n; i++) { app->tx_ema[i] += fs * (app->tx_raw[i] - app->tx_ema[i]); }
     }
+    /* First TX frame of a fresh window: one-shot-fit the dB scale, then leave it
+     * fixed and draggable (unless the operator already has a saved TX window). */
+    if (!app->tx_pan_init) { tx_pan_autofit(app); app->tx_pan_init = 1; }
     /* Feed the TX waterfall (its own auto-range colours the transmitted spectrum;
      * TX levels aren't dBm-calibrated, so map byte = dB + 200 like the RX path). */
     if (app->tx_wf) {
@@ -1011,6 +1044,7 @@ static void tick_tx(App *app, GtkWidget *widget) {
 
 static void update_span_label(App *app);   /* fwd: zoom slider updates it via tick */
 static void update_volt_label(App *app);   /* fwd: defined with the footer controls */
+static void on_zoom_changed(GtkRange *r, gpointer data);   /* fwd: footer zoom slider */
 
 /* TX readout (F6a): ONLY a refusal/trip reason, flashed red for a few seconds —
  * the live power/SWR live big on the TX panadapter + the power meter, so this no
@@ -1035,6 +1069,7 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
     app->zoom = app->pending_zoom;
     app->zoom_dirty = 0;
     if (app->pan != 0.0) { app->pan = 0.0; analyzer_set_pan(0.0); }   /* zoom change recentres */
+    if (app->tx_ready) { tx_run_set_span(tx_span_hz(app)); }  /* TX span follows the RX axis */
     update_span_label(app);
   }
   if (app->connected) {
@@ -1156,6 +1191,8 @@ static void app_to_settings(const App *app, Settings *s) {
   s->tx_tune  = app->tx_tune_w;
   s->tx_swr   = app->tx_swr_alarm;
   s->mic_gain = app->tx_mic_gain;
+  s->tx_pan_high = app->tx_pan_high;
+  s->tx_pan_low  = app->tx_pan_low;
   /* per-mode filter memory → "modeid=idx;..." */
   char *mp = s->mode_filt; size_t mrem = sizeof(s->mode_filt); mp[0] = '\0';
   for (int i = 0; i < 8; i++) {
@@ -1311,14 +1348,32 @@ static double pan_height_px(App *app) {
   return gtk_widget_get_height(app->area) * PANADAPTER_FRACTION;
 }
 
+/* Push the TX dB window onto the TX waterfall so it colours to the same manual
+ * scale (Richard's F6c-3 ask: the waterfall follows the operator's dB axis). */
+static void tx_pan_apply(App *app) {
+  waterfall_set_manual_range(app->tx_wf, app->tx_pan_low, app->tx_pan_high - app->tx_pan_low);
+}
+
+/* The dB window currently shown: the TX window while keyed (TX panadapter), else
+ * the RX window. Lets the shared gutter drag/scroll act on whichever is visible. */
+static double pan_win_high(App *app) { return app->tx_display ? app->tx_pan_high : app->pan_high; }
+static double pan_win_low (App *app) { return app->tx_display ? app->tx_pan_low  : app->pan_low;  }
+
 /* Store a proposed [high,low] dB window, clamped to a sane range and dBm span
- * (range preserved; the window slides within [FLOOR,CEIL]). */
+ * (range preserved; the window slides within [FLOOR,CEIL]). Targets the TX window
+ * while the TX panadapter is up, else the RX window (per-band). */
 static void pan_set_window(App *app, double high, double low) {
   double range = clampd(high - low, PAN_RANGE_MIN, PAN_RANGE_MAX);
   high = clampd(high, PAN_DBM_FLOOR + range, PAN_DBM_CEIL);
-  app->pan_high = high;
-  app->pan_low  = high - range;
-  pan_store_band(app);   /* remember it for the current band */
+  if (app->tx_display) {
+    app->tx_pan_high = high;
+    app->tx_pan_low  = high - range;
+    tx_pan_apply(app);
+  } else {
+    app->pan_high = high;
+    app->pan_low  = high - range;
+    pan_store_band(app);   /* remember it for the current band */
+  }
 }
 
 /* Is the pointer over the left dB gutter (the grab zone for the vertical axis)? */
@@ -1344,28 +1399,33 @@ static void pan_autofit(App *app) {
   gtk_widget_queue_draw(app->area);
 }
 
+/* One-shot fit of the TX dB window to the transmitted spectrum (double-click the
+ * gutter while keyed, and once automatically on the first TX frame). Then it stays
+ * a fixed, draggable scale. Falls back to a sane window if no TX frame yet. */
+static void tx_pan_autofit(App *app) {
+  int n = app->tx_ema_w;
+  if (n < 8) { app->tx_pan_high = -40.0; app->tx_pan_low = -130.0; tx_pan_apply(app); return; }
+  static float srt[SPECTRUM_DATA_SIZE];
+  memcpy(srt, app->tx_ema, n * sizeof(float));
+  qsort(srt, n, sizeof(float), cmp_float);
+  double floor_db = srt[(int)(n * 0.20)];
+  double peak_db  = srt[n - 1];
+  double low  = floor_db - 10.0;
+  double high = peak_db + 12.0;
+  if (high - low < 50.0) { high = low + 50.0; }
+  app->tx_pan_high = high;
+  app->tx_pan_low  = low;
+  tx_pan_apply(app);
+}
+
 /* Mouse wheel over the panadapter re-tunes the DDC (Model A: the whole span
- * moves, passband stays centred) by the selected step — UNLESS the cursor is
- * over the dB gutter, where it zooms the vertical axis around the cursor. Each
- * tune notch snaps to a clean grid multiple in the scroll direction. */
+ * moves, passband stays centred) by the selected step. Zoom lives on the right
+ * mouse button (drag) now, not the wheel. Each tune notch snaps to a clean grid
+ * multiple in the scroll direction. */
 static gboolean on_scroll(GtkEventControllerScroll *ctl, double dx, double dy, gpointer data) {
   (void)dx; (void)ctl;
   App *app = (App *)data;
   if (!app->radio_mode) { return FALSE; }
-
-  if (in_gutter(app, app->ptr_x, app->ptr_y)) {   /* zoom the dB axis */
-    double ph = pan_height_px(app);
-    if (ph < 1.0 || dy == 0.0) { return FALSE; }
-    double range = app->pan_high - app->pan_low;
-    double frac  = app->ptr_y / ph;
-    double cur   = app->pan_high - frac * range;         /* dBm under the cursor */
-    double nr    = clampd(range * (dy < 0 ? 0.9 : 1.0 / 0.9), PAN_RANGE_MIN, PAN_RANGE_MAX);
-    pan_set_window(app, cur + frac * nr, cur + frac * nr - nr);
-    schedule_save(app);
-    gtk_widget_queue_draw(app->area);
-    return TRUE;
-  }
-
   if (!app->engine_ok) { return FALSE; }
   int dir = (int)llround(-dy);        /* wheel up (dy < 0) tunes higher */
   if (dir == 0) { return FALSE; }
@@ -1406,8 +1466,8 @@ static void on_drag_begin(GtkGestureDrag *g, double x, double y, gpointer data) 
   app->drag_edge = 0;
   app->drag_pan = 0;
   if (app->drag_gutter) {
-    app->drag_base_high = app->pan_high;
-    app->drag_base_low  = app->pan_low;
+    app->drag_base_high = pan_win_high(app);
+    app->drag_base_low  = pan_win_low(app);
   } else if ((mods & GDK_SHIFT_MASK) && app->zoom > 1.0) {   /* shift+drag = pan the view */
     app->drag_pan = 1;
     app->drag_base_pan = app->pan;
@@ -1424,7 +1484,7 @@ static void on_drag_update(GtkGestureDrag *g, double off_x, double off_y, gpoint
   if (!app->radio_mode) { return; }
 
   if (app->drag_gutter) {                 /* vertical: slide the dB window */
-    if (app->auto_level) { return; }      /* floor is automatic — no manual pan */
+    if (!app->tx_display && app->auto_level) { return; }  /* RX auto-floor: no manual pan (TX is always manual) */
     double ph = pan_height_px(app);
     if (ph < 1.0) { return; }
     double range = app->drag_base_high - app->drag_base_low;
@@ -1522,7 +1582,11 @@ static void on_pressed(GtkGestureClick *g, int n_press, double x, double y, gpoi
   (void)g;
   App *app = (App *)data;
   if (!app->radio_mode) { return; }
-  if (n_press == 2 && in_gutter(app, x, y)) { pan_autofit(app); return; }
+  if (n_press == 2 && in_gutter(app, x, y)) {
+    if (app->tx_display) { tx_pan_autofit(app); schedule_save(app); gtk_widget_queue_draw(app->area); }
+    else                 { pan_autofit(app); }
+    return;
+  }
   if (n_press == 2 && !in_gutter(app, x, y) && app->pan != 0.0) {   /* recentre the pan */
     app->pan = 0.0; analyzer_set_pan(0.0); gtk_widget_queue_draw(app->area); return;
   }
@@ -1531,10 +1595,72 @@ static void on_pressed(GtkGestureClick *g, int n_press, double x, double y, gpoi
 
 /* Right click toggles select mode (a filter-shaped cursor you aim at a signal;
  * left-click then recenters on it). */
-static void on_right_pressed(GtkGestureClick *g, int n_press, double x, double y, gpointer data) {
-  (void)g; (void)n_press; (void)x; (void)y;
+/* Right button = ZOOM by dragging (dB range in the gutter, frequency span on the
+ * body). A plain right-click (no drag) still toggles select mode — handled by the
+ * click gesture below, gated on rdrag_zoomed so a drag never also toggles. */
+static void on_rdrag_begin(GtkGestureDrag *g, double x, double y, gpointer data) {
+  (void)g;
   App *app = (App *)data;
   if (!app->radio_mode) { return; }
+  app->rdrag_gutter = in_gutter(app, x, y);
+  if (app->rdrag_gutter) {
+    app->rdrag_base_high = pan_win_high(app);
+    app->rdrag_base_low  = pan_win_low(app);
+    double ph = pan_height_px(app);
+    app->rdrag_anchor_frac = ph > 1.0 ? y / ph : 0.5;   /* hold the grabbed dB fixed */
+  } else {
+    app->rdrag_base_zoom = app->zoom;
+  }
+}
+
+static void on_rdrag_update(GtkGestureDrag *g, double off_x, double off_y, gpointer data) {
+  (void)g;
+  App *app = (App *)data;
+  if (!app->radio_mode) { return; }
+  app->rdrag_zoomed = 1;                    /* this is a drag, not a click */
+  if (app->rdrag_gutter) {                  /* vertical drag → zoom the dB range */
+    double ph = pan_height_px(app);
+    if (ph < 1.0) { return; }
+    double base = app->rdrag_base_high - app->rdrag_base_low;
+    double frac = app->rdrag_anchor_frac;
+    double anchor = app->rdrag_base_high - frac * base;          /* dB held under cursor */
+    double nr = clampd(base * pow(2.0, off_y / ph), PAN_RANGE_MIN, PAN_RANGE_MAX);
+    pan_set_window(app, anchor + frac * nr, anchor + frac * nr - nr);   /* up = zoom in */
+    schedule_save(app);
+    gtk_widget_queue_draw(app->area);
+  } else if (app->engine_ok) {              /* horizontal drag → zoom the span (around VFO) */
+    /* Snap to the same octave raster as the footer slider (1,2,4,…,128×). */
+    int maxoct = (int)lround(log2(ZOOM_MAX));
+    int noct = (int)lround(log2(app->rdrag_base_zoom) + off_x / 90.0);   /* ~90 px / octave */
+    if (noct < 0) { noct = 0; } else if (noct > maxoct) { noct = maxoct; }
+    double nz = pow(2.0, noct);
+    if (nz != app->pending_zoom) {
+      app->pending_zoom = nz;
+      app->zoom_dirty   = 1;                /* applied ≤1×/frame in the tick */
+      if (app->zoom_scale) {                /* step the footer slider in lockstep */
+        g_signal_handlers_block_by_func(app->zoom_scale, (gpointer)on_zoom_changed, app);
+        gtk_range_set_value(GTK_RANGE(app->zoom_scale), noct);
+        g_signal_handlers_unblock_by_func(app->zoom_scale, (gpointer)on_zoom_changed, app);
+      }
+    }
+  }
+}
+
+static void on_rdrag_end(GtkGestureDrag *g, double off_x, double off_y, gpointer data) {
+  (void)g; (void)off_x; (void)off_y; (void)data;
+  /* Zoom + footer-slider sync happen live in on_rdrag_update; nothing to finalise. */
+}
+
+/* Right press starts fresh; right release with no intervening drag = a click →
+ * toggle select mode (the classic right-click behaviour, kept alongside zoom). */
+static void on_right_pressed(GtkGestureClick *g, int n_press, double x, double y, gpointer data) {
+  (void)g; (void)n_press; (void)x; (void)y;
+  ((App *)data)->rdrag_zoomed = 0;
+}
+static void on_right_released(GtkGestureClick *g, int n_press, double x, double y, gpointer data) {
+  (void)g; (void)n_press; (void)x; (void)y;
+  App *app = (App *)data;
+  if (!app->radio_mode || app->rdrag_zoomed) { return; }   /* a drag, not a click */
   app->select_mode = !app->select_mode;
   gtk_widget_set_cursor_from_name(app->area, app->select_mode ? "crosshair" : NULL);
   gtk_widget_queue_draw(app->area);
@@ -1877,8 +2003,6 @@ static GtkWidget *build_controls(App *app) {
   return bar;
 }
 
-#define ZOOM_MAX 128.0
-
 static void update_span_label(App *app) {
   if (!app->span_label) { return; }
   char buf[40];
@@ -1979,6 +2103,7 @@ static GtkWidget *build_bottom_controls(App *app) {
   gtk_widget_set_size_request(zoom, 200, -1);
   gtk_scale_set_draw_value(GTK_SCALE(zoom), FALSE);
   g_signal_connect(zoom, "value-changed", G_CALLBACK(on_zoom_changed), app);
+  app->zoom_scale = zoom;   /* right-drag zoom keeps this in sync */
   gtk_box_append(GTK_BOX(bar), labeled("Zoom", zoom));
 
   app->span_label = gtk_label_new("");
@@ -2669,9 +2794,17 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
   g_signal_connect(click, "pressed", G_CALLBACK(on_pressed), app);
   gtk_widget_add_controller(app->area, GTK_EVENT_CONTROLLER(click));
 
-  GtkGesture *rclick = gtk_gesture_click_new();  /* right: toggle select mode */
+  GtkGesture *rdrag = gtk_gesture_drag_new();    /* right drag = zoom (dB range / span) */
+  gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(rdrag), GDK_BUTTON_SECONDARY);
+  g_signal_connect(rdrag, "drag-begin",  G_CALLBACK(on_rdrag_begin),  app);
+  g_signal_connect(rdrag, "drag-update", G_CALLBACK(on_rdrag_update), app);
+  g_signal_connect(rdrag, "drag-end",    G_CALLBACK(on_rdrag_end),    app);
+  gtk_widget_add_controller(app->area, GTK_EVENT_CONTROLLER(rdrag));
+
+  GtkGesture *rclick = gtk_gesture_click_new();  /* right click (no drag) = toggle select mode */
   gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(rclick), GDK_BUTTON_SECONDARY);
-  g_signal_connect(rclick, "pressed", G_CALLBACK(on_right_pressed), app);
+  g_signal_connect(rclick, "pressed",  G_CALLBACK(on_right_pressed),  app);
+  g_signal_connect(rclick, "released", G_CALLBACK(on_right_released), app);
   gtk_widget_add_controller(app->area, GTK_EVENT_CONTROLLER(rclick));
 
   GtkEventControllerKey *keys =
@@ -2754,6 +2887,15 @@ static void start_radio(App *app) {
     app->pan_high = PAN_HIGH_DEFAULT;
     app->pan_low  = PAN_LOW_DEFAULT;
   }
+  /* TX dB window: a saved pair wins (the operator's manual scale); else defaults +
+   * a one-shot autofit on the first TX frame (tx_pan_init left 0). tx_wf exists by
+   * now (created in main before start_radio), so colour it to this window. */
+  if (st.tx_pan_high > st.tx_pan_low && st.tx_pan_high <= PAN_DBM_CEIL && st.tx_pan_low >= PAN_DBM_FLOOR) {
+    app->tx_pan_high = st.tx_pan_high; app->tx_pan_low = st.tx_pan_low; app->tx_pan_init = 1;
+  } else {
+    app->tx_pan_high = -40.0; app->tx_pan_low = -130.0; app->tx_pan_init = 0;
+  }
+  tx_pan_apply(app);
   /* Per-band dB windows: default every band to the global window, then apply the
    * saved "key=hi/lo;..." overrides, and load the band app->freq is in. */
   for (int i = 0; i < NBANDS; i++) {
@@ -2939,6 +3081,7 @@ static void start_radio(App *app) {
     app->tx_ready = 1;
     tx_push_cfg(app);
     tx_run_set_mic_gain(app->tx_mic_gain);   /* persisted SSB mic gain into the TX panel */
+    tx_run_set_span(tx_span_hz(app));  /* TX span ← saved zoom, matching the RX axis */
     tx_update_mic(app);   /* open the mic now if we start in a voice mode (no warm-up lag) */
   } else {
     fprintf(stderr, "TX runtime init failed — RX only\n");

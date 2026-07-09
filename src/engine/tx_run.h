@@ -84,6 +84,9 @@ void tx_run_set_freq(long long tx_freq_hz);
 /* Mic gain in dB → the WDSP TX panel (SetTXAPanelGain1). Safe if TX isn't up. */
 void tx_run_set_mic_gain(double db);
 
+/* TX panadapter zoom: set the displayed span (Hz). Safe if TX isn't up. */
+void tx_run_set_span(double span_hz);
+
 /*
  * Request keying. want_mox / want_tune are the operator's intent; the safety gate
  * decides whether it actually keys. (0,0) = unkey. Thread-safe.

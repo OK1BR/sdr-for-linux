@@ -38,6 +38,13 @@ void waterfall_palette_rgb(double t, double *r, double *g, double *b);
 void waterfall_range(const Waterfall *wf, double *low, double *span);
 
 /*
+ * Pin the colour-map to a fixed [low, low+span] dB window instead of the auto
+ * noise-floor tracking (span > 0). Used by the TX waterfall so it follows the
+ * operator's manual dB scale. span <= 0 restores auto-ranging.
+ */
+void waterfall_set_manual_range(Waterfall *wf, double low, double span);
+
+/*
  * Selectable colour schemes. The selected palette backs waterfall_palette_rgb()
  * (and therefore both the waterfall and the panadapter). Index 0 is "Classic".
  */
