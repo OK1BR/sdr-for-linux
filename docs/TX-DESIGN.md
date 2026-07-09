@@ -219,14 +219,35 @@ happens only at F5.
 | **F3** | fwd/rev/exciter parse (read-only) + G1 watts/SWR (`tx_meter`); `sdrfl-swr-test` | ✅ done, 8/8 (4f80abd) |
 | **F4** | Safety gate `tx_gate` (in-band, PA gate, SWR/open-ant shutdown, tune-exempt); `sdrfl-txgate-test` | ✅ done, 12/12 (f11a0c4) |
 | **F5** | **FIRST KEYING** via headless `sdrfl-txkey` — TUNE into a dummy load through `tx_gate` | ✅ **done, keyed live** (d3776e5) |
-| **F6** | TX into the GUI app: **a)** controls+meter · **b)** cal settings · **c)** mic/SSB · **d)** CW | ⏳ next (F6a first) |
+| **F6** | TX into the GUI app: **a)** controls+meter · **b)** cal settings · **c)** mic/SSB · **d)** CW | 🟢 **F6a done, keyed live (GUI)** |
 | **F7** | PureSignal (predistortion) — optional, later | — |
 
-**F6 breakdown (next; F6a chosen to start):**
-- **F6a** — GUI TX controls: link tx.c/tx_meter/tx_gate into the app; **MOX + TUNE
-  buttons**, **two drive sliders (Drive + Tune drive) in WATTS** (via
-  `tx_calc_drive_byte`), **TX meter (fwd power + SWR)**. TUNE-first, then MOX. This
-  is where the GUI app becomes TX-capable (until now only `sdrfl-txkey` can key).
+**F6a — done, live-validated on the G1 (OK1BR, 2026-07-08/09).** The GUI app keys
+RF through the safety gate into a matched load; verified across 20/40 m (~8 W for a
+10 W request — the known low-drive sensor under-read, F6b territory — rev 0, SWR 1.00,
+no trips). What landed:
+- **TX runtime** (`src/engine/tx_run.[ch]`) — a dedicated worker thread running the
+  F5 keying loop (real-time IQ feed → port 1029, `tx_meter` + `tx_gate` at ~20 Hz,
+  `p2_set_tx_state`). **Why a thread, not the GUI tick:** the tick is a
+  `GdkFrameClock` callback and pauses when the window is occluded — the SWR/open-ant
+  guard must never pause while the keepalive holds MOX. Control packets still go
+  only via the engine keepalive thread (`p2_set_tx_state` just stores state); only
+  the port-1029 IQ is emitted from the TX thread.
+- **TX panadapter** (`src/engine/tx_analyzer.[ch]`) — a 2nd WDSP analyzer (disp 1),
+  24 kHz span, mirroring piHPSDR `tx_set_analyzer`. While keyed the whole area shows
+  the **transmitted** spectrum (panadapter + a TX waterfall), replacing the RX view —
+  piHPSDR non-duplex behaviour. Big red power/SWR numbers, top ±kHz ruler.
+- **RX↔TX audio** (piHPSDR-faithful): RX audio **muted while keyed** (`demod_set_mute`,
+  ramped, no click), kept muted ~200 ms after unkey through the AGC recovery, plus a
+  ~20 ms demod-input silence for the T/R crosstalk tail (piHPSDR `txrxmax` anti-pump).
+  ADC-overload badge suppressed across the transition (a known transient).
+- **Controls:** **TUNE** button keys via `tx_gate`; **MOX** present but disabled until
+  F6c (SSB with silence ≈ no RF). Footer bar: **Drive** / **Tune** sliders (watts) +
+  **antenna** ANT1/2/3. **Preferences → Radio → Transmit:** PA-enable (persistent,
+  mirrors piHPSDR) + SWR alarm. A refuse/trip pops TUNE back and flashes the reason.
+  `pa_calibration` fixed at the validated 53 dB (per-band table = F6b).
+- Also: unified the canvas font to **Adwaita Mono** (the generic Cairo "monospace"
+  resolved to a serif Courier clone) to match the Adwaita Sans UI.
 - **F6b** — Settings: **per-band** `pa_calibration` + per-radio forward-power
   calibration (multi-point) in `config.ini` + the settings dialog.
 - **F6c** — Mic path for SSB voice: radio mic jack (P2 mic-to-host 1026) vs host
