@@ -75,6 +75,7 @@ executable('sdr-for-linux',
     'src/engine/analyzer.c',
     'src/engine/demod.c',
     'src/engine/audio_pw.c',
+    'src/engine/mic_pw.c',    # PipeWire mic capture — SSB TX (F6c)
     'src/engine/tx.c',        # WDSP TX DSP channel (F2)
     'src/engine/tx_meter.c',  # fwd/rev power + SWR (F3)
     'src/engine/tx_gate.c',   # TX safety gate (F4)
@@ -197,6 +198,15 @@ executable('sdrfl-audioprobe',
   ['src/audioprobe_main.c', 'src/engine/demod.c', 'src/engine/audio_pw.c'] + engine_sources,
   include_directories : [vendor_inc, src_inc, engine_inc],
   dependencies : engine_deps + [wdsp_dep, m_dep, pipewire_dep],
+  override_options : ['c_std=gnu11'],
+  install : false,
+)
+
+# Mic capture check (F6c-1): default PipeWire source → VU meter. NO radio, NO TX.
+executable('sdrfl-micprobe',
+  ['src/micprobe_main.c', 'src/engine/mic_pw.c'],
+  include_directories : [src_inc, engine_inc],
+  dependencies : [m_dep, pipewire_dep],
   override_options : ['c_std=gnu11'],
   install : false,
 )

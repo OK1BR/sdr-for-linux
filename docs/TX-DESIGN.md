@@ -307,8 +307,19 @@ no trips). What landed:
     generalising today's global curve. Do NOT hard-code a 6 m constant — it would
     be throwaway. Needs a guided per-band calibration pass and a known-mismatch
     load for the rev curve.
-- **F6c** — Mic path for SSB voice: radio mic jack (P2 mic-to-host 1026) vs host
-  soundcard (PipeWire) → `tx_dsp`. TUNE needs neither.
+- **F6c** — Mic path for SSB voice → **host soundcard (PipeWire)**, same as RX
+  (Richard's call; not the radio's mic jack). Enables MOX. TUNE needs neither.
+  - **F6c-1 done + live-validated** — `src/engine/mic_pw.[ch]` PipeWire capture
+    (mirror of `audio_pw.c`, `PW_DIRECTION_INPUT`, mono, SPSC ring, mic_pull for
+    the TX feed) + `sdrfl-micprobe` VU meter. Reads the mic live (SPL Marc One,
+    peak 0.16). **`PW_STREAM_FLAG_AUTOCONNECT` did NOT reliably hit the default
+    mic** — it landed on a silent node; pinning `PW_KEY_TARGET_OBJECT` to the
+    source node fixes it. So `mic_start(rate, lat, target)` takes an explicit node.
+  - **Device + sample-rate selection required** (Richard) — enumerate PW capture
+    sources + rate into the settings dialog, persist the chosen node/rate. The
+    capture plumbing already takes both; the GUI picker lands with F6c-3.
+  - **F6c-2** wire mic→`tx_dsp_feed_mic` in the TX worker (MOX only); **F6c-3**
+    enable MOX button + mic-gain + device/rate picker; first voice into a load.
 - **F6d** — CW keyer, sidetone, break-in/QSK.
 
 ---
