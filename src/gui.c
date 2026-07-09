@@ -2196,7 +2196,8 @@ static AdwDialog *build_prefs(App *app) {
   GtkStringList *rm = gtk_string_list_new((const char *[]){"48 kHz","96 kHz","192 kHz","384 kHz","768 kHz","1536 kHz", NULL});
   guint ri = 2;
   for (guint i = 0; i < G_N_ELEMENTS(PREF_RATES); i++) { if (PREF_RATES[i] == app->rate) { ri = i; } }
-  GtkWidget *rate = g_object_new(ADW_TYPE_COMBO_ROW, "title", "Sample rate", "model", rm, "selected", ri, NULL);
+  GtkWidget *rate = g_object_new(ADW_TYPE_COMBO_ROW, "title", "Sample rate",
+      "subtitle", "IQ span · restart to apply", "model", rm, "selected", ri, NULL);
   g_signal_connect(rate, "notify::selected", G_CALLBACK(on_pref_rate), app);
   adw_preferences_group_add(g, rate);
   adw_preferences_page_add(p, g);
@@ -2206,7 +2207,7 @@ static AdwDialog *build_prefs(App *app) {
    * is the Nyquist/stream rate, independent of the audio bandwidth (the filter).
    * Restart-to-apply, like the IQ rate. */
   g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Audio",
-      "description", "Shared RX/TX sample rate + soundcards · applies on restart", NULL));
+      "description", "Shared RX/TX sample rate + separate soundcards", NULL));
   { GtkStringList *m = gtk_string_list_new(NULL);
     guint sel = 0;
     for (guint i = 0; i < G_N_ELEMENTS(AUDIO_RATES); i++) {
@@ -2215,7 +2216,7 @@ static AdwDialog *build_prefs(App *app) {
       if (AUDIO_RATES[i] == app->audio_rate) { sel = i; }
     }
     GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "Sample rate",
-        "subtitle", "RX + TX (capped at the IQ rate)", "model", m, "selected", sel, NULL);
+        "subtitle", "RX + TX, ≤ IQ rate · restart to apply", "model", m, "selected", sel, NULL);
     g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_audio_rate), app);
     adw_preferences_group_add(g, row);
   }
@@ -2228,7 +2229,7 @@ static AdwDialog *build_prefs(App *app) {
       if (app->audio_device[0] && strcmp(app->audio_sinks[i].name, app->audio_device) == 0) { sel = (guint)(i + 1); }
     }
     GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "RX output device",
-        "subtitle", "soundcard for receive audio", "model", m, "selected", sel, NULL);
+        "subtitle", "receive-audio soundcard · restart to apply", "model", m, "selected", sel, NULL);
     g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_audio_device), app);
     adw_preferences_group_add(g, row);
   }
@@ -2241,7 +2242,7 @@ static AdwDialog *build_prefs(App *app) {
       if (app->mic_device[0] && strcmp(app->mic_srcs[i].name, app->mic_device) == 0) { sel = (guint)(i + 1); }
     }
     GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "TX mic device",
-        "subtitle", "capture soundcard for SSB voice (F6c)", "model", m, "selected", sel, NULL);
+        "subtitle", "SSB capture soundcard (F6c) · restart to apply", "model", m, "selected", sel, NULL);
     g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_mic_device), app);
     adw_preferences_group_add(g, row);
   }

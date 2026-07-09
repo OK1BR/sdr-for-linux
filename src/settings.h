@@ -6,6 +6,12 @@
  * Precedence is applied by the caller (gui.c): env var > saved value >
  * built-in default. This module only reads/writes the file.
  *
+ * UI rule (Richard, 2026-07-09): every setting that only takes effect on the
+ * next launch MUST say "· restart to apply" in its own row subtitle — users read
+ * the row, not the group header, and an unmarked delayed change reads as broken.
+ * Restart-to-apply here: ip, rate, latency, audio_rate, audio_device, mic_device.
+ * Everything else applies live.
+ *
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #ifndef SDRFL_SETTINGS_H
