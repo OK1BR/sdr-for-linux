@@ -360,7 +360,26 @@ no trips). What landed:
     **Still open:** audio *quality* / over-drive (needs a monitor RX — judge from the
     ALC meter + TX-panadapter splatter meanwhile), and whether to raise the default
     mic gain. Phase-1 stays plain SSB (ALC only; no speech compressor/EQ).
-- **F6d** — CW keyer, sidetone, break-in/QSK.
+- **F6d** — CW (Morse) transmit. **Digital keying from an external contest/logging
+  program (TCI, Richard's choice); no physical paddle, no in-app text window.**
+  - **Approach = host-generated shaped carrier** (piHPSDR's CAT-CW path). The
+    radio's FPGA internal keyer is PADDLE-ONLY (reads the key jack, can't be driven
+    digitally), so digital CW must be host-shaped: `I = 0.896·envelope, Q = 0` on
+    the TX-IQ port, MOX/drive/ANT/LPF exactly as SSB/TUNE (already verified) — WDSP
+    not involved. The FPGA keyer + the P2 host-CW HP[5] mode stay OFF. Timing is
+    carried in SAMPLE COUNTS (locked to the radio's IQ clock), so the rhythm is
+    jitter-free at any WPM. See the memory note `cw-research-f6d`.
+  - **F6d-1a done (offline-verified)** — `src/engine/cw_gen.[ch]`: a pure Morse
+    envelope generator (text → sample-accurate keyed envelope with a raised-cosine
+    ramp, capped inside a dot at high WPM). Gate `sdrfl-cw-test` proves the timing
+    with no radio: dot = sr·1.2/WPM and the **PARIS word rate = exactly 50 dots**
+    (0 sample error) at 12/20/25/30/40 WPM. NEVER keys — pure generator.
+  - **F6d-1b (next, hazardous)** — feed `cw_gen` into the TX runtime: on key-active,
+    assert MOX + drive (via `tx_gate`), emit the shaped IQ; break-in/hang-time T/R;
+    host sidetone; 20 s key-down cutoff. First keying = "TEST" into a 50 Ω dummy
+    load, operator present. Full TX-SAFETY re-check.
+  - **F6d-2** — **TCI** server endpoint as the CW source (bootstraps a slice of the
+    otherwise-deferred TCI transport); the contest program sends CW over TCI.
 
 ---
 

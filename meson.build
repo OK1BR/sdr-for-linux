@@ -81,6 +81,7 @@ executable('sdr-for-linux',
     'src/engine/tx_gate.c',   # TX safety gate (F4)
     'src/engine/tx_analyzer.c', # TX panadapter analyzer (F6a)
     'src/engine/tx_run.c',    # TX runtime thread — GUI keying (F6a)
+    'src/engine/cw_gen.c',    # CW Morse envelope generator (F6d)
   ] + engine_sources + ui_sources,
   include_directories : [vendor_inc, src_inc, engine_inc],
   # engine (protocol2 + analyzer + demod + PipeWire audio) alongside the v0
@@ -165,6 +166,16 @@ executable('sdrfl-txdsp-test',
 # ALEX coupler words — G1 watts + SWR vs piHPSDR. NO radio, NO WDSP.
 executable('sdrfl-swr-test',
   ['src/swr_test.c', 'src/engine/tx_meter.c'],
+  include_directories : [engine_inc],
+  dependencies : [m_dep],
+  install : false,
+)
+
+# Offline CW timing gate (F6d, docs/TX-DESIGN.md). Proves the Morse envelope
+# generator keeps sample-locked rhythm (dot = sr·1.2/WPM; PARIS = 50 dots) at a
+# range of speeds. Pure — NO radio, NO WDSP, NO socket.
+executable('sdrfl-cw-test',
+  ['src/cw_test.c', 'src/engine/cw_gen.c'],
   include_directories : [engine_inc],
   dependencies : [m_dep],
   install : false,
