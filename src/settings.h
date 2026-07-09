@@ -55,6 +55,8 @@ typedef struct {
   double    tx_drive;   /* MOX/voice power request (W)                            */
   double    tx_tune;    /* TUNE power request (W)                                 */
   double    tx_swr;     /* SWR trip threshold                                     */
+  char      pa_cal[256];  /* per-band PA calibration (dB), "6m=53.0;20m=53.0;.." */
+  char      pa_trim[256]; /* wattmeter correction curve, 11 pts "p0;p1;..;p10"   */
 } Settings;
 
 /*

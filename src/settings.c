@@ -126,6 +126,14 @@ int settings_load(Settings *s) {
       s->tx_tune = g_key_file_get_double(kf, GROUP_TX, "tune_w", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "swr_alarm", NULL))
       s->tx_swr = g_key_file_get_double(kf, GROUP_TX, "swr_alarm", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "pa_cal", NULL)) {
+      char *pc = g_key_file_get_string(kf, GROUP_TX, "pa_cal", NULL);
+      if (pc) { g_strlcpy(s->pa_cal, pc, sizeof(s->pa_cal)); g_free(pc); }
+    }
+    if (g_key_file_has_key(kf, GROUP_TX, "pa_trim", NULL)) {
+      char *pt = g_key_file_get_string(kf, GROUP_TX, "pa_trim", NULL);
+      if (pt) { g_strlcpy(s->pa_trim, pt, sizeof(s->pa_trim)); g_free(pt); }
+    }
     if (g_key_file_has_key(kf, GROUP_WINDOW, "width", NULL))
       s->win_w = g_key_file_get_integer(kf, GROUP_WINDOW, "width", NULL);
     if (g_key_file_has_key(kf, GROUP_WINDOW, "height", NULL))
@@ -184,6 +192,8 @@ int settings_save(const Settings *s) {
   g_key_file_set_double (kf, GROUP_TX,     "drive_w",   s->tx_drive);
   g_key_file_set_double (kf, GROUP_TX,     "tune_w",    s->tx_tune);
   g_key_file_set_double (kf, GROUP_TX,     "swr_alarm", s->tx_swr);
+  g_key_file_set_string (kf, GROUP_TX,     "pa_cal",    s->pa_cal);
+  g_key_file_set_string (kf, GROUP_TX,     "pa_trim",   s->pa_trim);
   g_key_file_set_integer(kf, GROUP_WINDOW, "width",     s->win_w);
   g_key_file_set_integer(kf, GROUP_WINDOW, "height",    s->win_h);
   g_key_file_set_integer(kf, GROUP_WINDOW, "maximized", s->win_max);

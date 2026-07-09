@@ -219,7 +219,7 @@ happens only at F5.
 | **F3** | fwd/rev/exciter parse (read-only) + G1 watts/SWR (`tx_meter`); `sdrfl-swr-test` | ✅ done, 8/8 (4f80abd) |
 | **F4** | Safety gate `tx_gate` (in-band, PA gate, SWR/open-ant shutdown, tune-exempt); `sdrfl-txgate-test` | ✅ done, 12/12 (f11a0c4) |
 | **F5** | **FIRST KEYING** via headless `sdrfl-txkey` — TUNE into a dummy load through `tx_gate` | ✅ **done, keyed live** (d3776e5) |
-| **F6** | TX into the GUI app: **a)** controls+meter · **b)** cal settings · **c)** mic/SSB · **d)** CW | 🟢 **F6a done, keyed live (GUI)** |
+| **F6** | TX into the GUI app: **a)** controls+meter · **b)** cal settings · **c)** mic/SSB · **d)** CW | 🟢 **F6a+F6b done + live-keyed; per-band cal = next** |
 | **F7** | PureSignal (predistortion) — optional, later | — |
 
 **F6a — done, live-validated on the G1 (OK1BR, 2026-07-08/09).** The GUI app keys
@@ -248,8 +248,65 @@ no trips). What landed:
   `pa_calibration` fixed at the validated 53 dB (per-band table = F6b).
 - Also: unified the canvas font to **Adwaita Mono** (the generic Cairo "monospace"
   resolved to a serif Courier clone) to match the Adwaita Sans UI.
-- **F6b** — Settings: **per-band** `pa_calibration` + per-radio forward-power
-  calibration (multi-point) in `config.ini` + the settings dialog.
+- **F6b — done + live-keyed on the G1 (2026-07-09).** Both piHPSDR calibration
+  knobs, taken in their common/default form (Richard's call: start from the proven
+  version, refine later). HF calibration confirmed accurate live; 6 m over-reads
+  ~25 % (safe direction) → per-band nonlinear calibration is the next milestone:
+  - **Per-band `pa_calibration` table** — `App.band_pacal[NBANDS]`, default 53 dB
+    (piHPSDR's, live-validated on this G1), **clamped to the safe [38.8, 70.0]
+    range** (the 38.8 dB floor is the safety limit — a lower value raises the
+    drive byte for a given watts request, band.c:571-577). Flows through
+    `tx_run_cfg.pa_calibration` for the **current** band and is **re-pushed on
+    every band change** (`band_apply` → `tx_push_cfg`) so the drive byte tracks
+    the band's PA gain. Editable per band in Preferences → Radio → Transmit.
+  - **Wattmeter correction curve** — global 11-point `pa_trim` (raw meter reading
+    → true watts at 0,10,…,100 W), piHPSDR `compute_power`, applied to **both**
+    fwd and rev in `tx_meter`. **Default = linear (identity)**, so out of the box
+    the meter keeps our live-validated constants (`G1_C1 = 5.0`, not piHPSDR's
+    3.3 — we keep the measured value and let the curve refine on top, rather than
+    regress the meter). Pushed through `tx_run_cfg.pa_trim`, installed in the TX
+    worker thread each meter slot (no cross-thread torn reads). Editable + "reset
+    to linear" in Preferences.
+  - **First-run defaults are the piHPSDR G1 values** (they are device-specific —
+    piHPSDR switches them per radio in radio.c): `pa_calibration` 53 dB/band
+    (band.c table; only HL2 overrides to 40.5), and `pa_trim` = identity for a
+    100 W rating (the G1 is `pa_power=PA_100W`, radio.c:1308/1330 → `i*10 W`). A
+    non-G1 port must switch these like piHPSDR does.
+  - Both persist in `config.ini` (`[tx] pa_cal`, `[tx] pa_trim`). Offline gates
+    `sdrfl-txgate-test` (15/15) and `sdrfl-swr-test` (8/8) pass; identity curve
+    reproduces the pre-F6b watts (47.34 W @ raw 2000) exactly.
+  - **6m added across the app** (G1 does 6 m; we'd overlooked it) — `BANDS[]`
+    50–54 MHz, footer band button, per-band dB window/stacking/pa_cal. The RF
+    path was already 6 m-ready (RX BPF `alex0=0x08`+preamp, TX 6 m bypass LPF,
+    `tx_meter` 6 m rconstant, band-plan 6 m).
+  - **Full-power TUNE** — the TUNE drive slider now spans 0–100 W like Drive (was
+    capped 30 W): a wattmeter-calibration pass needs a full-range carrier. With
+    that, the safety gate was tightened (docs/TX-SAFETY.md): the **open-antenna
+    test is now active during TUNE too** (a full-power carrier into an open port is
+    never legitimate; trips after two polls), while **high-SWR still does not trip
+    during TUNE** (deliberate ATU-mismatch tuning) but now raises a warn-only flag
+    (`tx_gate_result.high_swr` → amber "⚠ HIGH SWR" on the TX panadapter, in TUNE
+    and MOX). New gate cases in `sdrfl-txgate-test`.
+  - **Live-validated on the G1 (OK1BR, 2026-07-09).** 20 m TUNE into a dummy load,
+    swept to full power (drive 41 → app 108 W), SWR ~1.05, no false trips,
+    open-antenna guard silent into the matched load. **The power + SWR readout
+    matched Richard's tuner wattmeter on 20 m** — i.e. the default calibration
+    (`C1 = 5.0` + identity `pa_trim`) is already accurate on HF, vindicating
+    keeping our measured `C1` over piHPSDR's 3.3. 6 m keys fine and the sensor
+    reads (drive 51 → app ~19 W; the 6 m PA is much weaker per drive), but the app
+    **over-reads ~25 % on 6 m** vs the external meter — a **safe-direction** error
+    (true power lower than shown → SWR protection stays conservative).
+  - **★ NEXT / known limitation — per-band, nonlinear wattmeter calibration.** The
+    6 m +25 % is the ceiling of the piHPSDR model we cloned: a **single global**
+    `pa_trim` curve + one forward constant for all bands. Richard's requirements
+    for the proper fix (its own milestone, needs a real calibration workflow):
+    the coupler response is **nonlinear** (diode detectors) and **per-band**, and
+    the **reverse** sensor needs its own calibration for reflected power / SWR
+    under a real mismatch (today rev is ~0 into a dummy load). Target model:
+    **per-band** correction curves (`pa_trim[NBANDS][11]`) for **fwd *and* rev**,
+    generalising today's global curve. Do NOT hard-code a 6 m constant — it would
+    be throwaway. Needs a guided per-band calibration pass and a known-mismatch
+    load for the rev curve.
 - **F6c** — Mic path for SSB voice: radio mic jack (P2 mic-to-host 1026) vs host
   soundcard (PipeWire) → `tx_dsp`. TUNE needs neither.
 - **F6d** — CW keyer, sidetone, break-in/QSK.

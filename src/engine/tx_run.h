@@ -32,14 +32,15 @@ typedef struct {
   int         pa_enabled;      /* PA-enable setting (RF impossible when 0)         */
   int         antenna;         /* 0/1/2 → ALEX_TX_ANTENNA_1/2/3                    */
   double      drive_w;         /* MOX/voice power request, W (→ byte via calcLevel)*/
-  double      tune_w;          /* TUNE power request, W (separate, low)            */
-  double      pa_calibration;  /* PA calibration, dB (per-band in F6b; one value now)*/
+  double      tune_w;          /* TUNE power request, W (separate; up to full)     */
+  double      pa_calibration;  /* PA calibration for the CURRENT band, dB (F6b)     */
   int         swr_protect;     /* 1 = SWR/open-antenna protection on               */
   double      swr_alarm;       /* SWR trip threshold                               */
   int         allow_oob;       /* allow out-of-band TX                             */
   int         region;          /* band-plan region index (bp_region_t)             */
   const char *country_key;     /* "" / "CZ" / "US" (copied internally)             */
   int         mode;            /* WDSP/demod mode for the TX channel               */
+  double      pa_trim[11];     /* wattmeter correction curve, W (F6b; identity dflt)*/
 } tx_run_cfg;
 
 /* Live status for the meter / UI (thread-safe snapshot). */
@@ -50,6 +51,7 @@ typedef struct {
   int    mox;       /* MOX is the active key source                         */
   int    tripped;   /* protection latched                                   */
   int    allowed;   /* TX permitted at the current frequency (in band)      */
+  int    high_swr;  /* SWR >= alarm now (indicator; set in TUNE + MOX)      */
   double fwd_w, rev_w, swr;
   char   reason[64];/* "" or why refused/tripped (for the UI/log)          */
 } tx_run_status;

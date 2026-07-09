@@ -50,7 +50,7 @@
 /* Where the noise floor lands after auto-levelling (dBm, inside the pan window). */
 #define TARGET_FLOOR  -115.0
 
-#define NBANDS 10   /* HF bands we remember per-band dB levels for */
+#define NBANDS 11   /* HF+6m bands we remember per-band dB levels for */
 
 /* After a TX→RX transition, silence the DEMOD input for a short while so the
  * "tail" of the T/R-relay crosstalk doesn't pump the AGC (piHPSDR txrxmax:
@@ -161,6 +161,10 @@ typedef struct {
   double      tx_drive_w;    /* MOX/voice power request, W (persisted)              */
   double      tx_tune_w;     /* TUNE power request, W (persisted)                   */
   double      tx_swr_alarm;  /* SWR trip threshold (persisted)                      */
+  double      band_pacal[NBANDS]; /* per-band PA calibration, dB (F6b, persisted)   */
+  double      pa_trim[11];   /* wattmeter correction curve, 11 pts W (F6b, persist) */
+  GtkWidget  *pacal_spin[NBANDS]; /* per-band PA-cal spin buttons in Preferences    */
+  GtkWidget  *patrim_spin[11];    /* wattmeter-trim spin buttons in Preferences     */
   GtkWidget  *tune_btn;      /* TUNE toggle                                         */
   GtkWidget  *mox_btn;       /* MOX toggle (disabled until F6c)                     */
   GtkWidget  *tx_label;      /* live TX power/SWR + refusal reason readout          */
@@ -198,11 +202,30 @@ static const struct { long long lo, hi; const char *key; long long dflt; } BANDS
   {10100000, 10150000, "30m",  10136000 }, {14000000, 14350000, "20m", 14074000 },
   {18068000, 18168000, "17m",  18100000 }, {21000000, 21450000, "15m", 21074000 },
   {24890000, 24990000, "12m",  24915000 }, {28000000, 29700000, "10m", 28074000 },
+  {50000000, 54000000, "6m",   50313000 },
 };
 
 static int band_for_freq(long long f) {
   for (int i = 0; i < NBANDS; i++) { if (f >= BANDS[i].lo && f <= BANDS[i].hi) { return i; } }
   return -1;
+}
+
+/* Device-specific TX-calibration DEFAULTS, pulled from piHPSDR for the ANAN G1.
+ * These would differ for another radio type (piHPSDR device-switches them in
+ * radio.c) — if this app ever supports a non-G1, they must be switched too.
+ *
+ *   pa_calibration: piHPSDR band.c table = 53.0 dB for every band (the only
+ *     device override is HermesLite2 → 40.5; the G1 keeps 53.0). Live-validated
+ *     on this G1 (docs/TX-DESIGN.md §5). The 38.8 dB FLOOR (band.c:571-577) is the
+ *     safety limit — a lower value raises the drive byte for a given watts request.
+ *   pa_trim step: piHPSDR radio.c:1308 sets the G1 to pa_power=PA_100W (100 W
+ *     rated), so radio.c:1330 seeds pa_trim[i] = i * 100 * 0.1 = i * 10 W. */
+#define PACAL_MIN     38.8
+#define PACAL_MAX     70.0
+#define PACAL_DEFAULT 53.0     /* G1: piHPSDR band.c table (not HL2's 40.5)        */
+#define PATRIM_STEP   10.0     /* G1: PA_100W → 10 W per 10 % step (radio.c:1330)  */
+static inline double pacal_clamp(double v) {
+  return v < PACAL_MIN ? PACAL_MIN : (v > PACAL_MAX ? PACAL_MAX : v);
 }
 
 /* Keep the current band's remembered levels in step with the live window. */
@@ -224,6 +247,8 @@ static void update_band_highlight(App *app) {
   }
 }
 
+static void tx_push_cfg(App *app);   /* fwd: re-push TX cfg when the band changes */
+
 /* On a band change, load that band's remembered dB window (out-of-band keeps
  * the current one). Called each tick — freq changes via buttons/tune/click. */
 static void band_apply(App *app) {
@@ -242,6 +267,9 @@ static void band_apply(App *app) {
     }
     if (app->area) { gtk_widget_queue_draw(app->area); }
   }
+  /* The new band has its own PA calibration → recompute the drive byte. Guarded
+   * internally by tx_ready; no-op until TX is up. */
+  tx_push_cfg(app);
 }
 
 /* Supply-voltage calibration: V = k * raw_adc1. No G1 divider is documented, so
@@ -595,6 +623,15 @@ static void draw_tx(cairo_t *cr, int w, int h, App *app) {
   cairo_set_font_size(cr, 32.0);
   cairo_set_source_rgba(cr, 1.0, 0.34, 0.28, 0.98);
   cairo_move_to(cr, 44, 60); cairo_show_text(cr, big);
+
+  /* High-SWR flag (amber) — lights whenever SWR >= alarm, in TUNE *and* MOX. In
+   * MOX this precedes the two-poll trip; in TUNE it is warn-only (no trip) so the
+   * operator can watch SWR while tuning an ATU / dialling drive for calibration. */
+  if (ts.high_swr) {
+    cairo_set_font_size(cr, 18.0);
+    cairo_set_source_rgba(cr, 1.0, 0.72, 0.0, 0.98);
+    cairo_move_to(cr, 44, 88); cairo_show_text(cr, "⚠ HIGH SWR");
+  }
 }
 
 static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer data) {
@@ -1088,6 +1125,24 @@ static void app_to_settings(const App *app, Settings *s) {
     if (n < 0 || (size_t)n >= brem) { break; }
     bp += n; brem -= (size_t)n;
   }
+  /* per-band PA calibration → "key=dB;..." (F6b, locale-independent '.') */
+  char *cp = s->pa_cal; size_t crem = sizeof(s->pa_cal); cp[0] = '\0';
+  for (int i = 0; i < NBANDS; i++) {
+    char cbuf[G_ASCII_DTOSTR_BUF_SIZE];
+    g_ascii_formatd(cbuf, sizeof cbuf, "%.1f", app->band_pacal[i]);
+    int n = snprintf(cp, crem, "%s%s=%s", i ? ";" : "", BANDS[i].key, cbuf);
+    if (n < 0 || (size_t)n >= crem) { break; }
+    cp += n; crem -= (size_t)n;
+  }
+  /* wattmeter-trim curve → 11 semicolon-separated points (W) */
+  char *tp = s->pa_trim; size_t trem = sizeof(s->pa_trim); tp[0] = '\0';
+  for (int i = 0; i < 11; i++) {
+    char tbuf[G_ASCII_DTOSTR_BUF_SIZE];
+    g_ascii_formatd(tbuf, sizeof tbuf, "%.3f", app->pa_trim[i]);
+    int n = snprintf(tp, trem, "%s%s", i ? ";" : "", tbuf);
+    if (n < 0 || (size_t)n >= trem) { break; }
+    tp += n; trem -= (size_t)n;
+  }
 }
 
 static gboolean do_save_cb(gpointer data) {
@@ -1107,22 +1162,26 @@ static void schedule_save(App *app) {
 }
 
 /* Push the operator's persisted TX settings into the runtime. Safe if TX isn't up.
- * pa_calibration is the validated G1 default (53 dB); the per-band table is F6b. */
+ * pa_calibration follows the CURRENT band (F6b per-band table); out of band it
+ * falls back to the default, but the gate refuses OOB keying anyway. Re-called on
+ * band change (band_apply) so the drive byte tracks the band's PA calibration. */
 static void tx_push_cfg(App *app) {
   if (!app->tx_ready) { return; }
+  int b = band_for_freq(app->freq);
   tx_run_cfg c;
   memset(&c, 0, sizeof c);
   c.pa_enabled     = app->tx_pa_enabled;
   c.antenna        = app->tx_antenna;
   c.drive_w        = app->tx_drive_w;
   c.tune_w         = app->tx_tune_w;
-  c.pa_calibration = 53.0;
+  c.pa_calibration = (b >= 0) ? pacal_clamp(app->band_pacal[b]) : PACAL_DEFAULT;
   c.swr_protect    = 1;
   c.swr_alarm      = app->tx_swr_alarm;
   c.allow_oob      = 0;
   c.region         = app->bp_region;
   c.country_key    = bp_country_key(app->bp_country);
   c.mode           = app->mode;
+  for (int i = 0; i < 11; i++) { c.pa_trim[i] = app->pa_trim[i]; }
   tx_run_set_cfg(&c);
 }
 
@@ -1682,10 +1741,11 @@ static GtkWidget *build_controls(App *app) {
   static const struct { const char *l; int f; } bands[] = {
     {"160", 1840000}, {"80", 3600000}, {"40", 7074000}, {"20", 14074000},
     {"17", 18100000}, {"15", 21074000}, {"12", 24915000}, {"10", 28074000},
+    {"6", 50313000},
   };
   GtkWidget *bandbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_add_css_class(bandbox, "linked");
-  for (int i = 0; i < 8; i++) {
+  for (int i = 0; i < (int)(sizeof bands / sizeof bands[0]); i++) {
     GtkWidget *b = gtk_toggle_button_new_with_label(bands[i].l);
     gtk_widget_add_css_class(b, "band");
     g_object_set_data(G_OBJECT(b), "freq", GINT_TO_POINTER(bands[i].f));
@@ -1818,7 +1878,7 @@ static GtkWidget *build_bottom_controls(App *app) {
   g_signal_connect(drv, "value-changed", G_CALLBACK(on_drive_changed), app);
   gtk_box_append(GTK_BOX(bar), labeled("Drive", drv));
 
-  GtkWidget *tdrv = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 30, 1);
+  GtkWidget *tdrv = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 100, 1);
   gtk_range_set_value(GTK_RANGE(tdrv), app->tx_tune_w);
   gtk_widget_set_size_request(tdrv, 120, -1);
   gtk_scale_set_draw_value(GTK_SCALE(tdrv), TRUE);
@@ -1993,6 +2053,34 @@ static void on_pref_tx_swr(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   app->tx_swr_alarm = adw_spin_row_get_value(r);
   tx_push_cfg(app); schedule_save(app);
 }
+/* Per-band PA calibration (F6b): band index carried on the row. Clamped to the
+ * safe [38.8,70.0] range; re-pushed so the current band's drive byte updates. */
+static void on_pref_pacal(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  int i = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(r), "band"));
+  if (i < 0 || i >= NBANDS) { return; }
+  app->band_pacal[i] = pacal_clamp(adw_spin_row_get_value(r));
+  tx_push_cfg(app); schedule_save(app);
+}
+/* Wattmeter-trim point (F6b): point index 1..10 carried on the row (0 is fixed). */
+static void on_pref_patrim(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  int i = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(r), "pt"));
+  if (i < 1 || i > 10) { return; }
+  double v = adw_spin_row_get_value(r);
+  app->pa_trim[i] = v < 0.0 ? 0.0 : v;
+  tx_push_cfg(app); schedule_save(app);
+}
+static void on_pref_patrim_reset(GtkButton *b, gpointer data) {
+  (void)b; App *app = (App *)data;
+  for (int i = 0; i < 11; i++) {
+    app->pa_trim[i] = i * PATRIM_STEP;                       /* identity curve */
+    if (i >= 1 && app->patrim_spin[i]) {
+      adw_spin_row_set_value(ADW_SPIN_ROW(app->patrim_spin[i]), app->pa_trim[i]);
+    }
+  }
+  tx_push_cfg(app); schedule_save(app);
+}
 
 static GtkWidget *pref_spin(const char *title, const char *subtitle,
                             double lo, double hi, double val, GCallback cb, App *app) {
@@ -2024,6 +2112,36 @@ static GtkWidget *pref_slider(const char *title, const char *subtitle,
   return row;
 }
 
+/* One per-band PA-calibration spin row (dB), band index stored for the callback. */
+static GtkWidget *pacal_row(App *app, int band) {
+  GtkAdjustment *a = gtk_adjustment_new(pacal_clamp(app->band_pacal[band]),
+                                        PACAL_MIN, PACAL_MAX, 0.1, 1.0, 0);
+  char sub[48];
+  snprintf(sub, sizeof sub, "%lld–%lld MHz",
+           BANDS[band].lo / 1000000, BANDS[band].hi / 1000000);
+  GtkWidget *row = g_object_new(ADW_TYPE_SPIN_ROW, "title", BANDS[band].key,
+                                "subtitle", sub, "adjustment", a, "digits", 1, NULL);
+  g_object_set_data(G_OBJECT(row), "band", GINT_TO_POINTER(band));
+  g_signal_connect(row, "notify::value", G_CALLBACK(on_pref_pacal), app);
+  app->pacal_spin[band] = row;
+  return row;
+}
+
+/* One wattmeter-trim spin row: title = true watts (fixed grid), value = the raw
+ * meter reading at that power (the adjustable breakpoint). Point index 1..10. */
+static GtkWidget *patrim_row(App *app, int i) {
+  GtkAdjustment *a = gtk_adjustment_new(app->pa_trim[i], 0.0, 300.0, 0.5, 5.0, 0);
+  char title[16];
+  snprintf(title, sizeof title, "%d W", (int)(i * PATRIM_STEP));
+  GtkWidget *row = g_object_new(ADW_TYPE_SPIN_ROW, "title", title,
+                                "subtitle", "meter reading at this true power",
+                                "adjustment", a, "digits", 1, NULL);
+  g_object_set_data(G_OBJECT(row), "pt", GINT_TO_POINTER(i));
+  g_signal_connect(row, "notify::value", G_CALLBACK(on_pref_patrim), app);
+  app->patrim_spin[i] = row;
+  return row;
+}
+
 static AdwDialog *build_prefs(App *app) {
   AdwPreferencesDialog *dlg = ADW_PREFERENCES_DIALOG(adw_preferences_dialog_new());
 
@@ -2046,14 +2164,36 @@ static AdwDialog *build_prefs(App *app) {
 
   /* TX — keying, power + safety (F6a). Lives on the Radio page (like piHPSDR's
    * PA-enable in the Radio menu) so the page switcher stays in the header rather
-   * than dropping to a bottom bar. PA-enable persists across restarts. Per-band
-   * PA calibration table lands in F6b. */
+   * than dropping to a bottom bar. PA-enable persists across restarts. */
   g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Transmit",
       "description", "TUNE keys into a dummy load / matched antenna. MOX/voice needs the mic path (F6c).", NULL));
   adw_preferences_group_add(g, pref_switch("PA enable", "Off = dry key only (T/R relay, no RF)",
       app->tx_pa_enabled, G_CALLBACK(on_pref_tx_pa), app));
   adw_preferences_group_add(g, pref_spin("SWR alarm", "Trip: drop MOX + refuse re-key",
       2, 5, app->tx_swr_alarm, G_CALLBACK(on_pref_tx_swr), app));
+  /* F6b — per-band PA calibration table (like piHPSDR's PA-calibration menu). The
+   * 38.8 dB floor is the safety limit; 53 dB is the validated G1 default. */
+  GtkWidget *pacal_exp = g_object_new(ADW_TYPE_EXPANDER_ROW, "title", "PA calibration (per band)",
+      "subtitle", "dB · higher = less drive for the same power request", NULL);
+  for (int i = 0; i < NBANDS; i++) {
+    adw_expander_row_add_row(ADW_EXPANDER_ROW(pacal_exp), pacal_row(app, i));
+  }
+  adw_preferences_group_add(g, pacal_exp);
+  /* F6b — wattmeter correction curve (like piHPSDR's Watt-meter calibration): map
+   * the raw meter reading at each true power onto true watts. Default = linear. */
+  GtkWidget *wm_exp = g_object_new(ADW_TYPE_EXPANDER_ROW, "title", "Wattmeter calibration",
+      "subtitle", "correct the displayed power against an external wattmeter", NULL);
+  for (int i = 1; i <= 10; i++) {
+    adw_expander_row_add_row(ADW_EXPANDER_ROW(wm_exp), patrim_row(app, i));
+  }
+  GtkWidget *reset_row = g_object_new(ADW_TYPE_ACTION_ROW, "title", "Reset to linear",
+      "subtitle", "restore the identity (uncalibrated) curve", NULL);
+  GtkWidget *reset_btn = gtk_button_new_with_label("Reset");
+  gtk_widget_set_valign(reset_btn, GTK_ALIGN_CENTER);
+  g_signal_connect(reset_btn, "clicked", G_CALLBACK(on_pref_patrim_reset), app);
+  adw_action_row_add_suffix(ADW_ACTION_ROW(reset_row), reset_btn);
+  adw_expander_row_add_row(ADW_EXPANDER_ROW(wm_exp), reset_row);
+  adw_preferences_group_add(g, wm_exp);
   adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);   /* Drive / Tune drive / Antenna live on the footer bar */
 
@@ -2319,7 +2459,7 @@ static void start_radio(App *app) {
   app->tx_pa_enabled = st.tx_pa ? 1 : 0;
   app->tx_antenna    = st.tx_ant < 0 ? 0 : (st.tx_ant > 2 ? 2 : st.tx_ant);
   app->tx_drive_w    = st.tx_drive < 0.0 ? 0.0 : (st.tx_drive > 100.0 ? 100.0 : st.tx_drive);
-  app->tx_tune_w     = st.tx_tune  < 0.0 ? 0.0 : (st.tx_tune  > 30.0  ? 30.0  : st.tx_tune);
+  app->tx_tune_w     = st.tx_tune  < 0.0 ? 0.0 : (st.tx_tune  > 100.0 ? 100.0 : st.tx_tune);
   app->tx_swr_alarm  = st.tx_swr   < 2.0 ? 2.0 : (st.tx_swr   > 5.0   ? 5.0   : st.tx_swr);
   app->fps    = st.fps;
   app->latency = st.latency;
@@ -2379,6 +2519,33 @@ static void start_radio(App *app) {
       }
     }
   }
+  /* Per-band PA calibration (F6b): default every band to 53 dB, then apply saved
+   * "key=dB;..." overrides (clamped to the safe [38.8,70.0] range). */
+  for (int i = 0; i < NBANDS; i++) { app->band_pacal[i] = PACAL_DEFAULT; }
+  char pcbuf[256];
+  g_strlcpy(pcbuf, st.pa_cal, sizeof pcbuf);
+  char *pcsv = NULL;
+  for (char *tok = strtok_r(pcbuf, ";", &pcsv); tok; tok = strtok_r(NULL, ";", &pcsv)) {
+    char *eq = strchr(tok, '=');
+    if (!eq) { continue; }
+    *eq = '\0';
+    double db = pacal_clamp(g_ascii_strtod(eq + 1, NULL));
+    for (int i = 0; i < NBANDS; i++) {
+      if (strcmp(tok, BANDS[i].key) == 0) { app->band_pacal[i] = db; break; }
+    }
+  }
+  /* Wattmeter-trim curve (F6b): default identity, then apply the saved 11 points. */
+  for (int i = 0; i < 11; i++) { app->pa_trim[i] = i * PATRIM_STEP; }
+  char ptbuf[256];
+  g_strlcpy(ptbuf, st.pa_trim, sizeof ptbuf);
+  char *ptsv = NULL; int pti = 0;
+  for (char *tok = strtok_r(ptbuf, ";", &ptsv); tok && pti < 11; tok = strtok_r(NULL, ";", &ptsv)) {
+    double v = g_ascii_strtod(tok, NULL);
+    if (v < 0.0) { v = 0.0; }
+    app->pa_trim[pti++] = v;
+  }
+  app->pa_trim[0] = 0.0;   /* the origin is fixed */
+
   app->cur_band = band_for_freq(app->freq);
   if (app->cur_band >= 0) {
     app->pan_high = app->band_high[app->cur_band];

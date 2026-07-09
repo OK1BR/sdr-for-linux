@@ -8,15 +8,26 @@
  * SWR-driven drive/MOX cut-out is the F4 safety layer (this just provides the
  * number). On RX the words are ~0, so fwd/rev read ~0 W and SWR settles to 1.0.
  *
- * NOTE: absolute watts use the piHPSDR default (linear) pa_trim, i.e. compute_power
- * is the identity — the numbers are structurally correct but UNCALIBRATED until a
- * live wattmeter pass (F6). SWR is a ratio and does not depend on that calibration.
+ * Absolute watts pass through an 11-point wattmeter correction curve (pa_trim,
+ * F6b) applied to both fwd and rev, exactly like piHPSDR compute_power. The
+ * DEFAULT curve is linear (identity), so out of the box watts = the base G1
+ * computation (our live-validated constants); the operator can refine it against
+ * an external wattmeter. SWR is a ratio and is essentially independent of it.
  */
 #ifndef SDRFL_ENGINE_TX_METER_H
 #define SDRFL_ENGINE_TX_METER_H
 
-/* Reset the running SWR/power state (call at TX channel create / RX->TX). */
+/* Reset the running SWR/power state (call at TX channel create / RX->TX). Does
+ * NOT touch the wattmeter-trim curve (that is config, set via tx_meter_set_trim). */
 void tx_meter_reset(void);
+
+/*
+ * Install the 11-point wattmeter correction curve (raw-computed W → true W at
+ * 0,10,..,100 W). trim[0] is forced to 0 (the origin). Default is identity; pass
+ * a calibrated curve to correct sensor non-linearity. Thread note: called from
+ * the TX worker each meter slot, so no cross-thread torn reads of the curve.
+ */
+void tx_meter_set_trim(const double trim[11]);
 
 /*
  * Feed one set of averaged coupler words (p2_telemetry.fwd_raw / rev_raw) and

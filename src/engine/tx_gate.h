@@ -8,8 +8,11 @@
  *   - in-band lockout (via the band plan) — refuse out of band unless allow_oob;
  *   - PA gate — TX_RELAY / atten-31 only with the PA enabled (set in the state);
  *   - SWR shutdown — SWR >= alarm on TWO consecutive polls → drop MOX + drive 0,
- *     latched until the operator releases; SUPPRESSED during TUNE (ATU tuning);
- *   - open-antenna detection (Thetis) — fwd > 10 W && fwd-rev < 1 W → same trip;
+ *     latched until release. Trips under MOX; during TUNE high SWR does NOT trip
+ *     (deliberate ATU mismatch tuning) but IS still flagged (out->high_swr);
+ *   - open-antenna detection (Thetis) — fwd > 10 W && fwd-rev < 1 W → same trip,
+ *     ALWAYS active, incl. TUNE (you never legitimately key into an open antenna,
+ *     and TUNE can now run to full power);
  *   - separate MOX vs TUNE drive.
  *
  * ⛔ F4: this only DECIDES — it does not send. Nothing wires tx_gate_evaluate()'s
@@ -56,6 +59,7 @@ typedef struct {
   int         keyed;    /* 1 = exciter should be keyed (MOX/TUNE)                 */
   int         allowed;  /* 1 = TX permitted here (in band / not refused)          */
   int         tripped;  /* 1 = a protection trip is latched                       */
+  int         high_swr; /* 1 = SWR >= alarm right now (indicator; lights in TUNE too) */
   const char *reason;   /* "" or why refused/tripped (for the UI/log)            */
 } tx_gate_result;
 

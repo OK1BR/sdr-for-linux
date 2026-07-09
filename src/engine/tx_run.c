@@ -41,6 +41,7 @@ typedef struct {
   double swr_alarm;
   int    allow_oob, region, mode;
   char   country_key[8];
+  double pa_trim[11];
 } tx_cfg_i;
 
 static GThread          *s_thread;
@@ -102,7 +103,9 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence) {
   gc.country_key     = cfg.country_key;
 
   /* One real coupler reading per slot → tx_gate's 2-consecutive SWR filter sees
-   * genuine consecutive samples (never a re-run on stale data). */
+   * genuine consecutive samples (never a re-run on stale data). The wattmeter-trim
+   * curve is (re)installed here so it stays owned by this worker thread. */
+  tx_meter_set_trim(cfg.pa_trim);
   p2_telemetry t; p2_get_telemetry(&t);
   tx_meter_update(t.fwd_raw, t.rev_raw, is_6m);
 
@@ -150,6 +153,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence) {
   st.mox     = keyed && r.state.mox;
   st.tripped = r.tripped;
   st.allowed = r.allowed;
+  st.high_swr = r.high_swr;
   st.fwd_w   = tx_meter_fwd_w();
   st.rev_w   = tx_meter_rev_w();
   st.swr     = tx_meter_swr();
@@ -196,11 +200,12 @@ int tx_run_start(long long tx_freq_hz, int pan_pixels, int fps) {
   g_mutex_lock(&s_cfg_lock);
   memset(&s_cfg, 0, sizeof s_cfg);
   s_cfg.pa_enabled     = 0;      /* RF impossible until the operator enables the PA */
-  s_cfg.pa_calibration = 53.0;   /* G1 default (validated); per-band in F6b */
+  s_cfg.pa_calibration = 53.0;   /* G1 default (validated); per-band pushed by GUI */
   s_cfg.swr_protect    = 1;
   s_cfg.swr_alarm      = 3.0;
   s_cfg.mode           = TX_MODE_DFLT;
   s_cfg.country_key[0] = '\0';
+  for (int i = 0; i < 11; i++) { s_cfg.pa_trim[i] = i * 10.0; }  /* G1 identity curve (PA_100W: piHPSDR radio.c:1330) */
   g_mutex_unlock(&s_cfg_lock);
 
   g_mutex_lock(&s_freq_lock); s_freq = tx_freq_hz; g_mutex_unlock(&s_freq_lock);
@@ -257,6 +262,7 @@ void tx_run_set_cfg(const tx_run_cfg *cfg) {
   s_cfg.region         = cfg->region;
   s_cfg.mode           = cfg->mode;
   g_strlcpy(s_cfg.country_key, cfg->country_key ? cfg->country_key : "", sizeof s_cfg.country_key);
+  for (int i = 0; i < 11; i++) { s_cfg.pa_trim[i] = cfg->pa_trim[i]; }
   g_mutex_unlock(&s_cfg_lock);
 }
 

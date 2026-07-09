@@ -89,27 +89,50 @@ int main(void) {
     tx_gate_evaluate(&c, &i, &r); }
   ok("stays latched until release (SWR back to 1)", r.tripped && !r.keyed, "");
 
-  /* 7. high SWR during TUNE → protection suppressed */
-  printf("\n[TUNE] high SWR during tune → NOT tripped (ATU):\n");
+  /* 7. high SWR during TUNE → does NOT trip (ATU), but the flag still lights */
+  printf("\n[TUNE] high SWR during tune → NOT tripped (ATU), flag lit:\n");
   tx_gate_reset();
   { tx_gate_cfg c = base_cfg(); tx_gate_in i = base_in();
     i.want_mox = 0; i.want_tune = 1; i.swr = 5.0;
     tx_gate_evaluate(&c, &i, &r);
     tx_gate_evaluate(&c, &i, &r);
     tx_gate_evaluate(&c, &i, &r); }
-  snprintf(det, sizeof det, "keyed=%d tune=%d drive=%d tripped=%d",
-           r.keyed, r.state.tune, r.state.drive, r.tripped);
+  snprintf(det, sizeof det, "keyed=%d tune=%d drive=%d tripped=%d high_swr=%d",
+           r.keyed, r.state.tune, r.state.drive, r.tripped, r.high_swr);
   ok("tune keyed, tune drive, no trip", r.keyed && r.state.tune == 1 &&
      r.state.drive == 20 && !r.tripped, det);
+  ok("high-SWR flag lights during tune (warn-only)", r.high_swr, det);
 
-  /* 8. open antenna (fwd>10, fwd-rev<1) with LOW SWR → trip anyway */
-  printf("\n[open antenna] fwd=15 rev=14.5, SWR low → trip:\n");
+  /* 8. open antenna (fwd>10, fwd-rev<1) with LOW SWR under MOX → trip */
+  printf("\n[open antenna · MOX] fwd=15 rev=14.5, SWR low → trip:\n");
   tx_gate_reset();
   { tx_gate_cfg c = base_cfg(); tx_gate_in i = base_in();
     i.swr = 1.2; i.fwd_w = 15.0; i.rev_w = 14.5;
     tx_gate_evaluate(&c, &i, &r);
     tx_gate_evaluate(&c, &i, &r); }
   ok("open-antenna trips (low SWR)", r.tripped && !r.keyed, "");
+
+  /* 8b. open antenna during TUNE → trips too (open port is never legitimate; TUNE
+   * can run to full power, so it must NOT be exempt from the open-antenna guard) */
+  printf("\n[open antenna · TUNE] fwd=15 rev=14.5 → trips even in tune:\n");
+  tx_gate_reset();
+  { tx_gate_cfg c = base_cfg(); tx_gate_in i = base_in();
+    i.want_mox = 0; i.want_tune = 1; i.swr = 1.2; i.fwd_w = 15.0; i.rev_w = 14.5;
+    tx_gate_evaluate(&c, &i, &r);
+    tx_gate_evaluate(&c, &i, &r); }
+  ok("open-antenna trips during tune", r.tripped && !r.keyed, r.reason);
+
+  /* 8c. TUNE into a matched dummy load at full power → no trip (fwd≫rev) */
+  printf("\n[TUNE · dummy load] fwd=100 rev=0.3 → full-power tune, no trip:\n");
+  tx_gate_reset();
+  { tx_gate_cfg c = base_cfg(); c.tune_byte = 200; tx_gate_in i = base_in();
+    i.want_mox = 0; i.want_tune = 1; i.swr = 1.0; i.fwd_w = 100.0; i.rev_w = 0.3;
+    tx_gate_evaluate(&c, &i, &r);
+    tx_gate_evaluate(&c, &i, &r); }
+  snprintf(det, sizeof det, "keyed=%d drive=%d tripped=%d high_swr=%d",
+           r.keyed, r.state.drive, r.tripped, r.high_swr);
+  ok("full-power tune into matched load keys, no trip", r.keyed &&
+     r.state.drive == 200 && !r.tripped && !r.high_swr, det);
 
   /* 9. release resets the latch, then re-key recovers */
   printf("\n[release] release clears latch, re-key recovers:\n");

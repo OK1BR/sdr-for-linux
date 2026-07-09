@@ -23,10 +23,11 @@ void tx_gate_reset(void) {
 
 void tx_gate_evaluate(const tx_gate_cfg *cfg, const tx_gate_in *in, tx_gate_result *out) {
   memset(&out->state, 0, sizeof(out->state));
-  out->keyed   = 0;
-  out->allowed = 0;
-  out->tripped = s_tripped;
-  out->reason  = "";
+  out->keyed    = 0;
+  out->allowed  = 0;
+  out->tripped  = s_tripped;
+  out->high_swr = 0;
+  out->reason   = "";
 
   int want = in->want_mox || in->want_tune;
 
@@ -54,12 +55,19 @@ void tx_gate_evaluate(const tx_gate_cfg *cfg, const tx_gate_in *in, tx_gate_resu
 
   int pa_on = cfg->pa_enabled && !cfg->band_disable_pa;
 
-  /* SWR / open-antenna protection — SUPPRESSED during TUNE (deliberate mismatch
-   * into the ATU at low power). Requires two consecutive over-limit polls. */
-  if (!in->want_tune && cfg->swr_protect) {
+  /* SWR / open-antenna protection. Requires two consecutive over-limit polls.
+   *  - open antenna ALWAYS trips (incl. TUNE): keying into ~nothing is never
+   *    legitimate, and TUNE can now run to full power — an unprotected full-power
+   *    carrier into an open port is exactly what would cook the PA.
+   *  - high SWR trips under MOX only; during TUNE it does NOT trip (you must be
+   *    able to tune an ATU through a deliberate mismatch) but is still flagged so
+   *    the operator sees it. */
+  if (cfg->swr_protect) {
     int high_swr     = in->swr >= cfg->swr_alarm;
     int open_antenna = in->fwd_w > 10.0 && (in->fwd_w - in->rev_w) < 1.0;  /* Thetis */
-    if (high_swr || open_antenna) {
+    out->high_swr    = high_swr;                       /* indicator: TUNE + MOX */
+    int trip_now     = open_antenna || (high_swr && !in->want_tune);
+    if (trip_now) {
       if (s_pre_high) { s_tripped = 1; }   /* second consecutive → trip + latch */
       s_pre_high = 1;
     } else {
