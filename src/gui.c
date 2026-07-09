@@ -2730,7 +2730,7 @@ static AdwDialog *build_prefs(App *app) {
   p = ADW_PREFERENCES_PAGE(g_object_new(ADW_TYPE_PREFERENCES_PAGE,
       "title", "Audio", "icon-name", "audio-speakers-symbolic", NULL));
   g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP,
-      "title", "Devices & rate", NULL));
+      "title", "Devices and rate", NULL));
   { GtkStringList *m = gtk_string_list_new(NULL);
     guint sel = 0;
     for (guint i = 0; i < G_N_ELEMENTS(AUDIO_RATES); i++) {
@@ -2774,7 +2774,7 @@ static AdwDialog *build_prefs(App *app) {
   }
   adw_preferences_page_add(p, g);
   g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP,
-      "title", "Levels & latency", NULL));
+      "title", "Levels and latency", NULL));
   adw_preferences_group_add(g, pref_spin("Digital master gain",
       "× on the demodulated audio after WDSP; 1 = calibrated default · live",
       1, 32, app->gain, G_CALLBACK(on_pref_gain), app));
