@@ -201,6 +201,9 @@ typedef struct {
   char        tx_reason[64]; /* last refusal/trip reason to flash                   */
   gint64      tx_reason_until;/* monotonic µs until which to show tx_reason         */
   int         tx_keyed_shown;/* last keyed state pushed to the label (repaint gate) */
+  double      tx_pep_w;      /* displayed TX power: peak-hold (PEP-style)           */
+  gint64      tx_pep_at;     /* monotonic µs when tx_pep_w was set                  */
+  double      tx_swr_disp;   /* displayed SWR: held while no power flows            */
   int         mic_open;      /* PipeWire mic capture running (voice modes only, F6c) */
   /* TX panadapter: while keyed we show the transmitted spectrum (24 kHz span,
    * full area, no waterfall) in place of the RX view — like piHPSDR non-duplex. */
@@ -782,9 +785,30 @@ static void draw_tx(cairo_t *cr, int w, int h, App *app) {
   cairo_fill(cr);
 
   /* Big red power/SWR numbers, top-left — the RX frequency readout's TX sibling.
-   * No sub-line: power + SWR appearing is itself the "we're transmitting" cue. */
+   * No sub-line: power + SWR appearing is itself the "we're transmitting" cue.
+   *
+   * DISPLAY smoothing only — the SWR protection (tx_gate) keeps acting on the
+   * raw fast values. Power shows PEP with a peak-hold (voice power on an
+   * instantaneous meter is unreadable — it swings 0..PEP with every syllable;
+   * a held peak is what every rig's meter shows for SSB, and for a steady
+   * carrier it equals the live value). SWR only updates while real power flows
+   * (> 0.5 W) and is lightly smoothed — between syllables the coupler reads
+   * ~nothing and the computed SWR is meaningless jitter, so hold the last
+   * valid reading instead. */
+  gint64 pnow = g_get_monotonic_time();
+  if (ts.fwd_w >= app->tx_pep_w || pnow - app->tx_pep_at > 1500000) {
+    app->tx_pep_w  = ts.fwd_w;      /* new peak, or 1.5 s hold expired */
+    app->tx_pep_at = pnow;
+  }
+  if (ts.fwd_w > 0.5) {
+    app->tx_swr_disp = app->tx_swr_disp > 0.0
+                       ? app->tx_swr_disp + 0.3 * (ts.swr - app->tx_swr_disp)
+                       : ts.swr;
+  } else if (app->tx_swr_disp <= 0.0) {
+    app->tx_swr_disp = ts.swr;      /* nothing held yet (dry key) → show live */
+  }
   char big[48];
-  snprintf(big, sizeof big, "%.0f W   ·   SWR %.1f", ts.fwd_w, ts.swr);
+  snprintf(big, sizeof big, "%.0f W   ·   SWR %.1f", app->tx_pep_w, app->tx_swr_disp);
   cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
   cairo_set_font_size(cr, 32.0);
   cairo_set_source_rgba(cr, 1.0, 0.34, 0.28, 0.98);
@@ -1196,6 +1220,8 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
             if (app->audio_ok) { demod_set_mute(1); }
             app->tx_ema_w = 0;
             app->tx_settle_until = 0;
+            app->tx_pep_w = 0.0; app->tx_pep_at = 0;   /* fresh peak-hold + SWR */
+            app->tx_swr_disp = 0.0;                    /* per over (display only) */
           } else {
             if (app->audio_ok) { g_atomic_int_set(&g_rx_silence, app->rate * RX_SILENCE_MS / 1000); }
             app->tx_settle_until = now + (gint64)TX_SETTLE_MS * 1000;
