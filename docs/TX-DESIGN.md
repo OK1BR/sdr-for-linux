@@ -344,15 +344,22 @@ no trips). What landed:
     Richard's "level bars now, ALC later", both from `GetTXAMeter` (`TXA_MIC_PK`
     / `TXA_ALC_GAIN`) published into `tx_run_status.mic_pk/alc_gain` from the TX
     thread. Meaningful only while keyed. Builds; all TX gates pass.
-  - **F6c-3b — MOX enabled; mic lifecycle live-verified (RX-only); first voice
-    pending.** The MOX button is enabled, but only in a voice mode (`tx_update_mic`
-    greys it for CW/data alongside the mic) — same `tx_gate` path as TUNE, with
-    SWR protection ACTIVE for MOX. Live RX-only check (2026-07-09, G1): starting in
-    **USB → `mic: capture open @ 48000 Hz … voice mode`**; starting in **CWU → mic
-    stays closed**. No keying done (operator-in-the-loop). **★ Remaining: the first
-    voice keying into a 50 Ω dummy load** — operator confirms the load + at the
-    wattmeter, presses MOX and speaks; watch `tx:` power/SWR + the ALC/mic meters.
-    Full TX-SAFETY re-check applies (same as F5/F6a/F6b first-keying procedure).
+  - **F6c-3b — MOX enabled; first voice keyed — WORKS (ANAN G1, OK1BR,
+    2026-07-09).** MOX is enabled only in a voice mode (`tx_update_mic` greys it for
+    CW/data alongside the mic) — same `tx_gate` path as TUNE, SWR protection ACTIVE
+    for MOX. Live checks on the G1: mic lifecycle RX-only (USB → `mic: capture open
+    @ 48000 Hz … voice mode`; CWU → mic stays closed), then **first voice into a
+    50 Ω dummy load on ANT1**: keyed clean (`KEY MOX PA=ON ANT1 drive=35/255`),
+    SWR 1.00, and — after raising Mic gain — produced real SSB power that tracks the
+    voice.
+    **★ Gotcha found live:** at the default `mic_gain = 0 dB` the output was ~0 W
+    (a few 0.07 W blips on peaks, `fwd_raw` 9→121). The host mic chain (SPL Marc One
+    preamp) is quiet, so the WDSP TXA input sat far below full scale → the SSB IQ was
+    ~-30 dB down. Same log had TUNE at drive 30 = 53 W, proving the RF path was fine
+    — purely a mic-level/gain-staging issue; the footer Mic slider fixes it.
+    **Still open:** audio *quality* / over-drive (needs a monitor RX — judge from the
+    ALC meter + TX-panadapter splatter meanwhile), and whether to raise the default
+    mic gain. Phase-1 stays plain SSB (ALC only; no speech compressor/EQ).
 - **F6d** — CW keyer, sidetone, break-in/QSK.
 
 ---
