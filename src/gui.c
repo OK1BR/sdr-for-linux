@@ -1259,12 +1259,21 @@ static void tx_update_mic(App *app) {
   int want = app->tx_ready && mode_is_voice(app->mode);
   if (want && !app->mic_open) {
     const char *dev = app->mic_device[0] ? app->mic_device : NULL;
-    if (mic_start(tx_dsp_in_rate(), app->latency, dev) == 0) { app->mic_open = 1; }
-    else { fprintf(stderr, "mic_start failed — SSB voice TX will be silent\n"); }
+    if (mic_start(tx_dsp_in_rate(), app->latency, dev) == 0) {
+      app->mic_open = 1;
+      fprintf(stderr, "mic: capture open @ %d Hz (%s) — voice mode\n",
+              tx_dsp_in_rate(), dev ? dev : "default source");
+    } else {
+      fprintf(stderr, "mic_start failed — SSB voice TX will be silent\n");
+    }
   } else if (!want && app->mic_open) {
     mic_stop();
     app->mic_open = 0;
+    fprintf(stderr, "mic: capture closed — non-voice mode\n");
   }
+  /* MOX/voice is only meaningful with the mic open (a voice mode); grey it out for
+   * CW/data, exactly like the mic itself. Button may not exist yet during startup. */
+  if (app->mox_btn) { gtk_widget_set_sensitive(app->mox_btn, want); }
 }
 
 /* Push the operator's persisted TX settings into the runtime. Safe if TX isn't up.
@@ -1807,10 +1816,10 @@ static GtkWidget *build_controls(App *app) {
   gtk_box_append(GTK_BOX(nrbox), bin_b);
   gtk_box_append(GTK_BOX(bar), nrbox);
 
-  /* TX (F6a): TUNE keys a carrier at the tune power through the tx_gate safety
-   * layer (into a dummy load / matched antenna); MOX/voice waits for the mic
-   * path (F6c) so it is shown disabled. Drive/PA/antenna live in Preferences →
-   * TX (grouped with PA-enable, like piHPSDR's PA menu). */
+  /* TX: TUNE keys a carrier at the tune power through the tx_gate safety layer
+   * (into a dummy load / matched antenna); MOX keys SSB voice from the mic (F6c) —
+   * enabled only in a voice mode (mic open), greyed for CW/data. Both go through
+   * the same gate. Drive/PA/antenna live in Preferences → TX (like piHPSDR's PA). */
   GtkWidget *txbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_add_css_class(txbox, "linked");
   app->tune_btn = gtk_toggle_button_new_with_label("TUNE");
@@ -1819,9 +1828,11 @@ static GtkWidget *build_controls(App *app) {
   gtk_widget_add_css_class(app->mox_btn,  "txkey");
   gtk_widget_set_tooltip_text(app->tune_btn,
       "TUNE: key a carrier at the tune power (dummy load / matched antenna)");
-  gtk_widget_set_tooltip_text(app->mox_btn, "MOX/voice — needs the mic path (F6c)");
-  gtk_widget_set_sensitive(app->mox_btn, FALSE);              /* enabled in F6c */
+  gtk_widget_set_tooltip_text(app->mox_btn,
+      "MOX: key SSB voice from the mic (dummy load / matched antenna)");
   gtk_widget_set_sensitive(app->tune_btn, app->tx_ready);     /* only if the runtime is up */
+  gtk_widget_set_sensitive(app->mox_btn,                      /* + only in a voice mode */
+      app->tx_ready && mode_is_voice(app->mode));
   g_signal_connect(app->tune_btn, "toggled", G_CALLBACK(on_tx_key_toggled), app);
   g_signal_connect(app->mox_btn,  "toggled", G_CALLBACK(on_tx_key_toggled), app);
   gtk_box_append(GTK_BOX(txbox), app->tune_btn);

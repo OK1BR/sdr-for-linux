@@ -344,9 +344,15 @@ no trips). What landed:
     Richard's "level bars now, ALC later", both from `GetTXAMeter` (`TXA_MIC_PK`
     / `TXA_ALC_GAIN`) published into `tx_run_status.mic_pk/alc_gain` from the TX
     thread. Meaningful only while keyed. Builds; all TX gates pass.
-  - **F6c-3b (live, hazardous — needs the radio free + consent + TX-SAFETY
-    re-verify)** — enable the MOX button; first voice into a dummy load /
-    matched antenna; live-confirm the F6c-2 mic lifecycle + mic gain + meters.
+  - **F6c-3b — MOX enabled; mic lifecycle live-verified (RX-only); first voice
+    pending.** The MOX button is enabled, but only in a voice mode (`tx_update_mic`
+    greys it for CW/data alongside the mic) — same `tx_gate` path as TUNE, with
+    SWR protection ACTIVE for MOX. Live RX-only check (2026-07-09, G1): starting in
+    **USB → `mic: capture open @ 48000 Hz … voice mode`**; starting in **CWU → mic
+    stays closed**. No keying done (operator-in-the-loop). **★ Remaining: the first
+    voice keying into a 50 Ω dummy load** — operator confirms the load + at the
+    wattmeter, presses MOX and speaks; watch `tx:` power/SWR + the ALC/mic meters.
+    Full TX-SAFETY re-check applies (same as F5/F6a/F6b first-keying procedure).
 - **F6d** — CW keyer, sidetone, break-in/QSK.
 
 ---
