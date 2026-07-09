@@ -97,6 +97,70 @@ void mic_flush(void) {
   atomic_store_explicit(&m_tail, h, memory_order_release);
 }
 
+/* --- device enumeration (one-shot registry roundtrip) --------------------- */
+struct enum_state {
+  mic_source          *out;
+  int                  max, count;
+  struct pw_main_loop *loop;
+};
+
+static void reg_global(void *data, uint32_t id, uint32_t perm, const char *type,
+                       uint32_t ver, const struct spa_dict *props) {
+  (void)id; (void)perm; (void)ver;
+  struct enum_state *st = data;
+  if (!props || !type || strcmp(type, PW_TYPE_INTERFACE_Node) != 0) { return; }
+  const char *cls = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS);
+  if (!cls || strcmp(cls, "Audio/Source") != 0) { return; }     /* real capture only */
+  const char *name = spa_dict_lookup(props, PW_KEY_NODE_NAME);
+  if (!name || st->count >= st->max) { return; }
+  const char *desc = spa_dict_lookup(props, PW_KEY_NODE_DESCRIPTION);
+  snprintf(st->out[st->count].name, sizeof st->out[0].name, "%s", name);
+  snprintf(st->out[st->count].desc, sizeof st->out[0].desc, "%s", desc ? desc : name);
+  st->count++;
+}
+static const struct pw_registry_events registry_events = {
+  PW_VERSION_REGISTRY_EVENTS, .global = reg_global,
+};
+
+static void core_done(void *data, uint32_t id, int seq) {
+  (void)seq;
+  struct enum_state *st = data;
+  if (id == PW_ID_CORE) { pw_main_loop_quit(st->loop); }   /* initial dump complete */
+}
+static const struct pw_core_events core_events = {
+  PW_VERSION_CORE_EVENTS, .done = core_done,
+};
+
+int mic_list_sources(mic_source *out, int max) {
+  if (!out || max <= 0) { return 0; }
+  pw_init(NULL, NULL);
+  struct pw_main_loop *loop = pw_main_loop_new(NULL);
+  if (!loop) { return 0; }
+  struct pw_context *ctx = pw_context_new(pw_main_loop_get_loop(loop), NULL, 0);
+  struct pw_core *core = ctx ? pw_context_connect(ctx, NULL, 0) : NULL;
+  if (!core) {
+    if (ctx) { pw_context_destroy(ctx); }
+    pw_main_loop_destroy(loop);
+    return 0;
+  }
+  struct enum_state st = { .out = out, .max = max, .count = 0, .loop = loop };
+  struct pw_registry *reg = pw_core_get_registry(core, PW_VERSION_REGISTRY, 0);
+  struct spa_hook reg_hook, core_hook;
+  spa_zero(reg_hook); spa_zero(core_hook);
+  pw_registry_add_listener(reg, &reg_hook, &registry_events, &st);
+  pw_core_add_listener(core, &core_hook, &core_events, &st);
+  pw_core_sync(core, PW_ID_CORE, 0);        /* fires core_done after the initial globals */
+  pw_main_loop_run(loop);
+
+  spa_hook_remove(&reg_hook);
+  spa_hook_remove(&core_hook);
+  pw_proxy_destroy((struct pw_proxy *)reg);
+  pw_core_disconnect(core);
+  pw_context_destroy(ctx);
+  pw_main_loop_destroy(loop);
+  return st.count;
+}
+
 /* --- lifecycle ------------------------------------------------------------ */
 int mic_start(int rate, int latency_ms, const char *target) {
   atomic_store(&m_head, 0);

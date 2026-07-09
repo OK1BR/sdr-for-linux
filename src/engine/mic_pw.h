@@ -14,6 +14,19 @@
 #ifndef SDRFL_ENGINE_MIC_PW_H
 #define SDRFL_ENGINE_MIC_PW_H
 
+/* One capture source for the device picker: stable node name + friendly label. */
+typedef struct {
+  char name[128];   /* PipeWire node.name — pass to mic_start() as `target` */
+  char desc[160];   /* node.description — human label for the combo         */
+} mic_source;
+
+/*
+ * Enumerate Audio/Source capture devices into out[0..max-1]; returns the count
+ * written (<= max). One synchronous PipeWire registry roundtrip — call from the
+ * GUI thread when building the settings picker, NOT from the RT/feed path.
+ */
+int  mic_list_sources(mic_source *out, int max);
+
 /*
  * Open a capture source at `rate` Hz mono, targeting ~`latency_ms` of input
  * latency (smaller = lower latency, more CPU). `target` picks the source by its

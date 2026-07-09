@@ -33,7 +33,15 @@ int main(void) {
   const char *target = getenv("SDRFL_MIC_TARGET");   /* NULL/"" = default source */
 
   printf("=== sdrfl-micprobe — PipeWire mic capture (F6c-1) ===\n");
-  printf("Capturing %d s @ %d Hz mono from %s. Speak into the mic.\n\n",
+
+  /* Device picker source list (SDRFL_MIC_TARGET selects one by node name). */
+  mic_source srcs[32];
+  int nsrc = mic_list_sources(srcs, 32);
+  printf("Capture sources (%d):\n", nsrc);
+  for (int i = 0; i < nsrc; i++) {
+    printf("  %-52s  %s\n", srcs[i].name, srcs[i].desc);
+  }
+  printf("\nCapturing %d s @ %d Hz mono from %s. Speak into the mic.\n\n",
          secs, rate, (target && *target) ? target : "the default source");
 
   if (mic_start(rate, lat, target) != 0) {
