@@ -231,7 +231,10 @@ no trips). What landed:
   `p2_set_tx_state`). **Why a thread, not the GUI tick:** the tick is a
   `GdkFrameClock` callback and pauses when the window is occluded — the SWR/open-ant
   guard must never pause while the keepalive holds MOX. Control packets still go
-  only via the engine keepalive thread (`p2_set_tx_state` just stores state); only
+  only via the engine keepalive thread (`p2_set_tx_state` just stores state — and,
+  since the TX-audit fixes, kicks the keepalive awake on a state CHANGE so a
+  key/unkey/drive/QSY/SWR-trip edge hits the wire immediately, piHPSDR
+  `schedule_high_priority` parity, instead of ≤100 ms later); only
   the port-1029 IQ is emitted from the TX thread.
 - **TX panadapter** (`src/engine/tx_analyzer.[ch]`) — a 2nd WDSP analyzer (disp 1),
   24 kHz span, mirroring piHPSDR `tx_set_analyzer`. While keyed the whole area shows

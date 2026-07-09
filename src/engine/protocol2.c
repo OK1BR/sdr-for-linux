@@ -11,7 +11,9 @@
  * Threading model (simpler than upstream): the outgoing packets are sent only
  * from p2_rx_start() (once, before the timer spawns) and thereafter only from
  * the single keepalive-timer thread, so there is no send-side concurrency and
- * we need no per-packet mutexes. The listener thread decodes IQ inline (one low
+ * we need no per-packet mutexes. A TX-state change (p2_set_tx_state) does not
+ * send either — it only kicks the timer awake so IT applies the change
+ * immediately (see kick_cond). The listener thread decodes IQ inline (one low
  * -rate DDC → cheap) and hands it straight to the callback, so we also skip
  * upstream's per-DDC ring buffers + semaphores.
  */
@@ -89,6 +91,14 @@ static gint      cfg_atten;      /* ADC0 step attenuator dB (0-31), atomic; HP b
 static p2_tx_state cfg_tx;        /* live TX state (F5); applied only when cfg_tx_on */
 static int         cfg_tx_on;     /* 0 = RX-only (the default/off), 1 = apply cfg_tx */
 static GMutex      tx_state_lock; /* fences cfg_tx across the GUI/timer threads */
+/* TX-state kick: p2_set_tx_state() signals this when the state CHANGES, and the
+ * keepalive timer wakes early and applies it to the wire immediately (piHPSDR
+ * parity: schedule_high_priority() sends synchronously on every MOX/drive/freq
+ * change, new_protocol.c:335). Sends still happen ONLY on the timer thread —
+ * the kick just shortens its sleep, preserving the single-sender invariant. */
+static GMutex      kick_lock;
+static GCond       kick_cond;
+static int         kick_pending;
 static int       cfg_sample_rate;
 static int       cfg_ddc;        /* DDC index for this device (0 for G1) */
 static p2_iq_cb  cfg_cb;
@@ -478,10 +488,30 @@ void p2_set_attenuation(int db) {
 }
 
 void p2_set_tx_state(const p2_tx_state *tx) {
+  int changed;
   g_mutex_lock(&tx_state_lock);
-  if (tx) { cfg_tx = *tx; cfg_tx_on = 1; }
-  else    { memset(&cfg_tx, 0, sizeof(cfg_tx)); cfg_tx_on = 0; }
+  if (tx) {
+    /* memcmp is safe: both sides originate from memset-zeroed structs
+     * (tx_gate_evaluate zeroes out->state; cfg_tx is zeroed below/at start). */
+    changed = !cfg_tx_on || memcmp(&cfg_tx, tx, sizeof(cfg_tx)) != 0;
+    cfg_tx = *tx;
+    cfg_tx_on = 1;
+  } else {
+    changed = cfg_tx_on != 0;
+    memset(&cfg_tx, 0, sizeof(cfg_tx));
+    cfg_tx_on = 0;
+  }
   g_mutex_unlock(&tx_state_lock);
+
+  /* Key/unkey/drive/QSY/SWR-trip edge → wake the keepalive timer so the new
+   * state lands on the wire NOW, not up to 100 ms later. An unchanged refresh
+   * (the ~20 Hz keyed re-assert) does not kick — no extra wire traffic. */
+  if (changed) {
+    g_mutex_lock(&kick_lock);
+    kick_pending = 1;
+    g_cond_signal(&kick_cond);
+    g_mutex_unlock(&kick_lock);
+  }
 }
 
 void p2_get_telemetry(p2_telemetry *out) {
@@ -628,14 +658,38 @@ static gpointer listener_thread(gpointer data) {
   return NULL;
 }
 
+/* One keepalive tick: sleep up to 100 ms, but wake early on a TX-state kick and
+ * apply the new state to the wire immediately. Send order on a kick: General
+ * (PA enable) and TX-specific first, the High-Priority with MOX/relays last, so
+ * MOX never lands ahead of a consistent PA/DAC config; on unkey the same order
+ * also drops PA-enable right away instead of at the next 800 ms General. Runs
+ * on the timer thread only — the single-sender invariant holds. */
+static void timer_wait_or_kick(void) {
+  gint64 deadline = g_get_monotonic_time() + 100000;
+  g_mutex_lock(&kick_lock);
+  while (!kick_pending) {
+    if (!g_cond_wait_until(&kick_cond, &kick_lock, deadline)) { break; }  /* tick */
+  }
+  int kicked = kick_pending;
+  kick_pending = 0;
+  g_mutex_unlock(&kick_lock);
+
+  if (kicked && p2running) {
+    send_general();
+    send_transmit_specific();
+    send_high_priority(1);
+  }
+}
+
 /* Keepalive timer — np.c:2953-3007, same cadence as piHPSDR: HP every 100 ms,
  * RX-spec + TX-spec alternating every 200 ms, General every 800 ms. The
  * periodic (zeroed) TX-specific keeps the radio's TX registers in the known
- * TX-off state even across dropped packets. */
+ * TX-off state even across dropped packets. TX-state changes additionally
+ * short-circuit the sleep via timer_wait_or_kick (immediate key/unkey). */
 static gpointer timer_thread(gpointer data) {
   (void)data;
   int cycling = 0;
-  usleep(100000);
+  timer_wait_or_kick();
   while (p2running) {
     cycling++;
     switch (cycling) {
@@ -660,7 +714,7 @@ static gpointer timer_thread(gpointer data) {
     int tx_active = cfg_tx_on;
     g_mutex_unlock(&tx_state_lock);
     if (tx_active && cycling != 0) { send_general(); }
-    usleep(100000);
+    timer_wait_or_kick();
   }
   return NULL;
 }
@@ -734,6 +788,9 @@ int p2_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
   memset(&cfg_tx, 0, sizeof(cfg_tx));
   cfg_tx_on = 0;
   g_mutex_unlock(&tx_state_lock);
+  g_mutex_lock(&kick_lock);              /* drop a stale kick from a prior session */
+  kick_pending = 0;
+  g_mutex_unlock(&kick_lock);
   memset((void *)ddc_sequence, 0, sizeof(ddc_sequence));
 
   p2running = 1;
@@ -755,6 +812,10 @@ int p2_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
 void p2_rx_stop(void) {
   if (data_socket < 0) { return; }
   p2running = 0;
+  g_mutex_lock(&kick_lock);   /* wake the timer out of its tick wait (no sends: */
+  kick_pending = 1;           /* the kick path re-checks p2running)             */
+  g_cond_signal(&kick_cond);
+  g_mutex_unlock(&kick_lock);
   if (timer_tid)    { g_thread_join(timer_tid);    timer_tid = NULL; }
   if (listener_tid) { g_thread_join(listener_tid); listener_tid = NULL; }
 
