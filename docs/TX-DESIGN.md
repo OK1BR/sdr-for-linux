@@ -219,7 +219,7 @@ happens only at F5.
 | **F3** | fwd/rev/exciter parse (read-only) + G1 watts/SWR (`tx_meter`); `sdrfl-swr-test` | ✅ done, 8/8 (4f80abd) |
 | **F4** | Safety gate `tx_gate` (in-band, PA gate, SWR/open-ant shutdown, tune-exempt); `sdrfl-txgate-test` | ✅ done, 12/12 (f11a0c4) |
 | **F5** | **FIRST KEYING** via headless `sdrfl-txkey` — TUNE into a dummy load through `tx_gate` | ✅ **done, keyed live** (d3776e5) |
-| **F6** | TX into the GUI app: **a)** controls+meter · **b)** cal settings · **c)** mic/SSB · **d)** CW | 🟢 **F6a+F6b done + live-keyed; per-band cal = next** |
+| **F6** | TX into the GUI app: **a)** controls+meter · **b)** cal settings · **c)** mic/SSB · **d)** CW | 🟢 **F6a+F6b done + live-keyed; F6c-1/2 (mic capture + mode-gated wiring) done, MOX enable = F6c-3** |
 | **F7** | PureSignal (predistortion) — optional, later | — |
 
 **F6a — done, live-validated on the G1 (OK1BR, 2026-07-08/09).** The GUI app keys
@@ -315,11 +315,28 @@ no trips). What landed:
     peak 0.16). **`PW_STREAM_FLAG_AUTOCONNECT` did NOT reliably hit the default
     mic** — it landed on a silent node; pinning `PW_KEY_TARGET_OBJECT` to the
     source node fixes it. So `mic_start(rate, lat, target)` takes an explicit node.
-  - **Device + sample-rate selection required** (Richard) — enumerate PW capture
-    sources + rate into the settings dialog, persist the chosen node/rate. The
-    capture plumbing already takes both; the GUI picker lands with F6c-3.
-  - **F6c-2** wire mic→`tx_dsp_feed_mic` in the TX worker (MOX only); **F6c-3**
-    enable MOX button + mic-gain + device/rate picker; first voice into a load.
+  - **Device + sample-rate picker done** — the settings dialog enumerates PW
+    capture sources (`mic_list_sources`) and persists the chosen node
+    (`mic_device`) + shared audio rate; restart-to-apply. Note the WDSP TX input
+    is fixed at 48 kHz (`tx_dsp_in_rate()`), so the mic is *captured* at 48 kHz
+    regardless of the RX-output rate — PipeWire resamples the device for us.
+  - **F6c-2 done (offline-verified)** — live mic wired into the TX worker.
+    `tx_run.c`'s feed loop now pulls `mic_pull()` and feeds it to
+    `tx_dsp_feed_mic()` **only while MOX is keyed** (`keyed_mox`), padding any
+    underrun with silence so the 10.667 ms real-time cadence never stalls; TUNE
+    still feeds a post-gen carrier (mic muted). `mic_flush()` fires on the MOX
+    key-down edge so voice starts fresh, not on the stale idle backlog.
+    **Mic lifecycle is mode-gated** (Richard's call): the GUI opens the capture
+    at TX-runtime start / on switching *into* a voice mode (USB/LSB/AM — future
+    FM/DSB/SAM) so there's no warm-up lag, and closes it for CW/data modes (no
+    "recording" while listening). `gui.c` `mode_is_voice()`/`tx_update_mic()`.
+    The mic can only reach the exciter through `tx_gate`/MOX, and the MOX button
+    is still disabled — so this is **dormant until F6c-3**. Ring producer drops
+    on full (never blocks), so an undrained mic while MOX-off is harmless.
+    Offline: builds, all TX gates pass; live mic-opens-per-mode + first voice
+    are the F6c-3 test (needs the radio free).
+  - **F6c-3** enable the MOX button + a mic-gain control (`tx_dsp_set_mic_gain`);
+    first voice into a dummy load / matched antenna.
 - **F6d** — CW keyer, sidetone, break-in/QSK.
 
 ---

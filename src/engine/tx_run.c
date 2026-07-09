@@ -21,6 +21,7 @@
 #include "tx_gate.h"
 #include "tx_analyzer.h"
 #include "tx_run.h"
+#include "mic_pw.h"   /* live host-soundcard mic → exciter while MOX is keyed (F6c) */
 
 #define TX_IQ_RATE   192000  /* WDSP TX channel output rate (matches tx.c)     */
 #define TX_IQ_BLOCK  2048    /* IQ pairs per on_tx_iq block (512*192k/48k)     */
@@ -75,7 +76,7 @@ static void publish(const tx_run_status *st) {
 
 /* One meter+gate slot (~20 Hz). Returns the keyed decision and applies all wire
  * state (p2_set_tx_state) + DSP transitions (tone/run) on key/unkey edges. */
-static int gate_slot(int *prev_keyed, int *prev_want, const float *silence) {
+static int gate_slot(int *prev_keyed, int *prev_want, const float *silence, int *keyed_mox) {
   int want_mox  = g_atomic_int_get(&s_want_mox);
   int want_tune = g_atomic_int_get(&s_want_tune);
   int want      = want_mox || want_tune;
@@ -120,7 +121,8 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence) {
      * (IQ starts on the next feed; the radio ignores it until MOX/relay land, so
      * no RF can precede a consistent TX state.) */
     tx_dsp_set_mode(cfg.mode, TX_FLO, TX_FHI);
-    tx_dsp_tune_tone(r.state.tune ? 1 : 0, 0.0);   /* TUNE = post-gen carrier; MOX = mic (silence for now) */
+    tx_dsp_tune_tone(r.state.tune ? 1 : 0, 0.0);   /* TUNE = post-gen carrier; MOX = live mic */
+    if (r.state.mox) { mic_flush(); }              /* drop stale idle audio → start on fresh voice */
     tx_dsp_run(1);
     p2_set_tx_state(&r.state);
     fprintf(stderr, "tx: KEY %s  freq=%lld Hz  PA=%s  ANT%d  drive=%d/255\n",
@@ -160,6 +162,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence) {
   g_strlcpy(st.reason, r.reason ? r.reason : "", sizeof st.reason);
   publish(&st);
 
+  if (keyed_mox) { *keyed_mox = st.mox; }   /* feed loop pulls the mic only when MOX-keyed */
   *prev_keyed = keyed;
   *prev_want  = want;
   return keyed;
@@ -168,20 +171,29 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence) {
 static gpointer tx_thread(gpointer u) {
   (void)u;
   float silence[FEED_BLOCK];
+  float mic[FEED_BLOCK];
   memset(silence, 0, sizeof silence);
-  int prev_keyed = 0, prev_want = 0, keyed = 0;
+  int prev_keyed = 0, prev_want = 0, keyed = 0, keyed_mox = 0;
   gint64 last_gate = 0, next_feed = 0;
 
   while (g_atomic_int_get(&s_running)) {
     gint64 now = g_get_monotonic_time();
     if (now - last_gate >= GATE_US) {
       last_gate = now;
-      keyed = gate_slot(&prev_keyed, &prev_want, silence);
+      keyed = gate_slot(&prev_keyed, &prev_want, silence, &keyed_mox);
       if (keyed && next_feed == 0) { next_feed = g_get_monotonic_time(); }
       if (!keyed) { next_feed = 0; }
     }
     if (keyed) {
-      tx_dsp_feed_mic(silence, FEED_BLOCK);   /* → IQ → framer → port 1029 */
+      if (keyed_mox) {
+        /* MOX/voice: pull live mic; pad any underrun with silence so the exciter
+         * never stalls (PACE_US real-time cadence must be met every block). */
+        int got = mic_pull(mic, FEED_BLOCK);
+        for (int i = got; i < FEED_BLOCK; i++) { mic[i] = 0.0f; }
+        tx_dsp_feed_mic(mic, FEED_BLOCK);       /* → IQ → framer → port 1029 */
+      } else {
+        tx_dsp_feed_mic(silence, FEED_BLOCK);   /* TUNE: post-gen carrier, mic muted */
+      }
       next_feed += PACE_US;
       gint64 slack = next_feed - g_get_monotonic_time();
       if (slack > 0) { g_usleep((gulong)slack); }

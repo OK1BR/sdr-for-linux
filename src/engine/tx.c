@@ -104,6 +104,8 @@ void tx_dsp_set_mode(int mode, double flo, double fhi) {
   g_mutex_unlock(&t_lock);
 }
 
+int tx_dsp_in_rate(void) { return TX_IN_RATE; }
+
 void tx_dsp_set_mic_gain(double db) {
   g_mutex_lock(&t_lock);
   if (t_ready) { SetTXAPanelGain1(t_id, pow(10.0, 0.05 * db)); }

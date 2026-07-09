@@ -42,6 +42,13 @@ void tx_dsp_set_mode(int mode, double flo, double fhi);
 void tx_dsp_set_mic_gain(double db);        /* mic gain in dB (SetTXAPanelGain1) */
 
 /*
+ * The WDSP TX channel's mic input rate (Hz). The mic capture must deliver samples
+ * at exactly this rate — feed_mic → fexchange0 assumes it. Exposed so the GUI can
+ * open the PipeWire capture at the right rate without hard-coding 48000.
+ */
+int  tx_dsp_in_rate(void);
+
+/*
  * TUNE tone via the WDSP post generator (transmitter.c:2872). on=1 injects a
  * full-scale single carrier at `offset_hz` from the dial (0 = carrier at dial);
  * on=0 stops it. Used at F5 for TUNE; the tone power is set by the drive byte,

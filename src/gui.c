@@ -44,6 +44,7 @@
 #include "bandplan.h"
 #include "wisdom_gate.h"
 #include "tx_run.h"
+#include "tx.h"   /* tx_dsp_in_rate() — mic capture rate must match the WDSP TX input */
 
 #define ENGINE_PIXELS 2048
 #define ENGINE_FPS    25
@@ -183,6 +184,7 @@ typedef struct {
   char        tx_reason[64]; /* last refusal/trip reason to flash                   */
   gint64      tx_reason_until;/* monotonic µs until which to show tx_reason         */
   int         tx_keyed_shown;/* last keyed state pushed to the label (repaint gate) */
+  int         mic_open;      /* PipeWire mic capture running (voice modes only, F6c) */
   /* TX panadapter: while keyed we show the transmitted spectrum (24 kHz span,
    * full area, no waterfall) in place of the RX view — like piHPSDR non-duplex. */
   int         tx_display;    /* currently showing the TX panadapter (keyed)         */
@@ -1176,6 +1178,36 @@ static void schedule_save(App *app) {
   app->save_timer_id = g_timeout_add_seconds(1, do_save_cb, app);
 }
 
+/* Voice/phone modes need the mic; CW and data modes do not. WDSP mode ids — kept
+ * broad so future FM/DSB/SAM count as voice the moment they're wired. */
+static int mode_is_voice(int mode) {
+  switch (mode) {
+    case DEMOD_LSB: case DEMOD_USB: case DEMOD_AM:   /* + future FM/DSB/SAM */
+      return 1;
+    default:                                         /* CWL/CWU + data modes */
+      return 0;
+  }
+}
+
+/* Open/close the host-soundcard mic to match the selected mode (Richard's F6c
+ * choice): capture runs into the tx_run ring whenever a voice mode is active and
+ * the TX runtime is up, so the exciter has fresh audio the instant MOX is pressed —
+ * no warm-up lag. CW/data modes keep the mic closed (no "recording"). The capture
+ * rate must equal the WDSP TX input; PipeWire resamples the device for us. The mic
+ * only ever reaches the exciter through tx_gate/MOX — dormant until F6c-3 enables
+ * the MOX button. Idempotent; safe to call on any mode/engine transition. */
+static void tx_update_mic(App *app) {
+  int want = app->tx_ready && mode_is_voice(app->mode);
+  if (want && !app->mic_open) {
+    const char *dev = app->mic_device[0] ? app->mic_device : NULL;
+    if (mic_start(tx_dsp_in_rate(), app->latency, dev) == 0) { app->mic_open = 1; }
+    else { fprintf(stderr, "mic_start failed — SSB voice TX will be silent\n"); }
+  } else if (!want && app->mic_open) {
+    mic_stop();
+    app->mic_open = 0;
+  }
+}
+
 /* Push the operator's persisted TX settings into the runtime. Safe if TX isn't up.
  * pa_calibration follows the CURRENT band (F6b per-band table); out of band it
  * falls back to the default, but the gate refuses OOB keying anyway. Re-called on
@@ -1518,6 +1550,7 @@ static void on_mode_toggled(GtkToggleButton *b, gpointer data) {
   app->flo = lo; app->fhi = hi;
   demod_set_mode(mode, app->flo, app->fhi);
   populate_filter_dd(app);               /* refill dropdown for the new mode */
+  tx_update_mic(app);                    /* voice mode → mic ready; CW/data → mic closed */
   schedule_save(app);
 }
 
@@ -2813,6 +2846,7 @@ static void start_radio(App *app) {
   if (tx_run_start(app->freq, app->pixels, app->fps) == 0) {
     app->tx_ready = 1;
     tx_push_cfg(app);
+    tx_update_mic(app);   /* open the mic now if we start in a voice mode (no warm-up lag) */
   } else {
     fprintf(stderr, "TX runtime init failed — RX only\n");
   }
@@ -2821,6 +2855,7 @@ static void start_radio(App *app) {
   if (p2_rx_start(dev, app->freq, rate, feed_cb, NULL) != 0) {
     fprintf(stderr, "p2_rx_start failed\n");
     if (app->tx_ready) { tx_run_stop(); app->tx_ready = 0; }
+    if (app->mic_open) { mic_stop(); app->mic_open = 0; }
     if (app->audio_ok) { demod_destroy(); audio_stop(); }
     analyzer_destroy();
     return;
@@ -2879,6 +2914,7 @@ int main(int argc, char **argv) {
     if (app.save_timer_id) { g_source_remove(app.save_timer_id); app.save_timer_id = 0; }
     if (app.rate > 0) { Settings s; app_to_settings(&app, &s); settings_save(&s); }
     if (app.tx_ready) { tx_run_stop(); }   /* unkey + stop TX thread before the socket closes */
+    if (app.mic_open) { mic_stop(); app.mic_open = 0; }
     if (app.engine_ok) { p2_rx_stop(); }
     if (app.audio_ok)  { demod_destroy(); audio_stop(); }
     if (app.engine_ok) { analyzer_destroy(); }
