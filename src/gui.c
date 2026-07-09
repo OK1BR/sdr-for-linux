@@ -1691,14 +1691,8 @@ static gboolean on_key(GtkEventControllerKey *ctl, guint keyval, guint keycode,
     gtk_widget_queue_draw(app->area);
     return TRUE;
   }
-  /* CW test trigger (F6d-1b, TEMPORARY — the real CW source is TCI in F6d-2): in a
-   * CW mode, 'k' queues a short test string; the TX runtime's break-in keys it
-   * through tx_gate (so PA-off / out-of-band still produce no RF). Esc aborts. */
-  if (gdk_keyval_to_lower(keyval) == GDK_KEY_k &&
-      app->tx_ready && (app->mode == DEMOD_CWL || app->mode == DEMOD_CWU)) {
-    tx_run_cw_send("V V V TEST DE OK1BR ");
-    return TRUE;
-  }
+  /* Esc aborts any queued/running CW (the CW source is TCI, F6d-2; the F6d-1b
+   * 'k' test hotkey is gone — one stray keypress must never key the radio). */
   if (keyval == GDK_KEY_Escape && app->tx_ready) { tx_run_cw_abort(); return TRUE; }
   int mode;
   switch (gdk_keyval_to_lower(keyval)) {
