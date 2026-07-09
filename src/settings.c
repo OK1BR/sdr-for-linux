@@ -132,6 +132,14 @@ int settings_load(Settings *s) {
       s->tx_comp = g_key_file_get_integer(kf, GROUP_TX, "comp", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "comp_db", NULL))
       s->tx_comp_db = g_key_file_get_double(kf, GROUP_TX, "comp_db", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "gate", NULL))
+      s->tx_gate = g_key_file_get_integer(kf, GROUP_TX, "gate", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "gate_db", NULL))
+      s->tx_gate_db = g_key_file_get_double(kf, GROUP_TX, "gate_db", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "monitor", NULL))
+      s->tx_mon = g_key_file_get_integer(kf, GROUP_TX, "monitor", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "monitor_db", NULL))
+      s->tx_mon_db = g_key_file_get_double(kf, GROUP_TX, "monitor_db", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "pan_high", NULL))
       s->tx_pan_high = g_key_file_get_double(kf, GROUP_TX, "pan_high", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "pan_low", NULL))
@@ -215,6 +223,10 @@ int settings_save(const Settings *s) {
   g_key_file_set_double (kf, GROUP_TX,     "mic_gain",  s->mic_gain);
   g_key_file_set_integer(kf, GROUP_TX,     "comp",      s->tx_comp);
   g_key_file_set_double (kf, GROUP_TX,     "comp_db",   s->tx_comp_db);
+  g_key_file_set_integer(kf, GROUP_TX,     "gate",      s->tx_gate);
+  g_key_file_set_double (kf, GROUP_TX,     "gate_db",   s->tx_gate_db);
+  g_key_file_set_integer(kf, GROUP_TX,     "monitor",   s->tx_mon);
+  g_key_file_set_double (kf, GROUP_TX,     "monitor_db", s->tx_mon_db);
   g_key_file_set_double (kf, GROUP_TX,     "pan_high",  s->tx_pan_high);
   g_key_file_set_double (kf, GROUP_TX,     "pan_low",   s->tx_pan_low);
   g_key_file_set_string (kf, GROUP_TX,     "pa_cal",    s->pa_cal);

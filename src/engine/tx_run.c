@@ -12,6 +12,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include <glib.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -23,7 +24,9 @@
 #include "tx_run.h"
 #include "mic_pw.h"   /* live host-soundcard mic → exciter while MOX is keyed (F6c) */
 #include "cw_gen.h"   /* CW Morse envelope → keyed carrier (F6d)                    */
-#include "demod.h"    /* DEMOD_* mode ids (match WDSP TXA_*)                        */
+#include "demod.h"    /* DEMOD_* mode ids + demod_monitor_push (TX monitor)         */
+
+#define CW_SIDETONE_HZ 700.0   /* monitor sidetone pitch (F6d-1c will make it a setting) */
 
 #define TX_MODE_IS_CW(m) ((m) == DEMOD_CWL || (m) == DEMOD_CWU)
 #define CW_IQ_AMP        0.896   /* DC-signal gain comp for the radio's DUC CFIR (piHPSDR) */
@@ -74,6 +77,7 @@ static volatile int      s_want_mox;       /* g_atomic */
 static volatile int      s_want_tune;      /* g_atomic */
 static volatile int      s_want_cw;        /* g_atomic: CW break-in wants key (feed thread) */
 static volatile int      s_mode;           /* g_atomic: current WDSP/demod mode           */
+static volatile int      s_monitor;        /* g_atomic: TX monitor (self-listen) on/off   */
 
 static cw_gen           *s_cw;             /* CW envelope generator (192k), under s_cw_lock */
 static GMutex            s_cw_lock;
@@ -269,12 +273,28 @@ static gpointer tx_thread(gpointer u) {
           cwiq[2 * i + 1] = 0.0;
         }
         on_tx_iq(cwiq, TX_IQ_BLOCK, NULL);
+        if (g_atomic_int_get(&s_monitor)) {
+          /* Sidetone: the SAME envelope that keys the RF, on a local tone. */
+          static double ph;
+          float st[TX_IQ_BLOCK];
+          for (int i = 0; i < TX_IQ_BLOCK; i++) {
+            st[i] = cwenv[i] * (float)sin(ph);
+            ph += 2.0 * G_PI * CW_SIDETONE_HZ / (double)TX_IQ_RATE;
+            if (ph > 2.0 * G_PI) { ph -= 2.0 * G_PI; }
+          }
+          demod_monitor_push(st, TX_IQ_BLOCK, TX_IQ_RATE);
+        }
       } else if (keyed_mox) {
         /* MOX/voice: pull live mic; pad any underrun with silence so the exciter
          * never stalls (PACE_US real-time cadence must be met every block). */
         int got = mic_pull(mic, FEED_BLOCK);
         for (int i = got; i < FEED_BLOCK; i++) { mic[i] = 0.0f; }
         tx_dsp_feed_mic(mic, FEED_BLOCK);       /* → IQ → framer → port 1029 */
+        if (g_atomic_int_get(&s_monitor)) {
+          /* Voice monitor: the raw mic block, like piHPSDR's audiomonitor
+           * (transmitter.c:1953 plays mic_sample × capped volume). */
+          demod_monitor_push(mic, FEED_BLOCK, tx_dsp_in_rate());
+        }
       } else {
         tx_dsp_feed_mic(silence, FEED_BLOCK);   /* TUNE: post-gen carrier, mic muted */
       }
@@ -406,6 +426,10 @@ void tx_run_set_freq(long long tx_freq_hz) {
 void tx_run_set_mic_gain(double db) { tx_dsp_set_mic_gain(db); }   /* tx_dsp locks internally */
 
 void tx_run_set_comp(int on, double gain_db) { tx_dsp_set_compressor(on, gain_db); }
+
+void tx_run_set_gate(int on, double thresh_db) { tx_dsp_set_gate(on, thresh_db); }
+
+void tx_run_set_monitor(int on) { g_atomic_int_set(&s_monitor, on ? 1 : 0); }
 
 void tx_run_set_span(double span_hz) { tx_analyzer_set_span(span_hz); }   /* TX zoom (analyzer locks) */
 

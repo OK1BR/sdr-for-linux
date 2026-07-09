@@ -51,6 +51,14 @@ void tx_dsp_set_mic_gain(double db);        /* mic gain in dB (SetTXAPanelGain1)
 void tx_dsp_set_compressor(int on, double gain_db);
 
 /*
+ * Mic noise gate (downward expander) — WDSP TXA AMSQ, positioned after the mic
+ * gain and BEFORE the leveler/COMP, so PROC has nothing to pump up in speech
+ * gaps. thresh_db is on the post-mic-gain signal (dBFS); below it the mic drops
+ * 20 dB (piHPSDR DEXP expansion default), it is not a hard mute.
+ */
+void tx_dsp_set_gate(int on, double thresh_db);
+
+/*
  * The WDSP TX channel's mic input rate (Hz). The mic capture must deliver samples
  * at exactly this rate — feed_mic → fexchange0 assumes it. Exposed so the GUI can
  * open the PipeWire capture at the right rate without hard-coding 48000.

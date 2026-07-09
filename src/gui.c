@@ -185,6 +185,10 @@ typedef struct {
   double      tx_mic_gain;   /* TX mic gain, dB — SSB voice (persisted)             */
   int         tx_comp;       /* speech processor (PROC) on/off (persisted)          */
   double      tx_comp_db;    /* PROC compression dB, 0-20 (persisted)               */
+  int         tx_gate;       /* mic noise gate (DEXP) on/off (persisted)            */
+  double      tx_gate_db;    /* gate threshold dBFS post-mic-gain (persisted)       */
+  int         tx_mon;        /* TX monitor (self-listen) on/off (persisted)         */
+  double      tx_mon_db;     /* monitor level dB (persisted)                        */
   double      band_pacal[NBANDS]; /* per-band PA calibration, dB (F6b, persisted)   */
   double      pa_trim[11];   /* wattmeter correction curve, 11 pts W (F6b, persist) */
   GtkWidget  *pacal_spin[NBANDS]; /* per-band PA-cal spin buttons in Preferences    */
@@ -657,6 +661,12 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
 #define MIC_GAIN_MAX  50.0
 #define COMP_DB_MIN   0.0      /* PROC compression range, dB (0 = auto-leveler only) */
 #define COMP_DB_MAX   20.0
+#define GATE_DB_MIN  (-60.0)   /* mic noise-gate threshold range, dBFS (post-gain) */
+#define GATE_DB_MAX  (-10.0)
+#define GATE_DB_DFLT (-35.0)
+#define MON_DB_MIN   (-40.0)   /* TX monitor level range, dB */
+#define MON_DB_MAX     0.0
+#define MON_DB_DFLT  (-15.0)
 
 /* TX display span (Hz): the RX span (rate/zoom), capped at what the TX IQ holds. */
 static double tx_span_hz(App *app) {
@@ -1215,6 +1225,10 @@ static void app_to_settings(const App *app, Settings *s) {
   s->mic_gain = app->tx_mic_gain;
   s->tx_comp    = app->tx_comp;
   s->tx_comp_db = app->tx_comp_db;
+  s->tx_gate    = app->tx_gate;
+  s->tx_gate_db = app->tx_gate_db;
+  s->tx_mon     = app->tx_mon;
+  s->tx_mon_db  = app->tx_mon_db;
   s->tx_pan_high = app->tx_pan_high;
   s->tx_pan_low  = app->tx_pan_low;
   /* per-mode filter memory → "modeid=idx;..." */
@@ -2461,6 +2475,33 @@ static void on_pref_tx_swr(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   app->tx_swr_alarm = adw_spin_row_get_value(r);
   tx_push_cfg(app); schedule_save(app);
 }
+/* Mic noise gate (DEXP) — tames the PROC leveler pumping room noise up in the
+ * gaps between words. Threshold is on the post-mic-gain signal. Applies live. */
+static void on_pref_tx_gate(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->tx_gate = adw_switch_row_get_active(r) ? 1 : 0;
+  tx_run_set_gate(app->tx_gate, app->tx_gate_db);
+  schedule_save(app);
+}
+static void on_pref_tx_gate_db(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  app->tx_gate_db = gtk_range_get_value(r);
+  tx_run_set_gate(app->tx_gate, app->tx_gate_db);
+  schedule_save(app);
+}
+/* TX monitor (self-listen): voice mic / CW sidetone into the host audio. */
+static void on_pref_tx_mon(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->tx_mon = adw_switch_row_get_active(r) ? 1 : 0;
+  tx_run_set_monitor(app->tx_mon);
+  schedule_save(app);
+}
+static void on_pref_tx_mon_db(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  app->tx_mon_db = gtk_range_get_value(r);
+  demod_set_monitor_gain(app->tx_mon_db);
+  schedule_save(app);
+}
 /* Per-band PA calibration (F6b): band index carried on the row. Clamped to the
  * safe [38.8,70.0] range; re-pushed so the current band's drive byte updates. */
 static void on_pref_pacal(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
@@ -2626,6 +2667,18 @@ static AdwDialog *build_prefs(App *app) {
       app->tx_pa_enabled, G_CALLBACK(on_pref_tx_pa), app));
   adw_preferences_group_add(g, pref_spin("SWR alarm", "Trip: drop MOX + refuse re-key",
       2, 5, app->tx_swr_alarm, G_CALLBACK(on_pref_tx_swr), app));
+  adw_preferences_group_add(g, pref_switch("Mic noise gate",
+      "Mutes room noise between words (−20 dB) — pair with PROC · live",
+      app->tx_gate, G_CALLBACK(on_pref_tx_gate), app));
+  adw_preferences_group_add(g, pref_slider("Gate threshold",
+      "dBFS after Mic gain; open above, −20 dB below · live",
+      GATE_DB_MIN, GATE_DB_MAX, app->tx_gate_db, G_CALLBACK(on_pref_tx_gate_db), app));
+  adw_preferences_group_add(g, pref_switch("TX monitor",
+      "Hear your own transmission (voice mic / CW sidetone) · live",
+      app->tx_mon, G_CALLBACK(on_pref_tx_mon), app));
+  adw_preferences_group_add(g, pref_slider("Monitor level",
+      "dB into the RX audio output · live",
+      MON_DB_MIN, MON_DB_MAX, app->tx_mon_db, G_CALLBACK(on_pref_tx_mon_db), app));
   /* F6b — per-band PA calibration table (like piHPSDR's PA-calibration menu). The
    * 38.8 dB floor is the safety limit; 53 dB is the validated G1 default. */
   GtkWidget *pacal_exp = g_object_new(ADW_TYPE_EXPANDER_ROW, "title", "PA calibration (per band)",
@@ -2890,7 +2943,8 @@ static void start_radio(App *app) {
                   .filter_wf = 1, .filter_op = 60, .avg_spec = -1, .avg_wf = -1,
                   .palette = 0, .band_edges = 1,
                   .tx_pa = 0, .tx_ant = 0, .tx_drive = 25.0, .tx_tune = 10.0, .tx_swr = 3.0,
-                  .mic_gain = 0.0, .audio_rate = 48000 };
+                  .mic_gain = 0.0, .audio_rate = 48000,
+                  .tx_gate_db = GATE_DB_DFLT, .tx_mon_db = MON_DB_DFLT };
   g_strlcpy(st.ip, "192.168.1.247", sizeof(st.ip));
   g_strlcpy(st.region,  "R1", sizeof(st.region));   /* IARU R1 default; country = none */
   g_strlcpy(st.country, "",   sizeof(st.country));
@@ -2932,6 +2986,10 @@ static void start_radio(App *app) {
   app->tx_mic_gain   = st.mic_gain < MIC_GAIN_MIN ? MIC_GAIN_MIN : (st.mic_gain > MIC_GAIN_MAX ? MIC_GAIN_MAX : st.mic_gain);
   app->tx_comp       = st.tx_comp ? 1 : 0;
   app->tx_comp_db    = st.tx_comp_db < COMP_DB_MIN ? COMP_DB_MIN : (st.tx_comp_db > COMP_DB_MAX ? COMP_DB_MAX : st.tx_comp_db);
+  app->tx_gate       = st.tx_gate ? 1 : 0;
+  app->tx_gate_db    = st.tx_gate_db < GATE_DB_MIN ? GATE_DB_MIN : (st.tx_gate_db > GATE_DB_MAX ? GATE_DB_MAX : st.tx_gate_db);
+  app->tx_mon        = st.tx_mon ? 1 : 0;
+  app->tx_mon_db     = st.tx_mon_db < MON_DB_MIN ? MON_DB_MIN : (st.tx_mon_db > MON_DB_MAX ? MON_DB_MAX : st.tx_mon_db);
   app->fps    = st.fps;
   app->latency = st.latency;
   app->audio_rate = st.audio_rate >= 48000 ? st.audio_rate : 48000;
@@ -3146,6 +3204,9 @@ static void start_radio(App *app) {
     tx_push_cfg(app);
     tx_run_set_mic_gain(app->tx_mic_gain);   /* persisted SSB mic gain into the TX panel */
     tx_run_set_comp(app->tx_comp, app->tx_comp_db);   /* persisted PROC (COMP + leveler) */
+    tx_run_set_gate(app->tx_gate, app->tx_gate_db);   /* persisted mic noise gate (DEXP) */
+    tx_run_set_monitor(app->tx_mon);                  /* persisted TX monitor (self-listen) */
+    demod_set_monitor_gain(app->tx_mon_db);
     tx_run_set_span(tx_span_hz(app));  /* TX span ← saved zoom, matching the RX axis */
     /* CW speed (F6d): env override for testing until the F6d-1c WPM control lands. */
     { const char *w = getenv("SDRFL_CW_WPM"); int wpm = w ? atoi(w) : 20;

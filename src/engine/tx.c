@@ -124,6 +124,21 @@ void tx_dsp_set_mic_gain(double db) {
   g_mutex_unlock(&t_lock);
 }
 
+void tx_dsp_set_gate(int on, double thresh_db) {
+  g_mutex_lock(&t_lock);
+  if (t_ready) {
+    /* WDSP TXA AMSQ = downward expander, sits after the panel (mic gain) and
+     * BEFORE the leveler/COMP — so in speech gaps there is nothing for PROC to
+     * pump up. Depth -20 dB mirrors piHPSDR's DEXP expansion default
+     * (transmitter.c:1141 dexp_exp=20); threshold is on the post-mic-gain
+     * signal. Not a hard mute: gaps drop 20 dB, keying stays natural. */
+    SetTXAAMSQMutedGain(t_id, -20.0);
+    SetTXAAMSQThreshold(t_id, thresh_db);
+    SetTXAAMSQRun(t_id, on ? 1 : 0);
+  }
+  g_mutex_unlock(&t_lock);
+}
+
 void tx_dsp_set_compressor(int on, double gain_db) {
   g_mutex_lock(&t_lock);
   if (t_ready) {

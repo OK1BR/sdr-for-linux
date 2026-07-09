@@ -88,6 +88,14 @@ void tx_run_set_mic_gain(double db);
  * tx_set_compressor semantics (see tx_dsp_set_compressor). Safe if TX isn't up. */
 void tx_run_set_comp(int on, double gain_db);
 
+/* Mic noise gate (downward expander; see tx_dsp_set_gate). Safe if TX isn't up. */
+void tx_run_set_gate(int on, double thresh_db);
+
+/* TX monitor (self-listen): while keyed, feed the mic (voice) or a sidetone
+ * shaped by the CW envelope into the host audio via demod_monitor_push. Level
+ * is set separately (demod_set_monitor_gain). Safe if TX isn't up. */
+void tx_run_set_monitor(int on);
+
 /* TX panadapter zoom: set the displayed span (Hz). Safe if TX isn't up. */
 void tx_run_set_span(double span_hz);
 

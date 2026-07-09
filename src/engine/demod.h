@@ -66,6 +66,15 @@ void demod_set_volume(double db);
  * while transmitting. Thread-safe; the WDSP demod keeps running underneath. */
 void demod_set_mute(int on);
 
+/*
+ * TX monitor (hear your own transmission): push mono audio at src_rate from the
+ * TX feed thread; it is rate-converted, mixed into the sink AFTER the RX mute
+ * gain and clamped. Lock-free SPSC ring; drop-on-full; no-op before demod_create.
+ * demod_set_monitor_gain sets the monitor level in dB (≤ 0).
+ */
+void demod_monitor_push(const float *mono, int n, int src_rate);
+void demod_set_monitor_gain(double db);
+
 /* Set the filter passband [flo,fhi] Hz live (same mode); thread-safe. */
 void demod_set_passband(double flo, double fhi);
 

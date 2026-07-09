@@ -9,6 +9,7 @@
  */
 #include <glib.h>
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -47,6 +48,18 @@ static double   d_mute_gain = 1.0; /* applied output gain, ramped → target (fe
 #define D_FADE_STEP (1.0 / 960.0)  /* ~20 ms mute/unmute fade at 48 kHz (no click) */
 static int      d_dbg_blocks;      /* fexchange0 calls since last dump       */
 static double   d_dbg_pk;          /* raw WDSP-out peak since last dump      */
+
+/* TX monitor (hear your own transmission): mono ring at the sink rate, SPSC —
+ * producer = the TX feed thread (demod_monitor_push: mic while voice-keyed /
+ * CW sidetone), consumer = the RX feed loop below, which mixes it into d_out
+ * AFTER the RX-on-TX mute gain (RX is muted while keyed; the monitor is not).
+ * RX IQ keeps flowing during TX, so the ring drains continuously. */
+#define MON_FRAMES 16384u
+#define MON_MASK   (MON_FRAMES - 1u)
+static float           mon_ring[MON_FRAMES];
+static _Atomic unsigned mon_head;   /* producer (TX feed thread) frame index */
+static _Atomic unsigned mon_tail;   /* consumer (RX feed thread) frame index */
+static volatile double  mon_gain = 0.18;   /* linear; demod_set_monitor_gain */
 
 /* Apply the AGC character (d_agc_mode) + threshold (d_agc_top). Mirrors piHPSDR
  * rx_set_agc: WDSP mode 5 = AGC on, 0 = off; long/slow/med/fast differ only in
@@ -185,8 +198,22 @@ void demod_feed(const double *iq, int n_pairs) {
           if (sr < -1.0) { sr = -1.0; }
           if      (d_mute_gain < mgoal) { d_mute_gain += D_FADE_STEP; if (d_mute_gain > mgoal) { d_mute_gain = mgoal; } }
           else if (d_mute_gain > mgoal) { d_mute_gain -= D_FADE_STEP; if (d_mute_gain < mgoal) { d_mute_gain = mgoal; } }
-          d_out[k * 2]     = (float)(sl * d_mute_gain);   /* interleaved L/R */
-          d_out[k * 2 + 1] = (float)(sr * d_mute_gain);
+          /* TX monitor: pop one ring frame (0 on underrun) and add it after the
+           * mute gain, then clamp — the operator hears himself, never the RX. */
+          double mon = 0.0;
+          {
+            unsigned mh = atomic_load_explicit(&mon_head, memory_order_acquire);
+            unsigned mt = atomic_load_explicit(&mon_tail, memory_order_relaxed);
+            if (mt != mh) {
+              mon = (double)mon_ring[mt & MON_MASK] * mon_gain;
+              atomic_store_explicit(&mon_tail, mt + 1, memory_order_release);
+            }
+          }
+          double ol = sl * d_mute_gain + mon, or_ = sr * d_mute_gain + mon;
+          if (ol >  1.0) { ol =  1.0; }  if (ol < -1.0) { ol = -1.0; }
+          if (or_ >  1.0) { or_ =  1.0; }  if (or_ < -1.0) { or_ = -1.0; }
+          d_out[k * 2]     = (float)ol;   /* interleaved L/R */
+          d_out[k * 2 + 1] = (float)or_;
           a = sl < 0 ? -sl : sl;
           if (a > d_peak) { d_peak = a; }
         }
@@ -301,6 +328,42 @@ void demod_set_passband(double flo, double fhi) {
   g_mutex_lock(&d_lock);
   if (d_ready) { RXASetPassband(d_id, flo, fhi); }
   g_mutex_unlock(&d_lock);
+}
+
+/* --- TX monitor producer side (called from the TX feed thread) ------------- */
+
+/* Push mono monitor audio at src_rate; converted to the sink rate here with
+ * integer ZOH up / decimation down (rates are {48,96,192} k → always integer).
+ * Lock-free: ring only, drop-on-full. Safe no-op until demod_create ran. */
+void demod_monitor_push(const float *mono, int n, int src_rate) {
+  int out_rate = d_arate;
+  if (!d_ready || !mono || n <= 0 || src_rate <= 0 || out_rate <= 0) { return; }
+  unsigned h = atomic_load_explicit(&mon_head, memory_order_relaxed);
+  unsigned t = atomic_load_explicit(&mon_tail, memory_order_acquire);
+  unsigned space = MON_FRAMES - (h - t);
+  if (src_rate >= out_rate) {
+    int step = src_rate / out_rate;               /* decimate (e.g. 192k → 48k) */
+    for (int i = 0; i < n; i += step) {
+      if (space == 0) { break; }
+      mon_ring[h & MON_MASK] = mono[i];
+      h++; space--;
+    }
+  } else {
+    int rep = out_rate / src_rate;                /* ZOH upsample (48k → 192k) */
+    for (int i = 0; i < n; i++) {
+      for (int r = 0; r < rep; r++) {
+        if (space == 0) { break; }
+        mon_ring[h & MON_MASK] = mono[i];
+        h++; space--;
+      }
+    }
+  }
+  atomic_store_explicit(&mon_head, h, memory_order_release);
+}
+
+/* Monitor level in dB (≤ 0 sensible; piHPSDR caps its monitor at 0.25 ≈ −12 dB). */
+void demod_set_monitor_gain(double db) {
+  mon_gain = pow(10.0, 0.05 * db);
 }
 
 void demod_destroy(void) {
