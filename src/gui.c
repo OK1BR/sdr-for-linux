@@ -1021,10 +1021,14 @@ static void tx_pan_autofit(App *app);   /* fwd: one-shot TX dB-window fit (below
 /* TX path: pull one TX-analyzer frame (spectrum of what we transmit) and fold it
  * into the TX trace EMA. Draws the TX panadapter over the full area (no RX, no
  * waterfall) while keyed — piHPSDR non-duplex behaviour. */
+#define TX_TRACE_CW_MS 12   /* CW TX trace: fast so it tracks keying (SSB keeps the RX avg) */
 static void tick_tx(App *app, GtkWidget *widget) {
   int n = app->pixels;
   if (tx_run_get_pixels(app->tx_raw, n)) {
-    float fs = ema_factor_ms(app->avg_spec_ms, app->fps);
+    /* INTERIM: CW needs a fast trace, SSB a smooth one — mode-split for now; a
+     * proper tunable per-mode TX averaging is on the TODO list. */
+    int cw = (app->mode == DEMOD_CWL || app->mode == DEMOD_CWU);
+    float fs = ema_factor_ms(cw ? TX_TRACE_CW_MS : app->avg_spec_ms, app->fps);
     if (app->tx_ema_w != n) {
       memcpy(app->tx_ema, app->tx_raw, n * sizeof(float));
       app->tx_ema_w = n;
@@ -3100,6 +3104,10 @@ static void start_radio(App *app) {
     tx_push_cfg(app);
     tx_run_set_mic_gain(app->tx_mic_gain);   /* persisted SSB mic gain into the TX panel */
     tx_run_set_span(tx_span_hz(app));  /* TX span ← saved zoom, matching the RX axis */
+    /* CW speed (F6d): env override for testing until the F6d-1c WPM control lands. */
+    { const char *w = getenv("SDRFL_CW_WPM"); int wpm = w ? atoi(w) : 20;
+      if (wpm < 1) { wpm = 1; } if (wpm > 60) { wpm = 60; }
+      tx_run_set_cw(wpm, 50.0, 9.0, 250); }
     tx_update_mic(app);   /* open the mic now if we start in a voice mode (no warm-up lag) */
   } else {
     fprintf(stderr, "TX runtime init failed — RX only\n");

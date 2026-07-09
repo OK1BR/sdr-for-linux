@@ -74,8 +74,9 @@ int tx_analyzer_create(int pixels, int iq_rate, int bf_size, int fps) {
   tx_ana_configure((double)iq_rate);   /* default: full TX IQ; the GUI sets the zoomed span */
   SetDisplayNormOneHz(TXA_DISP, 0, 1);
   SetDisplaySampleRate(TXA_DISP, iq_rate);
-  /* Detector + light averaging, as for the RX analyzer (the GUI adds its own EMA). */
-  double t    = 0.030;
+  /* Detector + very light averaging so the TX display tracks fast CW keying (the
+   * GUI adds a short EMA on top). Small time constant = snappy on/off. */
+  double t    = 0.008;
   int    navg = (int)fmax(2.0, fmin(60.0, (double)fps * t));
   double avb  = exp(-1.0 / ((double)fps * t));
   SetDisplayDetectorMode(TXA_DISP, 0, DETECTOR_MODE_PEAK);
