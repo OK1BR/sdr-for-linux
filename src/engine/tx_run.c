@@ -23,17 +23,35 @@
 #include "tx_run.h"
 #include "mic_pw.h"   /* live host-soundcard mic → exciter while MOX is keyed (F6c) */
 #include "cw_gen.h"   /* CW Morse envelope → keyed carrier (F6d)                    */
+#include "demod.h"    /* DEMOD_* mode ids (match WDSP TXA_*)                        */
 
-#define TX_MODE_IS_CW(m) ((m) == 3 || (m) == 4)   /* DEMOD_CWL / DEMOD_CWU */
+#define TX_MODE_IS_CW(m) ((m) == DEMOD_CWL || (m) == DEMOD_CWU)
 #define CW_IQ_AMP        0.896   /* DC-signal gain comp for the radio's DUC CFIR (piHPSDR) */
 #define CW_CUTOFF_US     (20 * 1000000LL)   /* 20 s continuous-key hardware backstop */
+#define CW_PTT_DELAY_US  30000   /* key-on → first RF: MOX must land on the wire first
+                                    (piHPSDR cw_keyer_ptt_delay default, radio.c:203) */
 
 #define TX_IQ_RATE   192000  /* WDSP TX channel output rate (matches tx.c)     */
 #define TX_IQ_BLOCK  2048    /* IQ pairs per on_tx_iq block (512*192k/48k)     */
 
-#define TX_FLO        150.0    /* TX SSB passband low  (Hz) — F6a fixed; per-mode later */
-#define TX_FHI        2850.0   /* TX SSB passband high (Hz)                              */
-#define TX_MODE_DFLT  1        /* WDSP USB — channel is created here, mode set per key   */
+#define TX_FLO        150.0    /* TX audio passband low edge  (Hz)                       */
+#define TX_FHI        2850.0   /* TX audio passband high edge (Hz)                       */
+#define TX_MODE_DFLT  DEMOD_USB /* channel is created with this; mode set per key        */
+
+/* TX bandpass edges in IQ space for a WDSP mode. The SIGN of the passband is the
+ * ONLY sideband selector in the TXA chain (SetTXAMode just switches the AM/FM
+ * modulators), so LSB must get (-high,-low) — mirrors piHPSDR tx_set_filter
+ * (transmitter.c:2161 @974acba): USB (low,high), LSB (-high,-low), AM (-high,high),
+ * CW ±150 (WDSP is bypassed for CW; kept for the tidy channel state). */
+static void tx_passband(int mode, double *flo, double *fhi) {
+  switch (mode) {
+  case DEMOD_LSB: *flo = -TX_FHI; *fhi = -TX_FLO; break;
+  case DEMOD_CWL:
+  case DEMOD_CWU: *flo = -150.0;  *fhi = 150.0;   break;
+  case DEMOD_AM:  *flo = -TX_FHI; *fhi = TX_FHI;  break;   /* carrier ± high */
+  default:        *flo = TX_FLO;  *fhi = TX_FHI;  break;   /* USB + future DIGU */
+  }
+}
 #define FEED_BLOCK    512      /* mic samples per fexchange0 (matches tx.c TX_BUFSIZE)   */
 #define PACE_US       10667    /* 512 samples @ 48 kHz — real-time TX IQ pacing          */
 #define GATE_US       50000    /* gate + meter cadence (~20 Hz, like tx_update_display)  */
@@ -137,7 +155,9 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
      * (IQ starts on the next feed; the radio ignores it until MOX/relay land, so
      * no RF can precede a consistent TX state.) CW bypasses WDSP — the feed loop
      * emits the shaped carrier IQ directly; here we just assert the wire state. */
-    tx_dsp_set_mode(cfg.mode, TX_FLO, TX_FHI);
+    double flo, fhi;
+    tx_passband(cfg.mode, &flo, &fhi);
+    tx_dsp_set_mode(cfg.mode, flo, fhi);
     tx_dsp_tune_tone(r.state.tune ? 1 : 0, 0.0);   /* TUNE = post-gen carrier */
     if (r.state.mox && !cw_key) { mic_flush(); }   /* voice: start on fresh mic audio */
     tx_dsp_run(1);
@@ -234,10 +254,15 @@ static gpointer tx_thread(gpointer u) {
       if (keyed_cw) {
         /* CW: pull the shaped envelope and emit it as a keyed carrier IQ
          * (I = amp·env, Q = 0) straight to the framer — no WDSP. During the hang
-         * the generator is idle so env = 0 (carrier off, T/R still held). */
+         * the generator is idle so env = 0 (carrier off, T/R still held).
+         * PTT delay: for the first CW_PTT_DELAY_US after key-on emit zeros WITHOUT
+         * consuming the Morse queue — the MOX HP packet has just been kicked onto
+         * the wire and the FPGA/T-R relay need a beat, else the radio swallows the
+         * first dits (a dot @30 WPM is only 40 ms). */
+        int rf_hold = (now - cw_key_on) < CW_PTT_DELAY_US;
         g_mutex_lock(&s_cw_lock);
-        if (s_cw) { cw_gen_pull(s_cw, cwenv, TX_IQ_BLOCK); }
-        else      { memset(cwenv, 0, sizeof cwenv); }
+        if (s_cw && !rf_hold) { cw_gen_pull(s_cw, cwenv, TX_IQ_BLOCK); }
+        else                  { memset(cwenv, 0, sizeof cwenv); }
         g_mutex_unlock(&s_cw_lock);
         for (int i = 0; i < TX_IQ_BLOCK; i++) {
           cwiq[2 * i]     = CW_IQ_AMP * (double)cwenv[i];
@@ -300,7 +325,9 @@ int tx_run_start(long long tx_freq_hz, int pan_pixels, int fps) {
    * port-1029 emitter. Both WDSP OpenChannel/XCreateAnalyzer happen here, before
    * RX starts flowing, so they don't race the live RX channel/analyzer. */
   p2_tx_iq_framer_init(&s_framer, p2_tx_iq_socket_emit, NULL);
-  if (tx_dsp_create(TX_MODE_DFLT, TX_FLO, TX_FHI, on_tx_iq, NULL) != 0) { return -1; }
+  double flo, fhi;
+  tx_passband(TX_MODE_DFLT, &flo, &fhi);
+  if (tx_dsp_create(TX_MODE_DFLT, flo, fhi, on_tx_iq, NULL) != 0) { return -1; }
   tx_analyzer_create(pan_pixels, TX_IQ_RATE, TX_IQ_BLOCK, fps);
   tx_meter_reset();
   tx_gate_reset();
