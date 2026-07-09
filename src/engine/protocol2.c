@@ -23,6 +23,7 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <arpa/inet.h>
@@ -769,7 +770,26 @@ void p2_rx_stop(void) {
    * from the antenna while no host runs (see p2_build_high_priority). */
   send_high_priority(0);
 
+  /* CLEAN DISCONNECT (mirror piHPSDR new_protocol_menu_stop:1747-1775). Do NOT
+   * slam the socket shut right after run=0: give the FPGA ~200 ms to act on it,
+   * then drain the RX data still in flight. Otherwise the radio keeps streaming
+   * into a closed socket, gets ICMP "port unreachable", and its P2 session hangs
+   * — after which it refuses the next discovery ("no radio found") until it is
+   * power-cycled. This is what a rapid close/reopen was tripping. */
+  usleep(200000);
+  {
+    unsigned char drain[NET_BUFFER_SIZE];
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 50000 };
+    fd_set fds;
+    while (1) {
+      FD_ZERO(&fds);
+      FD_SET(data_socket, &fds);
+      if (select(data_socket + 1, &fds, NULL, NULL, &tv) <= 0) { break; }
+      if (recvfrom(data_socket, drain, sizeof drain, 0, NULL, NULL) <= 0) { break; }
+    }
+  }
+
   close(data_socket);
   data_socket = -1;
-  t_print("p2: stopped\n");
+  t_print("p2: stopped (clean: run=0, FPGA rest, drained)\n");
 }
