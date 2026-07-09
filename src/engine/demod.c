@@ -4,8 +4,10 @@
  * Mirrors piHPSDR receiver.c @ 974acba: OpenChannel (:1001) + the RXA setters
  * (:1019-1047) + fexchange0 (:1334). We hand both demodulated channels (L/R) to
  * the (always-stereo) audio sink; with binaural off the WDSP panel makes L=R so
- * it plays as mono, with binaural on L=I / R=Q for the spatial effect. WDSP
- * resamples the input IQ rate down to 48 kHz internally, so audio out is 48 kHz.
+ * it plays as mono, with binaural on L=I / R=Q for the spatial effect. The audio
+ * output rate is selectable (48-768 kHz, an integer divisor of the IQ rate); the
+ * RXA DSP itself runs at min(out, 192 kHz) and higher output rates go through
+ * the RXA output resampler — see demod_create.
  */
 #include <glib.h>
 #include <math.h>
@@ -131,6 +133,11 @@ int demod_create(int id, int in_rate, int mode, double flo, double fhi, double v
   if (scale < 1) { scale = 1; }
   d_arate = in_rate / scale;             /* snap to an exact integer divisor */
   d_output = D_BUFSIZE / scale;          /* frames/block: 32 @1536k/48k, 1024 @192k/192k */
+  /* DSP rate is capped at 192 kHz: above that the fixed-length RXA filters lose
+   * selectivity (2048 taps cover 4x less at 768 k) and CPU quadruples for zero
+   * audible gain. Higher audio-out rates (384/768 k — let the card run native)
+   * ride the RXA OUTPUT resampler instead (RXAResCheck arms it when dsp != out). */
+  int dsp_rate = d_arate > 192000 ? 192000 : d_arate;
   d_iq    = g_new0(double, 2 * D_BUFSIZE);
   d_audio = g_new0(double, 2 * d_output);
   d_out   = g_new0(float,  2 * d_output);   /* interleaved L/R for the sink */
@@ -148,7 +155,7 @@ int demod_create(int id, int in_rate, int mode, double flo, double fhi, double v
 
   g_mutex_lock(&d_lock);
   /* Channel opens already running (state=1). */
-  OpenChannel(id, D_BUFSIZE, D_DSPSIZE, in_rate, d_arate, d_arate,
+  OpenChannel(id, D_BUFSIZE, D_DSPSIZE, in_rate, dsp_rate, d_arate,
               0, 1, 0.010, 0.025, 0.0, 0.010, 1);
   /* External noise blanker (ANB) lives OUTSIDE the RXA channel: it must be
    * created explicitly (else the SetEXTANB setters and xanbEXT dereference a

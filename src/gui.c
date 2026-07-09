@@ -2439,7 +2439,7 @@ static void on_pref_ip(GtkEditable *e, gpointer data) {
 /* Audio device + sample-rate selection (restart-to-apply, like the IQ rate). The
  * RX audio rate is the sample rate (Nyquist ceiling), NOT the audio bandwidth —
  * that stays the filter's job. Capped to the IQ rate at apply time. */
-static const int AUDIO_RATES[] = {48000, 96000, 192000, 384000};
+static const int AUDIO_RATES[] = {48000, 96000, 192000, 384000, 768000};
 static void on_pref_audio_rate(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   (void)ps; App *app = (App *)data;
   guint i = adw_combo_row_get_selected(r);
@@ -2626,7 +2626,9 @@ static AdwDialog *build_prefs(App *app) {
       if (AUDIO_RATES[i] == app->audio_rate) { sel = i; }
     }
     GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "Sample rate",
-        "subtitle", "RX + TX, ≤ IQ rate · restart to apply", "model", m, "selected", sel, NULL);
+        "subtitle", "RX output, ≤ IQ rate; DSP caps at 192 kHz, above is output "
+                    "resampling (mic is fixed 48 kHz by WDSP) · restart to apply",
+        "model", m, "selected", sel, NULL);
     g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_audio_rate), app);
     adw_preferences_group_add(g, row);
   }
