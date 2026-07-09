@@ -37,22 +37,24 @@
 #define TX_IQ_RATE   192000  /* WDSP TX channel output rate (matches tx.c)     */
 #define TX_IQ_BLOCK  2048    /* IQ pairs per on_tx_iq block (512*192k/48k)     */
 
-#define TX_FLO        150.0    /* TX audio passband low edge  (Hz)                       */
-#define TX_FHI        2850.0   /* TX audio passband high edge (Hz)                       */
+#define TX_FLO        150.0    /* default TX audio passband low edge  (Hz)               */
+#define TX_FHI        2850.0   /* default TX audio passband high edge (Hz)               */
 #define TX_MODE_DFLT  DEMOD_USB /* channel is created with this; mode set per key        */
 
-/* TX bandpass edges in IQ space for a WDSP mode. The SIGN of the passband is the
- * ONLY sideband selector in the TXA chain (SetTXAMode just switches the AM/FM
+/* TX bandpass edges in IQ space for a WDSP mode, from the operator's audio edges
+ * (positive lo<hi, e.g. 150/2850 or an eSSB 50/4000). The SIGN of the passband is
+ * the ONLY sideband selector in the TXA chain (SetTXAMode just switches the AM/FM
  * modulators), so LSB must get (-high,-low) — mirrors piHPSDR tx_set_filter
  * (transmitter.c:2161 @974acba): USB (low,high), LSB (-high,-low), AM (-high,high),
  * CW ±150 (WDSP is bypassed for CW; kept for the tidy channel state). */
-static void tx_passband(int mode, double *flo, double *fhi) {
+static void tx_passband(int mode, double lo, double hi, double *flo, double *fhi) {
+  if (!(lo > 0.0) || !(hi > lo + 100.0)) { lo = TX_FLO; hi = TX_FHI; }  /* sane fallback */
   switch (mode) {
-  case DEMOD_LSB: *flo = -TX_FHI; *fhi = -TX_FLO; break;
+  case DEMOD_LSB: *flo = -hi;    *fhi = -lo;   break;
   case DEMOD_CWL:
-  case DEMOD_CWU: *flo = -150.0;  *fhi = 150.0;   break;
-  case DEMOD_AM:  *flo = -TX_FHI; *fhi = TX_FHI;  break;   /* carrier ± high */
-  default:        *flo = TX_FLO;  *fhi = TX_FHI;  break;   /* USB + future DIGU */
+  case DEMOD_CWU: *flo = -150.0; *fhi = 150.0; break;
+  case DEMOD_AM:  *flo = -hi;    *fhi = hi;    break;   /* carrier ± high */
+  default:        *flo = lo;     *fhi = hi;    break;   /* USB + future DIGU */
   }
 }
 #define FEED_BLOCK    512      /* mic samples per fexchange0 (matches tx.c TX_BUFSIZE)   */
@@ -69,6 +71,7 @@ typedef struct {
   int    allow_oob, region, mode;
   char   country_key[8];
   double pa_trim[11];
+  double tx_flo, tx_fhi;   /* TX audio passband edges (Hz, positive lo<hi) */
 } tx_cfg_i;
 
 static GThread          *s_thread;
@@ -154,13 +157,13 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   int keyed = r.keyed;
 
   int cw_key = is_cw && r.state.mox && !r.state.tune;   /* MOX-keyed in a CW mode = CW */
+  double flo, fhi;
+  tx_passband(cfg.mode, cfg.tx_flo, cfg.tx_fhi, &flo, &fhi);
   if (keyed && !*prev_keyed) {
     /* KEY ON: bring up the DSP first, then assert the gate-approved wire state.
      * (IQ starts on the next feed; the radio ignores it until MOX/relay land, so
      * no RF can precede a consistent TX state.) CW bypasses WDSP — the feed loop
      * emits the shaped carrier IQ directly; here we just assert the wire state. */
-    double flo, fhi;
-    tx_passband(cfg.mode, &flo, &fhi);
     tx_dsp_set_mode(cfg.mode, flo, fhi);
     tx_dsp_tune_tone(r.state.tune ? 1 : 0, 0.0);   /* TUNE = post-gen carrier */
     if (r.state.mox && !cw_key) { mic_flush(); }   /* voice: start on fresh mic audio */
@@ -181,6 +184,8 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     fflush(stderr);
   } else if (keyed) {
     p2_set_tx_state(&r.state);   /* refresh (frequency/antenna may have changed) */
+    tx_dsp_set_mode(cfg.mode, flo, fhi);   /* live TX-filter change while keyed —
+                                              WDSP setters no-op when unchanged */
     if (++s_log_ctr % 20 == 0) {   /* ~1 Hz while keyed */
       fprintf(stderr, "tx: fwd=%.2f W  rev=%.2f W  SWR=%.2f  (fwd_raw=%d rev_raw=%d)\n",
               tx_meter_fwd_w(), tx_meter_rev_w(), tx_meter_swr(), t.fwd_raw, t.rev_raw);
@@ -200,8 +205,8 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   st.fwd_w   = tx_meter_fwd_w();
   st.rev_w   = tx_meter_rev_w();
   st.swr     = tx_meter_swr();
-  if (keyed) { tx_dsp_get_meters(&st.mic_pk, &st.alc_gain); }   /* live WDSP TX level */
-  else       { st.mic_pk = -99.0; st.alc_gain = 0.0; }
+  if (keyed) { tx_dsp_get_meters(&st.mic_pk, &st.alc_gain, &st.lvlr_gain); }  /* live WDSP TX level */
+  else       { st.mic_pk = -99.0; st.alc_gain = 0.0; st.lvlr_gain = 0.0; }
   g_strlcpy(st.reason, r.reason ? r.reason : "", sizeof st.reason);
   publish(&st);
 
@@ -320,6 +325,8 @@ int tx_run_start(long long tx_freq_hz, int pan_pixels, int fps) {
   s_cfg.swr_protect    = 1;
   s_cfg.swr_alarm      = 3.0;
   s_cfg.mode           = TX_MODE_DFLT;
+  s_cfg.tx_flo         = TX_FLO;
+  s_cfg.tx_fhi         = TX_FHI;
   s_cfg.country_key[0] = '\0';
   for (int i = 0; i < 11; i++) { s_cfg.pa_trim[i] = i * 10.0; }  /* G1 identity curve (PA_100W: piHPSDR radio.c:1330) */
   g_mutex_unlock(&s_cfg_lock);
@@ -346,7 +353,7 @@ int tx_run_start(long long tx_freq_hz, int pan_pixels, int fps) {
    * RX starts flowing, so they don't race the live RX channel/analyzer. */
   p2_tx_iq_framer_init(&s_framer, p2_tx_iq_socket_emit, NULL);
   double flo, fhi;
-  tx_passband(TX_MODE_DFLT, &flo, &fhi);
+  tx_passband(TX_MODE_DFLT, TX_FLO, TX_FHI, &flo, &fhi);
   if (tx_dsp_create(TX_MODE_DFLT, flo, fhi, on_tx_iq, NULL) != 0) { return -1; }
   tx_analyzer_create(pan_pixels, TX_IQ_RATE, TX_IQ_BLOCK, fps);
   tx_meter_reset();
@@ -392,6 +399,8 @@ void tx_run_set_cfg(const tx_run_cfg *cfg) {
   s_cfg.allow_oob      = cfg->allow_oob;
   s_cfg.region         = cfg->region;
   s_cfg.mode           = cfg->mode;
+  s_cfg.tx_flo         = cfg->tx_flo;
+  s_cfg.tx_fhi         = cfg->tx_fhi;
   g_strlcpy(s_cfg.country_key, cfg->country_key ? cfg->country_key : "", sizeof s_cfg.country_key);
   for (int i = 0; i < 11; i++) { s_cfg.pa_trim[i] = cfg->pa_trim[i]; }
   g_mutex_unlock(&s_cfg_lock);

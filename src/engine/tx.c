@@ -106,16 +106,18 @@ void tx_dsp_set_mode(int mode, double flo, double fhi) {
 
 int tx_dsp_in_rate(void) { return TX_IN_RATE; }
 
-void tx_dsp_get_meters(double *mic_pk_db, double *alc_gain_db) {
-  double mic = -99.0, alc = 0.0;
+void tx_dsp_get_meters(double *mic_pk_db, double *alc_gain_db, double *lvlr_gain_db) {
+  double mic = -99.0, alc = 0.0, lvl = 0.0;
   g_mutex_lock(&t_lock);
   if (t_ready) {
-    mic = GetTXAMeter(t_id, TXA_MIC_PK);      /* mic-input peak, dBFS */
+    mic = GetTXAMeter(t_id, TXA_MIC_PK);      /* mic-input peak, dBFS (pre-gate) */
     alc = GetTXAMeter(t_id, TXA_ALC_GAIN);    /* ALC gain reduction, dB (≤ 0) */
+    lvl = GetTXAMeter(t_id, TXA_LVLR_GAIN);   /* leveler makeup, dB (0 with PROC off) */
   }
   g_mutex_unlock(&t_lock);
-  if (mic_pk_db)   { *mic_pk_db   = mic; }
-  if (alc_gain_db) { *alc_gain_db = alc; }
+  if (mic_pk_db)    { *mic_pk_db    = mic; }
+  if (alc_gain_db)  { *alc_gain_db  = alc; }
+  if (lvlr_gain_db) { *lvlr_gain_db = lvl; }
 }
 
 void tx_dsp_set_mic_gain(double db) {

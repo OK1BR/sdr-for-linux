@@ -68,6 +68,8 @@ typedef struct {
   double    tx_gate_db; /* gate threshold (dBFS, post-mic-gain; -60..-10)         */
   int       tx_mon;     /* TX monitor (self-listen: voice mic / CW sidetone)      */
   double    tx_mon_db;  /* monitor level (dB, -40..0)                             */
+  double    tx_flo;     /* TX audio filter low edge (Hz; default 150)             */
+  double    tx_fhi;     /* TX audio filter high edge (Hz; default 2850, eSSB up)  */
   double    tx_pan_high, tx_pan_low; /* TX panadapter dB window (0/0 = autofit)   */
   char      pa_cal[256];  /* per-band PA calibration (dB), "6m=53.0;20m=53.0;.." */
   char      pa_trim[256]; /* wattmeter correction curve, 11 pts "p0;p1;..;p10"   */

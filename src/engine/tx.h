@@ -67,11 +67,13 @@ int  tx_dsp_in_rate(void);
 
 /*
  * Live WDSP TX level meters, in dB (GetTXAMeter, like piHPSDR): `mic_pk_db` is the
- * mic-input peak in dBFS (≤ 0; -99 floor), `alc_gain_db` the ALC gain reduction in
- * dB (0 = none, negative = clamping). Only meaningful while the channel runs; both
- * fall to the floor (-99 / 0) when not ready. NULL args are skipped.
+ * mic-input peak in dBFS (≤ 0; -99 floor; measured before the noise gate),
+ * `alc_gain_db` the ALC gain reduction in dB (0 = none, negative = clamping),
+ * `lvlr_gain_db` the leveler makeup gain in dB (0..+8; only moves with PROC on).
+ * Only meaningful while the channel runs; all fall to the floor (-99 / 0 / 0)
+ * when not ready. NULL args are skipped.
  */
-void tx_dsp_get_meters(double *mic_pk_db, double *alc_gain_db);
+void tx_dsp_get_meters(double *mic_pk_db, double *alc_gain_db, double *lvlr_gain_db);
 
 /*
  * TUNE tone via the WDSP post generator (transmitter.c:2872). on=1 injects a

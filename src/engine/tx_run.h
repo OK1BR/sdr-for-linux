@@ -41,6 +41,8 @@ typedef struct {
   const char *country_key;     /* "" / "CZ" / "US" (copied internally)             */
   int         mode;            /* WDSP/demod mode for the TX channel               */
   double      pa_trim[11];     /* wattmeter correction curve, W (F6b; identity dflt)*/
+  double      tx_flo, tx_fhi;  /* TX audio passband edges, Hz (0/0 = 150/2850);
+                                  sideband sign is applied per mode internally     */
 } tx_run_cfg;
 
 /* Live status for the meter / UI (thread-safe snapshot). */
@@ -55,6 +57,7 @@ typedef struct {
   double fwd_w, rev_w, swr;
   double mic_pk;    /* mic-input peak, dBFS (≤ 0; -99 floor); valid while keyed */
   double alc_gain;  /* ALC gain reduction, dB (0 = none, negative = clamping)   */
+  double lvlr_gain; /* leveler makeup gain, dB (0..+8; valid only with PROC on) */
   char   reason[64];/* "" or why refused/tripped (for the UI/log)          */
 } tx_run_status;
 

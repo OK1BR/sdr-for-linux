@@ -189,6 +189,8 @@ typedef struct {
   double      tx_gate_db;    /* gate threshold dBFS post-mic-gain (persisted)       */
   int         tx_mon;        /* TX monitor (self-listen) on/off (persisted)         */
   double      tx_mon_db;     /* monitor level dB (persisted)                        */
+  double      tx_flo;        /* TX audio filter low edge, Hz (persisted)            */
+  double      tx_fhi;        /* TX audio filter high edge, Hz (persisted; eSSB up)  */
   double      band_pacal[NBANDS]; /* per-band PA calibration, dB (F6b, persisted)   */
   double      pa_trim[11];   /* wattmeter correction curve, 11 pts W (F6b, persist) */
   GtkWidget  *pacal_spin[NBANDS]; /* per-band PA-cal spin buttons in Preferences    */
@@ -597,7 +599,8 @@ static void draw_s_meter(cairo_t *cr, App *app, int w) {
  * needs mic peaks at the top of this bar with the ALC just starting to work. */
 static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_status *ts) {
   const double MIC_MIN = -40.0, MIC_MAX = 0.0, MIC_TGT = -6.0, ALC_FS = 20.0;
-  const double h_mic = 14.0, gap = 3.0, h_alc = 7.0;   /* 14+3+7 = METER_BH */
+  const double LVL_FS = 8.0;   /* leveler makeup full scale (WDSP top = 8 dB) */
+  const double h_mic = 14.0, gap = 3.0, h_lvl = 7.0, h_alc = 7.0;
   double bw = METER_BW, bx = w - bw - METER_RM, by = METER_BY;
 
   /* Mic input peak (dBFS): palette gradient fill, exactly like draw_s_meter, so the
@@ -628,8 +631,34 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
   cairo_set_source_rgba(cr, 0.55, 0.95, 0.55, 0.75);          /* target-zone edge (-6 dB) */
   cairo_rectangle(cr, zx, by, 1.0, h_mic); cairo_fill(cr);
 
+  /* Noise-gate overlay on the Mic bar: a blue threshold tick, and when the gate
+   * is CLOSED (mic below threshold → mic dropped 20 dB) a blue shade over the
+   * sub-threshold region — the operator sees exactly when/where the gate bites. */
+  int gate_closed = 0;
+  if (app->tx_gate) {
+    double gx = bx + (app->tx_gate_db - MIC_MIN) / (MIC_MAX - MIC_MIN) * bw;
+    if (gx < bx) { gx = bx; } else if (gx > bx + bw) { gx = bx + bw; }
+    gate_closed = ts->mic_pk < app->tx_gate_db;
+    if (gate_closed) {
+      cairo_set_source_rgba(cr, 0.30, 0.55, 1.0, 0.30);
+      cairo_rectangle(cr, bx, by, gx - bx, h_mic); cairo_fill(cr);
+    }
+    cairo_set_source_rgba(cr, 0.35, 0.65, 1.0, 0.95);   /* gate threshold tick */
+    cairo_rectangle(cr, gx, by, 1.5, h_mic); cairo_fill(cr);
+  }
+
+  /* Leveler makeup gain (dB, green) — what PROC is ADDING right now (0..+8).
+   * Riding high in speech gaps = the noise pump the gate is there to stop. */
+  double ly = by + h_mic + gap;
+  double lvl = ts->lvlr_gain;
+  if (lvl < 0.0) { lvl = 0.0; } else if (lvl > LVL_FS) { lvl = LVL_FS; }
+  cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.5);
+  cairo_rectangle(cr, bx, ly, bw, h_lvl); cairo_fill(cr);
+  cairo_set_source_rgba(cr, 0.45, 0.85, 0.45, 0.9);
+  cairo_rectangle(cr, bx, ly, lvl / LVL_FS * bw, h_lvl); cairo_fill(cr);
+
   /* ALC gain reduction (dB, amber). alc_gain is ≤ 0; show its magnitude. */
-  double ay = by + h_mic + gap;
+  double ay = ly + h_lvl + gap;
   double alc = -ts->alc_gain;
   if (alc < 0.0) { alc = 0.0; } else if (alc > ALC_FS) { alc = ALC_FS; }
   cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.5);
@@ -642,10 +671,16 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
   cairo_set_source_rgba(cr, 0.72, 0.80, 0.92, 0.8);
   cairo_set_font_size(cr, 11.0);
   cairo_move_to(cr, bx - 32, by + h_mic - 3); cairo_show_text(cr, "Mic");
+  cairo_move_to(cr, bx - 32, ly + h_lvl);     cairo_show_text(cr, "Lev");
   cairo_move_to(cr, bx - 32, ay + h_alc);     cairo_show_text(cr, "ALC");
-  char lbl[48];
-  if (ts->mic_pk <= MIC_MIN) { snprintf(lbl, sizeof lbl, "Mic  --      ALC %.0f dB", ts->alc_gain); }
-  else { snprintf(lbl, sizeof lbl, "Mic %+.0f dBFS   ALC %.0f dB", ts->mic_pk, ts->alc_gain); }
+  char lbl[64];
+  if (ts->mic_pk <= MIC_MIN) {
+    snprintf(lbl, sizeof lbl, "Mic  --   Lev +%.0f   ALC %.0f dB%s",
+             ts->lvlr_gain, ts->alc_gain, gate_closed ? "  · GATE" : "");
+  } else {
+    snprintf(lbl, sizeof lbl, "Mic %+.0f   Lev +%.0f   ALC %.0f dB%s",
+             ts->mic_pk, ts->lvlr_gain, ts->alc_gain, gate_closed ? "  · GATE" : "");
+  }
   cairo_set_font_size(cr, 15.0);
   cairo_text_extents_t ex; cairo_text_extents(cr, lbl, &ex);
   cairo_set_source_rgba(cr, 0.95, 0.86, 0.62, 0.92);
@@ -667,6 +702,12 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
 #define MON_DB_MIN   (-40.0)   /* TX monitor level range, dB */
 #define MON_DB_MAX     0.0
 #define MON_DB_DFLT  (-15.0)
+#define TXF_LO_MIN    20.0     /* TX audio filter edges, Hz (150/2850 default;   */
+#define TXF_LO_MAX   500.0     /* high edge up to 6 kHz covers eSSB widths)      */
+#define TXF_HI_MIN  1500.0
+#define TXF_HI_MAX  6000.0
+#define TXF_LO_DFLT  150.0
+#define TXF_HI_DFLT 2850.0
 
 /* TX display span (Hz): the RX span (rate/zoom), capped at what the TX IQ holds. */
 static double tx_span_hz(App *app) {
@@ -1229,6 +1270,8 @@ static void app_to_settings(const App *app, Settings *s) {
   s->tx_gate_db = app->tx_gate_db;
   s->tx_mon     = app->tx_mon;
   s->tx_mon_db  = app->tx_mon_db;
+  s->tx_flo     = app->tx_flo;
+  s->tx_fhi     = app->tx_fhi;
   s->tx_pan_high = app->tx_pan_high;
   s->tx_pan_low  = app->tx_pan_low;
   /* per-mode filter memory → "modeid=idx;..." */
@@ -1371,6 +1414,8 @@ static void tx_push_cfg(App *app) {
   c.region         = app->bp_region;
   c.country_key    = bp_country_key(app->bp_country);
   c.mode           = app->mode;
+  c.tx_flo         = app->tx_flo;
+  c.tx_fhi         = app->tx_fhi;
   for (int i = 0; i < 11; i++) { c.pa_trim[i] = app->pa_trim[i]; }
   tx_run_set_cfg(&c);
 }
@@ -2502,6 +2547,18 @@ static void on_pref_tx_mon_db(GtkRange *r, gpointer data) {
   demod_set_monitor_gain(app->tx_mon_db);
   schedule_save(app);
 }
+/* TX audio filter edges (Hz). Pushed via tx_push_cfg; applies live even while
+ * keyed (gate_slot re-asserts the passband each slot, WDSP no-ops if unchanged). */
+static void on_pref_tx_flo(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->tx_flo = adw_spin_row_get_value(r);
+  tx_push_cfg(app); schedule_save(app);
+}
+static void on_pref_tx_fhi(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->tx_fhi = adw_spin_row_get_value(r);
+  tx_push_cfg(app); schedule_save(app);
+}
 /* Per-band PA calibration (F6b): band index carried on the row. Clamped to the
  * safe [38.8,70.0] range; re-pushed so the current band's drive byte updates. */
 static void on_pref_pacal(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
@@ -2633,6 +2690,12 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, pref_slider("Monitor level",
       "dB into the RX audio output · live",
       MON_DB_MIN, MON_DB_MAX, app->tx_mon_db, G_CALLBACK(on_pref_tx_mon_db), app));
+  adw_preferences_group_add(g, pref_spin("TX filter low",
+      "Hz · voice audio low edge (default 150) · live",
+      TXF_LO_MIN, TXF_LO_MAX, app->tx_flo, G_CALLBACK(on_pref_tx_flo), app));
+  adw_preferences_group_add(g, pref_spin("TX filter high",
+      "Hz · voice audio high edge (2850 default; 3500-6000 = eSSB — mind the band plan) · live",
+      TXF_HI_MIN, TXF_HI_MAX, app->tx_fhi, G_CALLBACK(on_pref_tx_fhi), app));
   /* F6b — per-band PA calibration table (like piHPSDR's PA-calibration menu). The
    * 38.8 dB floor is the safety limit; 53 dB is the validated G1 default. */
   GtkWidget *pacal_exp = g_object_new(ADW_TYPE_EXPANDER_ROW, "title", "PA calibration (per band)",
@@ -2949,7 +3012,8 @@ static void start_radio(App *app) {
                   .palette = 0, .band_edges = 1,
                   .tx_pa = 0, .tx_ant = 0, .tx_drive = 25.0, .tx_tune = 10.0, .tx_swr = 3.0,
                   .mic_gain = 0.0, .audio_rate = 48000,
-                  .tx_gate_db = GATE_DB_DFLT, .tx_mon_db = MON_DB_DFLT };
+                  .tx_gate_db = GATE_DB_DFLT, .tx_mon_db = MON_DB_DFLT,
+                  .tx_flo = TXF_LO_DFLT, .tx_fhi = TXF_HI_DFLT };
   g_strlcpy(st.ip, "192.168.1.247", sizeof(st.ip));
   g_strlcpy(st.region,  "R1", sizeof(st.region));   /* IARU R1 default; country = none */
   g_strlcpy(st.country, "",   sizeof(st.country));
@@ -2995,6 +3059,8 @@ static void start_radio(App *app) {
   app->tx_gate_db    = st.tx_gate_db < GATE_DB_MIN ? GATE_DB_MIN : (st.tx_gate_db > GATE_DB_MAX ? GATE_DB_MAX : st.tx_gate_db);
   app->tx_mon        = st.tx_mon ? 1 : 0;
   app->tx_mon_db     = st.tx_mon_db < MON_DB_MIN ? MON_DB_MIN : (st.tx_mon_db > MON_DB_MAX ? MON_DB_MAX : st.tx_mon_db);
+  app->tx_flo        = st.tx_flo < TXF_LO_MIN ? TXF_LO_MIN : (st.tx_flo > TXF_LO_MAX ? TXF_LO_MAX : st.tx_flo);
+  app->tx_fhi        = st.tx_fhi < TXF_HI_MIN ? TXF_HI_MIN : (st.tx_fhi > TXF_HI_MAX ? TXF_HI_MAX : st.tx_fhi);
   app->fps    = st.fps;
   app->latency = st.latency;
   /* Clamp to the supported 48-192 k window — a stale >192 k value from an older
