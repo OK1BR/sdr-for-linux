@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <arpa/inet.h>
 
 #include "client.h"
@@ -154,6 +155,9 @@ typedef struct {
   int         bp_country;    /* band-plan country/overlay index (0=none)           */
   int         show_band_edges; /* draw band-plan edges + band name on the spectrum */
   GtkWidget  *win;           /* top-level window (for size persistence)           */
+  GtkWidget  *toast_overlay; /* AdwToastOverlay wrapping the content (restart hint) */
+  int         restart_pending;     /* a restart-to-apply setting changed this session */
+  int         restart_toast_shown; /* a "restart to apply" toast is live (dedupe)   */
   int         win_w, win_h, win_max;  /* remembered window geometry               */
   double      band_high[NBANDS], band_low[NBANDS];  /* per-band dB window          */
   int         band_mode[NBANDS];  /* per-band remembered demod mode (band stacking) */
@@ -1934,6 +1938,60 @@ static void css_load(void) {
 
 static const int PREF_RATES[] = {48000, 96000, 192000, 384000, 768000, 1536000};
 
+static char **g_orig_argv;   /* main()'s argv — for the in-app restart */
+
+/* Restart the app in place: spawn a detached relauncher that waits ~5 s (the G1
+ * needs that long after we disconnect before it answers discovery again — the
+ * restart-pause gotcha) then re-execs this binary with the same args, and quit so
+ * main()'s normal cleanup parks the RF path and saves settings. Env is inherited. */
+static void do_restart(App *app) {
+  (void)app;
+  char exe[4096];
+  ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+  if (n <= 0) { return; }
+  exe[n] = '\0';
+  GPtrArray *a = g_ptr_array_new();
+  g_ptr_array_add(a, (gpointer)"/bin/sh");
+  g_ptr_array_add(a, (gpointer)"-c");
+  g_ptr_array_add(a, (gpointer)"sleep 5; exec \"$@\"");
+  g_ptr_array_add(a, (gpointer)"sh");        /* $0 for the -c script */
+  g_ptr_array_add(a, exe);                   /* $1 → the binary, first of "$@" */
+  for (int i = 1; g_orig_argv && g_orig_argv[i]; i++) { g_ptr_array_add(a, g_orig_argv[i]); }
+  g_ptr_array_add(a, NULL);
+  GError *err = NULL;
+  g_spawn_async(NULL, (char **)a->pdata, NULL, G_SPAWN_DEFAULT, NULL, NULL, NULL, &err);
+  g_ptr_array_free(a, TRUE);
+  if (err) { g_warning("restart: spawn failed: %s", err->message); g_error_free(err); return; }
+  g_application_quit(G_APPLICATION(g_application_get_default()));   /* → main() cleanup */
+}
+static void on_restart_toast_clicked(AdwToast *t, gpointer data) {
+  (void)t; do_restart((App *)data);
+}
+static void on_restart_toast_dismissed(AdwToast *t, gpointer data) {
+  (void)t; ((App *)data)->restart_toast_shown = 0;
+}
+/* Show the non-modal restart toast on the MAIN window. Deduped: only one lives at
+ * a time (cleared when dismissed or acted on). Shown when the Preferences dialog
+ * CLOSES — a toast added while the modal dialog is up sits behind it, unclickable. */
+static void show_restart_toast(App *app) {
+  if (!app->toast_overlay || app->restart_toast_shown) { return; }
+  app->restart_toast_shown = 1;
+  AdwToast *t = adw_toast_new("Some changes apply on restart");
+  adw_toast_set_button_label(t, "Restart now");
+  adw_toast_set_timeout(t, 0);              /* stay until acted on / dismissed */
+  g_signal_connect(t, "button-clicked", G_CALLBACK(on_restart_toast_clicked), app);
+  g_signal_connect(t, "dismissed",      G_CALLBACK(on_restart_toast_dismissed), app);
+  adw_toast_overlay_add_toast(ADW_TOAST_OVERLAY(app->toast_overlay), t);
+}
+/* A restart-to-apply setting changed: just remember it; the toast pops when the
+ * Preferences dialog closes (see on_prefs_closed). */
+static void restart_hint(App *app) { app->restart_pending = 1; }
+/* Preferences dialog closed → if a restart-to-apply setting changed, offer it now. */
+static void on_prefs_closed(AdwDialog *dlg, gpointer data) {
+  (void)dlg; App *app = (App *)data;
+  if (app->restart_pending) { app->restart_pending = 0; show_restart_toast(app); }
+}
+
 static void on_pref_fps(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   (void)ps;
   App *app = (App *)data;
@@ -1952,7 +2010,7 @@ static void on_pref_latency(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   (void)ps;
   App *app = (App *)data;
   app->latency = (int)adw_spin_row_get_value(r);   /* applied on restart */
-  schedule_save(app);
+  schedule_save(app); restart_hint(app);
 }
 static void on_pref_pan_high(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   (void)ps;
@@ -2045,12 +2103,12 @@ static void on_pref_rate(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   (void)ps;
   App *app = (App *)data;
   guint i = adw_combo_row_get_selected(r);
-  if (i < G_N_ELEMENTS(PREF_RATES)) { app->rate = PREF_RATES[i]; schedule_save(app); }  /* restart */
+  if (i < G_N_ELEMENTS(PREF_RATES)) { app->rate = PREF_RATES[i]; schedule_save(app); restart_hint(app); }  /* restart */
 }
 static void on_pref_ip(GtkEditable *e, gpointer data) {
   App *app = (App *)data;
   g_strlcpy(app->radio_ip, gtk_editable_get_text(e), sizeof(app->radio_ip));   /* restart */
-  schedule_save(app);
+  schedule_save(app); restart_hint(app);
 }
 
 /* Audio device + sample-rate selection (restart-to-apply, like the IQ rate). The
@@ -2060,7 +2118,7 @@ static const int AUDIO_RATES[] = {48000, 96000, 192000, 384000};
 static void on_pref_audio_rate(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   (void)ps; App *app = (App *)data;
   guint i = adw_combo_row_get_selected(r);
-  if (i < G_N_ELEMENTS(AUDIO_RATES)) { app->audio_rate = AUDIO_RATES[i]; schedule_save(app); }
+  if (i < G_N_ELEMENTS(AUDIO_RATES)) { app->audio_rate = AUDIO_RATES[i]; schedule_save(app); restart_hint(app); }
 }
 static void on_pref_audio_device(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   (void)ps; App *app = (App *)data;
@@ -2069,7 +2127,7 @@ static void on_pref_audio_device(AdwComboRow *r, GParamSpec *ps, gpointer data) 
   else if ((int)i - 1 < app->audio_nsink) {
     g_strlcpy(app->audio_device, app->audio_sinks[i - 1].name, sizeof app->audio_device);
   }
-  schedule_save(app);
+  schedule_save(app); restart_hint(app);
 }
 static void on_pref_mic_device(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   (void)ps; App *app = (App *)data;
@@ -2078,7 +2136,7 @@ static void on_pref_mic_device(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   else if ((int)i - 1 < app->mic_nsrc) {
     g_strlcpy(app->mic_device, app->mic_srcs[i - 1].name, sizeof app->mic_device);
   }
-  schedule_save(app);
+  schedule_save(app); restart_hint(app);
 }
 
 /* TX preferences (F6a) — all live into the runtime (tx_push_cfg) and persisted. */
@@ -2389,7 +2447,9 @@ static void act_prefs(GSimpleAction *a, GVariant *param, gpointer data) {
   App *app = (App *)data;
   GtkWindow *win = gtk_application_get_active_window(
       GTK_APPLICATION(g_application_get_default()));
-  adw_dialog_present(build_prefs(app), GTK_WIDGET(win));
+  AdwDialog *dlg = build_prefs(app);
+  g_signal_connect(dlg, "closed", G_CALLBACK(on_prefs_closed), app);   /* restart toast after close */
+  adw_dialog_present(dlg, GTK_WIDGET(win));
 }
 
 /* Persist window geometry as the user resizes / maximizes (debounced). GTK4
@@ -2460,7 +2520,9 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
   if (app->radio_mode) {
     adw_toolbar_view_add_bottom_bar(ADW_TOOLBAR_VIEW(tv), build_bottom_controls(app));
   }
-  adw_application_window_set_content(ADW_APPLICATION_WINDOW(win), tv);
+  app->toast_overlay = adw_toast_overlay_new();
+  adw_toast_overlay_set_child(ADW_TOAST_OVERLAY(app->toast_overlay), tv);
+  adw_application_window_set_content(ADW_APPLICATION_WINDOW(win), app->toast_overlay);
 
   /* Input controllers (self-gate on radio mode): wheel tunes, drag pans, u/l/c/a mode. */
   GtkEventControllerScroll *scroll = GTK_EVENT_CONTROLLER_SCROLL(
@@ -2775,6 +2837,7 @@ static gboolean on_signal(gpointer data) {
 }
 
 int main(int argc, char **argv) {
+  g_orig_argv = argv;   /* for the in-app "Restart now" toast */
   App app;
   memset(&app, 0, sizeof(app));
   app.wf = waterfall_new();
