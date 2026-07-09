@@ -2612,55 +2612,6 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, rate);
   adw_preferences_page_add(p, g);
 
-  /* Audio — one shared sample rate for RX out + TX mic (a soundcard runs at a
-   * single rate), plus separate RX playback and TX capture DEVICES. Sample rate
-   * is the Nyquist/stream rate, independent of the audio bandwidth (the filter).
-   * Restart-to-apply, like the IQ rate. */
-  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Audio",
-      "description", "Shared RX/TX sample rate + separate soundcards", NULL));
-  { GtkStringList *m = gtk_string_list_new(NULL);
-    guint sel = 0;
-    for (guint i = 0; i < G_N_ELEMENTS(AUDIO_RATES); i++) {
-      char lbl[16]; snprintf(lbl, sizeof lbl, "%d kHz", AUDIO_RATES[i] / 1000);
-      gtk_string_list_append(m, lbl);
-      if (AUDIO_RATES[i] == app->audio_rate) { sel = i; }
-    }
-    GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "Sample rate",
-        "subtitle", "RX output, ≤ IQ rate; the AF band is filter-limited, above "
-                    "192 kHz is only fatter samples (mic is fixed 48 kHz by WDSP) "
-                    "· restart to apply",
-        "model", m, "selected", sel, NULL);
-    g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_audio_rate), app);
-    adw_preferences_group_add(g, row);
-  }
-  { app->audio_nsink = audio_list_sinks(app->audio_sinks, (int)G_N_ELEMENTS(app->audio_sinks));
-    GtkStringList *m = gtk_string_list_new(NULL);
-    gtk_string_list_append(m, "Default (auto)");
-    guint sel = 0;
-    for (int i = 0; i < app->audio_nsink; i++) {
-      gtk_string_list_append(m, app->audio_sinks[i].desc);
-      if (app->audio_device[0] && strcmp(app->audio_sinks[i].name, app->audio_device) == 0) { sel = (guint)(i + 1); }
-    }
-    GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "RX output device",
-        "subtitle", "receive-audio soundcard · restart to apply", "model", m, "selected", sel, NULL);
-    g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_audio_device), app);
-    adw_preferences_group_add(g, row);
-  }
-  { app->mic_nsrc = mic_list_sources(app->mic_srcs, (int)G_N_ELEMENTS(app->mic_srcs));
-    GtkStringList *m = gtk_string_list_new(NULL);
-    gtk_string_list_append(m, "Default (auto)");
-    guint sel = 0;
-    for (int i = 0; i < app->mic_nsrc; i++) {
-      gtk_string_list_append(m, app->mic_srcs[i].desc);
-      if (app->mic_device[0] && strcmp(app->mic_srcs[i].name, app->mic_device) == 0) { sel = (guint)(i + 1); }
-    }
-    GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "TX mic device",
-        "subtitle", "SSB capture soundcard (F6c) · restart to apply", "model", m, "selected", sel, NULL);
-    g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_mic_device), app);
-    adw_preferences_group_add(g, row);
-  }
-  adw_preferences_page_add(p, g);
-
   /* TX — keying, power + safety (F6a). Lives on the Radio page (like piHPSDR's
    * PA-enable in the Radio menu) so the page switcher stays in the header rather
    * than dropping to a bottom bar. PA-enable persists across restarts. */
@@ -2708,13 +2659,64 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);   /* Drive / Tune drive / Antenna live on the footer bar */
 
-  /* Audio — gain live, latency restart. */
+  /* Audio — ALL audio settings in one place (Richard's ask, 2026-07-10):
+   * devices + shared sample rate + gain/latency. One sample rate for the RX
+   * output stream (a soundcard runs at a single rate); separate RX playback and
+   * TX capture DEVICES. Sample rate is the Nyquist/stream rate, independent of
+   * the audio bandwidth (the filter). Rate + devices are restart-to-apply. */
   p = ADW_PREFERENCES_PAGE(g_object_new(ADW_TYPE_PREFERENCES_PAGE,
       "title", "Audio", "icon-name", "audio-speakers-symbolic", NULL));
-  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Output", NULL));
-  adw_preferences_group_add(g, pref_spin("Digital master gain", "Applies live",
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP,
+      "title", "Devices & rate", NULL));
+  { GtkStringList *m = gtk_string_list_new(NULL);
+    guint sel = 0;
+    for (guint i = 0; i < G_N_ELEMENTS(AUDIO_RATES); i++) {
+      char lbl[16]; snprintf(lbl, sizeof lbl, "%d kHz", AUDIO_RATES[i] / 1000);
+      gtk_string_list_append(m, lbl);
+      if (AUDIO_RATES[i] == app->audio_rate) { sel = i; }
+    }
+    GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "Sample rate",
+        "subtitle", "RX output, ≤ IQ rate; the AF band is filter-limited, above "
+                    "192 kHz is only fatter samples (mic is fixed 48 kHz by WDSP) "
+                    "· restart to apply",
+        "model", m, "selected", sel, NULL);
+    g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_audio_rate), app);
+    adw_preferences_group_add(g, row);
+  }
+  { app->audio_nsink = audio_list_sinks(app->audio_sinks, (int)G_N_ELEMENTS(app->audio_sinks));
+    GtkStringList *m = gtk_string_list_new(NULL);
+    gtk_string_list_append(m, "Default (auto)");
+    guint sel = 0;
+    for (int i = 0; i < app->audio_nsink; i++) {
+      gtk_string_list_append(m, app->audio_sinks[i].desc);
+      if (app->audio_device[0] && strcmp(app->audio_sinks[i].name, app->audio_device) == 0) { sel = (guint)(i + 1); }
+    }
+    GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "RX output device",
+        "subtitle", "receive-audio soundcard · restart to apply", "model", m, "selected", sel, NULL);
+    g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_audio_device), app);
+    adw_preferences_group_add(g, row);
+  }
+  { app->mic_nsrc = mic_list_sources(app->mic_srcs, (int)G_N_ELEMENTS(app->mic_srcs));
+    GtkStringList *m = gtk_string_list_new(NULL);
+    gtk_string_list_append(m, "Default (auto)");
+    guint sel = 0;
+    for (int i = 0; i < app->mic_nsrc; i++) {
+      gtk_string_list_append(m, app->mic_srcs[i].desc);
+      if (app->mic_device[0] && strcmp(app->mic_srcs[i].name, app->mic_device) == 0) { sel = (guint)(i + 1); }
+    }
+    GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "TX mic device",
+        "subtitle", "SSB capture soundcard (F6c) · restart to apply", "model", m, "selected", sel, NULL);
+    g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_mic_device), app);
+    adw_preferences_group_add(g, row);
+  }
+  adw_preferences_page_add(p, g);
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP,
+      "title", "Levels & latency", NULL));
+  adw_preferences_group_add(g, pref_spin("Digital master gain",
+      "× on the demodulated audio after WDSP; 1 = calibrated default · live",
       1, 32, app->gain, G_CALLBACK(on_pref_gain), app));
-  adw_preferences_group_add(g, pref_spin("Audio latency", "ms · restart to apply",
+  adw_preferences_group_add(g, pref_spin("Audio latency",
+      "ms, PipeWire quantum for RX output AND TX mic capture · restart to apply",
       5, 100, app->latency, G_CALLBACK(on_pref_latency), app));
   adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);

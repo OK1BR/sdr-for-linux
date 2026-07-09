@@ -53,6 +53,9 @@ static double cmag_at(const double *iq, int n, double f, double fs) {
   }
   return sqrt(re * re + im * im) / n;
 }
+static int    g_gate_on;          /* mic noise gate for the next run_tone */
+static double g_gate_db = -35.0;
+
 /* Peak envelope sqrt(I²+Q²) over a window — for the ALC-ceiling check. */
 static double env_peak(const double *iq, int n) {
   double pk = 0.0;
@@ -75,6 +78,7 @@ static int run_tone(int mode, double amp, int blocks, int comp, double comp_db,
   double fhi = (mode == TXTEST_LSB) ?  -150.0 : 2850.0;
   tx_dsp_create(mode, flo, fhi, on_tx_iq, NULL);
   tx_dsp_set_compressor(comp, comp_db);
+  tx_dsp_set_gate(g_gate_on, g_gate_db);
   tx_dsp_run(1);
   float mic[512];
   double ph = 0.0, dph = 2.0 * M_PI * 1000.0 / 48000.0;
@@ -161,6 +165,31 @@ int main(void) {
     snprintf(det, sizeof det, "envelope peak = %.3f", fenv);
     ok("PROC drives a modest tone to full scale", fenv > 0.85, det);
     ok("ALC holds the ceiling (env <= 1.05)", fenv <= 1.05, det);
+  }
+
+  /* ---- 1c. Mic noise gate (AMSQ downward expander) ----------------------- */
+  /* A "noise" tone below the threshold must come out ~20 dB down (the muted
+   * gain) versus gate-off; a "speech" tone above the threshold must pass at
+   * unity. Verifies the whole SetTXAAMSQ* path — if this passes, a live "gate
+   * does nothing" is a threshold-tuning issue, not a DSP bug. */
+  printf("\n[gate] mic noise gate (WDSP AMSQ, threshold -35 dBFS):\n");
+  {
+    double np_, nm, nj, sp_, sm, sj, e;
+    g_gate_on = 1; g_gate_db = -35.0;
+    run_tone(TXTEST_USB, 0.005, 90, 0, 0.0, &np_, &nm, &nj, &e);  /* -46 dBFS "noise" */
+    double gated = np_ > nm ? np_ : nm;
+    g_gate_on = 0;
+    run_tone(TXTEST_USB, 0.005, 90, 0, 0.0, &np_, &nm, &nj, &e);
+    double open_ = np_ > nm ? np_ : nm;
+    snprintf(det, sizeof det, "below thr: open=%.5f gated=%.5f (%.1f dB down)",
+             open_, gated, 20.0 * log10(gated / open_));
+    ok("below threshold drops ~20 dB", gated < open_ * 0.20 && gated > open_ * 0.05, det);
+    g_gate_on = 1;
+    run_tone(TXTEST_USB, 0.5, 90, 0, 0.0, &sp_, &sm, &sj, &e);    /* -6 dBFS "speech" */
+    double loud = sp_ > sm ? sp_ : sm;
+    snprintf(det, sizeof det, "above thr: %.4f (expect ~0.45)", loud);
+    ok("above threshold passes at unity", loud > 0.40, det);
+    g_gate_on = 0;
   }
 
   /* ---- 2. encoder: hand values + round-trip --------------------------- */
