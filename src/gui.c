@@ -38,6 +38,7 @@
 #include "analyzer.h"
 #include "demod.h"
 #include "audio.h"
+#include "mic_pw.h"
 #include "settings.h"
 #include "bandplan.h"
 #include "wisdom_gate.h"
@@ -83,6 +84,11 @@ typedef struct {
   int         binaural;     /* binaural stereo audio output on-off             */
   int         fps;          /* panadapter frame rate                          */
   int         latency;      /* audio target latency (ms)                      */
+  int         audio_rate;   /* RX audio output sample rate (Hz); ≤ IQ rate    */
+  char        mic_device[128]; /* TX mic capture PW node.name ("" = default)   */
+  int         mic_rate;     /* TX mic capture sample rate (Hz)                 */
+  mic_source  mic_srcs[16]; /* enumerated capture devices (for the picker)     */
+  int         mic_nsrc;     /* count in mic_srcs                               */
   char        radio_ip[64]; /* resolved radio IP (for persistence)            */
   guint       save_timer_id;/* debounced settings save (0 = none pending)     */
   long long   drag_base_freq; /* app->freq at drag-begin (pan is absolute)     */
@@ -1065,6 +1071,9 @@ static void app_to_settings(const App *app, Settings *s) {
   s->gain    = app->gain;
   s->fps     = app->fps;
   s->latency = app->latency;
+  s->audio_rate = app->audio_rate;
+  s->mic_rate   = app->mic_rate;
+  g_strlcpy(s->mic_device, app->mic_device, sizeof s->mic_device);
   s->step    = (int)app->tune_step;
   s->zoom    = app->zoom;
   s->atten   = app->atten;
@@ -2042,6 +2051,31 @@ static void on_pref_ip(GtkEditable *e, gpointer data) {
   schedule_save(app);
 }
 
+/* Audio device + sample-rate selection (restart-to-apply, like the IQ rate). The
+ * RX audio rate is the sample rate (Nyquist ceiling), NOT the audio bandwidth —
+ * that stays the filter's job. Capped to the IQ rate at apply time. */
+static const int AUDIO_RATES[] = {48000, 96000, 192000, 384000};
+static const int MIC_RATES[]   = {48000, 96000, 192000};
+static void on_pref_audio_rate(AdwComboRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  guint i = adw_combo_row_get_selected(r);
+  if (i < G_N_ELEMENTS(AUDIO_RATES)) { app->audio_rate = AUDIO_RATES[i]; schedule_save(app); }
+}
+static void on_pref_mic_rate(AdwComboRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  guint i = adw_combo_row_get_selected(r);
+  if (i < G_N_ELEMENTS(MIC_RATES)) { app->mic_rate = MIC_RATES[i]; schedule_save(app); }
+}
+static void on_pref_mic_device(AdwComboRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  guint i = adw_combo_row_get_selected(r);   /* 0 = "Default"; 1.. = mic_srcs[i-1] */
+  if (i == 0) { app->mic_device[0] = '\0'; }
+  else if ((int)i - 1 < app->mic_nsrc) {
+    g_strlcpy(app->mic_device, app->mic_srcs[i - 1].name, sizeof app->mic_device);
+  }
+  schedule_save(app);
+}
+
 /* TX preferences (F6a) — all live into the runtime (tx_push_cfg) and persisted. */
 static void on_pref_tx_pa(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
   (void)ps; App *app = (App *)data;
@@ -2160,6 +2194,50 @@ static AdwDialog *build_prefs(App *app) {
   GtkWidget *rate = g_object_new(ADW_TYPE_COMBO_ROW, "title", "Sample rate", "model", rm, "selected", ri, NULL);
   g_signal_connect(rate, "notify::selected", G_CALLBACK(on_pref_rate), app);
   adw_preferences_group_add(g, rate);
+  adw_preferences_page_add(p, g);
+
+  /* Audio — RX output rate + TX mic device/rate. Sample rate is the Nyquist
+   * ceiling / stream rate, independent of the audio bandwidth (the filter's job).
+   * Restart-to-apply, like the IQ rate. */
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Audio",
+      "description", "Sample rates apply on restart", NULL));
+  { GtkStringList *m = gtk_string_list_new(NULL);
+    guint sel = 0;
+    for (guint i = 0; i < G_N_ELEMENTS(AUDIO_RATES); i++) {
+      char lbl[16]; snprintf(lbl, sizeof lbl, "%d kHz", AUDIO_RATES[i] / 1000);
+      gtk_string_list_append(m, lbl);
+      if (AUDIO_RATES[i] == app->audio_rate) { sel = i; }
+    }
+    GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "RX audio rate",
+        "subtitle", "output sample rate (capped at the IQ rate)", "model", m, "selected", sel, NULL);
+    g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_audio_rate), app);
+    adw_preferences_group_add(g, row);
+  }
+  { app->mic_nsrc = mic_list_sources(app->mic_srcs, (int)G_N_ELEMENTS(app->mic_srcs));
+    GtkStringList *m = gtk_string_list_new(NULL);
+    gtk_string_list_append(m, "Default (auto)");
+    guint sel = 0;
+    for (int i = 0; i < app->mic_nsrc; i++) {
+      gtk_string_list_append(m, app->mic_srcs[i].desc);
+      if (app->mic_device[0] && strcmp(app->mic_srcs[i].name, app->mic_device) == 0) { sel = (guint)(i + 1); }
+    }
+    GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "TX mic device",
+        "subtitle", "capture source for SSB voice (F6c)", "model", m, "selected", sel, NULL);
+    g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_mic_device), app);
+    adw_preferences_group_add(g, row);
+  }
+  { GtkStringList *m = gtk_string_list_new(NULL);
+    guint sel = 0;
+    for (guint i = 0; i < G_N_ELEMENTS(MIC_RATES); i++) {
+      char lbl[16]; snprintf(lbl, sizeof lbl, "%d kHz", MIC_RATES[i] / 1000);
+      gtk_string_list_append(m, lbl);
+      if (MIC_RATES[i] == app->mic_rate) { sel = i; }
+    }
+    GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "TX mic rate",
+        "subtitle", "mic capture sample rate", "model", m, "selected", sel, NULL);
+    g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_mic_rate), app);
+    adw_preferences_group_add(g, row);
+  }
   adw_preferences_page_add(p, g);
 
   /* TX — keying, power + safety (F6a). Lives on the Radio page (like piHPSDR's
@@ -2422,7 +2500,8 @@ static void start_radio(App *app) {
                   .db_grid = 1, .db_scale = 1, .freq_grid = 1, .freq_scale = 1,
                   .filter_wf = 1, .filter_op = 60, .avg_spec = -1, .avg_wf = -1,
                   .palette = 0, .band_edges = 1,
-                  .tx_pa = 0, .tx_ant = 0, .tx_drive = 25.0, .tx_tune = 10.0, .tx_swr = 3.0 };
+                  .tx_pa = 0, .tx_ant = 0, .tx_drive = 25.0, .tx_tune = 10.0, .tx_swr = 3.0,
+                  .audio_rate = 48000, .mic_rate = 48000 };
   g_strlcpy(st.ip, "192.168.1.247", sizeof(st.ip));
   g_strlcpy(st.region,  "R1", sizeof(st.region));   /* IARU R1 default; country = none */
   g_strlcpy(st.country, "",   sizeof(st.country));
@@ -2463,6 +2542,9 @@ static void start_radio(App *app) {
   app->tx_swr_alarm  = st.tx_swr   < 2.0 ? 2.0 : (st.tx_swr   > 5.0   ? 5.0   : st.tx_swr);
   app->fps    = st.fps;
   app->latency = st.latency;
+  app->audio_rate = st.audio_rate >= 48000 ? st.audio_rate : 48000;
+  app->mic_rate   = st.mic_rate   >= 48000 ? st.mic_rate   : 48000;
+  g_strlcpy(app->mic_device, st.mic_device, sizeof app->mic_device);
   /* Snap the saved zoom to the nearest octave detent in [1, ZOOM_MAX]. */
   app->zoom = st.zoom;
   if (!(app->zoom >= 1.0))  { app->zoom = 1.0; }      /* NaN or < 1 */
@@ -2634,7 +2716,13 @@ static void start_radio(App *app) {
   }
   app->filter_idx = app->filter_by_mode[mode];
   { int lo, hi; filter_lohi(app, mode, app->filter_idx, &lo, &hi); app->flo = lo; app->fhi = hi; }
-  if (audio_start(48000, 2, app->latency) == 0 && demod_create(0, rate, mode, app->flo, app->fhi, app->volume) == 0) {
+  /* RX audio output rate: an exact divisor of the IQ rate, ≤ it (WDSP downsamples
+   * IQ→audio). Compute once so the sink and the demod channel agree. */
+  int arate = app->audio_rate >= 48000 ? app->audio_rate : 48000;
+  if (arate > rate) { arate = rate; }
+  { int asc = rate / arate; if (asc < 1) { asc = 1; } arate = rate / asc; }
+  demod_set_audio_rate(arate);
+  if (audio_start(arate, 2, app->latency) == 0 && demod_create(0, rate, mode, app->flo, app->fhi, app->volume) == 0) {
     demod_set_gain(app->gain);
     demod_set_agc(app->agc);            /* saved AGC character + threshold */
     demod_set_agc_gain(app->agc_gain);

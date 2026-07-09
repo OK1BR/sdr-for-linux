@@ -18,7 +18,9 @@
 
 #define D_BUFSIZE  1024     /* IQ samples per fexchange0 (in_size)        */
 #define D_DSPSIZE  2048     /* WDSP internal DSP block                    */
-#define AUDIO_RATE 48000    /* WDSP dsp + output rate                     */
+#define AUDIO_RATE_DEFAULT 48000  /* default WDSP dsp + output rate       */
+
+static int d_arate = AUDIO_RATE_DEFAULT;  /* selectable RX audio out rate (Hz) */
 
 static int      d_id;
 static int      d_ready;
@@ -102,11 +104,20 @@ static void setup_noise(void) {
   SetRXAANFRun(id, d_anf);
 }
 
+void demod_set_audio_rate(int rate) {
+  if (rate >= 48000) { d_arate = rate; }   /* applied at the next demod_create */
+}
+int demod_audio_rate(void) { return d_arate; }
+
 int demod_create(int id, int in_rate, int mode, double flo, double fhi, double volume) {
   d_id = id;
-  int scale = in_rate / AUDIO_RATE;
+  /* Audio rate must divide the IQ rate and not exceed it (else fexchange0 would
+   * emit more frames than d_audio holds). Clamp to a safe divisor. */
+  if (d_arate > in_rate) { d_arate = in_rate; }
+  int scale = in_rate / d_arate;
   if (scale < 1) { scale = 1; }
-  d_output = D_BUFSIZE / scale;          /* 64 @768k, 256 @192k */
+  d_arate = in_rate / scale;             /* snap to an exact integer divisor */
+  d_output = D_BUFSIZE / scale;          /* frames/block: 32 @1536k/48k, 1024 @192k/192k */
   d_iq    = g_new0(double, 2 * D_BUFSIZE);
   d_audio = g_new0(double, 2 * d_output);
   d_out   = g_new0(float,  2 * d_output);   /* interleaved L/R for the sink */
@@ -124,7 +135,7 @@ int demod_create(int id, int in_rate, int mode, double flo, double fhi, double v
 
   g_mutex_lock(&d_lock);
   /* Channel opens already running (state=1). */
-  OpenChannel(id, D_BUFSIZE, D_DSPSIZE, in_rate, AUDIO_RATE, AUDIO_RATE,
+  OpenChannel(id, D_BUFSIZE, D_DSPSIZE, in_rate, d_arate, d_arate,
               0, 1, 0.010, 0.025, 0.0, 0.010, 1);
   /* External noise blanker (ANB) lives OUTSIDE the RXA channel: it must be
    * created explicitly (else the SetEXTANB setters and xanbEXT dereference a

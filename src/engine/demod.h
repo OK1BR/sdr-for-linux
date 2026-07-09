@@ -12,9 +12,21 @@
 enum { DEMOD_LSB = 0, DEMOD_USB = 1, DEMOD_CWL = 3, DEMOD_CWU = 4, DEMOD_AM = 6 };
 
 /*
+ * Set the RX audio OUTPUT sample rate (Hz) for the next demod_create(). This is
+ * the WDSP RXA output + sink rate — orthogonal to the audio bandwidth (the demod
+ * filter passband), which stays user-controlled. Must be a divisor of the IQ
+ * `in_rate` and ≤ it (demod_create clamps otherwise). Default 48000. Call before
+ * demod_create; restart-to-apply (a live channel keeps its create-time rate).
+ */
+void demod_set_audio_rate(int rate);
+
+/* The audio output rate the current channel actually opened with (Hz). */
+int  demod_audio_rate(void);
+
+/*
  * Open demod channel `id` for `in_rate` Hz IQ, `mode`, passband [flo,fhi] Hz,
- * AF `volume` in dB (0..−40). The audio sink (audio_start) must already be up.
- * Returns 0 on success.
+ * AF `volume` in dB (0..−40). The audio sink (audio_start) must already be up at
+ * demod_audio_rate(). Returns 0 on success.
  */
 int demod_create(int id, int in_rate, int mode, double flo, double fhi, double volume);
 

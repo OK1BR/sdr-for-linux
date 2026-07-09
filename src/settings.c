@@ -134,6 +134,14 @@ int settings_load(Settings *s) {
       char *pt = g_key_file_get_string(kf, GROUP_TX, "pa_trim", NULL);
       if (pt) { g_strlcpy(s->pa_trim, pt, sizeof(s->pa_trim)); g_free(pt); }
     }
+    if (g_key_file_has_key(kf, GROUP_RX, "audio_rate", NULL))
+      s->audio_rate = g_key_file_get_integer(kf, GROUP_RX, "audio_rate", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "mic_device", NULL)) {
+      char *md = g_key_file_get_string(kf, GROUP_TX, "mic_device", NULL);
+      if (md) { g_strlcpy(s->mic_device, md, sizeof(s->mic_device)); g_free(md); }
+    }
+    if (g_key_file_has_key(kf, GROUP_TX, "mic_rate", NULL))
+      s->mic_rate = g_key_file_get_integer(kf, GROUP_TX, "mic_rate", NULL);
     if (g_key_file_has_key(kf, GROUP_WINDOW, "width", NULL))
       s->win_w = g_key_file_get_integer(kf, GROUP_WINDOW, "width", NULL);
     if (g_key_file_has_key(kf, GROUP_WINDOW, "height", NULL))
@@ -194,6 +202,9 @@ int settings_save(const Settings *s) {
   g_key_file_set_double (kf, GROUP_TX,     "swr_alarm", s->tx_swr);
   g_key_file_set_string (kf, GROUP_TX,     "pa_cal",    s->pa_cal);
   g_key_file_set_string (kf, GROUP_TX,     "pa_trim",   s->pa_trim);
+  g_key_file_set_integer(kf, GROUP_RX,     "audio_rate", s->audio_rate);
+  g_key_file_set_string (kf, GROUP_TX,     "mic_device", s->mic_device);
+  g_key_file_set_integer(kf, GROUP_TX,     "mic_rate",   s->mic_rate);
   g_key_file_set_integer(kf, GROUP_WINDOW, "width",     s->win_w);
   g_key_file_set_integer(kf, GROUP_WINDOW, "height",    s->win_h);
   g_key_file_set_integer(kf, GROUP_WINDOW, "maximized", s->win_max);
