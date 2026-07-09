@@ -444,6 +444,63 @@ disconnected, operator at the wattmeter. Staged, and each keying watched:
 
 ---
 
-*Written F0, updated through F5, 2026-07-08. Byte offsets cross-verified against
-piHPSDR @974acba by first-hand read (MOX/`TX_RELAY`/atten/SWR) + three-way audit,
-then validated by live keying into a dummy load (§7).*
+## 8. F6c-4 — the voice chain completed (TX-path audit + live USB session, 2026-07-09/10)
+
+A full audit of the TX path against piHPSDR @974acba (SSB focus) plus a live
+USB-into-dummy-load session produced this wave. Commits 9f29479..63468b0; every
+item below is offline-gated by `sdrfl-txdsp-test` (18 checks) unless noted.
+
+**Root cause of "USB voice puts out ~no power":** the TX chain is UNITY GAIN end
+to end and the WDSP ALC only attenuates (`out_targ=1.0, max_gain=1.0`), exactly
+like piHPSDR — so voice PEP = (mic peak × mic gain)² × drive. A studio-staged
+interface at −20 dBFS peaks → milliwatts. Verified on air: fwd_raw sat at the
+sensor pedestal until the makeup gain below existed.
+
+What landed (⚠ = regression tripwire — do not undo casually):
+
+- **PROC (speech processor)** — `tx_dsp_set_compressor()`: WDSP COMP 0-20 dB +
+  auto-leveler (attack 1 / decay 500 / top 8 dB) + CESSB above 5.5 dB, exact
+  piHPSDR `tx_set_compressor` semantics. ⚠ This is the ONLY makeup gain in the
+  chain. Never "fix" voice level by scaling IQ samples or drive instead.
+- **Mic noise gate** — `tx_dsp_set_gate()`: WDSP TXA AMSQ, depth −20 dB
+  (piHPSDR DEXP default), operator threshold (post-mic-gain dBFS). ⚠ AMSQ sits
+  BEFORE the leveler in the TXA chain — that ordering is what stops the leveler
+  pumping room noise up in speech gaps. Gate depth is verified offline
+  (−46 dBFS tone drops exactly 20.0 dB; above-threshold passes unity).
+- **Per-mode TX passband** — `tx_passband()`: ⚠ in WDSP TXA the SIGN of the
+  bandpass is the ONLY sideband selector for SSB (SetTXAMode just switches
+  AM/FM modulators). LSB = (−high,−low). The fixed positive F6a passband was
+  transmitting USB in LSB mode. Edges are an operator setting ([tx]
+  filt_lo/filt_hi, 20-500 / 1500-6000 Hz — eSSB by raising the high edge),
+  applied live even while keyed (WDSP setters no-op when unchanged).
+- **Keepalive kick** — `p2_set_tx_state()` signals a GCond on a real state
+  change; the keepalive timer wakes and sends General + TX-spec + HP
+  immediately (piHPSDR `schedule_high_priority` parity; was ≤150 ms of
+  key/unkey/SWR-trip latency). ⚠ All sends STILL happen only on the timer
+  thread — the kick only shortens its sleep. Never send packets from another
+  thread; the single-sender invariant is what keeps protocol2.c mutex-free.
+- **CW RF hold** — 30 ms of zero envelope after break-in key-on WITHOUT
+  consuming the Morse queue (piHPSDR `cw_keyer_ptt_delay` default), so the MOX
+  HP packet + T/R relay land before the first dit (a dot @30 WPM is 40 ms).
+- **TX monitor** — voice mic / CW 700 Hz sidetone (shaped by the SAME envelope
+  that keys RF) → `demod_monitor_push()`: lock-free SPSC ring, mixed into the
+  sink AFTER the RX-on-TX mute gain. ⚠ demod is the only audio-sink producer;
+  the monitor must go through this ring, never push to the sink directly.
+- **TX meter** — Lev bar (TXA_LVLR_GAIN, the pump made visible), gate
+  threshold tick + GATE state, ALC bar; Mic −6..0 dBFS is a TARGET zone (full
+  PEP needs peaks at the top), not a keep-out.
+- Removed the `'k'` CW test hotkey (one keypress = real RF); Esc still aborts.
+- Audio prefs consolidated on the Audio page; **AF output caps at 192 kHz by
+  decision** (the AF band is filter-limited; >192 k is only fatter samples —
+  see the audio-rate discussion, 2026-07-10). ⚠ Don't re-add higher AF rates,
+  and don't run RXA DSP above 192 k (fixed-length filters lose selectivity).
+
+**Live-verified operator config (OK1BR, USB, dummy load, 2026-07-10):**
+`mic_gain=11 dB, gate=1 @ −29.5 dBFS, comp(PROC)=off, filt 40-4000 Hz,
+drive_w=63` — voice peaks 1-24 W on the averaged wattmeter with SWR 1.00,
+gate visibly closing in speech gaps (GATE indicator). PROC remains available
+when more punch is wanted; with it on, re-tune the gate threshold first.
+
+*Written F0, updated through F6c-4, 2026-07-10. Byte offsets cross-verified
+against piHPSDR @974acba by first-hand read (MOX/`TX_RELAY`/atten/SWR) +
+three-way audit, then validated by live keying into a dummy load (§7, §8).*
