@@ -183,6 +183,8 @@ typedef struct {
   double      tx_tune_w;     /* TUNE power request, W (persisted)                   */
   double      tx_swr_alarm;  /* SWR trip threshold (persisted)                      */
   double      tx_mic_gain;   /* TX mic gain, dB — SSB voice (persisted)             */
+  int         tx_comp;       /* speech processor (PROC) on/off (persisted)          */
+  double      tx_comp_db;    /* PROC compression dB, 0-20 (persisted)               */
   double      band_pacal[NBANDS]; /* per-band PA calibration, dB (F6b, persisted)   */
   double      pa_trim[11];   /* wattmeter correction curve, 11 pts W (F6b, persist) */
   GtkWidget  *pacal_spin[NBANDS]; /* per-band PA-cal spin buttons in Preferences    */
@@ -582,22 +584,28 @@ static void draw_s_meter(cairo_t *cr, App *app, int w) {
 
 /* TX level meter — top-right of the TX panadapter, in the SAME geometry as the RX
  * S-meter so they read as one family. Two stacked bars: Mic input peak (dBFS,
- * -40..0, filled with the ACTIVE PALETTE like the S-meter, with a clip-threshold
- * tick at -6 dB) and ALC gain reduction (dB, amber, 0..-20). WDSP TX meters, valid
- * only while keyed. */
+ * -40..0, filled with the ACTIVE PALETTE like the S-meter, with a -6..0 TARGET
+ * zone) and ALC gain reduction (dB, amber, 0..-20). WDSP TX meters, valid only
+ * while keyed.
+ *
+ * The -6..0 dBFS zone is where voice PEAKS belong, not a danger zone: the TX
+ * chain has no makeup gain with PROC off (the ALC only attenuates), so full PEP
+ * needs mic peaks at the top of this bar with the ALC just starting to work. */
 static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_status *ts) {
-  const double MIC_MIN = -40.0, MIC_MAX = 0.0, MIC_RED = -6.0, ALC_FS = 20.0;
+  const double MIC_MIN = -40.0, MIC_MAX = 0.0, MIC_TGT = -6.0, ALC_FS = 20.0;
   const double h_mic = 14.0, gap = 3.0, h_alc = 7.0;   /* 14+3+7 = METER_BH */
   double bw = METER_BW, bx = w - bw - METER_RM, by = METER_BY;
 
   /* Mic input peak (dBFS): palette gradient fill, exactly like draw_s_meter, so the
-   * drive bar tracks the colour scheme (Richard's ask); tick marks -6 dB clip. */
+   * drive bar tracks the colour scheme (Richard's ask). */
   double mic = ts->mic_pk;
   if (mic < MIC_MIN) { mic = MIC_MIN; } else if (mic > MIC_MAX) { mic = MIC_MAX; }
   double micfill = (mic - MIC_MIN) / (MIC_MAX - MIC_MIN) * bw;
-  double redx = bx + (MIC_RED - MIC_MIN) / (MIC_MAX - MIC_MIN) * bw;
+  double zx = bx + (MIC_TGT - MIC_MIN) / (MIC_MAX - MIC_MIN) * bw;
   cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.5);
   cairo_rectangle(cr, bx, by, bw, h_mic); cairo_fill(cr);
+  cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.13);   /* target zone: aim peaks here */
+  cairo_rectangle(cr, zx, by, bx + bw - zx, h_mic); cairo_fill(cr);
   const char *pname = waterfall_palette_name(app->palette);   /* lift the near-black Mono low end */
   double kk = (pname && g_str_has_prefix(pname, "Mono")) ? 0.20 : 0.0;
   cairo_pattern_t *grad = cairo_pattern_create_linear(bx, 0, bx + bw, 0);
@@ -613,8 +621,8 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
   cairo_rectangle(cr, bx, by, bw, h_mic); cairo_fill(cr);
   cairo_restore(cr);
   cairo_pattern_destroy(grad);
-  cairo_set_source_rgba(cr, 1.0, 0.5, 0.4, 0.6);              /* clip-threshold tick (-6 dB) */
-  cairo_rectangle(cr, redx, by, 1.0, h_mic); cairo_fill(cr);
+  cairo_set_source_rgba(cr, 0.55, 0.95, 0.55, 0.75);          /* target-zone edge (-6 dB) */
+  cairo_rectangle(cr, zx, by, 1.0, h_mic); cairo_fill(cr);
 
   /* ALC gain reduction (dB, amber). alc_gain is ≤ 0; show its magnitude. */
   double ay = by + h_mic + gap;
@@ -645,8 +653,10 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
  * The frequency axis MATCHES the RX one (span = rate/zoom), capped at the TX DUC
  * IQ bandwidth (192 kHz) since that's all the TX stream carries. */
 #define TX_IQ_BW 192000.0      /* TX DUC IQ bandwidth = widest possible TX span (Hz) */
-#define MIC_GAIN_MIN (-12.0)   /* TX mic-gain slider range, dB (piHPSDR default 0) */
-#define MIC_GAIN_MAX  40.0
+#define MIC_GAIN_MIN (-12.0)   /* TX mic-gain slider range, dB — piHPSDR sliders.c:643 */
+#define MIC_GAIN_MAX  50.0
+#define COMP_DB_MIN   0.0      /* PROC compression range, dB (0 = auto-leveler only) */
+#define COMP_DB_MAX   20.0
 
 /* TX display span (Hz): the RX span (rate/zoom), capped at what the TX IQ holds. */
 static double tx_span_hz(App *app) {
@@ -1203,6 +1213,8 @@ static void app_to_settings(const App *app, Settings *s) {
   s->tx_tune  = app->tx_tune_w;
   s->tx_swr   = app->tx_swr_alarm;
   s->mic_gain = app->tx_mic_gain;
+  s->tx_comp    = app->tx_comp;
+  s->tx_comp_db = app->tx_comp_db;
   s->tx_pan_high = app->tx_pan_high;
   s->tx_pan_low  = app->tx_pan_low;
   /* per-mode filter memory → "modeid=idx;..." */
@@ -2107,6 +2119,18 @@ static void on_mic_gain_changed(GtkRange *r, gpointer data) {
   tx_run_set_mic_gain(app->tx_mic_gain);   /* live into the WDSP TX panel (SSB voice) */
   schedule_save(app);
 }
+static void on_comp_toggled(GtkToggleButton *b, gpointer data) {
+  App *app = (App *)data;
+  app->tx_comp = gtk_toggle_button_get_active(b) ? 1 : 0;
+  tx_run_set_comp(app->tx_comp, app->tx_comp_db);   /* live (WDSP setters lock) */
+  schedule_save(app);
+}
+static void on_comp_level_changed(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  app->tx_comp_db = gtk_range_get_value(r);
+  tx_run_set_comp(app->tx_comp, app->tx_comp_db);
+  schedule_save(app);
+}
 
 static GtkWidget *build_bottom_controls(App *app) {
   GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
@@ -2172,6 +2196,28 @@ static GtkWidget *build_bottom_controls(App *app) {
   gtk_scale_set_format_value_func(GTK_SCALE(micg), fmt_db, NULL, NULL);
   g_signal_connect(micg, "value-changed", G_CALLBACK(on_mic_gain_changed), app);
   gtk_box_append(GTK_BOX(bar), labeled("Mic", micg));
+
+  /* Speech processor (PROC): toggle + compression level. Off = the chain has NO
+   * makeup gain (voice PEP = mic peaks × mic gain, the ALC only limits); on = the
+   * WDSP auto-leveler (+8 dB) + COMP at this level (piHPSDR tx_set_compressor).
+   * 0 dB is meaningful — leveler only. */
+  GtkWidget *procbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+  GtkWidget *proct = gtk_toggle_button_new_with_label("PROC");
+  gtk_widget_add_css_class(proct, "mode");
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(proct), app->tx_comp != 0);
+  gtk_widget_set_tooltip_text(proct,
+      "Speech processor: auto-leveler (+8 dB) + compression (SSB voice)");
+  g_signal_connect(proct, "toggled", G_CALLBACK(on_comp_toggled), app);
+  gtk_box_append(GTK_BOX(procbox), proct);
+  GtkWidget *procl = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, COMP_DB_MIN, COMP_DB_MAX, 1);
+  gtk_range_set_value(GTK_RANGE(procl), app->tx_comp_db);      /* before wiring: no send */
+  gtk_widget_set_size_request(procl, 100, -1);
+  gtk_scale_set_draw_value(GTK_SCALE(procl), TRUE);
+  gtk_scale_set_value_pos(GTK_SCALE(procl), GTK_POS_RIGHT);
+  gtk_scale_set_format_value_func(GTK_SCALE(procl), fmt_db, NULL, NULL);
+  g_signal_connect(procl, "value-changed", G_CALLBACK(on_comp_level_changed), app);
+  gtk_box_append(GTK_BOX(procbox), procl);
+  gtk_box_append(GTK_BOX(bar), labeled("Proc", procbox));
 
   GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_set_hexpand(spacer, TRUE);
@@ -2884,6 +2930,8 @@ static void start_radio(App *app) {
   app->tx_tune_w     = st.tx_tune  < 0.0 ? 0.0 : (st.tx_tune  > 100.0 ? 100.0 : st.tx_tune);
   app->tx_swr_alarm  = st.tx_swr   < 2.0 ? 2.0 : (st.tx_swr   > 5.0   ? 5.0   : st.tx_swr);
   app->tx_mic_gain   = st.mic_gain < MIC_GAIN_MIN ? MIC_GAIN_MIN : (st.mic_gain > MIC_GAIN_MAX ? MIC_GAIN_MAX : st.mic_gain);
+  app->tx_comp       = st.tx_comp ? 1 : 0;
+  app->tx_comp_db    = st.tx_comp_db < COMP_DB_MIN ? COMP_DB_MIN : (st.tx_comp_db > COMP_DB_MAX ? COMP_DB_MAX : st.tx_comp_db);
   app->fps    = st.fps;
   app->latency = st.latency;
   app->audio_rate = st.audio_rate >= 48000 ? st.audio_rate : 48000;
@@ -3097,6 +3145,7 @@ static void start_radio(App *app) {
     app->tx_ready = 1;
     tx_push_cfg(app);
     tx_run_set_mic_gain(app->tx_mic_gain);   /* persisted SSB mic gain into the TX panel */
+    tx_run_set_comp(app->tx_comp, app->tx_comp_db);   /* persisted PROC (COMP + leveler) */
     tx_run_set_span(tx_span_hz(app));  /* TX span ← saved zoom, matching the RX axis */
     /* CW speed (F6d): env override for testing until the F6d-1c WPM control lands. */
     { const char *w = getenv("SDRFL_CW_WPM"); int wpm = w ? atoi(w) : 20;

@@ -124,6 +124,23 @@ void tx_dsp_set_mic_gain(double db) {
   g_mutex_unlock(&t_lock);
 }
 
+void tx_dsp_set_compressor(int on, double gain_db) {
+  g_mutex_lock(&t_lock);
+  if (t_ready) {
+    /* piHPSDR tx_set_compressor order: leveler + CESSB first, compressor run
+     * last — SetTXACompressorRun re-runs TXASetupBPFilters, which needs the
+     * final osctrl state to bring the bp1/bp2 aux filters in. */
+    SetTXALevelerSt(t_id, on ? 1 : 0);
+    SetTXALevelerAttack(t_id, 1);
+    SetTXALevelerDecay(t_id, 500);
+    SetTXALevelerTop(t_id, 8.0);
+    SetTXAosctrlRun(t_id, (on && gain_db > 5.5) ? 1 : 0);
+    SetTXACompressorGain(t_id, gain_db);
+    SetTXACompressorRun(t_id, on ? 1 : 0);
+  }
+  g_mutex_unlock(&t_lock);
+}
+
 void tx_dsp_tune_tone(int on, double offset_hz) {
   g_mutex_lock(&t_lock);
   if (t_ready) {

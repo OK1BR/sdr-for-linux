@@ -30,7 +30,7 @@ static void ok(const char *what, int cond, const char *detail) {
 }
 
 /* ---- 1. TX DSP: collect the IQ the callback produces --------------------- */
-#define MAXP 200000
+#define MAXP 640000   /* 300 blocks × 2048 pairs — room for the PROC settle runs */
 static double g_iq[2 * MAXP];
 static int    g_np;
 static void on_tx_iq(const double *iq, int n, void *u) {
@@ -53,27 +53,41 @@ static double cmag_at(const double *iq, int n, double f, double fs) {
   }
   return sqrt(re * re + im * im) / n;
 }
-/* Feed a 1000 Hz mic tone through a fresh TX channel in `mode`; return the |DFT|
- * at +1000/-1000/+5000 Hz over a settled window. Returns the fexchange0 error. */
-static int run_tone(int mode, double *m_plus, double *m_minus, double *m_junk) {
+/* Peak envelope sqrt(I²+Q²) over a window — for the ALC-ceiling check. */
+static double env_peak(const double *iq, int n) {
+  double pk = 0.0;
+  for (int k = 0; k < n; k++) {
+    double e = iq[2 * k] * iq[2 * k] + iq[2 * k + 1] * iq[2 * k + 1];
+    if (e > pk) { pk = e; }
+  }
+  return sqrt(pk);
+}
+
+/* Feed a 1000 Hz mic tone (amplitude `amp`, `blocks`×512 samples, optional PROC)
+ * through a fresh TX channel in `mode`; return the |DFT| at +1000/-1000/+5000 Hz
+ * plus the envelope peak over the settled tail. Returns the fexchange0 error. */
+static int run_tone(int mode, double amp, int blocks, int comp, double comp_db,
+                    double *m_plus, double *m_minus, double *m_junk, double *m_env) {
   g_np = 0;
   /* Signed passband selects the sideband in WDSP (same convention as RX): USB is
    * a positive passband, LSB a negative one (cf. gui.c FILT_USB/FILT_LSB). */
   double flo = (mode == TXTEST_LSB) ? -2850.0 : 150.0;
   double fhi = (mode == TXTEST_LSB) ?  -150.0 : 2850.0;
   tx_dsp_create(mode, flo, fhi, on_tx_iq, NULL);
+  tx_dsp_set_compressor(comp, comp_db);
   tx_dsp_run(1);
   float mic[512];
   double ph = 0.0, dph = 2.0 * M_PI * 1000.0 / 48000.0;
-  for (int b = 0; b < 90; b++) {                 /* ~0.96 s of audio */
-    for (int i = 0; i < 512; i++) { mic[i] = (float)(0.5 * sin(ph)); ph += dph; }
+  for (int b = 0; b < blocks; b++) {
+    for (int i = 0; i < 512; i++) { mic[i] = (float)(amp * sin(ph)); ph += dph; }
     tx_dsp_feed_mic(mic, 512);
   }
-  int a0 = 120000, an = 40000;                   /* settled window, past transients */
-  if (a0 + an > g_np) { a0 = g_np / 2; an = g_np - a0; }
+  int an = 40000, a0 = g_np - an;                /* settled tail, past transients */
+  if (a0 < 0) { a0 = g_np / 2; an = g_np - a0; }
   *m_plus  = cmag_at(g_iq + 2 * a0, an, +1000.0, 192000.0);
   *m_minus = cmag_at(g_iq + 2 * a0, an, -1000.0, 192000.0);
   *m_junk  = cmag_at(g_iq + 2 * a0, an, +5000.0, 192000.0);
+  if (m_env) { *m_env = env_peak(g_iq + 2 * a0, an); }
   int err = tx_dsp_last_error();
   tx_dsp_destroy();
   return err;
@@ -110,8 +124,8 @@ int main(void) {
    * correct upper sideband on air (verified live at F5). */
   printf("[TX DSP] 1000 Hz mic tone; each mode clean SSB, USB/LSB opposite:\n");
   double up, um, uj, lp, lm, lj;
-  int uerr = run_tone(TXTEST_USB, &up, &um, &uj);
-  int lerr = run_tone(TXTEST_LSB, &lp, &lm, &lj);
+  int uerr = run_tone(TXTEST_USB, 0.5, 90, 0, 0.0, &up, &um, &uj, NULL);
+  int lerr = run_tone(TXTEST_LSB, 0.5, 90, 0, 0.0, &lp, &lm, &lj, NULL);
   char det[160];
   ok("fexchange0 no error (USB+LSB)", uerr == 0 && lerr == 0, "");
   double us_hi = up > um ? up : um, us_lo = up > um ? um : up;
@@ -123,6 +137,31 @@ int main(void) {
   int lsb_side = lp > lm ? +1 : -1;
   snprintf(det, sizeof det, "USB→%+dkHz side, LSB→%+dkHz side", usb_side, lsb_side);
   ok("USB and LSB on opposite sidebands", usb_side != lsb_side, det);
+
+  /* ---- 1b. PROC (leveler + COMP): the only makeup gain in the chain ------ */
+  /* Without PROC the chain is unity (ALC only attenuates) — a quiet mic gives a
+   * quiet exciter. With PROC on, a quiet tone must come up (leveler +8 dB and
+   * COMP gain), a modest tone must reach ~full scale, the ALC must hold the
+   * ceiling, and the signal must stay clean SSB. 300 blocks ≈ 3.2 s so the
+   * leveler (decay 500 ms) settles before the measured tail. */
+  printf("\n[PROC] leveler + compressor (piHPSDR tx_set_compressor):\n");
+  {
+    double qp, qm, qj, cp, cm, cj, fenv;
+    run_tone(TXTEST_USB, 0.05, 300, 0, 0.0,  &qp, &qm, &qj, NULL);  /* quiet, off  */
+    run_tone(TXTEST_USB, 0.05, 300, 1, 10.0, &cp, &cm, &cj, NULL);  /* quiet, 10dB */
+    /* USB puts the tone on the −1 kHz side of the complex baseband (see check 1);
+     * the signal is max(±1 kHz), the leftover image is min(±1 kHz). */
+    double qs = qp > qm ? qp : qm;
+    double cs = cp > cm ? cp : cm, ci = cp > cm ? cm : cp;
+    snprintf(det, sizeof det, "off=%.4f on=%.4f (%.1fx)", qs, cs, qs > 0 ? cs / qs : 0.0);
+    ok("PROC lifts a quiet (-26 dBFS) tone >2x", qs > 1e-3 && cs > 2.0 * qs, det);
+    ok("PROC output stays clean SSB", cs > 20.0 * ci && cs > 20.0 * cj, "");
+    double fp, fm, fj;
+    run_tone(TXTEST_USB, 0.5, 300, 1, 10.0, &fp, &fm, &fj, &fenv);  /* modest, 10dB */
+    snprintf(det, sizeof det, "envelope peak = %.3f", fenv);
+    ok("PROC drives a modest tone to full scale", fenv > 0.85, det);
+    ok("ALC holds the ceiling (env <= 1.05)", fenv <= 1.05, det);
+  }
 
   /* ---- 2. encoder: hand values + round-trip --------------------------- */
   printf("\n[encode] 24-bit BE mapping (np.c:2919):\n");

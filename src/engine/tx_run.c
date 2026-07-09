@@ -405,6 +405,8 @@ void tx_run_set_freq(long long tx_freq_hz) {
 
 void tx_run_set_mic_gain(double db) { tx_dsp_set_mic_gain(db); }   /* tx_dsp locks internally */
 
+void tx_run_set_comp(int on, double gain_db) { tx_dsp_set_compressor(on, gain_db); }
+
 void tx_run_set_span(double span_hz) { tx_analyzer_set_span(span_hz); }   /* TX zoom (analyzer locks) */
 
 void tx_run_request(int want_mox, int want_tune) {

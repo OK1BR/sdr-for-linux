@@ -42,6 +42,15 @@ void tx_dsp_set_mode(int mode, double flo, double fhi);
 void tx_dsp_set_mic_gain(double db);        /* mic gain in dB (SetTXAPanelGain1) */
 
 /*
+ * Speech processor (PROC) — piHPSDR tx_set_compressor @974acba: the WDSP COMP
+ * compressor at `gain_db` (0-20 dB; 0 dB still useful) plus, whenever on, the
+ * auto-LEVELER (attack 1 / decay 500 / top 8 dB) and, above 5.5 dB, the CESSB
+ * overshoot control. This is the ONLY makeup gain in the TX chain: without it
+ * voice PEP is exactly (mic peak × mic gain)² — the ALC only attenuates.
+ */
+void tx_dsp_set_compressor(int on, double gain_db);
+
+/*
  * The WDSP TX channel's mic input rate (Hz). The mic capture must deliver samples
  * at exactly this rate — feed_mic → fexchange0 assumes it. Exposed so the GUI can
  * open the PipeWire capture at the right rate without hard-coding 48000.

@@ -62,6 +62,8 @@ typedef struct {
   double    tx_tune;    /* TUNE power request (W)                                 */
   double    tx_swr;     /* SWR trip threshold                                     */
   double    mic_gain;   /* TX mic gain (dB, SSB voice) — SetTXAPanelGain1         */
+  int       tx_comp;    /* speech processor (PROC) on/off                         */
+  double    tx_comp_db; /* PROC compression (dB, 0-20; 0 = auto-leveler only)     */
   double    tx_pan_high, tx_pan_low; /* TX panadapter dB window (0/0 = autofit)   */
   char      pa_cal[256];  /* per-band PA calibration (dB), "6m=53.0;20m=53.0;.." */
   char      pa_trim[256]; /* wattmeter correction curve, 11 pts "p0;p1;..;p10"   */

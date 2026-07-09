@@ -84,6 +84,10 @@ void tx_run_set_freq(long long tx_freq_hz);
 /* Mic gain in dB → the WDSP TX panel (SetTXAPanelGain1). Safe if TX isn't up. */
 void tx_run_set_mic_gain(double db);
 
+/* Speech processor (PROC): COMP at gain_db + auto-leveler, piHPSDR
+ * tx_set_compressor semantics (see tx_dsp_set_compressor). Safe if TX isn't up. */
+void tx_run_set_comp(int on, double gain_db);
+
 /* TX panadapter zoom: set the displayed span (Hz). Safe if TX isn't up. */
 void tx_run_set_span(double span_hz);
 
