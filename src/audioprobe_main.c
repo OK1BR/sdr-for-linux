@@ -69,7 +69,7 @@ int main(void) {
 
   if (getenv("SDRFL_TONE")) {
     printf("sdrfl-audioprobe TONE: 700 Hz for 2 s via PipeWire (lat target %d ms)\n", lat);
-    if (audio_start(AUDIO_RATE, 1, lat) != 0) { fprintf(stderr, "audio_start failed\n"); return 2; }
+    if (audio_start(AUDIO_RATE, 1, lat, NULL) != 0) { fprintf(stderr, "audio_start failed\n"); return 2; }
     double ph = 0.0, dph = 2.0 * M_PI * 700.0 / AUDIO_RATE;
     float blk[480];
     for (int b = 0; b < 200; b++) {              /* 200 × 10 ms = 2 s */
@@ -104,7 +104,7 @@ int main(void) {
   printf("RX %lld Hz @ %d Hz, mode %s (%.0f..%.0f Hz), vol %.0f dB, audio lat %d ms\n",
          freq, rate, mname, flo, fhi, vol, lat);
 
-  if (audio_start(AUDIO_RATE, 2, lat) != 0) { fprintf(stderr, "audio_start failed\n"); return 2; }  /* stereo: demod feeds L/R */
+  if (audio_start(AUDIO_RATE, 2, lat, NULL) != 0) { fprintf(stderr, "audio_start failed\n"); return 2; }  /* stereo: demod feeds L/R */
   if (demod_create(0, rate, mode, flo, fhi, vol) != 0) { fprintf(stderr, "demod_create failed\n"); audio_stop(); return 3; }
   if (p2_rx_start(dev, freq, rate, feed_cb, NULL) != 0) {
     fprintf(stderr, "p2_rx_start failed\n");

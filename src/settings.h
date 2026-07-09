@@ -57,9 +57,9 @@ typedef struct {
   double    tx_swr;     /* SWR trip threshold                                     */
   char      pa_cal[256];  /* per-band PA calibration (dB), "6m=53.0;20m=53.0;.." */
   char      pa_trim[256]; /* wattmeter correction curve, 11 pts "p0;p1;..;p10"   */
-  int       audio_rate;   /* RX audio output sample rate (Hz); capped by IQ rate  */
-  char      mic_device[128]; /* TX mic capture: PW node.name ("" = default)       */
-  int       mic_rate;     /* TX mic capture sample rate (Hz)                       */
+  int       audio_rate;   /* shared audio sample rate (RX out + TX mic), Hz        */
+  char      audio_device[128]; /* RX playback: PW node.name ("" = default)         */
+  char      mic_device[128];   /* TX mic capture: PW node.name ("" = default)      */
 } Settings;
 
 /*

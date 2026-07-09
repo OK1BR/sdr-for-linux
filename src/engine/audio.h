@@ -12,11 +12,24 @@
 #ifndef SDRFL_ENGINE_AUDIO_H
 #define SDRFL_ENGINE_AUDIO_H
 
+/* One playback sink for the RX output-device picker (node.name + friendly label). */
+typedef struct {
+  char name[128];   /* PipeWire node.name — pass to audio_start() as `target` */
+  char desc[160];   /* node.description — human label for the combo           */
+} audio_sink;
+
+/*
+ * Enumerate Audio/Sink playback devices into out[0..max-1]; returns the count
+ * written. One synchronous PipeWire registry roundtrip — call from the GUI thread.
+ */
+int audio_list_sinks(audio_sink *out, int max);
+
 /*
  * Start the sink: `rate` Hz, `channels` (1 = mono), targeting ~`latency_ms` of
- * output latency (smaller = lower latency, more CPU). Returns 0 on success.
+ * output latency. `target` pins the output device by PipeWire node.name; NULL/""
+ * = system default. Returns 0 on success.
  */
-int audio_start(int rate, int channels, int latency_ms);
+int audio_start(int rate, int channels, int latency_ms, const char *target);
 
 /*
  * Push `frames` interleaved float frames to the sink (channels-per-frame as

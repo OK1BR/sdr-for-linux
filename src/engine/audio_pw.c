@@ -89,8 +89,68 @@ int audio_queued(void) {
   return (int)(h - t);
 }
 
+/* --- device enumeration (one-shot registry roundtrip) --------------------- */
+struct sink_enum {
+  audio_sink          *out;
+  int                  max, count;
+  struct pw_main_loop *loop;
+};
+static void sink_global(void *data, uint32_t id, uint32_t perm, const char *type,
+                        uint32_t ver, const struct spa_dict *props) {
+  (void)id; (void)perm; (void)ver;
+  struct sink_enum *st = data;
+  if (!props || !type || strcmp(type, PW_TYPE_INTERFACE_Node) != 0) { return; }
+  const char *cls = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS);
+  if (!cls || strcmp(cls, "Audio/Sink") != 0) { return; }        /* playback devices */
+  const char *name = spa_dict_lookup(props, PW_KEY_NODE_NAME);
+  if (!name || st->count >= st->max) { return; }
+  const char *desc = spa_dict_lookup(props, PW_KEY_NODE_DESCRIPTION);
+  snprintf(st->out[st->count].name, sizeof st->out[0].name, "%s", name);
+  snprintf(st->out[st->count].desc, sizeof st->out[0].desc, "%s", desc ? desc : name);
+  st->count++;
+}
+static const struct pw_registry_events sink_registry_events = {
+  PW_VERSION_REGISTRY_EVENTS, .global = sink_global,
+};
+static void sink_core_done(void *data, uint32_t id, int seq) {
+  (void)seq;
+  struct sink_enum *st = data;
+  if (id == PW_ID_CORE) { pw_main_loop_quit(st->loop); }
+}
+static const struct pw_core_events sink_core_events = {
+  PW_VERSION_CORE_EVENTS, .done = sink_core_done,
+};
+int audio_list_sinks(audio_sink *out, int max) {
+  if (!out || max <= 0) { return 0; }
+  pw_init(NULL, NULL);
+  struct pw_main_loop *loop = pw_main_loop_new(NULL);
+  if (!loop) { return 0; }
+  struct pw_context *ctx = pw_context_new(pw_main_loop_get_loop(loop), NULL, 0);
+  struct pw_core *core = ctx ? pw_context_connect(ctx, NULL, 0) : NULL;
+  if (!core) {
+    if (ctx) { pw_context_destroy(ctx); }
+    pw_main_loop_destroy(loop);
+    return 0;
+  }
+  struct sink_enum st = { .out = out, .max = max, .count = 0, .loop = loop };
+  struct pw_registry *reg = pw_core_get_registry(core, PW_VERSION_REGISTRY, 0);
+  struct spa_hook reg_hook, core_hook;
+  spa_zero(reg_hook); spa_zero(core_hook);
+  pw_registry_add_listener(reg, &reg_hook, &sink_registry_events, &st);
+  pw_core_add_listener(core, &core_hook, &sink_core_events, &st);
+  pw_core_sync(core, PW_ID_CORE, 0);
+  pw_main_loop_run(loop);
+  spa_hook_remove(&reg_hook);
+  spa_hook_remove(&core_hook);
+  pw_proxy_destroy((struct pw_proxy *)reg);
+  pw_core_disconnect(core);
+  pw_context_destroy(ctx);
+  pw_main_loop_destroy(loop);
+  return st.count;
+}
+
 /* --- lifecycle ------------------------------------------------------------ */
-int audio_start(int rate, int channels, int latency_ms) {
+int audio_start(int rate, int channels, int latency_ms, const char *target) {
   a_channels = (channels < 1) ? 1 : (channels > MAX_CH ? MAX_CH : channels);
   channels = a_channels;
   atomic_store(&a_head, 0);
@@ -105,16 +165,16 @@ int audio_start(int rate, int channels, int latency_ms) {
   char latprop[32];
   snprintf(latprop, sizeof(latprop), "%d/%d", q, rate);
 
-  a_stream = pw_stream_new_simple(
-      pw_thread_loop_get_loop(a_loop),
-      "sdr-for-linux",
-      pw_properties_new(
+  struct pw_properties *props = pw_properties_new(
           PW_KEY_MEDIA_TYPE,     "Audio",
           PW_KEY_MEDIA_CATEGORY, "Playback",
           PW_KEY_MEDIA_ROLE,     "Communication",
           PW_KEY_NODE_LATENCY,   latprop,
           PW_KEY_NODE_NAME,      "sdr-for-linux",
-          NULL),
+          NULL);
+  if (target && *target) { pw_properties_set(props, PW_KEY_TARGET_OBJECT, target); }
+  a_stream = pw_stream_new_simple(
+      pw_thread_loop_get_loop(a_loop), "sdr-for-linux", props,
       &stream_events, NULL);
   if (!a_stream) { pw_thread_loop_destroy(a_loop); a_loop = NULL; return -2; }
 
