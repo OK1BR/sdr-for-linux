@@ -2439,7 +2439,7 @@ static void on_pref_ip(GtkEditable *e, gpointer data) {
 /* Audio device + sample-rate selection (restart-to-apply, like the IQ rate). The
  * RX audio rate is the sample rate (Nyquist ceiling), NOT the audio bandwidth —
  * that stays the filter's job. Capped to the IQ rate at apply time. */
-static const int AUDIO_RATES[] = {48000, 96000, 192000, 384000, 768000};
+static const int AUDIO_RATES[] = {48000, 96000, 192000};
 static void on_pref_audio_rate(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   (void)ps; App *app = (App *)data;
   guint i = adw_combo_row_get_selected(r);
@@ -2626,8 +2626,9 @@ static AdwDialog *build_prefs(App *app) {
       if (AUDIO_RATES[i] == app->audio_rate) { sel = i; }
     }
     GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "Sample rate",
-        "subtitle", "RX output, ≤ IQ rate; DSP caps at 192 kHz, above is output "
-                    "resampling (mic is fixed 48 kHz by WDSP) · restart to apply",
+        "subtitle", "RX output, ≤ IQ rate; the AF band is filter-limited, above "
+                    "192 kHz is only fatter samples (mic is fixed 48 kHz by WDSP) "
+                    "· restart to apply",
         "model", m, "selected", sel, NULL);
     g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_audio_rate), app);
     adw_preferences_group_add(g, row);
@@ -2994,7 +2995,11 @@ static void start_radio(App *app) {
   app->tx_mon_db     = st.tx_mon_db < MON_DB_MIN ? MON_DB_MIN : (st.tx_mon_db > MON_DB_MAX ? MON_DB_MAX : st.tx_mon_db);
   app->fps    = st.fps;
   app->latency = st.latency;
+  /* Clamp to the supported 48-192 k window — a stale >192 k value from an older
+   * config would otherwise still apply (the AF band is filter-limited; higher
+   * rates are only fatter samples — Richard's call, 2026-07-10). */
   app->audio_rate = st.audio_rate >= 48000 ? st.audio_rate : 48000;
+  if (app->audio_rate > 192000) { app->audio_rate = 192000; }
   g_strlcpy(app->audio_device, st.audio_device, sizeof app->audio_device);
   g_strlcpy(app->mic_device, st.mic_device, sizeof app->mic_device);
   /* Snap the saved zoom to the nearest octave detent in [1, ZOOM_MAX]. */
