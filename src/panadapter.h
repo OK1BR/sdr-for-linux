@@ -13,6 +13,15 @@
 
 #include <cairo.h>
 
+/*
+ * Canvas fonts. The generic Cairo "monospace" resolves (via fontconfig) to a
+ * serif Courier clone — Nimbus Mono PS — on this system, which clashes with the
+ * sans libadwaita UI. Name the libadwaita families explicitly so the whole app
+ * reads as one type system: Adwaita Mono (tabular readouts) + Adwaita Sans (UI).
+ */
+#define FONT_MONO "Adwaita Mono"
+#define FONT_UI   "Adwaita Sans"
+
 #include "client.h"
 
 /*
@@ -50,6 +59,13 @@ void panadapter_set_range(double high, double low);
  * module state; set before panadapter_draw() each frame). Both default on.
  */
 void panadapter_set_grid(int show_grid, int show_labels);
+
+/*
+ * Suppress (0) or restore (1) the built-in top-left readout (VFO frequency +
+ * sub-line). The GUI turns it off around the TX panadapter so it can draw its own
+ * red power/SWR readout in its place. Persistent module state; default on.
+ */
+void panadapter_set_readout(int on);
 
 /* Width (px) of the left dB-scale gutter — the grab zone for vertical
  * pan/zoom. The GUI hit-tests against this so the affordance matches the draw. */

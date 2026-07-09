@@ -40,6 +40,9 @@ static int      d_binaural;        /* binaural stereo output (WDSP panel copy) *
 static int      d_rate;            /* IQ input rate (blocks/s = d_rate/1024) */
 static double   d_vol_db;          /* AF volume in dB (panel gain source)    */
 static int      d_dbg;             /* SDRFL_DEBUG_LEVELS: 1 Hz meter dump    */
+static int      d_mute_target;     /* g_atomic: 1 = want RX muted (RX-on-TX)  */
+static double   d_mute_gain = 1.0; /* applied output gain, ramped → target (feed thread) */
+#define D_FADE_STEP (1.0 / 960.0)  /* ~20 ms mute/unmute fade at 48 kHz (no click) */
 static int      d_dbg_blocks;      /* fexchange0 calls since last dump       */
 static double   d_dbg_pk;          /* raw WDSP-out peak since last dump      */
 
@@ -156,6 +159,9 @@ void demod_feed(const double *iq, int n_pairs) {
         fexchange0(d_id, d_iq, d_audio, &err);   /* blocks on WDSP compute (bfo=1) */
         d_blocks++;
         if (err != 0) { d_err = err; d_ferr++; }
+        /* RX-on-TX mute: ramp a gain toward 0 (muted) / 1 (open) so the sink never
+         * sees a step → no click. The WDSP demod keeps running underneath. */
+        double mgoal = g_atomic_int_get(&d_mute_target) ? 0.0 : 1.0;
         for (int k = 0; k < d_output; k++) {
           double rl = d_audio[k * 2];             /* raw WDSP out L (I)            */
           double rr = d_audio[k * 2 + 1];         /* raw WDSP out R (Q; == L unless binaural) */
@@ -166,8 +172,10 @@ void demod_feed(const double *iq, int n_pairs) {
           if (sl < -1.0) { sl = -1.0; }
           if (sr >  1.0) { sr =  1.0; }
           if (sr < -1.0) { sr = -1.0; }
-          d_out[k * 2]     = (float)sl;           /* interleaved L/R */
-          d_out[k * 2 + 1] = (float)sr;
+          if      (d_mute_gain < mgoal) { d_mute_gain += D_FADE_STEP; if (d_mute_gain > mgoal) { d_mute_gain = mgoal; } }
+          else if (d_mute_gain > mgoal) { d_mute_gain -= D_FADE_STEP; if (d_mute_gain < mgoal) { d_mute_gain = mgoal; } }
+          d_out[k * 2]     = (float)(sl * d_mute_gain);   /* interleaved L/R */
+          d_out[k * 2 + 1] = (float)(sr * d_mute_gain);
           a = sl < 0 ? -sl : sl;
           if (a > d_peak) { d_peak = a; }
         }
@@ -226,6 +234,8 @@ void demod_set_volume(double db) {
   if (d_ready) { SetRXAPanelGain1(d_id, pow(10.0, 0.05 * db)); }  /* AF gain dB → linear */
   g_mutex_unlock(&d_lock);
 }
+
+void demod_set_mute(int on) { g_atomic_int_set(&d_mute_target, on ? 1 : 0); }
 
 /* AGC character: 0=off, 1=long, 2=slow, 3=medium, 4=fast (thread-safe). */
 void demod_set_agc(int mode) {

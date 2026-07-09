@@ -50,6 +50,10 @@ void demod_set_binaural(int on);
 /* Set the AF volume (dB, 0..-40) live on the running channel (thread-safe). */
 void demod_set_volume(double db);
 
+/* Mute the RX audio output (silence to the sink) — used to silence the receiver
+ * while transmitting. Thread-safe; the WDSP demod keeps running underneath. */
+void demod_set_mute(int on);
+
 /* Set the filter passband [flo,fhi] Hz live (same mode); thread-safe. */
 void demod_set_passband(double flo, double fhi);
 

@@ -14,6 +14,7 @@
 #define GROUP_RX      "rx"
 #define GROUP_DISPLAY "display"
 #define GROUP_WINDOW  "window"
+#define GROUP_TX      "tx"
 
 static char cfg_path[1024];
 
@@ -115,6 +116,16 @@ int settings_load(Settings *s) {
       char *vf = g_key_file_get_string(kf, GROUP_RX, "var_filters", NULL);
       if (vf) { g_strlcpy(s->var_filt, vf, sizeof(s->var_filt)); g_free(vf); }
     }
+    if (g_key_file_has_key(kf, GROUP_TX, "pa_enable", NULL))
+      s->tx_pa = g_key_file_get_integer(kf, GROUP_TX, "pa_enable", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "antenna", NULL))
+      s->tx_ant = g_key_file_get_integer(kf, GROUP_TX, "antenna", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "drive_w", NULL))
+      s->tx_drive = g_key_file_get_double(kf, GROUP_TX, "drive_w", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "tune_w", NULL))
+      s->tx_tune = g_key_file_get_double(kf, GROUP_TX, "tune_w", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "swr_alarm", NULL))
+      s->tx_swr = g_key_file_get_double(kf, GROUP_TX, "swr_alarm", NULL);
     if (g_key_file_has_key(kf, GROUP_WINDOW, "width", NULL))
       s->win_w = g_key_file_get_integer(kf, GROUP_WINDOW, "width", NULL);
     if (g_key_file_has_key(kf, GROUP_WINDOW, "height", NULL))
@@ -168,6 +179,11 @@ int settings_save(const Settings *s) {
   g_key_file_set_string (kf, GROUP_RX,      "region",     s->region);
   g_key_file_set_string (kf, GROUP_RX,      "country",    s->country);
   g_key_file_set_string (kf, GROUP_DISPLAY, "band_levels", s->band_levels);
+  g_key_file_set_integer(kf, GROUP_TX,     "pa_enable", s->tx_pa);
+  g_key_file_set_integer(kf, GROUP_TX,     "antenna",   s->tx_ant);
+  g_key_file_set_double (kf, GROUP_TX,     "drive_w",   s->tx_drive);
+  g_key_file_set_double (kf, GROUP_TX,     "tune_w",    s->tx_tune);
+  g_key_file_set_double (kf, GROUP_TX,     "swr_alarm", s->tx_swr);
   g_key_file_set_integer(kf, GROUP_WINDOW, "width",     s->win_w);
   g_key_file_set_integer(kf, GROUP_WINDOW, "height",    s->win_h);
   g_key_file_set_integer(kf, GROUP_WINDOW, "maximized", s->win_max);

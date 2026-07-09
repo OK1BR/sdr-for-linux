@@ -41,6 +41,7 @@
 #include "settings.h"
 #include "bandplan.h"
 #include "wisdom_gate.h"
+#include "tx_run.h"
 
 #define ENGINE_PIXELS 2048
 #define ENGINE_FPS    25
@@ -50,6 +51,15 @@
 #define TARGET_FLOOR  -115.0
 
 #define NBANDS 10   /* HF bands we remember per-band dB levels for */
+
+/* After a TX→RX transition, silence the DEMOD input for a short while so the
+ * "tail" of the T/R-relay crosstalk doesn't pump the AGC (piHPSDR txrxmax:
+ * receiver.c:1355-1369, radio.c:2168-2207 — 31 ms for TUNE). The panadapter
+ * keeps its live RX IQ, so only the audio path (AGC) is silenced. */
+#define RX_SILENCE_MS 20    /* brief demod-input silence to swallow the literal T/R tail */
+#define TX_SETTLE_MS  200   /* keep RX audio muted + ADC-OVL suppressed this long after */
+                            /* unkey, so the AGC recovers before the audio fades back in */
+static volatile int g_rx_silence;   /* g_atomic: RX IQ pairs still to silence to the demod */
 
 typedef struct {
   int         radio_mode;   /* 1 = direct radio, 0 = network server            */
@@ -142,6 +152,32 @@ typedef struct {
   long long   band_freq[NBANDS];  /* per-band last frequency                       */
   GtkWidget  *band_btns[NBANDS];  /* band buttons (NULL if no button), for highlight */
   int         cur_band;      /* index into BANDS for app->freq (-1 = out of band) */
+
+  /* TX (F6a) — the runtime lives in engine/tx_run; the GUI only expresses intent
+   * (TUNE) and reflects status. MOX waits for the mic path (F6c). */
+  int         tx_ready;      /* tx_run started (WDSP TX channel + worker thread up) */
+  int         tx_pa_enabled; /* PA enable — RF impossible when 0 (persisted)        */
+  int         tx_antenna;    /* TX/RX antenna 0/1/2 → ANT1/2/3 (persisted)          */
+  double      tx_drive_w;    /* MOX/voice power request, W (persisted)              */
+  double      tx_tune_w;     /* TUNE power request, W (persisted)                   */
+  double      tx_swr_alarm;  /* SWR trip threshold (persisted)                      */
+  GtkWidget  *tune_btn;      /* TUNE toggle                                         */
+  GtkWidget  *mox_btn;       /* MOX toggle (disabled until F6c)                     */
+  GtkWidget  *tx_label;      /* live TX power/SWR + refusal reason readout          */
+  char        tx_reason[64]; /* last refusal/trip reason to flash                   */
+  gint64      tx_reason_until;/* monotonic µs until which to show tx_reason         */
+  int         tx_keyed_shown;/* last keyed state pushed to the label (repaint gate) */
+  /* TX panadapter: while keyed we show the transmitted spectrum (24 kHz span,
+   * full area, no waterfall) in place of the RX view — like piHPSDR non-duplex. */
+  int         tx_display;    /* currently showing the TX panadapter (keyed)         */
+  float       tx_raw[SPECTRUM_DATA_SIZE];  /* latest TX analyzer pixels (dB)         */
+  float       tx_ema[SPECTRUM_DATA_SIZE];  /* smoothed TX trace (dB)                 */
+  int         tx_ema_w;      /* width of tx_ema (0 = no frame yet)                   */
+  ClientFrame tx_frame;      /* metadata for the TX readout (carrier freq)           */
+  double      tx_fwd_shown;  /* fwd power last drawn in the TX banner                */
+  Waterfall  *tx_wf;         /* TX waterfall (transmitted spectrum history)          */
+  gint64      tx_settle_until;/* monotonic µs: keep RX audio muted + ADC-OVL badge   */
+                             /* suppressed through the TX→RX AGC-recovery window     */
 } App;
 
 /* dB-scale limits for the grab-to-move axis. */
@@ -241,8 +277,22 @@ static const char * const TUNE_STEP_LABELS[] = { "1 Hz", "10 Hz", "100 Hz", "1 k
 
 static void feed_cb(const double *iq, int n_pairs, void *user) {
   (void)user;
-  analyzer_feed(iq, n_pairs);   /* panadapter */
-  demod_feed(iq, n_pairs);      /* audio */
+  analyzer_feed(iq, n_pairs);   /* panadapter — always live */
+  /* Anti-AGC-pump: after TX, feed the demod silence for RX_SILENCE_MS so the
+   * relay-crosstalk tail can't kick the AGC (the analyzer still gets real IQ). */
+  if (g_atomic_int_get(&g_rx_silence) > 0) {
+    static const double zbuf[2 * 4096] = { 0 };
+    int done = 0;
+    while (done < n_pairs) {
+      int chunk = n_pairs - done;
+      if (chunk > 4096) { chunk = 4096; }
+      demod_feed(zbuf, chunk);
+      done += chunk;
+    }
+    g_atomic_int_add(&g_rx_silence, -n_pairs);
+  } else {
+    demod_feed(iq, n_pairs);    /* audio */
+  }
 }
 
 /* Filter presets per mode — piHPSDR filter.c @ 974acba (named presets; Var later). */
@@ -343,7 +393,7 @@ static void draw_freq_scale(cairo_t *cr, App *app, int w, int ph) {
   double step = (nn <= 1 ? 1 : nn <= 2 ? 2 : nn <= 5 ? 5 : 10) * mag;
   int dec = step >= 1000000 ? 1 : step >= 100000 ? 2 : step >= 1000 ? 3 : step >= 100 ? 4 : 5;
 
-  cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
   cairo_set_font_size(cr, 10.0);
   const double ly = 13.0;   /* label baseline — top edge, above the VFO readout */
   for (double f = ceil(left_hz / step) * step; f <= right_hz; f += step) {
@@ -407,6 +457,15 @@ static void draw_band_edges(cairo_t *cr, App *app, int w, int ph) {
   cairo_set_dash(cr, NULL, 0, 0);
 }
 
+/* Top-right meter geometry — shared by the RX S-meter and the TX power meter so
+ * the two read as one family. METER_BY aligns the bar with the frequency readout
+ * (its tick labels line up with the big number's top); METER_RM keeps it off the
+ * right edge. */
+#define METER_BW 384.0
+#define METER_BH 24.0
+#define METER_BY 54.0
+#define METER_RM 28.0   /* right margin */
+
 /* Graphical S-meter, top-right of the panadapter. S1..S9 (6 dB/unit, S9 = -73
  * dBm on HF) then +dB over S9. dBm comes from the WDSP meter (radio) or the
  * server (network). Fill is coloured by the active palette (like spectrum/wf). */
@@ -415,17 +474,22 @@ static void draw_s_meter(cairo_t *cr, App *app, int w) {
   double dbm = app->frame.s_dbm;
   if (dbm < DBM_MIN) { dbm = DBM_MIN; }
   double span = DBM_MAX - DBM_MIN;
-  double bw = 300, bh = 14, bx = w - bw - 16, by = 32;
+  double bw = METER_BW, bh = METER_BH, bx = w - bw - METER_RM, by = METER_BY;
   double fillw = (dbm - DBM_MIN) / span * bw;
   if (fillw > bw) { fillw = bw; }
   cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.5);           /* track */
   cairo_rectangle(cr, bx, by, bw, bh); cairo_fill(cr);
   /* Fill coloured by the active palette (same scheme as the spectrum + waterfall):
    * a horizontal gradient over the whole bar, painted up to the current level. */
+  /* The monochrome palettes have a near-black low end, too dark to read as a
+   * meter fill, so lift them toward white; the colour palettes read fine as-is. */
+  const char *pname = waterfall_palette_name(app->palette);
+  double k = (pname && g_str_has_prefix(pname, "Mono")) ? 0.20 : 0.0;
   cairo_pattern_t *grad = cairo_pattern_create_linear(bx, 0, bx + bw, 0);
   for (int s = 0; s <= 12; s++) {
     double t = s / 12.0, r, g, b;
     waterfall_palette_rgb(t, &r, &g, &b);
+    r += (1.0 - r) * k; g += (1.0 - g) * k; b += (1.0 - b) * k;
     cairo_pattern_add_color_stop_rgba(grad, t, r, g, b, 0.92);
   }
   cairo_save(cr);
@@ -435,8 +499,8 @@ static void draw_s_meter(cairo_t *cr, App *app, int w) {
   cairo_restore(cr);
   cairo_pattern_destroy(grad);
 
-  cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-  cairo_set_font_size(cr, 13.0);
+  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_set_font_size(cr, 15.0);
   const struct { double dbm; const char *l; } mk[] = {
     {-121,"1"},{-109,"3"},{-97,"5"},{-85,"7"},{-73,"9"},{-53,"+20"},{-33,"+40"},{-13,"+60"},
   };
@@ -456,10 +520,81 @@ static void draw_s_meter(cairo_t *cr, App *app, int w) {
   } else {
     snprintf(lbl, sizeof lbl, "S9+%d   %.0f dBm", (int)(lround((d - DBM_S9) / 10.0) * 10), d);
   }
-  cairo_set_font_size(cr, 16.0);
+  cairo_set_font_size(cr, 19.0);
   cairo_text_extents_t ex; cairo_text_extents(cr, lbl, &ex);
   cairo_set_source_rgba(cr, 0.82, 0.92, 0.78, 0.95);
-  cairo_move_to(cr, bx + bw - ex.width, by + bh + 17); cairo_show_text(cr, lbl);
+  cairo_move_to(cr, bx + bw - ex.width, by + bh + 22); cairo_show_text(cr, lbl);
+}
+
+/* TX panadapter (F6a): the transmitted spectrum in a fixed 24 kHz window centred
+ * on the carrier — panadapter (top) + waterfall (bottom), like the RX view but
+ * with a top ±kHz ruler, big red power/SWR numbers, and a red power meter. Auto-
+ * ranges around the carrier peak (TX levels aren't dBm-calibrated). */
+#define TX_PAN_SPAN_HZ 24000.0
+static void draw_tx(cairo_t *cr, int w, int h, App *app) {
+  int n = app->pixels;
+  if (app->tx_ema_w != n) {
+    panadapter_draw(cr, w, h, NULL, NULL, 0, 1, "TX — keying…", NULL, 0.5);
+    return;
+  }
+  tx_run_status ts; tx_run_get_status(&ts);
+  int ph = (int)(h * PANADAPTER_FRACTION);
+  if (ph < 1) { ph = 1; }
+  double peak = app->tx_ema[0];
+  for (int i = 1; i < n; i++) { if (app->tx_ema[i] > peak) { peak = app->tx_ema[i]; } }
+  double high = peak + 10.0, low = peak - 90.0;
+  panadapter_set_range(high, low);
+  panadapter_set_grid(app->show_db_grid, app->show_db_scale);
+
+  /* Panadapter (top): transmitted spectrum, 24 kHz span, carrier centred. Suppress
+   * the built-in white VFO readout — we draw a red power/SWR one instead. */
+  cairo_save(cr);
+  cairo_rectangle(cr, 0, 0, w, ph);
+  cairo_clip(cr);
+  panadapter_set_readout(0);
+  panadapter_draw(cr, w, ph, &app->tx_frame, app->tx_ema, low, high - low, NULL, NULL, 0.5);
+  panadapter_set_readout(1);
+
+  /* 24 kHz frequency ruler at the TOP (like the RX ruler): faint full-height
+   * grid + labelled ±kHz ticks with legibility pills. */
+  double pxhz = (double)w / TX_PAN_SPAN_HZ, cx = w / 2.0;
+  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_set_font_size(cr, 10.0);
+  const double ly = 13.0;
+  cairo_set_line_width(cr, 1.0);
+  for (int khz = -10; khz <= 10; khz += 5) {
+    double x = floor(cx + khz * 1000.0 * pxhz) + 0.5;
+    if (app->show_freq_grid && khz != 0) {
+      cairo_set_source_rgba(cr, 0.5, 0.6, 0.7, 0.11);        /* neutral, like the RX ruler */
+      cairo_move_to(cr, x, 0); cairo_line_to(cr, x, ph); cairo_stroke(cr);
+    }
+    char lbl[8]; snprintf(lbl, sizeof lbl, khz == 0 ? "0" : "%+d", khz);
+    cairo_text_extents_t ex; cairo_text_extents(cr, lbl, &ex);
+    double lx = x - ex.width / 2.0;
+    cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.42);
+    cairo_rectangle(cr, lx - 3, ly - ex.height - 2, ex.width + 6, ex.height + 5);
+    cairo_fill(cr);
+    cairo_set_source_rgba(cr, 0.72, 0.82, 0.94, 0.95);
+    cairo_move_to(cr, lx, ly); cairo_show_text(cr, lbl);
+  }
+  cairo_set_source_rgba(cr, 0.72, 0.82, 0.94, 0.7);
+  cairo_move_to(cr, cx + 10 * 1000.0 * pxhz + 8, ly); cairo_show_text(cr, "kHz");
+  cairo_restore(cr);
+
+  /* TX waterfall (bottom): transmitted-spectrum history. */
+  if (app->tx_wf) { waterfall_draw(app->tx_wf, cr, 0, ph, w, h - ph); }
+  cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.55);
+  cairo_rectangle(cr, 0, ph - 1, w, 2);
+  cairo_fill(cr);
+
+  /* Big red power/SWR numbers, top-left — the RX frequency readout's TX sibling.
+   * No sub-line: power + SWR appearing is itself the "we're transmitting" cue. */
+  char big[48];
+  snprintf(big, sizeof big, "%.0f W   ·   SWR %.1f", ts.fwd_w, ts.swr);
+  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+  cairo_set_font_size(cr, 32.0);
+  cairo_set_source_rgba(cr, 1.0, 0.34, 0.28, 0.98);
+  cairo_move_to(cr, 44, 60); cairo_show_text(cr, big);
 }
 
 static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer data) {
@@ -482,6 +617,9 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
                     app->radio_mode ? "Radio up — calibrating…" : "Connected — waiting for spectrum…", NULL, 0.5);
     return;
   }
+
+  /* While keyed, the whole area is the TX panadapter (no RX trace / waterfall). */
+  if (app->tx_display) { draw_tx(cr, w, h, app); return; }
 
   int ph = (int)(h * PANADAPTER_FRACTION);
   if (ph < 1) ph = 1;
@@ -560,7 +698,7 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
   int ovl1 = now < app->ovl1_until;
   if (ovl0 || ovl1) {
     const char *txt = (ovl0 && ovl1) ? "ADC0+1 OVL" : ovl0 ? "ADC0 OVL" : "ADC1 OVL";
-    cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+    cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
     cairo_set_font_size(cr, 12.0);
     cairo_text_extents_t ext;
     cairo_text_extents(cr, txt, &ext);
@@ -733,8 +871,52 @@ static void tick_radio(App *app, GtkWidget *widget) {
   gtk_widget_queue_draw(widget);
 }
 
+/* TX path: pull one TX-analyzer frame (spectrum of what we transmit) and fold it
+ * into the TX trace EMA. Draws the TX panadapter over the full area (no RX, no
+ * waterfall) while keyed — piHPSDR non-duplex behaviour. */
+static void tick_tx(App *app, GtkWidget *widget) {
+  int n = app->pixels;
+  if (tx_run_get_pixels(app->tx_raw, n)) {
+    float fs = ema_factor_ms(app->avg_spec_ms, app->fps);
+    if (app->tx_ema_w != n) {
+      memcpy(app->tx_ema, app->tx_raw, n * sizeof(float));
+      app->tx_ema_w = n;
+    } else {
+      for (int i = 0; i < n; i++) { app->tx_ema[i] += fs * (app->tx_raw[i] - app->tx_ema[i]); }
+    }
+    /* Feed the TX waterfall (its own auto-range colours the transmitted spectrum;
+     * TX levels aren't dBm-calibrated, so map byte = dB + 200 like the RX path). */
+    if (app->tx_wf) {
+      static uint8_t bytes[SPECTRUM_DATA_SIZE];
+      for (int i = 0; i < n; i++) {
+        double b = (double)app->tx_ema[i] + 200.0;
+        bytes[i] = (uint8_t)(b < 0 ? 0 : (b > 255 ? 255 : b));
+      }
+      waterfall_push(app->tx_wf, bytes, n);
+    }
+  }
+  app->tx_frame.width      = n;
+  app->tx_frame.vfo_a_freq = app->freq;
+  gtk_widget_queue_draw(widget);
+}
+
 static void update_span_label(App *app);   /* fwd: zoom slider updates it via tick */
 static void update_volt_label(App *app);   /* fwd: defined with the footer controls */
+
+/* TX readout (F6a): ONLY a refusal/trip reason, flashed red for a few seconds —
+ * the live power/SWR live big on the TX panadapter + the power meter, so this no
+ * longer duplicates them (and shows nothing when idle). Called each tick. */
+static void update_tx_label(App *app, const tx_run_status *ts, gint64 now) {
+  (void)ts;
+  if (!app->tx_label) { return; }
+  if (app->tx_reason[0] && now < app->tx_reason_until) {
+    char m[160];
+    snprintf(m, sizeof m, "<span foreground='#f2413d'><b>⚠ %s</b></span>", app->tx_reason);
+    gtk_label_set_markup(GTK_LABEL(app->tx_label), m);
+  } else {
+    gtk_label_set_text(GTK_LABEL(app->tx_label), "");
+  }
+}
 
 static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) {
   (void)clock;
@@ -756,8 +938,14 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
       p2_telemetry t;
       p2_get_telemetry(&t);
       gint64 now = g_get_monotonic_time();
-      if (t.adc0_overload) { app->ovl0_until = now + ADC_OVL_HOLD_US; }
-      if (t.adc1_overload) { app->ovl1_until = now + ADC_OVL_HOLD_US; }
+      /* Suppress the ADC-overload badge across the TX→RX transition: dropping the
+       * step attenuators from 31 dB back to 0 lets the relay-crosstalk tail clip
+       * the ADC for a moment — a known transient, not a real RX overload. */
+      int ovl_suppress = app->tx_display || (app->tx_settle_until && now < app->tx_settle_until);
+      if (!ovl_suppress) {
+        if (t.adc0_overload) { app->ovl0_until = now + ADC_OVL_HOLD_US; }
+        if (t.adc1_overload) { app->ovl1_until = now + ADC_OVL_HOLD_US; }
+      }
       app->tlm_valid = t.valid;
       if (t.valid && t.raw_adc1 > 0) {
         static double kcal = -1.0;
@@ -770,19 +958,57 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
                         ? app->supply_v + SUPPLY_V_EMA * (v - app->supply_v) : v;
         update_volt_label(app);
       }
-      tick_radio(app, widget);
-      if (app->auto_level) {
-        /* Track the noise floor on the dB axis, reusing the waterfall's already-
-         * smoothed floor. Keep the current range; place the floor AUTO_FLOOR_FRAC
-         * up from the bottom. */
-        double wl, ws; waterfall_range(app->wf, &wl, &ws); (void)ws;
-        double R = app->pan_high - app->pan_low;
-        if (R < PAN_RANGE_MIN) { R = PAN_RANGE_MIN; }
-        if (R > PAN_RANGE_MAX) { R = PAN_RANGE_MAX; }
-        double lo = wl - AUTO_FLOOR_FRAC * R;
-        if (lo < PAN_DBM_FLOOR)     { lo = PAN_DBM_FLOOR; }
-        if (lo > PAN_DBM_CEIL - R)  { lo = PAN_DBM_CEIL - R; }
-        app->pan_low = lo; app->pan_high = lo + R;
+      /* TX (F6a): keep the runtime's TX frequency on the VFO and reflect status.
+       * If the gate refused or a protection latch tripped while TUNE is held,
+       * pop the button back (which fires the handler → unkey) and flash why. */
+      if (app->tx_ready) {
+        tx_run_set_freq(app->freq);
+        tx_run_status ts; tx_run_get_status(&ts);
+        if (app->tune_btn && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(app->tune_btn))
+            && (ts.tripped || !ts.allowed)) {
+          g_strlcpy(app->tx_reason, ts.reason[0] ? ts.reason : "TX refused", sizeof app->tx_reason);
+          app->tx_reason_until = now + 4 * G_USEC_PER_SEC;
+          gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->tune_btn), FALSE);
+        }
+        /* On the RX↔TX transition. Key up: fade RX audio out, start a fresh TX
+         * trace. Unkey: keep the audio muted through the AGC-recovery window
+         * (TX_SETTLE_MS) and only then fade it back in — otherwise the wound-up
+         * AGC pops; also silence the demod input briefly for the literal T/R tail. */
+        if (ts.keyed != app->tx_keyed_shown) {
+          if (ts.keyed) {
+            if (app->audio_ok) { demod_set_mute(1); }
+            app->tx_ema_w = 0;
+            app->tx_settle_until = 0;
+          } else {
+            if (app->audio_ok) { g_atomic_int_set(&g_rx_silence, app->rate * RX_SILENCE_MS / 1000); }
+            app->tx_settle_until = now + (gint64)TX_SETTLE_MS * 1000;
+          }
+          app->tx_keyed_shown = ts.keyed;
+        }
+        if (app->tx_settle_until && now >= app->tx_settle_until) {
+          if (app->audio_ok) { demod_set_mute(0); }   /* AGC settled → fade back in */
+          app->tx_settle_until = 0;
+        }
+        app->tx_display = ts.keyed;
+        update_tx_label(app, &ts, now);
+      }
+      if (app->tx_display) {
+        tick_tx(app, widget);       /* transmitted spectrum, full area */
+      } else {
+        tick_radio(app, widget);
+        if (app->auto_level) {
+          /* Track the noise floor on the dB axis, reusing the waterfall's already-
+           * smoothed floor. Keep the current range; place the floor AUTO_FLOOR_FRAC
+           * up from the bottom. */
+          double wl, ws; waterfall_range(app->wf, &wl, &ws); (void)ws;
+          double R = app->pan_high - app->pan_low;
+          if (R < PAN_RANGE_MIN) { R = PAN_RANGE_MIN; }
+          if (R > PAN_RANGE_MAX) { R = PAN_RANGE_MAX; }
+          double lo = wl - AUTO_FLOOR_FRAC * R;
+          if (lo < PAN_DBM_FLOOR)     { lo = PAN_DBM_FLOOR; }
+          if (lo > PAN_DBM_CEIL - R)  { lo = PAN_DBM_CEIL - R; }
+          app->pan_low = lo; app->pan_high = lo + R;
+        }
       }
     } else {
       tick_network(app, widget);
@@ -812,6 +1038,11 @@ static void app_to_settings(const App *app, Settings *s) {
   s->nb      = app->nb;
   s->anf     = app->anf;
   s->binaural = app->binaural;
+  s->tx_pa    = app->tx_pa_enabled;
+  s->tx_ant   = app->tx_antenna;
+  s->tx_drive = app->tx_drive_w;
+  s->tx_tune  = app->tx_tune_w;
+  s->tx_swr   = app->tx_swr_alarm;
   /* per-mode filter memory → "modeid=idx;..." */
   char *mp = s->mode_filt; size_t mrem = sizeof(s->mode_filt); mp[0] = '\0';
   for (int i = 0; i < 8; i++) {
@@ -873,6 +1104,26 @@ static void schedule_save(App *app) {
   if (!app->radio_mode) { return; }
   if (app->save_timer_id) { g_source_remove(app->save_timer_id); }
   app->save_timer_id = g_timeout_add_seconds(1, do_save_cb, app);
+}
+
+/* Push the operator's persisted TX settings into the runtime. Safe if TX isn't up.
+ * pa_calibration is the validated G1 default (53 dB); the per-band table is F6b. */
+static void tx_push_cfg(App *app) {
+  if (!app->tx_ready) { return; }
+  tx_run_cfg c;
+  memset(&c, 0, sizeof c);
+  c.pa_enabled     = app->tx_pa_enabled;
+  c.antenna        = app->tx_antenna;
+  c.drive_w        = app->tx_drive_w;
+  c.tune_w         = app->tx_tune_w;
+  c.pa_calibration = 53.0;
+  c.swr_protect    = 1;
+  c.swr_alarm      = app->tx_swr_alarm;
+  c.allow_oob      = 0;
+  c.region         = app->bp_region;
+  c.country_key    = bp_country_key(app->bp_country);
+  c.mode           = app->mode;
+  tx_run_set_cfg(&c);
 }
 
 /* ---- vertical dB axis — grab the scale (left gutter) --------------------- */
@@ -1274,6 +1525,18 @@ static void on_bin_toggled(GtkToggleButton *b, gpointer data) {
   schedule_save(app);
 }
 
+/* TX key (F6a): both TUNE and MOX route here; we hand the runtime the combined
+ * intent and let tx_gate decide whether it actually keys. MOX is disabled until
+ * F6c, so only TUNE can set intent today. */
+static void on_tx_key_toggled(GtkToggleButton *b, gpointer data) {
+  (void)b;
+  App *app = (App *)data;
+  if (!app->tx_ready) { return; }
+  int mox  = app->mox_btn  && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(app->mox_btn));
+  int tune = app->tune_btn && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(app->tune_btn));
+  tx_run_request(mox, tune);
+}
+
 static void on_band_clicked(GtkButton *b, gpointer data) {
   App *app = (App *)data;
   long long f = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "freq"));
@@ -1378,6 +1641,31 @@ static GtkWidget *build_controls(App *app) {
   gtk_box_append(GTK_BOX(nrbox), bin_b);
   gtk_box_append(GTK_BOX(bar), nrbox);
 
+  /* TX (F6a): TUNE keys a carrier at the tune power through the tx_gate safety
+   * layer (into a dummy load / matched antenna); MOX/voice waits for the mic
+   * path (F6c) so it is shown disabled. Drive/PA/antenna live in Preferences →
+   * TX (grouped with PA-enable, like piHPSDR's PA menu). */
+  GtkWidget *txbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_add_css_class(txbox, "linked");
+  app->tune_btn = gtk_toggle_button_new_with_label("TUNE");
+  app->mox_btn  = gtk_toggle_button_new_with_label("MOX");
+  gtk_widget_add_css_class(app->tune_btn, "txkey");
+  gtk_widget_add_css_class(app->mox_btn,  "txkey");
+  gtk_widget_set_tooltip_text(app->tune_btn,
+      "TUNE: key a carrier at the tune power (dummy load / matched antenna)");
+  gtk_widget_set_tooltip_text(app->mox_btn, "MOX/voice — needs the mic path (F6c)");
+  gtk_widget_set_sensitive(app->mox_btn, FALSE);              /* enabled in F6c */
+  gtk_widget_set_sensitive(app->tune_btn, app->tx_ready);     /* only if the runtime is up */
+  g_signal_connect(app->tune_btn, "toggled", G_CALLBACK(on_tx_key_toggled), app);
+  g_signal_connect(app->mox_btn,  "toggled", G_CALLBACK(on_tx_key_toggled), app);
+  gtk_box_append(GTK_BOX(txbox), app->tune_btn);
+  gtk_box_append(GTK_BOX(txbox), app->mox_btn);
+  gtk_box_append(GTK_BOX(bar), txbox);
+
+  app->tx_label = gtk_label_new("");   /* only flashes a refusal/trip reason; empty otherwise */
+  gtk_widget_add_css_class(app->tx_label, "span");
+  gtk_box_append(GTK_BOX(bar), app->tx_label);
+
   /* AF volume — live. */
   GtkWidget *vol = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, -40, 0, 1);
   gtk_range_set_value(GTK_RANGE(vol), app->volume);
@@ -1467,6 +1755,31 @@ static void on_step_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data) {
   schedule_save(app);
 }
 
+/* Show the drive sliders' value with its unit ("50 W"), not just the number. */
+static char *fmt_watts(GtkScale *s, double v, gpointer u) {
+  (void)s; (void)u;
+  return g_strdup_printf("%.0f W", v);
+}
+
+/* TX drive / tune-drive / antenna — operational, so they live on the footer bar
+ * (not buried in Preferences). All live into the runtime + persisted. */
+static void on_drive_changed(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  app->tx_drive_w = gtk_range_get_value(r);
+  tx_push_cfg(app); schedule_save(app);
+}
+static void on_tune_drive_changed(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  app->tx_tune_w = gtk_range_get_value(r);
+  tx_push_cfg(app); schedule_save(app);
+}
+static void on_antenna_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data) {
+  (void)ps;
+  App *app = (App *)data;
+  app->tx_antenna = (int)gtk_drop_down_get_selected(dd);
+  tx_push_cfg(app); schedule_save(app);
+}
+
 static GtkWidget *build_bottom_controls(App *app) {
   GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
   gtk_widget_add_css_class(bar, "controlbar");
@@ -1495,6 +1808,31 @@ static GtkWidget *build_bottom_controls(App *app) {
   app->step_dd = sdd;
   gtk_box_append(GTK_BOX(bar), labeled("Step", sdd));
 
+  /* TX drive (MOX/voice, W) + tune drive (W) + antenna — operational TX controls. */
+  GtkWidget *drv = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 100, 1);
+  gtk_range_set_value(GTK_RANGE(drv), app->tx_drive_w);        /* before wiring: no send */
+  gtk_widget_set_size_request(drv, 130, -1);
+  gtk_scale_set_draw_value(GTK_SCALE(drv), TRUE);
+  gtk_scale_set_value_pos(GTK_SCALE(drv), GTK_POS_RIGHT);
+  gtk_scale_set_format_value_func(GTK_SCALE(drv), fmt_watts, NULL, NULL);
+  g_signal_connect(drv, "value-changed", G_CALLBACK(on_drive_changed), app);
+  gtk_box_append(GTK_BOX(bar), labeled("Drive", drv));
+
+  GtkWidget *tdrv = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 30, 1);
+  gtk_range_set_value(GTK_RANGE(tdrv), app->tx_tune_w);
+  gtk_widget_set_size_request(tdrv, 120, -1);
+  gtk_scale_set_draw_value(GTK_SCALE(tdrv), TRUE);
+  gtk_scale_set_value_pos(GTK_SCALE(tdrv), GTK_POS_RIGHT);
+  gtk_scale_set_format_value_func(GTK_SCALE(tdrv), fmt_watts, NULL, NULL);
+  g_signal_connect(tdrv, "value-changed", G_CALLBACK(on_tune_drive_changed), app);
+  gtk_box_append(GTK_BOX(bar), labeled("Tune", tdrv));
+
+  GtkWidget *antdd = gtk_drop_down_new_from_strings((const char *[]){"ANT 1","ANT 2","ANT 3", NULL});
+  gtk_drop_down_set_selected(GTK_DROP_DOWN(antdd),
+      (app->tx_antenna >= 0 && app->tx_antenna < 3) ? (guint)app->tx_antenna : 0);
+  g_signal_connect(antdd, "notify::selected", G_CALLBACK(on_antenna_changed), app);
+  gtk_box_append(GTK_BOX(bar), labeled("Ant", antdd));
+
   GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_set_hexpand(spacer, TRUE);
   gtk_box_append(GTK_BOX(bar), spacer);
@@ -1511,9 +1849,11 @@ static void css_load(void) {
   const char *c =
     ".controlbar { padding: 7px 10px; }"
     ".dim { opacity: 0.6; font-size: 12px; }"
-    ".span { font-family: monospace; opacity: 0.75; }"
+    ".span { font-family: \"Adwaita Mono\"; opacity: 0.75; }"
     "button.mode, button.band { min-width: 30px; padding-left: 7px; padding-right: 7px; }"
-    "button.mode:checked, button.band:checked { background: #1d6fa5; color: #fff; }";
+    "button.mode:checked, button.band:checked { background: #1d6fa5; color: #fff; }"
+    "button.txkey { min-width: 42px; padding-left: 9px; padding-right: 9px; }"
+    "button.txkey:checked { background: #c8321e; color: #fff; }";
   gtk_css_provider_load_from_string(p, c);
   gtk_style_context_add_provider_for_display(gdk_display_get_default(),
       GTK_STYLE_PROVIDER(p), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
@@ -1608,6 +1948,7 @@ static void on_pref_palette(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   (void)ps; App *app = (App *)data;
   app->palette = (int)adw_combo_row_get_selected(r);
   waterfall_set_palette(app->wf, app->palette);   /* recolours the whole waterfall live */
+  waterfall_set_palette(app->tx_wf, app->palette);
   schedule_save(app);
   if (app->area) { gtk_widget_queue_draw(app->area); }   /* repaint the spectrum too */
 }
@@ -1639,6 +1980,18 @@ static void on_pref_ip(GtkEditable *e, gpointer data) {
   App *app = (App *)data;
   g_strlcpy(app->radio_ip, gtk_editable_get_text(e), sizeof(app->radio_ip));   /* restart */
   schedule_save(app);
+}
+
+/* TX preferences (F6a) — all live into the runtime (tx_push_cfg) and persisted. */
+static void on_pref_tx_pa(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->tx_pa_enabled = adw_switch_row_get_active(r);
+  tx_push_cfg(app); schedule_save(app);
+}
+static void on_pref_tx_swr(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->tx_swr_alarm = adw_spin_row_get_value(r);
+  tx_push_cfg(app); schedule_save(app);
 }
 
 static GtkWidget *pref_spin(const char *title, const char *subtitle,
@@ -1690,7 +2043,19 @@ static AdwDialog *build_prefs(App *app) {
   g_signal_connect(rate, "notify::selected", G_CALLBACK(on_pref_rate), app);
   adw_preferences_group_add(g, rate);
   adw_preferences_page_add(p, g);
-  adw_preferences_dialog_add(dlg, p);
+
+  /* TX — keying, power + safety (F6a). Lives on the Radio page (like piHPSDR's
+   * PA-enable in the Radio menu) so the page switcher stays in the header rather
+   * than dropping to a bottom bar. PA-enable persists across restarts. Per-band
+   * PA calibration table lands in F6b. */
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Transmit",
+      "description", "TUNE keys into a dummy load / matched antenna. MOX/voice needs the mic path (F6c).", NULL));
+  adw_preferences_group_add(g, pref_switch("PA enable", "Off = dry key only (T/R relay, no RF)",
+      app->tx_pa_enabled, G_CALLBACK(on_pref_tx_pa), app));
+  adw_preferences_group_add(g, pref_spin("SWR alarm", "Trip: drop MOX + refuse re-key",
+      2, 5, app->tx_swr_alarm, G_CALLBACK(on_pref_tx_swr), app));
+  adw_preferences_page_add(p, g);
+  adw_preferences_dialog_add(dlg, p);   /* Drive / Tune drive / Antenna live on the footer bar */
 
   /* Audio — gain live, latency restart. */
   p = ADW_PREFERENCES_PAGE(g_object_new(ADW_TYPE_PREFERENCES_PAGE,
@@ -1916,7 +2281,8 @@ static void start_radio(App *app) {
                   .pan_high = PAN_HIGH_DEFAULT, .pan_low = PAN_LOW_DEFAULT,
                   .db_grid = 1, .db_scale = 1, .freq_grid = 1, .freq_scale = 1,
                   .filter_wf = 1, .filter_op = 60, .avg_spec = -1, .avg_wf = -1,
-                  .palette = 0, .band_edges = 1 };
+                  .palette = 0, .band_edges = 1,
+                  .tx_pa = 0, .tx_ant = 0, .tx_drive = 25.0, .tx_tune = 10.0, .tx_swr = 3.0 };
   g_strlcpy(st.ip, "192.168.1.247", sizeof(st.ip));
   g_strlcpy(st.region,  "R1", sizeof(st.region));   /* IARU R1 default; country = none */
   g_strlcpy(st.country, "",   sizeof(st.country));
@@ -1949,6 +2315,12 @@ static void start_radio(App *app) {
   app->nb     = st.nb < 0 ? 0 : (st.nb > 2 ? 2 : st.nb);   /* 0 off / 1 NB / 2 NB2 */
   app->anf    = st.anf ? 1 : 0;
   app->binaural = st.binaural ? 1 : 0;
+  /* TX (F6a): PA-enable persists (mirrors piHPSDR). Clamp the rest to safe ranges. */
+  app->tx_pa_enabled = st.tx_pa ? 1 : 0;
+  app->tx_antenna    = st.tx_ant < 0 ? 0 : (st.tx_ant > 2 ? 2 : st.tx_ant);
+  app->tx_drive_w    = st.tx_drive < 0.0 ? 0.0 : (st.tx_drive > 100.0 ? 100.0 : st.tx_drive);
+  app->tx_tune_w     = st.tx_tune  < 0.0 ? 0.0 : (st.tx_tune  > 30.0  ? 30.0  : st.tx_tune);
+  app->tx_swr_alarm  = st.tx_swr   < 2.0 ? 2.0 : (st.tx_swr   > 5.0   ? 5.0   : st.tx_swr);
   app->fps    = st.fps;
   app->latency = st.latency;
   /* Snap the saved zoom to the nearest octave detent in [1, ZOOM_MAX]. */
@@ -2026,6 +2398,7 @@ static void start_radio(App *app) {
   app->avg_wf_ms   = (st.avg_wf   < 0) ?  40 : (st.avg_wf   > 2000 ? 2000 : st.avg_wf);
   app->palette = (st.palette < 0 || st.palette >= waterfall_palette_count()) ? 0 : st.palette;
   waterfall_set_palette(app->wf, app->palette);   /* app->wf created in main() before activation */
+  waterfall_set_palette(app->tx_wf, app->palette);
   app->show_band_edges = st.band_edges ? 1 : 0;
   { int r = bp_region_from_key(st.region);  app->bp_region  = r >= 0 ? r : 0; }
   { int c = bp_country_from_key(st.country); app->bp_country = c >= 0 ? c : 0; }
@@ -2107,9 +2480,21 @@ static void start_radio(App *app) {
     fprintf(stderr, "audio/demod init failed — panadapter only\n");
   }
 
+  /* TX runtime (F6a): open the WDSP TX channel and spawn the idle worker thread
+   * BEFORE RX starts flowing, so OpenChannel doesn't race the live RX channel.
+   * The GUI only ever requests TUNE; all keying goes through tx_gate. Starts with
+   * a safe config (PA off, drive 0); tx_push_cfg applies the operator's settings. */
+  if (tx_run_start(app->freq, app->pixels, app->fps) == 0) {
+    app->tx_ready = 1;
+    tx_push_cfg(app);
+  } else {
+    fprintf(stderr, "TX runtime init failed — RX only\n");
+  }
+
   p2_set_attenuation(app->atten);   /* front-end gain: goes out in the first HP packet */
   if (p2_rx_start(dev, app->freq, rate, feed_cb, NULL) != 0) {
     fprintf(stderr, "p2_rx_start failed\n");
+    if (app->tx_ready) { tx_run_stop(); app->tx_ready = 0; }
     if (app->audio_ok) { demod_destroy(); audio_stop(); }
     analyzer_destroy();
     return;
@@ -2129,6 +2514,7 @@ int main(int argc, char **argv) {
   App app;
   memset(&app, 0, sizeof(app));
   app.wf = waterfall_new();
+  app.tx_wf = waterfall_new();   /* TX waterfall (transmitted spectrum, F6a) */
 
   int server_mode = (argc > 1) && (strcmp(argv[1], "--server") == 0);
 
@@ -2165,6 +2551,7 @@ int main(int argc, char **argv) {
   if (app.radio_mode) {
     if (app.save_timer_id) { g_source_remove(app.save_timer_id); app.save_timer_id = 0; }
     if (app.rate > 0) { Settings s; app_to_settings(&app, &s); settings_save(&s); }
+    if (app.tx_ready) { tx_run_stop(); }   /* unkey + stop TX thread before the socket closes */
     if (app.engine_ok) { p2_rx_stop(); }
     if (app.audio_ok)  { demod_destroy(); audio_stop(); }
     if (app.engine_ok) { analyzer_destroy(); }
@@ -2172,5 +2559,6 @@ int main(int argc, char **argv) {
     client_free(app.client);
   }
   waterfall_free(app.wf);
+  waterfall_free(app.tx_wf);
   return status;
 }

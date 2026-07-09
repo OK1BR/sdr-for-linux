@@ -49,6 +49,12 @@ typedef struct {
   int       binaural;    /* binaural stereo audio output on-off                  */
   char      mode_filt[128]; /* per-mode filter memory, "modeid=idx;..."          */
   char      var_filt[256];  /* Var1/Var2 per mode, "modeid/v1lo/v1hi/v2lo/v2hi;.."*/
+  /* TX (F6a) — persistent; PA-enable mirrors piHPSDR's persistent PA setting. */
+  int       tx_pa;      /* PA enable (0/1) — RF impossible when 0                 */
+  int       tx_ant;     /* TX/RX antenna 0/1/2 → ANT1/2/3                         */
+  double    tx_drive;   /* MOX/voice power request (W)                            */
+  double    tx_tune;    /* TUNE power request (W)                                 */
+  double    tx_swr;     /* SWR trip threshold                                     */
 } Settings;
 
 /*

@@ -69,7 +69,7 @@ static double dbm_to_y(double dbm, int h) {
 
 static void draw_grid(cairo_t *cr, int w, int h) {
   if (!show_db_grid && !show_db_labels) { return; }
-  cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
   cairo_set_font_size(cr, 11.0);
   cairo_set_line_width(cr, 1.0);
 
@@ -196,17 +196,22 @@ static void draw_center_line(cairo_t *cr, int w, int h, double vfo_frac) {
   cairo_stroke(cr);
 }
 
+static int p_show_readout = 1;   /* GUI suppresses this to draw a custom TX readout */
+
+void panadapter_set_readout(int on) { p_show_readout = on; }
+
 static void draw_readouts(cairo_t *cr, const ClientFrame *f, int w, const char *band) {
   char buf[64];
 
-  /* VFO frequency (big), top-left. Prefer CTUN if it differs from the dial. */
-  cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+  /* VFO frequency (big), top-left, clear of the top freq ruler. Prefer CTUN if it
+   * differs from the dial. */
+  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
   cairo_set_font_size(cr, 32.0);
   long long freq = (f->vfo_a_ctun_freq && f->vfo_a_ctun_freq != f->vfo_a_freq)
                      ? f->vfo_a_ctun_freq : f->vfo_a_freq;
   format_hz(freq, buf, sizeof(buf));
   cairo_set_source_rgba(cr, 0.93, 0.96, 1.0, 0.96);
-  cairo_move_to(cr, 44, 48);   /* pushed down so the top freq ruler sits above it */
+  cairo_move_to(cr, 44, 60);
   cairo_show_text(cr, buf);
 
   /* Sub-line under the frequency: "Hz · VFO A", plus the band-plan band +
@@ -216,14 +221,14 @@ static void draw_readouts(cairo_t *cr, const ClientFrame *f, int w, const char *
   else               { snprintf(sub, sizeof sub, "Hz  ·  VFO A"); }
   cairo_set_font_size(cr, 15.0);
   cairo_set_source_rgba(cr, 0.62, 0.72, 0.85, 0.9);
-  cairo_move_to(cr, 44, 68);
+  cairo_move_to(cr, 44, 82);
   cairo_show_text(cr, sub);
   /* S-meter is drawn by the GUI overlay (graphical bar), not here. */
   (void)w;
 }
 
 static void draw_status(cairo_t *cr, const char *msg, int w, int h) {
-  cairo_select_font_face(cr, "sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_select_font_face(cr, FONT_UI, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
   cairo_set_font_size(cr, 16.0);
   cairo_text_extents_t ext;
   cairo_text_extents(cr, msg, &ext);
@@ -263,5 +268,5 @@ void panadapter_draw(cairo_t *cr, int w, int h,
   if (cmap_span < 1.0) cmap_span = 1.0;
   draw_spectrum(cr, vals, frame->width, w, h, cmap_low, cmap_span);
   draw_center_line(cr, w, h, vfo_frac);
-  draw_readouts(cr, frame, w, band);
+  if (p_show_readout) { draw_readouts(cr, frame, w, band); }
 }

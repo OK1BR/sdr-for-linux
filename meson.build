@@ -75,6 +75,11 @@ executable('sdr-for-linux',
     'src/engine/analyzer.c',
     'src/engine/demod.c',
     'src/engine/audio_pw.c',
+    'src/engine/tx.c',        # WDSP TX DSP channel (F2)
+    'src/engine/tx_meter.c',  # fwd/rev power + SWR (F3)
+    'src/engine/tx_gate.c',   # TX safety gate (F4)
+    'src/engine/tx_analyzer.c', # TX panadapter analyzer (F6a)
+    'src/engine/tx_run.c',    # TX runtime thread — GUI keying (F6a)
   ] + engine_sources + ui_sources,
   include_directories : [vendor_inc, src_inc, engine_inc],
   # engine (protocol2 + analyzer + demod + PipeWire audio) alongside the v0
