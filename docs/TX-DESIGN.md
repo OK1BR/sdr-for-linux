@@ -335,8 +335,18 @@ no trips). What landed:
     on full (never blocks), so an undrained mic while MOX-off is harmless.
     Offline: builds, all TX gates pass; live mic-opens-per-mode + first voice
     are the F6c-3 test (needs the radio free).
-  - **F6c-3** enable the MOX button + a mic-gain control (`tx_dsp_set_mic_gain`);
-    first voice into a dummy load / matched antenna.
+  - **F6c-3a done (offline-verified)** — the non-hazardous GUI, MOX still
+    disabled. **Mic-gain** slider on the footer next to Drive (`fmt_db`,
+    −12…+40 dB, default 0; `Settings.mic_gain` persisted; live via
+    `tx_run_set_mic_gain` → `SetTXAPanelGain1`). **TX level meter** top-right of
+    the TX panadapter, in the RX S-meter's geometry: Mic-input-peak bar (dBFS,
+    green with a red clip zone past −6 dB) + ALC-gain-reduction bar (amber) —
+    Richard's "level bars now, ALC later", both from `GetTXAMeter` (`TXA_MIC_PK`
+    / `TXA_ALC_GAIN`) published into `tx_run_status.mic_pk/alc_gain` from the TX
+    thread. Meaningful only while keyed. Builds; all TX gates pass.
+  - **F6c-3b (live, hazardous — needs the radio free + consent + TX-SAFETY
+    re-verify)** — enable the MOX button; first voice into a dummy load /
+    matched antenna; live-confirm the F6c-2 mic lifecycle + mic gain + meters.
 - **F6d** — CW keyer, sidetone, break-in/QSK.
 
 ---

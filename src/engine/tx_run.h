@@ -53,6 +53,8 @@ typedef struct {
   int    allowed;   /* TX permitted at the current frequency (in band)      */
   int    high_swr;  /* SWR >= alarm now (indicator; set in TUNE + MOX)      */
   double fwd_w, rev_w, swr;
+  double mic_pk;    /* mic-input peak, dBFS (≤ 0; -99 floor); valid while keyed */
+  double alc_gain;  /* ALC gain reduction, dB (0 = none, negative = clamping)   */
   char   reason[64];/* "" or why refused/tripped (for the UI/log)          */
 } tx_run_status;
 
@@ -78,6 +80,9 @@ void tx_run_set_cfg(const tx_run_cfg *cfg);
 
 /* Update the TX frequency (follows the VFO; thread-safe). */
 void tx_run_set_freq(long long tx_freq_hz);
+
+/* Mic gain in dB → the WDSP TX panel (SetTXAPanelGain1). Safe if TX isn't up. */
+void tx_run_set_mic_gain(double db);
 
 /*
  * Request keying. want_mox / want_tune are the operator's intent; the safety gate

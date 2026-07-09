@@ -106,6 +106,18 @@ void tx_dsp_set_mode(int mode, double flo, double fhi) {
 
 int tx_dsp_in_rate(void) { return TX_IN_RATE; }
 
+void tx_dsp_get_meters(double *mic_pk_db, double *alc_gain_db) {
+  double mic = -99.0, alc = 0.0;
+  g_mutex_lock(&t_lock);
+  if (t_ready) {
+    mic = GetTXAMeter(t_id, TXA_MIC_PK);      /* mic-input peak, dBFS */
+    alc = GetTXAMeter(t_id, TXA_ALC_GAIN);    /* ALC gain reduction, dB (≤ 0) */
+  }
+  g_mutex_unlock(&t_lock);
+  if (mic_pk_db)   { *mic_pk_db   = mic; }
+  if (alc_gain_db) { *alc_gain_db = alc; }
+}
+
 void tx_dsp_set_mic_gain(double db) {
   g_mutex_lock(&t_lock);
   if (t_ready) { SetTXAPanelGain1(t_id, pow(10.0, 0.05 * db)); }

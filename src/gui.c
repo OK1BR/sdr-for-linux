@@ -174,6 +174,7 @@ typedef struct {
   double      tx_drive_w;    /* MOX/voice power request, W (persisted)              */
   double      tx_tune_w;     /* TUNE power request, W (persisted)                   */
   double      tx_swr_alarm;  /* SWR trip threshold (persisted)                      */
+  double      tx_mic_gain;   /* TX mic gain, dB — SSB voice (persisted)             */
   double      band_pacal[NBANDS]; /* per-band PA calibration, dB (F6b, persisted)   */
   double      pa_trim[11];   /* wattmeter correction curve, 11 pts W (F6b, persist) */
   GtkWidget  *pacal_spin[NBANDS]; /* per-band PA-cal spin buttons in Preferences    */
@@ -568,11 +569,65 @@ static void draw_s_meter(cairo_t *cr, App *app, int w) {
   cairo_move_to(cr, bx + bw - ex.width, by + bh + 22); cairo_show_text(cr, lbl);
 }
 
+/* TX level meter — top-right of the TX panadapter, in the SAME geometry as the RX
+ * S-meter so they read as one family. Two stacked bars: Mic input peak (dBFS,
+ * -40..0, green with a red clip zone in the top 6 dB) and ALC gain reduction (dB,
+ * amber, 0..-20). WDSP TX meters, valid only while keyed. ALC bar = Richard's
+ * "level bars now, ALC later" — both land here. */
+static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_status *ts) {
+  (void)app;
+  const double MIC_MIN = -40.0, MIC_MAX = 0.0, MIC_RED = -6.0, ALC_FS = 20.0;
+  const double h_mic = 14.0, gap = 3.0, h_alc = 7.0;   /* 14+3+7 = METER_BH */
+  double bw = METER_BW, bx = w - bw - METER_RM, by = METER_BY;
+
+  /* Mic input peak (dBFS): green safe zone, red past -6 dB (approaching clip). */
+  double mic = ts->mic_pk;
+  if (mic < MIC_MIN) { mic = MIC_MIN; } else if (mic > MIC_MAX) { mic = MIC_MAX; }
+  double micfill = (mic - MIC_MIN) / (MIC_MAX - MIC_MIN) * bw;
+  double redx = bx + (MIC_RED - MIC_MIN) / (MIC_MAX - MIC_MIN) * bw;
+  cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.5);
+  cairo_rectangle(cr, bx, by, bw, h_mic); cairo_fill(cr);
+  cairo_save(cr);
+  cairo_rectangle(cr, bx, by, micfill, h_mic); cairo_clip(cr);
+  cairo_set_source_rgba(cr, 0.30, 0.80, 0.45, 0.92);          /* safe green */
+  cairo_rectangle(cr, bx, by, bw, h_mic); cairo_fill(cr);
+  cairo_set_source_rgba(cr, 1.0, 0.34, 0.28, 0.95);           /* clip red */
+  cairo_rectangle(cr, redx, by, bx + bw - redx, h_mic); cairo_fill(cr);
+  cairo_restore(cr);
+  cairo_set_source_rgba(cr, 1.0, 0.5, 0.4, 0.6);              /* clip-threshold tick */
+  cairo_rectangle(cr, redx, by, 1.0, h_mic); cairo_fill(cr);
+
+  /* ALC gain reduction (dB, amber). alc_gain is ≤ 0; show its magnitude. */
+  double ay = by + h_mic + gap;
+  double alc = -ts->alc_gain;
+  if (alc < 0.0) { alc = 0.0; } else if (alc > ALC_FS) { alc = ALC_FS; }
+  cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.5);
+  cairo_rectangle(cr, bx, ay, bw, h_alc); cairo_fill(cr);
+  cairo_set_source_rgba(cr, 1.0, 0.72, 0.0, 0.9);
+  cairo_rectangle(cr, bx, ay, alc / ALC_FS * bw, h_alc); cairo_fill(cr);
+
+  /* Left tags + a numeric readout under the bars (like the S-meter's dBm line). */
+  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_set_source_rgba(cr, 0.72, 0.80, 0.92, 0.8);
+  cairo_set_font_size(cr, 11.0);
+  cairo_move_to(cr, bx - 32, by + h_mic - 3); cairo_show_text(cr, "Mic");
+  cairo_move_to(cr, bx - 32, ay + h_alc);     cairo_show_text(cr, "ALC");
+  char lbl[48];
+  if (ts->mic_pk <= MIC_MIN) { snprintf(lbl, sizeof lbl, "Mic  --      ALC %.0f dB", ts->alc_gain); }
+  else { snprintf(lbl, sizeof lbl, "Mic %+.0f dBFS   ALC %.0f dB", ts->mic_pk, ts->alc_gain); }
+  cairo_set_font_size(cr, 15.0);
+  cairo_text_extents_t ex; cairo_text_extents(cr, lbl, &ex);
+  cairo_set_source_rgba(cr, 0.95, 0.86, 0.62, 0.92);
+  cairo_move_to(cr, bx + bw - ex.width, ay + h_alc + 20); cairo_show_text(cr, lbl);
+}
+
 /* TX panadapter (F6a): the transmitted spectrum in a fixed 24 kHz window centred
  * on the carrier — panadapter (top) + waterfall (bottom), like the RX view but
  * with a top ±kHz ruler, big red power/SWR numbers, and a red power meter. Auto-
  * ranges around the carrier peak (TX levels aren't dBm-calibrated). */
 #define TX_PAN_SPAN_HZ 24000.0
+#define MIC_GAIN_MIN (-12.0)   /* TX mic-gain slider range, dB (piHPSDR default 0) */
+#define MIC_GAIN_MAX  40.0
 static void draw_tx(cairo_t *cr, int w, int h, App *app) {
   int n = app->pixels;
   if (app->tx_ema_w != n) {
@@ -646,6 +701,9 @@ static void draw_tx(cairo_t *cr, int w, int h, App *app) {
     cairo_set_source_rgba(cr, 1.0, 0.72, 0.0, 0.98);
     cairo_move_to(cr, 44, 88); cairo_show_text(cr, "⚠ HIGH SWR");
   }
+
+  /* Level meter top-right, where the RX S-meter sits — mic peak + ALC. */
+  draw_tx_level_meter(cr, app, w, &ts);
 }
 
 static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer data) {
@@ -1097,6 +1155,7 @@ static void app_to_settings(const App *app, Settings *s) {
   s->tx_drive = app->tx_drive_w;
   s->tx_tune  = app->tx_tune_w;
   s->tx_swr   = app->tx_swr_alarm;
+  s->mic_gain = app->tx_mic_gain;
   /* per-mode filter memory → "modeid=idx;..." */
   char *mp = s->mode_filt; size_t mrem = sizeof(s->mode_filt); mp[0] = '\0';
   for (int i = 0; i < 8; i++) {
@@ -1868,6 +1927,10 @@ static char *fmt_watts(GtkScale *s, double v, gpointer u) {
   (void)s; (void)u;
   return g_strdup_printf("%.0f W", v);
 }
+static char *fmt_db(GtkScale *s, double v, gpointer u) {
+  (void)s; (void)u;
+  return g_strdup_printf("%+.0f dB", v);
+}
 
 /* TX drive / tune-drive / antenna — operational, so they live on the footer bar
  * (not buried in Preferences). All live into the runtime + persisted. */
@@ -1886,6 +1949,12 @@ static void on_antenna_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data) {
   App *app = (App *)data;
   app->tx_antenna = (int)gtk_drop_down_get_selected(dd);
   tx_push_cfg(app); schedule_save(app);
+}
+static void on_mic_gain_changed(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  app->tx_mic_gain = gtk_range_get_value(r);
+  tx_run_set_mic_gain(app->tx_mic_gain);   /* live into the WDSP TX panel (SSB voice) */
+  schedule_save(app);
 }
 
 static GtkWidget *build_bottom_controls(App *app) {
@@ -1940,6 +2009,17 @@ static GtkWidget *build_bottom_controls(App *app) {
       (app->tx_antenna >= 0 && app->tx_antenna < 3) ? (guint)app->tx_antenna : 0);
   g_signal_connect(antdd, "notify::selected", G_CALLBACK(on_antenna_changed), app);
   gtk_box_append(GTK_BOX(bar), labeled("Ant", antdd));
+
+  /* Mic gain (SSB voice) — operational, so it lives on the footer next to Drive.
+   * Live into the WDSP TX panel + persisted; only bites while MOX-keyed (F6c-3). */
+  GtkWidget *micg = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, MIC_GAIN_MIN, MIC_GAIN_MAX, 1);
+  gtk_range_set_value(GTK_RANGE(micg), app->tx_mic_gain);      /* before wiring: no send */
+  gtk_widget_set_size_request(micg, 120, -1);
+  gtk_scale_set_draw_value(GTK_SCALE(micg), TRUE);
+  gtk_scale_set_value_pos(GTK_SCALE(micg), GTK_POS_RIGHT);
+  gtk_scale_set_format_value_func(GTK_SCALE(micg), fmt_db, NULL, NULL);
+  g_signal_connect(micg, "value-changed", G_CALLBACK(on_mic_gain_changed), app);
+  gtk_box_append(GTK_BOX(bar), labeled("Mic", micg));
 
   GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_set_hexpand(spacer, TRUE);
@@ -2604,7 +2684,7 @@ static void start_radio(App *app) {
                   .filter_wf = 1, .filter_op = 60, .avg_spec = -1, .avg_wf = -1,
                   .palette = 0, .band_edges = 1,
                   .tx_pa = 0, .tx_ant = 0, .tx_drive = 25.0, .tx_tune = 10.0, .tx_swr = 3.0,
-                  .audio_rate = 48000 };
+                  .mic_gain = 0.0, .audio_rate = 48000 };
   g_strlcpy(st.ip, "192.168.1.247", sizeof(st.ip));
   g_strlcpy(st.region,  "R1", sizeof(st.region));   /* IARU R1 default; country = none */
   g_strlcpy(st.country, "",   sizeof(st.country));
@@ -2643,6 +2723,7 @@ static void start_radio(App *app) {
   app->tx_drive_w    = st.tx_drive < 0.0 ? 0.0 : (st.tx_drive > 100.0 ? 100.0 : st.tx_drive);
   app->tx_tune_w     = st.tx_tune  < 0.0 ? 0.0 : (st.tx_tune  > 100.0 ? 100.0 : st.tx_tune);
   app->tx_swr_alarm  = st.tx_swr   < 2.0 ? 2.0 : (st.tx_swr   > 5.0   ? 5.0   : st.tx_swr);
+  app->tx_mic_gain   = st.mic_gain < MIC_GAIN_MIN ? MIC_GAIN_MIN : (st.mic_gain > MIC_GAIN_MAX ? MIC_GAIN_MAX : st.mic_gain);
   app->fps    = st.fps;
   app->latency = st.latency;
   app->audio_rate = st.audio_rate >= 48000 ? st.audio_rate : 48000;
@@ -2846,6 +2927,7 @@ static void start_radio(App *app) {
   if (tx_run_start(app->freq, app->pixels, app->fps) == 0) {
     app->tx_ready = 1;
     tx_push_cfg(app);
+    tx_run_set_mic_gain(app->tx_mic_gain);   /* persisted SSB mic gain into the TX panel */
     tx_update_mic(app);   /* open the mic now if we start in a voice mode (no warm-up lag) */
   } else {
     fprintf(stderr, "TX runtime init failed — RX only\n");

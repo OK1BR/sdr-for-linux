@@ -159,6 +159,8 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence, int 
   st.fwd_w   = tx_meter_fwd_w();
   st.rev_w   = tx_meter_rev_w();
   st.swr     = tx_meter_swr();
+  if (keyed) { tx_dsp_get_meters(&st.mic_pk, &st.alc_gain); }   /* live WDSP TX level */
+  else       { st.mic_pk = -99.0; st.alc_gain = 0.0; }
   g_strlcpy(st.reason, r.reason ? r.reason : "", sizeof st.reason);
   publish(&st);
 
@@ -281,6 +283,8 @@ void tx_run_set_cfg(const tx_run_cfg *cfg) {
 void tx_run_set_freq(long long tx_freq_hz) {
   g_mutex_lock(&s_freq_lock); s_freq = tx_freq_hz; g_mutex_unlock(&s_freq_lock);
 }
+
+void tx_run_set_mic_gain(double db) { tx_dsp_set_mic_gain(db); }   /* tx_dsp locks internally */
 
 void tx_run_request(int want_mox, int want_tune) {
   g_atomic_int_set(&s_want_mox,  want_mox  ? 1 : 0);

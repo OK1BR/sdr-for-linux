@@ -49,6 +49,14 @@ void tx_dsp_set_mic_gain(double db);        /* mic gain in dB (SetTXAPanelGain1)
 int  tx_dsp_in_rate(void);
 
 /*
+ * Live WDSP TX level meters, in dB (GetTXAMeter, like piHPSDR): `mic_pk_db` is the
+ * mic-input peak in dBFS (≤ 0; -99 floor), `alc_gain_db` the ALC gain reduction in
+ * dB (0 = none, negative = clamping). Only meaningful while the channel runs; both
+ * fall to the floor (-99 / 0) when not ready. NULL args are skipped.
+ */
+void tx_dsp_get_meters(double *mic_pk_db, double *alc_gain_db);
+
+/*
  * TUNE tone via the WDSP post generator (transmitter.c:2872). on=1 injects a
  * full-scale single carrier at `offset_hz` from the dial (0 = carrier at dial);
  * on=0 stops it. Used at F5 for TUNE; the tone power is set by the drive byte,

@@ -126,6 +126,8 @@ int settings_load(Settings *s) {
       s->tx_tune = g_key_file_get_double(kf, GROUP_TX, "tune_w", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "swr_alarm", NULL))
       s->tx_swr = g_key_file_get_double(kf, GROUP_TX, "swr_alarm", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "mic_gain", NULL))
+      s->mic_gain = g_key_file_get_double(kf, GROUP_TX, "mic_gain", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "pa_cal", NULL)) {
       char *pc = g_key_file_get_string(kf, GROUP_TX, "pa_cal", NULL);
       if (pc) { g_strlcpy(s->pa_cal, pc, sizeof(s->pa_cal)); g_free(pc); }
@@ -202,6 +204,7 @@ int settings_save(const Settings *s) {
   g_key_file_set_double (kf, GROUP_TX,     "drive_w",   s->tx_drive);
   g_key_file_set_double (kf, GROUP_TX,     "tune_w",    s->tx_tune);
   g_key_file_set_double (kf, GROUP_TX,     "swr_alarm", s->tx_swr);
+  g_key_file_set_double (kf, GROUP_TX,     "mic_gain",  s->mic_gain);
   g_key_file_set_string (kf, GROUP_TX,     "pa_cal",    s->pa_cal);
   g_key_file_set_string (kf, GROUP_TX,     "pa_trim",   s->pa_trim);
   g_key_file_set_integer(kf, GROUP_RX,     "audio_rate",   s->audio_rate);
