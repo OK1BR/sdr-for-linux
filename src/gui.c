@@ -582,30 +582,38 @@ static void draw_s_meter(cairo_t *cr, App *app, int w) {
 
 /* TX level meter — top-right of the TX panadapter, in the SAME geometry as the RX
  * S-meter so they read as one family. Two stacked bars: Mic input peak (dBFS,
- * -40..0, green with a red clip zone in the top 6 dB) and ALC gain reduction (dB,
- * amber, 0..-20). WDSP TX meters, valid only while keyed. ALC bar = Richard's
- * "level bars now, ALC later" — both land here. */
+ * -40..0, filled with the ACTIVE PALETTE like the S-meter, with a clip-threshold
+ * tick at -6 dB) and ALC gain reduction (dB, amber, 0..-20). WDSP TX meters, valid
+ * only while keyed. */
 static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_status *ts) {
-  (void)app;
   const double MIC_MIN = -40.0, MIC_MAX = 0.0, MIC_RED = -6.0, ALC_FS = 20.0;
   const double h_mic = 14.0, gap = 3.0, h_alc = 7.0;   /* 14+3+7 = METER_BH */
   double bw = METER_BW, bx = w - bw - METER_RM, by = METER_BY;
 
-  /* Mic input peak (dBFS): green safe zone, red past -6 dB (approaching clip). */
+  /* Mic input peak (dBFS): palette gradient fill, exactly like draw_s_meter, so the
+   * drive bar tracks the colour scheme (Richard's ask); tick marks -6 dB clip. */
   double mic = ts->mic_pk;
   if (mic < MIC_MIN) { mic = MIC_MIN; } else if (mic > MIC_MAX) { mic = MIC_MAX; }
   double micfill = (mic - MIC_MIN) / (MIC_MAX - MIC_MIN) * bw;
   double redx = bx + (MIC_RED - MIC_MIN) / (MIC_MAX - MIC_MIN) * bw;
   cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.5);
   cairo_rectangle(cr, bx, by, bw, h_mic); cairo_fill(cr);
+  const char *pname = waterfall_palette_name(app->palette);   /* lift the near-black Mono low end */
+  double kk = (pname && g_str_has_prefix(pname, "Mono")) ? 0.20 : 0.0;
+  cairo_pattern_t *grad = cairo_pattern_create_linear(bx, 0, bx + bw, 0);
+  for (int s = 0; s <= 12; s++) {
+    double t = s / 12.0, r, g, b;
+    waterfall_palette_rgb(t, &r, &g, &b);
+    r += (1.0 - r) * kk; g += (1.0 - g) * kk; b += (1.0 - b) * kk;
+    cairo_pattern_add_color_stop_rgba(grad, t, r, g, b, 0.92);
+  }
   cairo_save(cr);
   cairo_rectangle(cr, bx, by, micfill, h_mic); cairo_clip(cr);
-  cairo_set_source_rgba(cr, 0.30, 0.80, 0.45, 0.92);          /* safe green */
+  cairo_set_source(cr, grad);
   cairo_rectangle(cr, bx, by, bw, h_mic); cairo_fill(cr);
-  cairo_set_source_rgba(cr, 1.0, 0.34, 0.28, 0.95);           /* clip red */
-  cairo_rectangle(cr, redx, by, bx + bw - redx, h_mic); cairo_fill(cr);
   cairo_restore(cr);
-  cairo_set_source_rgba(cr, 1.0, 0.5, 0.4, 0.6);              /* clip-threshold tick */
+  cairo_pattern_destroy(grad);
+  cairo_set_source_rgba(cr, 1.0, 0.5, 0.4, 0.6);              /* clip-threshold tick (-6 dB) */
   cairo_rectangle(cr, redx, by, 1.0, h_mic); cairo_fill(cr);
 
   /* ALC gain reduction (dB, amber). alc_gain is ≤ 0; show its magnitude. */
