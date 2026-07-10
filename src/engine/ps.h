@@ -45,15 +45,6 @@ void ps_stop(void);
 void ps_set(int enable, int att_db, double setpk);
 
 /*
- * Re-arm calibration (reset + resume in the current mode). Call when the TX
- * working point changes — drive level, band — because a held correction is
- * only valid for the point it was calibrated at (piHPSDR's continuous mode
- * adapts implicitly; single-cal needs this explicit trigger). No-op when PS
- * is off. Safe from the GUI thread.
- */
-void ps_recal(void);
-
-/*
  * Key-state hand-off from the tx_run gate slot (~20 Hz, every slot): `keyed`
  * is "MOX/TUNE keyed AND not CW-carrier" (CW bypasses WDSP so feedback is
  * meaningless — piHPSDR transmitter.c:2114-2120). Calls SetPSMox (lock-free)

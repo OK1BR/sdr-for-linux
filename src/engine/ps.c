@@ -201,26 +201,6 @@ void ps_set(int enable, int att_db, double setpk) {
   }
 }
 
-void ps_recal(void) {
-  if (!s_started) { return; }
-  int auto_on = g_atomic_int_get(&s_auto);
-  g_mutex_lock(&s_lock);
-  int on = s_enable;
-  if (auto_on) { s_att = 0; }        /* piHPSDR Restart semantics — see below */
-  int att = s_att;
-  g_mutex_unlock(&s_lock);
-  if (!on) { return; }
-  /* piHPSDR resume_cb (ps_menu.c:537-545): with Auto attenuate, restart the
-   * level hunt from 0 dB — "a very high attenuation could mean WDSP never
-   * calibrates, so auto-adjust would never trigger" (too-weak feedback never
-   * fills the COLLECT bins → no new calibration → no auto-att step). With
-   * auto off the operator's manual attenuator is preserved, exactly like
-   * piHPSDR's manual TX-ATT mode. */
-  p2_ps_state ps = { .enabled = 1, .attenuation = att, .feedback_ant = 0 };
-  p2_set_ps(&ps);
-  SetPSControl(s_ch, 1, 0, 0, 0);    /* drop the held/stale correction */
-  ps_resume();                       /* re-arm per mode (automode / one cal) */
-}
 
 void ps_key(int keyed) {
   if (!s_started) { return; }
@@ -264,7 +244,27 @@ void ps_auto_tick(int keyed, int twotone) {
   /* Attenuator stepping: EXACTLY piHPSDR's scoping — only during the
    * two-tone experiment and only with the Auto attenuate switch on
    * (ps_calibration_timer exists only while twotone runs, ps_menu.c:2934). */
-  if (!twotone || !g_atomic_int_get(&s_auto)) { a_state = 0; return; }
+  static int a_nocal;
+  if (!twotone || !g_atomic_int_get(&s_auto)) { a_state = 0; a_nocal = 0; return; }
+
+  /* Too-weak stall: with the attenuator too high the COLLECT bins never fill,
+   * no calibration ever completes and there is no newcal to step on — the
+   * deadlock piHPSDR's Restart button cures by zeroing the attenuation
+   * (ps_menu.c:537-545). Automated here, scoped to the two-tone hunt: no
+   * completed calibration for ~4 s → restart the hunt from 0 dB. */
+  if (newcal) { a_nocal = 0; }
+  else if (a_state == 0 && ++a_nocal >= 80) {
+    a_nocal = 0;
+    if (att > 0) {
+      SetPSControl(s_ch, 1, 0, 0, 0);
+      g_mutex_lock(&s_lock); s_att = 0; g_mutex_unlock(&s_lock);
+      p2_ps_state ps = { .enabled = 1, .attenuation = 0, .feedback_ant = 0 };
+      p2_set_ps(&ps);
+      fprintf(stderr, "ps: auto-att stall (no cal in 4 s at %d dB) — restarting hunt at 0 dB\n", att);
+      a_state = 1;
+      return;
+    }
+  }
 
   switch (a_state) {
   case 0: {
