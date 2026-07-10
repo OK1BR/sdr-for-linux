@@ -69,6 +69,7 @@ executable('sdr-for-linux',
     'src/settings.c',
     'src/bandplan.c',
     'src/wisdom_gate.c',
+    'src/picker.c',           # startup radio picker (discovery dialog)
     'src/client.c',
     'src/protocol.c',
     'src/transport.c',

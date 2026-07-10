@@ -154,9 +154,10 @@ build** + vendor **Protocol-2 discovery** (find the radio on the LAN). See
 
 ```sh
 meson setup build && meson compile -C build
-# GUI, DIRECT RADIO (default): discovery → P2 RX → WDSP analyzer → panadapter.
-# TAKES THE RADIO (piHPSDR must be closed). GSK_RENDERER=cairo avoids the
-# NVIDIA+Wayland GTK4 GL crash. Env: SDRFL_RADIO_IP/SDRFL_FREQ/SDRFL_RATE.
+# GUI, DIRECT RADIO (default): radio-picker dialog (broadcast discovery, pick
+# one) → P2 RX → WDSP analyzer → panadapter. TAKES THE RADIO once started
+# (piHPSDR must be closed). GSK_RENDERER=cairo avoids the NVIDIA+Wayland GTK4
+# GL crash. Env: SDRFL_RADIO_IP (skips the picker) / SDRFL_FREQ / SDRFL_RATE.
 GSK_RENDERER=cairo ./build/sdr-for-linux
 # GUI, network remote head onto a running piHPSDR server (v0 path):
 GSK_RENDERER=cairo PIHPSDR_PWD='Test5' ./build/sdr-for-linux --server 127.0.0.1 50000

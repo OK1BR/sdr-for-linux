@@ -43,6 +43,7 @@
 #include "settings.h"
 #include "bandplan.h"
 #include "wisdom_gate.h"
+#include "picker.h"
 #include "tx_run.h"
 #include "tx.h"   /* tx_dsp_in_rate() — mic capture rate must match the WDSP TX input */
 
@@ -187,6 +188,7 @@ typedef struct {
   double      tx_comp_db;    /* PROC compression dB, 0-20 (persisted)               */
   int         tx_gate;       /* mic noise gate (DEXP) on/off (persisted)            */
   double      tx_gate_db;    /* gate threshold dBFS post-mic-gain (persisted)       */
+  char        picked_ip[64]; /* radio chosen in the startup picker ("" = none)      */
   int         tx_mon;        /* TX monitor (self-listen) on/off (persisted)         */
   double      tx_mon_db;     /* monitor level dB (persisted)                        */
   double      tx_flo;        /* TX audio filter low edge, Hz (persisted)            */
@@ -2759,7 +2761,8 @@ static AdwDialog *build_prefs(App *app) {
       "title", "Radio", "icon-name", "network-workgroup-symbolic", NULL));
   AdwPreferencesGroup *g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP,
       "title", "Connection", "description", "Applies on restart", NULL));
-  GtkWidget *ip = g_object_new(ADW_TYPE_ENTRY_ROW, "title", "Radio IP address", NULL);
+  GtkWidget *ip = g_object_new(ADW_TYPE_ENTRY_ROW, "title",
+      "Radio IP address (empty = pick at startup) · restart to apply", NULL);
   gtk_editable_set_text(GTK_EDITABLE(ip), app->radio_ip);
   g_signal_connect(ip, "changed", G_CALLBACK(on_pref_ip), app);
   adw_preferences_group_add(g, ip);
@@ -3132,13 +3135,16 @@ static void start_radio(App *app) {
                   .tx_flo = TXF_LO_DFLT, .tx_fhi = TXF_HI_DFLT,
                   .cw_wpm = CW_WPM_DFLT, .cw_pitch = CW_PITCH_DFLT,
                   .cw_st_db = CW_ST_DB_DFLT, .cw_hang = CW_HANG_DFLT };
-  g_strlcpy(st.ip, "192.168.1.247", sizeof(st.ip));
+  g_strlcpy(st.ip, "", sizeof(st.ip));   /* no radio default: the picker (or a
+                                            saved config) provides the IP; empty
+                                            = discovery falls back to broadcast */
   g_strlcpy(st.region,  "R1", sizeof(st.region));   /* IARU R1 default; country = none */
   g_strlcpy(st.country, "",   sizeof(st.country));
   if (settings_load(&st)) { printf("settings: loaded %s\n", settings_path()); }
 
   const char *e;
   if ((e = getenv("SDRFL_RADIO_IP")) && *e) { g_strlcpy(st.ip, e, sizeof(st.ip)); }
+  if (app->picked_ip[0]) { g_strlcpy(st.ip, app->picked_ip, sizeof(st.ip)); }  /* picker's choice */
   if ((e = getenv("SDRFL_FREQ"))     && *e) { st.freq = strtoll(e, NULL, 10); }
   if ((e = getenv("SDRFL_RATE"))     && *e) { st.rate = atoi(e); }
   if ((e = getenv("SDRFL_VOLUME"))   && *e) { st.volume = atof(e); }
@@ -3457,6 +3463,19 @@ int main(int argc, char **argv) {
     }
   } else {
     app.radio_mode = 1;
+    /* Radio picker (Zeus/piHPSDR-style): broadcast-discover the LAN, let the
+     * operator choose. Skipped when SDRFL_RADIO_IP pins the radio, so scripts
+     * and gates keep their non-interactive path. */
+    const char *eip = getenv("SDRFL_RADIO_IP");
+    if (!(eip && *eip)) {
+      Settings pst; memset(&pst, 0, sizeof(pst));
+      settings_load(&pst);                       /* only for the last-used IP */
+      if (!picker_run(pst.ip, app.picked_ip, sizeof(app.picked_ip))) {
+        waterfall_free(app.wf);                  /* closed the picker = quit */
+        waterfall_free(app.tx_wf);
+        return 0;
+      }
+    }
     wisdom_ensure();      /* first run: build FFTW wisdom (progress window) so the
                              analyzer's PATIENT plans don't freeze on deep zoom */
     start_radio(&app);
