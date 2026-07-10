@@ -31,18 +31,18 @@ static int      s_att;
 static double   s_setpk = PS_SETPK_DEFAULT;
 
 static volatile gint s_keyed;      /* g_atomic: keyed && !CW (feed gate)        */
-static volatile gint s_oneshot;    /* g_atomic: single-cal mode (hold after 1)  */
 static volatile gint s_auto = 1;   /* g_atomic: "Auto attenuate" (piHPSDR auto_on) */
 
 void ps_set_auto(int on) {
   g_atomic_int_set(&s_auto, on ? 1 : 0);
 }
 
-/* Arm calibration per the mode (piHPSDR tx_ps_resume, transmitter.c:2544-2556):
- * continuous = automode, single-cal = one manual calibration then LSTAYON. */
+/* Arm continuous calibration (piHPSDR tx_ps_resume automode branch,
+ * transmitter.c:2544-2556). Single-cal was removed by decision 2026-07-11 —
+ * continuous automode self-heals (2 failed fits → LRESET → automode → LWAIT
+ * → retry), so no oneshot dead-end exists. */
 static void ps_resume(void) {
-  if (g_atomic_int_get(&s_oneshot)) { SetPSControl(s_ch, 0, 1, 0, 0); }
-  else                              { SetPSControl(s_ch, 0, 0, 1, 0); }
+  SetPSControl(s_ch, 0, 0, 1, 0);
 }
 
 /* Feedback accumulator — written ONLY on the P2 listener thread (feed_cb);
@@ -194,20 +194,6 @@ void ps_set(int enable, int att_db, double setpk) {
   }
 }
 
-void ps_set_oneshot(int oneshot) {
-  int prev = g_atomic_int_get(&s_oneshot);
-  oneshot = oneshot ? 1 : 0;
-  g_atomic_int_set(&s_oneshot, oneshot);
-  if (prev == oneshot || !s_started) { return; }
-  g_mutex_lock(&s_lock);
-  int on = s_enable;
-  g_mutex_unlock(&s_lock);
-  if (on) {                    /* re-arm in the new mode (drop the held cal) */
-    SetPSControl(s_ch, 1, 0, 0, 0);
-    ps_resume();
-  }
-}
-
 void ps_recal(void) {
   if (!s_started) { return; }
   int auto_on = g_atomic_int_get(&s_auto);
@@ -259,13 +245,9 @@ void ps_auto_tick(int keyed, int twotone) {
   int newcal = info[5] != a_last_cals;
   a_last_cals = info[5];
 
-  /* Stuck-in-Reset watchdog (Richard's second stuck, log 2026-07-11): a
-   * FAILED single calibration consumes the one-shot mancal request and calcc
-   * parks in LRESET forever — piHPSDR expects a manual "Restart". If the
-   * machine sits in LRESET for ~0.5 s while keyed with PS on, re-arm.
-   * Continuous mode never parks there (automode persists), and the auto-att
-   * choreography below passes through LRESET in ~2 slots — both far under
-   * the threshold. */
+  /* Belt-and-braces: automode should never park in LRESET (it re-enters
+   * LWAIT by itself), but if the machine ever sits there ~0.5 s while keyed,
+   * re-arm — cheap insurance against a repeat of tonight's dead-ends. */
   if (info[15] == 0) {
     if (++a_stuck >= 10) { ps_resume(); a_stuck = 0; }
   } else {

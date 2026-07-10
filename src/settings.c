@@ -152,8 +152,6 @@ int settings_load(Settings *s) {
       s->ps_att = g_key_file_get_integer(kf, GROUP_TX, "ps_att", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "ps_setpk", NULL))
       s->ps_setpk = g_key_file_get_double(kf, GROUP_TX, "ps_setpk", NULL);
-    if (g_key_file_has_key(kf, GROUP_TX, "ps_oneshot", NULL))
-      s->ps_oneshot = g_key_file_get_integer(kf, GROUP_TX, "ps_oneshot", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "ps_auto", NULL))
       s->ps_auto = g_key_file_get_integer(kf, GROUP_TX, "ps_auto", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "monitor", NULL))
@@ -271,7 +269,6 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_TX,     "ps_enable", s->ps_enable);
   g_key_file_set_integer(kf, GROUP_TX,     "ps_att",    s->ps_att);
   g_key_file_set_double (kf, GROUP_TX,     "ps_setpk",  s->ps_setpk);
-  g_key_file_set_integer(kf, GROUP_TX,     "ps_oneshot", s->ps_oneshot);
   g_key_file_set_integer(kf, GROUP_TX,     "ps_auto",   s->ps_auto);
   g_key_file_set_integer(kf, GROUP_TX,     "monitor",   s->tx_mon);
   g_key_file_set_double (kf, GROUP_TX,     "monitor_db", s->tx_mon_db);

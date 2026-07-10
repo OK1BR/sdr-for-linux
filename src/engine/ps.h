@@ -45,15 +45,6 @@ void ps_stop(void);
 void ps_set(int enable, int att_db, double setpk);
 
 /*
- * Calibration mode: 0 = continuous (piHPSDR automode; recalibrates forever
- * while keyed) / 1 = single-cal (piHPSDR ps_oneshot / Thetis "Single Cal":
- * ONE calibration, then the correction holds frozen). The community
- * workaround for the picket-fence instability of the continuous loop.
- * Takes effect on the next resume (enable toggle or auto-att step).
- */
-void ps_set_oneshot(int oneshot);
-
-/*
  * Re-arm calibration (reset + resume in the current mode). Call when the TX
  * working point changes — drive level, band — because a held correction is
  * only valid for the point it was calibrated at (piHPSDR's continuous mode

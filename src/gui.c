@@ -214,7 +214,6 @@ typedef struct {
   int         ps_enable;     /* PureSignal on/off (persisted)                       */
   int         ps_att;        /* PS ADC0 feedback attenuator during TX, dB (persisted)*/
   double      ps_setpk;      /* PS SetPk — expected full-scale envelope (persisted) */
-  int         ps_oneshot;    /* PS single-cal mode — hold after one cal (persisted) */
   int         ps_auto;       /* PS Auto attenuate (piHPSDR auto_on; persisted)      */
   char        picked_ip[64]; /* radio chosen in the startup picker ("" = none)      */
   int         tci_enable;    /* TCI server on/off (persisted, F6d-2a)               */
@@ -1458,7 +1457,6 @@ static void app_to_settings(const App *app, Settings *s) {
   s->ps_enable = app->ps_enable;
   s->ps_att    = app->ps_att;
   s->ps_setpk  = app->ps_setpk;
-  s->ps_oneshot = app->ps_oneshot;
   s->ps_auto    = app->ps_auto;
   s->tx_ant   = app->tx_antenna;
   s->tx_drive = app->tx_drive_w;
@@ -2913,12 +2911,6 @@ static void on_pref_ps_setpk(AdwSpinRow *r, GParamSpec *p, gpointer data) {
   app->ps_setpk = adw_spin_row_get_value(r);
   ps_apply(app); schedule_save(app);
 }
-static void on_pref_ps_oneshot(AdwSwitchRow *r, GParamSpec *p, gpointer data) {
-  (void)p; App *app = (App *)data;
-  app->ps_oneshot = adw_switch_row_get_active(r) ? 1 : 0;
-  ps_set_oneshot(app->ps_oneshot);
-  schedule_save(app);
-}
 static void on_pref_ps_auto(AdwSwitchRow *r, GParamSpec *p, gpointer data) {
   (void)p; App *app = (App *)data;
   app->ps_auto = adw_switch_row_get_active(r) ? 1 : 0;
@@ -3447,9 +3439,6 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, pref_switch("Auto attenuate",
       "find the feedback level automatically during the two-tone test (piHPSDR) · live",
       app->ps_auto, G_CALLBACK(on_pref_ps_auto), app));
-  adw_preferences_group_add(g, pref_switch("Single calibration",
-      "calibrate once and hold (Thetis \"Single Cal\") — try if continuous mode splatters · live",
-      app->ps_oneshot, G_CALLBACK(on_pref_ps_oneshot), app));
   adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);   /* Drive / Tune drive / Antenna live on the footer bar */
 
@@ -3802,7 +3791,7 @@ static void start_radio(App *app) {
                   /* PS defaults = piHPSDR's verified setup: continuous automode
                    * + Auto attenuate on (Richard's call 2026-07-11: no own
                    * inventions — the piHPSDR recipe works on his G1). */
-                  .ps_setpk = 0.2899, .ps_oneshot = 0, .ps_auto = 1,
+                  .ps_setpk = 0.2899, .ps_auto = 1,
                   .cw_wpm = CW_WPM_DFLT, .cw_pitch = CW_PITCH_DFLT,
                   .cw_st_db = CW_ST_DB_DFLT, .cw_hang = CW_HANG_DFLT,
                   .tci_enable = 0, .tci_port = 40001, .tci_iq_rate = 48000 };
@@ -3859,10 +3848,8 @@ static void start_radio(App *app) {
   app->ps_enable = st.ps_enable ? 1 : 0;
   app->ps_att    = st.ps_att < 0 ? 0 : (st.ps_att > 31 ? 31 : st.ps_att);
   app->ps_setpk  = (st.ps_setpk >= 0.01 && st.ps_setpk <= 1.01) ? st.ps_setpk : 0.2899;
-  app->ps_oneshot = st.ps_oneshot ? 1 : 0;
-  ps_set_oneshot(app->ps_oneshot);   /* atomic flag; safe pre-start */
   app->ps_auto = st.ps_auto ? 1 : 0;
-  ps_set_auto(app->ps_auto);
+  ps_set_auto(app->ps_auto);         /* atomic flag; safe pre-start */
   app->tx_mon        = st.tx_mon ? 1 : 0;
   app->tx_mon_db     = st.tx_mon_db < MON_DB_MIN ? MON_DB_MIN : (st.tx_mon_db > MON_DB_MAX ? MON_DB_MAX : st.tx_mon_db);
   app->tx_flo        = st.tx_flo < TXF_LO_MIN ? TXF_LO_MIN : (st.tx_flo > TXF_LO_MAX ? TXF_LO_MAX : st.tx_flo);
