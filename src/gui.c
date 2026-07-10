@@ -192,6 +192,7 @@ typedef struct {
   char        picked_ip[64]; /* radio chosen in the startup picker ("" = none)      */
   int         tci_enable;    /* TCI server on/off (persisted, F6d-2a)               */
   int         tci_port;      /* TCI server port (persisted; ExpertSDR default 40001)*/
+  int         tci_iq_rate;   /* device-global IQ stream rate (persisted; client-set)*/
   GtkWidget  *tci_client_row; /* live client list on the TCI prefs page             */
   guint       tci_timer;     /* 1 s refresh for the client row                      */
   int         tx_mon;        /* TX monitor (self-listen) on/off (persisted)         */
@@ -1325,6 +1326,7 @@ static void app_to_settings(const App *app, Settings *s) {
   s->cw_hang    = app->cw_hang;
   s->tci_enable = app->tci_enable;
   s->tci_port   = app->tci_port;
+  s->tci_iq_rate = app->tci_iq_rate;
   s->tx_pan_high = app->tx_pan_high;
   s->tx_pan_low  = app->tx_pan_low;
   /* per-mode filter memory → "modeid=idx;..." */
@@ -2783,6 +2785,10 @@ static int tci_set_tx_src(int on) {
   return 0;
 }
 static void tci_tx_audio_push(const float *m, int n) { tx_run_ext_push(m, n); }
+static void tci_iq_rate_changed(int rate) {
+  tci_app->tci_iq_rate = rate;
+  schedule_save(tci_app);
+}
 static void tci_get_tx_meters(double *mic_db, double *rms_w, double *pep_w, double *swr) {
   tx_run_status ts;
   memset(&ts, 0, sizeof(ts));
@@ -2801,6 +2807,7 @@ static const TciOps TCI_OPS = {
   tci_get_mute, tci_set_mute, tci_get_cw_speed, tci_set_cw_speed,
   tci_cw_send, tci_cw_stop, tci_get_tx_enable, tci_get_rate,
   tci_get_smeter, tci_get_tx_meters, tci_set_tx_src, tci_tx_audio_push,
+  tci_iq_rate_changed,
 };
 
 /* Start/stop the TCI server to match app->tci_enable (prefs + startup). */
@@ -2810,6 +2817,7 @@ static void tci_apply(App *app) {
     if (tci_server_start(app->tci_port, &TCI_OPS) != 0) {
       fprintf(stderr, "tci: start failed on port %d\n", app->tci_port);
     } else {
+      tci_server_set_iq_rate(app->tci_iq_rate);     /* persisted device IQ rate */
       demod_set_audio_tap(tci_server_audio_push);   /* RX audio → TCI (F6d-2b) */
       tx_run_set_ext_notify(tci_server_tx_chrono);  /* TX pacing → TCI (F6d-2c) */
     }
@@ -3400,7 +3408,7 @@ static void start_radio(App *app) {
                   .tx_flo = TXF_LO_DFLT, .tx_fhi = TXF_HI_DFLT,
                   .cw_wpm = CW_WPM_DFLT, .cw_pitch = CW_PITCH_DFLT,
                   .cw_st_db = CW_ST_DB_DFLT, .cw_hang = CW_HANG_DFLT,
-                  .tci_enable = 0, .tci_port = 40001 };
+                  .tci_enable = 0, .tci_port = 40001, .tci_iq_rate = 48000 };
   g_strlcpy(st.ip, "", sizeof(st.ip));   /* no radio default: the picker (or a
                                             saved config) provides the IP; empty
                                             = discovery falls back to broadcast */
@@ -3457,6 +3465,8 @@ static void start_radio(App *app) {
   app->cw_hang       = st.cw_hang  < 0   ? 0   : (st.cw_hang  > 1000 ? 1000 : st.cw_hang);
   app->tci_enable    = st.tci_enable ? 1 : 0;
   app->tci_port      = st.tci_port < 1024 ? 40001 : (st.tci_port > 65535 ? 40001 : st.tci_port);
+  app->tci_iq_rate   = (st.tci_iq_rate == 96000 || st.tci_iq_rate == 192000 ||
+                        st.tci_iq_rate == 384000) ? st.tci_iq_rate : 48000;
   app->fps    = st.fps;
   app->latency = st.latency;
   /* Clamp to the supported 48-192 k window — a stale >192 k value from an older

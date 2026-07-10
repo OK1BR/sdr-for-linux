@@ -55,6 +55,8 @@ typedef struct {
    * be called from the TCI service thread (must be lock-free/thread-safe). */
   int       (*set_tx_source_tci)(int on); /* 0 = ok, -1 = not possible      */
   void      (*tx_audio_push)(const float *mono48k, int n);
+  /* IQ stream rate changed by a client (F6d-2d) — persist it. May be NULL. */
+  void      (*iq_rate_changed)(int rate);
 } TciOps;
 
 /* Start/stop the server. start returns 0 on success (port bound). *ops is
@@ -81,6 +83,14 @@ void tci_server_audio_push(const float *mono48k, int n);
  * blocks. Lock-free SPSC ring, cheap no-op while no client has iq_start'ed.
  * Callable from the radio thread. */
 void tci_server_iq_push(const double *iq, int n_pairs, int rate);
+
+/* Device-global IQ stream rate. In ExpertSDR iq_samplerate is a radio
+ * setting, not a per-connection one: SDC sends it only at its own startup
+ * and expects it to survive reconnects and server restarts. Accepted client
+ * sets update it (→ ops.iq_rate_changed for persistence), new clients
+ * inherit it, and the init block announces it. */
+void tci_server_set_iq_rate(int rate);
+int  tci_server_get_iq_rate(void);
 
 /* TX pacing clock (F6d-2c): emit a TX_CHRONO frame asking the TX-owner client
  * for nsamples of TX audio. Wire to tx_run_set_ext_notify; called from the TX

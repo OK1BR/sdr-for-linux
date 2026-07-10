@@ -109,6 +109,9 @@ static double           s_iq_chunk[2 * IQ_CHUNK]; /* shared resampler input   */
 /* Live-debug knobs (deskHPSDR precedent: some TCI clients expect the
  * opposite complex spectral orientation): swap I/Q, negate Q. */
 static int              s_iq_swap, s_iq_conj;
+/* Device-global IQ rate (see tci_server.h): new clients inherit it. Written
+ * on the main thread, read by the LWS thread at ESTABLISHED → atomic. */
+static _Atomic int      s_iq_rate_dflt = 48000;
 
 /* Last state broadcast by the reporter (main thread only). */
 static struct {
@@ -352,6 +355,7 @@ static gboolean send_initial_idle(gpointer data) {
   tci_sendf(c, "cw_keyer_speed:%d;", s_ops.get_cw_speed());
   tci_sendf(c, "tx_enable:0,%s;", s_ops.get_tx_enable() ? "true" : "false");
   tci_sendf(c, "tx_frequency:%lld;", f);
+  tci_sendf(c, "iq_samplerate:%d;", atomic_load(&s_iq_rate_dflt));
   tci_sendf(c, "ready;");
   tci_sendf(c, "start;");                    /* piHPSDR ends with start; — device is running */
   return G_SOURCE_REMOVE;
@@ -612,6 +616,10 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
         if (c->iq_rs) { destroy_resample(c->iq_rs); c->iq_rs = NULL; }
         c->iq_fill = 0;
         g_mutex_unlock(&s_lock);
+        /* a radio setting, not a connection one: SDC sets it once at its
+         * own startup and expects it after reconnects — stick + persist */
+        atomic_store(&s_iq_rate_dflt, r);
+        if (s_ops.iq_rate_changed) { s_ops.iq_rate_changed(r); }
       }
     }
     tci_sendf(c, "iq_samplerate:%d;", c->iq_rate);
@@ -743,7 +751,7 @@ static int lws_cb(struct lws *wsi, enum lws_callback_reasons reason,
       nc->au_fmt = TCI_FMT_FLOAT32;
       nc->au_ch = 2;
       nc->au_block = 2048;
-      nc->iq_rate = 48000;
+      nc->iq_rate = atomic_load(&s_iq_rate_dflt);
       lws_get_peer_simple(wsi, nc->peer, sizeof(nc->peer));
       lws_hdr_copy(wsi, nc->agent, sizeof(nc->agent), WSI_TOKEN_HTTP_USER_AGENT);
     }
@@ -1144,6 +1152,14 @@ void tci_server_stop(void) {
 }
 
 int tci_server_running(void) { return s_run; }
+
+void tci_server_set_iq_rate(int rate) {
+  if (rate == 48000 || rate == 96000 || rate == 192000 || rate == 384000) {
+    atomic_store(&s_iq_rate_dflt, rate);
+  }
+}
+
+int tci_server_get_iq_rate(void) { return atomic_load(&s_iq_rate_dflt); }
 
 int tci_server_clients(void) {
   int n = 0;

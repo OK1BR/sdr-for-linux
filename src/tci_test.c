@@ -72,6 +72,7 @@ static const TciOps STUB_OPS = {
   s_get_tune, s_set_tune, s_get_vol, s_set_vol, s_get_mute, s_set_mute,
   s_get_wpm, s_set_wpm, s_cw_send, s_cw_stop, s_get_txen, s_get_rate,
   s_get_smeter, s_get_txm, s_set_tx_src, s_txa_push,
+  NULL,                                    /* iq_rate_changed: no persistence */
 };
 
 /* ---- LWS test client -------------------------------------------------------- */
@@ -248,6 +249,7 @@ int main(void) {
   check("handshake announces protocol:ExpertSDR3", rx_contains("protocol:ExpertSDR3,1.9;"));
   check("handshake carries device + vfo + modulation state",
         rx_contains("device:") && rx_contains("vfo:0,0,14100000;") && rx_contains("modulation:0,usb;"));
+  check("handshake announces the device IQ rate", rx_contains("iq_samplerate:48000;"));
 
   client_send("vfo:0,0,7020000;modulation:0,CW;drive:0,42;cw_macros_speed:31;");
   check("vfo set lands in the radio (7.020 MHz)", wait_for(cond_freq, 2000));
@@ -397,6 +399,20 @@ int main(void) {
       g_usleep(10 * 1000);
     }
     check("iq_stop echoes back", got_stop);
+  }
+
+  /* Sticky device rate: an accepted iq_samplerate becomes the default new
+   * clients inherit — SDC sends it only at its own startup and expects it
+   * to survive reconnects (the second live SDC bug). */
+  client_send("iq_samplerate:96000;");
+  {
+    int sticky = 0;
+    for (int ms = 0; ms < 2000 && !sticky; ms += 10) {
+      while (g_main_context_iteration(NULL, FALSE)) {}
+      sticky = rx_contains("iq_samplerate:96000;") && tci_server_get_iq_rate() == 96000;
+      g_usleep(10 * 1000);
+    }
+    check("accepted iq_samplerate sticks as the device default", sticky);
   }
 
   /* ---- TX audio over TCI (F6d-2c): key with source tci, get the chrono

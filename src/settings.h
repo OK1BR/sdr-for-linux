@@ -76,6 +76,7 @@ typedef struct {
   int       cw_hang;    /* CW break-in hang (ms)                                  */
   int       tci_enable; /* TCI server on/off (F6d-2a)                             */
   int       tci_port;   /* TCI server port (ExpertSDR default 40001)              */
+  int       tci_iq_rate;/* device-global IQ stream rate (F6d-2d; client-set)      */
   double    tx_pan_high, tx_pan_low; /* TX panadapter dB window (0/0 = autofit)   */
   char      pa_cal[256];  /* per-band PA calibration (dB), "6m=53.0;20m=53.0;.." */
   char      pa_trim[256]; /* wattmeter correction curve, 11 pts "p0;p1;..;p10"   */
