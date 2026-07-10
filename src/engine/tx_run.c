@@ -265,11 +265,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
    * bypassed in CW → feedback is meaningless, piHPSDR transmitter.c:2114-2120).
    * Every slot — ps_key edge-detects internally; SetPSMox is lock-free. */
   ps_key(keyed && !cw_key);
-  /* Auto-attenuate on ANY keyed PS TX (Thetis-style, wider than piHPSDR's
-   * two-tone-only scoping): after ps_recal restarts the hunt at 0 dB, the
-   * walk-up must be able to run on voice too. It only ever steps on NEW
-   * calibrations, so a frozen single-cal (StayOn) stays untouched mid-QSO. */
-  ps_auto_tick(keyed && !cw_key);
+  ps_auto_tick(keyed && !cw_key, tt_applied);   /* att stepping: two-tone only */
 
   tx_run_status st;
   memset(&st, 0, sizeof st);

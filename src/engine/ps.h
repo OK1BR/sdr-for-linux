@@ -88,11 +88,16 @@ typedef struct {
 } ps_status;
 void ps_get_status(ps_status *out);
 
-/* Auto-attenuate (piHPSDR ps_menu.c:169-281 algorithm, Thetis-style scoping:
- * any keyed PS TX, not just two-tone): steps the ADC0 attenuator toward
- * feedback ≈152 on each NEW calibration — a frozen single-cal produces no new
- * calibrations, so it never steps mid-QSO. Call every gate slot with "keyed
- * non-CW". */
-void ps_auto_tick(int keyed);
+/* "Auto attenuate" (piHPSDR PS-menu checkbox, transmitter->auto_on): when on,
+ * the attenuator hunt below runs during the two-tone test. Persisted by the
+ * GUI; default on. */
+void ps_set_auto(int on);
+
+/* Auto-attenuate tick (piHPSDR ps_calibration_timer, ps_menu.c:169-281):
+ * `keyed` = any keyed non-CW PS TX (drives the stuck-in-Reset watchdog),
+ * `twotone` = the two-tone test keys right now (the attenuator stepping runs
+ * ONLY here, exactly like piHPSDR, and only with the auto switch on). Call
+ * every gate slot. */
+void ps_auto_tick(int keyed, int twotone);
 
 #endif /* SDRFL_ENGINE_PS_H */

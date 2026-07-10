@@ -32,6 +32,11 @@ static double   s_setpk = PS_SETPK_DEFAULT;
 
 static volatile gint s_keyed;      /* g_atomic: keyed && !CW (feed gate)        */
 static volatile gint s_oneshot;    /* g_atomic: single-cal mode (hold after 1)  */
+static volatile gint s_auto = 1;   /* g_atomic: "Auto attenuate" (piHPSDR auto_on) */
+
+void ps_set_auto(int on) {
+  g_atomic_int_set(&s_auto, on ? 1 : 0);
+}
 
 /* Arm calibration per the mode (piHPSDR tx_ps_resume, transmitter.c:2544-2556):
  * continuous = automode, single-cal = one manual calibration then LSTAYON. */
@@ -205,21 +210,23 @@ void ps_set_oneshot(int oneshot) {
 
 void ps_recal(void) {
   if (!s_started) { return; }
+  int auto_on = g_atomic_int_get(&s_auto);
   g_mutex_lock(&s_lock);
   int on = s_enable;
-  s_att = 0;                         /* see below — restart the level hunt at 0 */
+  if (auto_on) { s_att = 0; }        /* piHPSDR Restart semantics — see below */
+  int att = s_att;
   g_mutex_unlock(&s_lock);
   if (!on) { return; }
-  /* piHPSDR resume_cb (ps_menu.c:537-545): "a very high attenuation could
-   * mean WDSP never calibrates, so auto-adjust would never trigger" — with a
-   * too-weak feedback the COLLECT bins never fill, no calibration completes,
-   * and auto-att (which only steps on NEW calibrations) deadlocks. Restarting
-   * from 0 dB always yields completing (if initially clipped) calibrations,
-   * so the auto-att walk-up converges. Richard hit exactly this deadlock. */
-  p2_ps_state ps = { .enabled = 1, .attenuation = 0, .feedback_ant = 0 };
+  /* piHPSDR resume_cb (ps_menu.c:537-545): with Auto attenuate, restart the
+   * level hunt from 0 dB — "a very high attenuation could mean WDSP never
+   * calibrates, so auto-adjust would never trigger" (too-weak feedback never
+   * fills the COLLECT bins → no new calibration → no auto-att step). With
+   * auto off the operator's manual attenuator is preserved, exactly like
+   * piHPSDR's manual TX-ATT mode. */
+  p2_ps_state ps = { .enabled = 1, .attenuation = att, .feedback_ant = 0 };
   p2_set_ps(&ps);
   SetPSControl(s_ch, 1, 0, 0, 0);    /* drop the held/stale correction */
-  ps_resume();                       /* re-arm per mode (one cal / automode) */
+  ps_resume();                       /* re-arm per mode (automode / one cal) */
 }
 
 void ps_key(int keyed) {
@@ -239,18 +246,36 @@ void ps_key(int keyed) {
  * by 20·log10(fdbk/152.293) dB (±15 dB jumps at the clip/noise extremes), then
  * run the reset → apply → reset → resume choreography so the next calibration
  * starts clean at the new level. Called from the tx_run gate slot (~20 Hz). */
-void ps_auto_tick(int keyed) {
-  static int a_state, a_last_cals;
+void ps_auto_tick(int keyed, int twotone) {
+  static int a_state, a_last_cals, a_stuck;
   if (!s_started) { return; }
   g_mutex_lock(&s_lock);
   int on = s_enable, att = s_att;
   g_mutex_unlock(&s_lock);
-  if (!on || !keyed) { a_state = 0; return; }
+  if (!on || !keyed) { a_state = 0; a_stuck = 0; return; }
 
   int info[16];
   GetPSInfo(s_ch, info);
   int newcal = info[5] != a_last_cals;
   a_last_cals = info[5];
+
+  /* Stuck-in-Reset watchdog (Richard's second stuck, log 2026-07-11): a
+   * FAILED single calibration consumes the one-shot mancal request and calcc
+   * parks in LRESET forever — piHPSDR expects a manual "Restart". If the
+   * machine sits in LRESET for ~0.5 s while keyed with PS on, re-arm.
+   * Continuous mode never parks there (automode persists), and the auto-att
+   * choreography below passes through LRESET in ~2 slots — both far under
+   * the threshold. */
+  if (info[15] == 0) {
+    if (++a_stuck >= 10) { ps_resume(); a_stuck = 0; }
+  } else {
+    a_stuck = 0;
+  }
+
+  /* Attenuator stepping: EXACTLY piHPSDR's scoping — only during the
+   * two-tone experiment and only with the Auto attenuate switch on
+   * (ps_calibration_timer exists only while twotone runs, ps_menu.c:2934). */
+  if (!twotone || !g_atomic_int_get(&s_auto)) { a_state = 0; return; }
 
   switch (a_state) {
   case 0: {
