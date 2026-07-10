@@ -178,6 +178,49 @@ static gboolean tci_reporter(gpointer data) {
   return G_SOURCE_CONTINUE;
 }
 
+/* Bidirectional commands accepted + echoed (the TCI synchronizer contract:
+ * every set MUST come back as a broadcast, else clients stall waiting) that
+ * have no real backend yet. The stored args replay in the handshake. */
+static struct {
+  const char *name;
+  const char *dflt;
+  char        val[64];
+} s_echo[] = {
+  { "split_enable",  "0,false", "" }, { "lock",          "0,false", "" },
+  { "rit_enable",    "0,false", "" }, { "rit_offset",    "0,0",     "" },
+  { "xit_enable",    "0,false", "" }, { "xit_offset",    "0,0",     "" },
+  { "sql_enable",    "0,false", "" }, { "sql_level",     "0,-80",   "" },
+  { "rx_nb_enable",  "0,false", "" }, { "rx_nr_enable",  "0,false", "" },
+  { "rx_anf_enable", "0,false", "" }, { "rx_apf_enable", "0,false", "" },
+  { "rx_bin_enable", "0,false", "" }, { "rx_nf_enable",  "0,false", "" },
+  { "rx_dse_enable", "0,false", "" }, { "rx_mute",       "0,false", "" },
+  { "agc_mode",      "0,fast",  "" }, { "agc_gain",      "0,80",    "" },
+};
+
+static void echo_reset(void) {
+  for (guint i = 0; i < G_N_ELEMENTS(s_echo); i++) {
+    g_strlcpy(s_echo[i].val, s_echo[i].dflt, sizeof(s_echo[i].val));
+  }
+}
+
+/* Try the echo table; returns 1 when the command was consumed. */
+static int echo_exec(const char *name, char **av, int ac) {
+  for (guint i = 0; i < G_N_ELEMENTS(s_echo); i++) {
+    if (strcmp(name, s_echo[i].name) != 0) { continue; }
+    if (ac > 0 && av[0][0]) {                /* set: join args + store */
+      char joined[64] = "";
+      for (int a = 0; a < ac; a++) {
+        if (a) { g_strlcat(joined, ",", sizeof(joined)); }
+        g_strlcat(joined, av[a], sizeof(joined));
+      }
+      g_strlcpy(s_echo[i].val, joined, sizeof(s_echo[i].val));
+    }
+    tci_broadcastf("%s:%s;", s_echo[i].name, s_echo[i].val);
+    return 1;
+  }
+  return 0;
+}
+
 /* ---- initial handshake (main thread; ops needed for the state block) ------ */
 
 static gboolean send_initial_idle(gpointer data) {
@@ -211,15 +254,24 @@ static gboolean send_initial_idle(gpointer data) {
   tci_sendf(c, "modulation:0,%s;", mode);
   tci_sendf(c, "rx_filter_band:0,%d,%d;", lo, hi);
   tci_sendf(c, "rx_enable:0,true;");         /* receiver 0 is running — Decodium gates audio on this */
+  /* Full state block like piHPSDR: locks, squelch, noise, RIT/XIT, split,
+   * volumes, AGC — clients wait for the lot before they start operating. */
+  for (guint i = 0; i < G_N_ELEMENTS(s_echo); i++) {
+    tci_sendf(c, "%s:%s;", s_echo[i].name, s_echo[i].val);
+  }
+  tci_sendf(c, "rx_volume:0,0,%d;", (int)(s_ops.get_volume() - 0.5));
+  tci_sendf(c, "rx_volume:0,1,%d;", (int)(s_ops.get_volume() - 0.5));
   tci_sendf(c, "trx:0,%s;", s_ops.get_trx() ? "true" : "false");
   tci_sendf(c, "tune:0,%s;", s_ops.get_tune() ? "true" : "false");
   tci_sendf(c, "drive:0,%d;", (int)(s_ops.get_drive() + 0.5));
   tci_sendf(c, "tune_drive:0,%d;", (int)(s_ops.get_tune_drive() + 0.5));
   tci_sendf(c, "cw_macros_speed:%d;", s_ops.get_cw_speed());
   tci_sendf(c, "cw_macros_delay:%d;", s_cw_delay_ms);
+  tci_sendf(c, "cw_keyer_speed:%d;", s_ops.get_cw_speed());
   tci_sendf(c, "tx_enable:0,%s;", s_ops.get_tx_enable() ? "true" : "false");
   tci_sendf(c, "tx_frequency:%lld;", f);
   tci_sendf(c, "ready;");
+  tci_sendf(c, "start;");                    /* piHPSDR ends with start; — device is running */
   return G_SOURCE_REMOVE;
 }
 
@@ -425,6 +477,8 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
   } else if (strcmp(name, "start") == 0 || strcmp(name, "stop") == 0) {
     /* device start/stop — we are always running; acknowledge by echo */
     tci_sendf(c, "%s;", name);
+  } else if (echo_exec(name, av, ac)) {
+    /* bidirectional command without a backend yet: stored + broadcast back */
   }
   /* anything else: ignored (per spec: invalid commands are ignored) */
 }
@@ -688,6 +742,7 @@ int tci_server_start(int port, const TciOps *ops) {
   memset(&s_last, 0, sizeof(s_last));
   s_cw_delay_ms = 10;
   s_debug = g_getenv("SDRFL_TCI_DEBUG") != NULL;
+  echo_reset();
   atomic_store(&s_au_active, 0);
   atomic_store(&au_head, 0u);
   atomic_store(&au_tail, 0u);
