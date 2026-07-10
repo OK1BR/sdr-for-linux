@@ -52,10 +52,16 @@ typedef struct {
 
 /* Start/stop the server. start returns 0 on success (port bound). *ops is
  * copied. Safe to call stop when not running. */
+#define TCI_SERVER_MAX_CLIENTS 8
+
 int  tci_server_start(int port, const TciOps *ops);
 void tci_server_stop(void);
 int  tci_server_running(void);
 int  tci_server_clients(void);   /* connected client count (for the GUI)    */
+
+/* Describe connected client slot i (0..TCI_SERVER_MAX_CLIENTS-1) as
+ * "ip:port · user-agent [· audio]". Returns 1 if that slot is connected. */
+int  tci_server_client_info(int i, char *buf, int len);
 
 /* RX audio input (F6d-2b): push volume-independent mono 48 kHz samples from
  * the demod tap (demod_set_audio_tap → this). Lock-free SPSC ring, cheap

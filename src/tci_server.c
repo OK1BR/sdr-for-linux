@@ -39,6 +39,8 @@ typedef struct {
   int         inuse;
   int         init_sent;     /* handshake block queued                       */
   GQueue     *txq;           /* Msg* waiting for SERVER_WRITEABLE            */
+  char        peer[48];      /* client ip:port (identification for the GUI)  */
+  char        agent[96];     /* HTTP User-Agent from the WS handshake ("" =?)*/
   /* RX audio stream subscription (F6d-2b); state under s_lock. */
   int         au_sub;        /* audio_start'ed                               */
   int         au_rate;       /* 8000/12000/24000/48000                       */
@@ -89,6 +91,9 @@ static void cli_send_msg(Client *c, int binary, const void *data, size_t len) {
   m->len = len;
   memcpy(m->data, data, len);
   g_queue_push_tail(c->txq, m);
+  if (s_debug && !binary) {
+    fprintf(stderr, "tci> %.*s\n", (int)len, (const char *)data);
+  }
 }
 
 static void cli_send(Client *c, const char *msg) {
@@ -472,11 +477,14 @@ static int lws_cb(struct lws *wsi, enum lws_callback_reasons reason,
       nc->au_fmt = TCI_FMT_FLOAT32;
       nc->au_ch = 2;
       nc->au_block = 2048;
+      lws_get_peer_simple(wsi, nc->peer, sizeof(nc->peer));
+      lws_hdr_copy(wsi, nc->agent, sizeof(nc->agent), WSI_TOKEN_HTTP_USER_AGENT);
     }
     g_mutex_unlock(&s_lock);
     *slot = idx;
     if (idx < 0) { return -1; }             /* table full — refuse */
-    fprintf(stderr, "tci: client %d connected\n", idx);
+    fprintf(stderr, "tci: client %d connected (%s%s%s)\n", idx, s_cli[idx].peer,
+            s_cli[idx].agent[0] ? " · " : "", s_cli[idx].agent);
     g_idle_add(send_initial_idle, &s_cli[idx]);
     return 0;
   }
@@ -724,4 +732,19 @@ int tci_server_clients(void) {
   for (int i = 0; i < TCI_MAX_CLIENTS; i++) { n += s_cli[i].inuse ? 1 : 0; }
   g_mutex_unlock(&s_lock);
   return n;
+}
+
+int tci_server_client_info(int i, char *buf, int len) {
+  if (i < 0 || i >= TCI_MAX_CLIENTS) { return 0; }
+  int ok = 0;
+  g_mutex_lock(&s_lock);
+  if (s_cli[i].inuse) {
+    snprintf(buf, (size_t)len, "%s%s%s%s",
+             s_cli[i].peer[0] ? s_cli[i].peer : "?",
+             s_cli[i].agent[0] ? " · " : "", s_cli[i].agent,
+             s_cli[i].au_sub ? " · audio" : "");
+    ok = 1;
+  }
+  g_mutex_unlock(&s_lock);
+  return ok;
 }

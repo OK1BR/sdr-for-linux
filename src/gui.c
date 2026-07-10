@@ -192,6 +192,8 @@ typedef struct {
   char        picked_ip[64]; /* radio chosen in the startup picker ("" = none)      */
   int         tci_enable;    /* TCI server on/off (persisted, F6d-2a)               */
   int         tci_port;      /* TCI server port (persisted; ExpertSDR default 40001)*/
+  GtkWidget  *tci_client_row; /* live client list on the TCI prefs page             */
+  guint       tci_timer;     /* 1 s refresh for the client row                      */
   int         tx_mon;        /* TX monitor (self-listen) on/off (persisted)         */
   double      tx_mon_db;     /* monitor level dB (persisted)                        */
   double      tx_flo;        /* TX audio filter low edge, Hz (persisted)            */
@@ -2034,7 +2036,7 @@ static GtkWidget *build_controls(App *app) {
   if (app->mode_btns[app->mode]) {   /* reflect the resolved startup mode … */
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->mode_btns[app->mode]), TRUE);
   }
-  for (int i = 0; i < 5; i++) {       /* … then connect, so this doesn't re-fire the engine */
+  for (int i = 0; i < (int)G_N_ELEMENTS(mids); i++) {  /* … then connect, so this doesn't re-fire the engine */
     g_signal_connect(app->mode_btns[mids[i]], "toggled", G_CALLBACK(on_mode_toggled), app);
   }
   gtk_box_append(GTK_BOX(bar), modebox);
@@ -2795,6 +2797,37 @@ static void on_pref_tci_port(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   }
   schedule_save(app);
 }
+
+/* Live "who is connected" row on the TCI page (1 s refresh while it exists). */
+static gboolean tci_clients_tick(gpointer data) {
+  App *app = (App *)data;
+  if (!app->tci_client_row) { app->tci_timer = 0; return G_SOURCE_REMOVE; }
+  if (!tci_server_running()) {
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(app->tci_client_row), "Server is off");
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(app->tci_client_row), "");
+    return G_SOURCE_CONTINUE;
+  }
+  int n = tci_server_clients();
+  char t[48];
+  if (n == 0) { g_strlcpy(t, "No clients connected", sizeof(t)); }
+  else { snprintf(t, sizeof(t), "%d client%s connected", n, n == 1 ? "" : "s"); }
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(app->tci_client_row), t);
+  GString *s = g_string_new(NULL);
+  for (int i = 0; i < TCI_SERVER_MAX_CLIENTS; i++) {
+    char info[192];
+    if (tci_server_client_info(i, info, sizeof(info))) {
+      if (s->len) { g_string_append_c(s, '\n'); }
+      g_string_append(s, info);
+    }
+  }
+  adw_action_row_set_subtitle(ADW_ACTION_ROW(app->tci_client_row), s->str);
+  g_string_free(s, TRUE);
+  return G_SOURCE_CONTINUE;
+}
+static void on_tci_row_destroy(GtkWidget *w, gpointer data) {
+  (void)w;
+  ((App *)data)->tci_client_row = NULL;
+}
 /* TX audio filter edges (Hz). Pushed via tx_push_cfg; applies live even while
  * keyed (gate_slot re-asserts the passband each slot, WDSP no-ops if unchanged). */
 static void on_pref_tx_flo(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
@@ -2985,9 +3018,13 @@ static AdwDialog *build_prefs(App *app) {
   adw_expander_row_add_row(ADW_EXPANDER_ROW(wm_exp), reset_row);
   adw_preferences_group_add(g, wm_exp);
   adw_preferences_page_add(p, g);
+  adw_preferences_dialog_add(dlg, p);   /* Drive / Tune drive / Antenna live on the footer bar */
 
-  /* CW (F6d-1c) — keyer + sidetone, like piHPSDR's CW menu. All live. */
-  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "CW", NULL));
+  /* CW — own page (F6d-1c): keyer + sidetone, like piHPSDR's CW menu. All live. */
+  p = ADW_PREFERENCES_PAGE(g_object_new(ADW_TYPE_PREFERENCES_PAGE,
+      "title", "CW", "icon-name", "input-keyboard-symbolic", NULL));
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP,
+      "title", "Keyer &amp; sidetone", NULL));
   adw_preferences_group_add(g, pref_spin("Keyer speed",
       "WPM · queued CW (dev trigger / TCI) · live",
       5, 60, app->cw_wpm, G_CALLBACK(on_pref_cw_wpm), app));
@@ -3001,10 +3038,13 @@ static AdwDialog *build_prefs(App *app) {
       "ms · T/R hold after the last element (piHPSDR default 500) · live",
       0, 1000, app->cw_hang, G_CALLBACK(on_pref_cw_hang), app));
   adw_preferences_page_add(p, g);
+  adw_preferences_dialog_add(dlg, p);
 
-  /* TCI (F6d-2a) — ExpertSDR-compatible server for loggers/digimode SW. */
-  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "TCI",
-      "description", "ExpertSDR-compatible control server (CW keying, frequency/mode; audio streams come later)", NULL));
+  /* TCI — own page (F6d-2): server switch + a live list of connected clients. */
+  p = ADW_PREFERENCES_PAGE(g_object_new(ADW_TYPE_PREFERENCES_PAGE,
+      "title", "TCI", "icon-name", "network-transmit-receive-symbolic", NULL));
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Server",
+      "description", "ExpertSDR-compatible control server (frequency/mode, CW keying, RX audio; TX audio comes later)", NULL));
   adw_preferences_group_add(g, pref_switch("TCI server",
       "WebSocket for SDC, loggers, Decodium… · live",
       app->tci_enable, G_CALLBACK(on_pref_tci_enable), app));
@@ -3012,7 +3052,17 @@ static AdwDialog *build_prefs(App *app) {
       "ExpertSDR default 40001 · applies on server toggle",
       1024, 65535, app->tci_port, G_CALLBACK(on_pref_tci_port), app));
   adw_preferences_page_add(p, g);
-  adw_preferences_dialog_add(dlg, p);   /* Drive / Tune drive / Antenna live on the footer bar */
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Clients", NULL));
+  app->tci_client_row = g_object_new(ADW_TYPE_ACTION_ROW, "title", "—",
+      "use-markup", FALSE, NULL);   /* user-agents may contain markup chars */
+  g_signal_connect(app->tci_client_row, "destroy", G_CALLBACK(on_tci_row_destroy), app);
+  adw_preferences_group_add(g, app->tci_client_row);
+  adw_preferences_page_add(p, g);
+  adw_preferences_dialog_add(dlg, p);
+  tci_clients_tick(app);            /* fill immediately, then 1 s refresh */
+  if (!app->tci_timer) { app->tci_timer = g_timeout_add(1000, tci_clients_tick, app); }
+  adw_dialog_set_content_width(ADW_DIALOG(dlg), 780);   /* roomier than the default */
+  adw_dialog_set_content_height(ADW_DIALOG(dlg), 680);
 
   /* Audio — ALL audio settings in one place (Richard's ask, 2026-07-10):
    * devices + shared sample rate + gain/latency. One sample rate for the RX
