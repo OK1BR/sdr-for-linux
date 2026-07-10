@@ -1772,7 +1772,7 @@ static void on_right_released(GtkGestureClick *g, int n_press, double x, double 
  * (which drives the engine), so keyboard and buttons stay in sync. */
 static gboolean on_key(GtkEventControllerKey *ctl, guint keyval, guint keycode,
                        GdkModifierType state, gpointer data) {
-  (void)ctl; (void)keycode; (void)state;
+  (void)ctl; (void)keycode;
   App *app = (App *)data;
   if (!app->radio_mode) { return FALSE; }
   if (keyval == GDK_KEY_Escape && app->select_mode) {
@@ -1784,6 +1784,16 @@ static gboolean on_key(GtkEventControllerKey *ctl, guint keyval, guint keycode,
   /* Esc aborts any queued/running CW (the CW source is TCI, F6d-2; the F6d-1b
    * 'k' test hotkey is gone — one stray keypress must never key the radio). */
   if (keyval == GDK_KEY_Escape && app->tx_ready) { tx_run_cw_abort(); return TRUE; }
+  /* CW dev trigger, ENV-GATED: Ctrl+Shift+K queues a test string, but only when
+   * the app was launched with SDRFL_CW_TEST=1 (+ CW mode + TX up). A normal run
+   * still has no key that can key the radio — the 45f73ae audit rule holds. */
+  if (gdk_keyval_to_lower(keyval) == GDK_KEY_k &&
+      (state & GDK_CONTROL_MASK) && (state & GDK_SHIFT_MASK) &&
+      app->tx_ready && (app->mode == DEMOD_CWL || app->mode == DEMOD_CWU)) {
+    const char *t = g_getenv("SDRFL_CW_TEST");
+    if (t && strcmp(t, "1") == 0) { tx_run_cw_send("V V V TEST DE OK1BR "); }
+    return TRUE;
+  }
   int mode;
   switch (gdk_keyval_to_lower(keyval)) {
     case GDK_KEY_u: mode = DEMOD_USB; break;

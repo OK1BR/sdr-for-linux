@@ -383,9 +383,11 @@ no trips). What landed:
     turns it into a real MOX assertion (drive, ANT, LPF, atten-31, SWR protection —
     identical to voice MOX, already verified), and the feed loop emits the shaped
     carrier IQ directly (`I = 0.896·env, Q = 0`, no WDSP). 20 s continuous-key
-    cutoff. API: `tx_run_cw_send/abort/set_cw`. **Temporary trigger for the live
-    test:** in a CW mode the key **'k'** queues "V V V TEST DE OK1BR" (Esc aborts) —
-    to be replaced by the TCI source (F6d-2). Builds; all offline gates pass (cw
+    cutoff. API: `tx_run_cw_send/abort/set_cw`. **Dev trigger for live tests,
+    ENV-GATED:** with `SDRFL_CW_TEST=1` in the environment, **Ctrl+Shift+K** in a
+    CW mode queues "V V V TEST DE OK1BR" (Esc aborts). Without the env var no
+    key can key the radio (the plain-'k' hotkey was removed by the 2026-07-09
+    audit); the real CW source is TCI (F6d-2). Builds; all offline gates pass (cw
     timing, txprobe OFF-state clean, txgate, swr, txdsp). **★ Live test pending:**
     first CW keying into a 50 Ω dummy load, operator at the wattmeter (watch `tx:
     KEY CW` + fwd/SWR). Sidetone + WPM/persistence UI = F6d-1c.
