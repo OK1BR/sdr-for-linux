@@ -26,7 +26,11 @@
 #include "cw_gen.h"   /* CW Morse envelope → keyed carrier (F6d)                    */
 #include "demod.h"    /* DEMOD_* mode ids + demod_monitor_push (TX monitor)         */
 
-#define CW_SIDETONE_HZ 700.0   /* monitor sidetone pitch (F6d-1c will make it a setting) */
+#define CW_SIDETONE_HZ  700     /* sidetone pitch default, Hz — tx_run_set_sidetone      */
+#define CW_SIDETONE_CDB (-2000) /* sidetone level default (dB × 100): −20 dBFS ≈ piHPSDR's
+                                   default sidetone volume 50/127 (0.00196·vol·env peaks
+                                   at 0.098, transmitter.c:1491) — NOT full scale, which
+                                   overdrives the speaker through the voice monitor gain */
 
 #define TX_MODE_IS_CW(m) ((m) == DEMOD_CWL || (m) == DEMOD_CWU)
 #define CW_IQ_AMP        0.896   /* DC-signal gain comp for the radio's DUC CFIR (piHPSDR) */
@@ -85,6 +89,8 @@ static volatile int      s_monitor;        /* g_atomic: TX monitor (self-listen)
 static cw_gen           *s_cw;             /* CW envelope generator (192k), under s_cw_lock */
 static GMutex            s_cw_lock;
 static volatile int      s_cw_hang_ms = 250;   /* g_atomic: break-in hang time (ms)         */
+static volatile int      s_st_hz  = CW_SIDETONE_HZ;  /* g_atomic: sidetone pitch (Hz)       */
+static volatile int      s_st_cdb = CW_SIDETONE_CDB; /* g_atomic: sidetone level (dB × 100) */
 
 static tx_cfg_i          s_cfg;            /* under s_cfg_lock */
 static GMutex            s_cfg_lock;
@@ -280,12 +286,16 @@ static gpointer tx_thread(gpointer u) {
         }
         on_tx_iq(cwiq, TX_IQ_BLOCK, NULL);
         if (g_atomic_int_get(&s_monitor)) {
-          /* Sidetone: the SAME envelope that keys the RF, on a local tone. */
+          /* Sidetone: the SAME envelope that keys the RF, on a local tone, scaled
+           * to the sidetone level (its own trim — the shared monitor gain is
+           * calibrated for the much quieter voice-mic signal). */
           static double ph;
           float st[TX_IQ_BLOCK];
+          double amp  = pow(10.0, (double)g_atomic_int_get(&s_st_cdb) / 2000.0);
+          double step = 2.0 * G_PI * (double)g_atomic_int_get(&s_st_hz) / (double)TX_IQ_RATE;
           for (int i = 0; i < TX_IQ_BLOCK; i++) {
-            st[i] = cwenv[i] * (float)sin(ph);
-            ph += 2.0 * G_PI * CW_SIDETONE_HZ / (double)TX_IQ_RATE;
+            st[i] = (float)(amp * (double)cwenv[i] * sin(ph));
+            ph += step;
             if (ph > 2.0 * G_PI) { ph -= 2.0 * G_PI; }
           }
           demod_monitor_push(st, TX_IQ_BLOCK, TX_IQ_RATE);
@@ -427,6 +437,11 @@ void tx_run_set_cw(int wpm, double weight, double ramp_ms, int hang_ms) {
   if (s_cw) { cw_gen_set_speed(s_cw, wpm, weight); cw_gen_set_ramp(s_cw, ramp_ms); }
   g_mutex_unlock(&s_cw_lock);
   g_atomic_int_set(&s_cw_hang_ms, hang_ms > 0 ? hang_ms : 0);
+}
+
+void tx_run_set_sidetone(int pitch_hz, double level_db) {
+  g_atomic_int_set(&s_st_hz,  CLAMP(pitch_hz, 100, 2000));
+  g_atomic_int_set(&s_st_cdb, (int)lrint(CLAMP(level_db, -40.0, 0.0) * 100.0));
 }
 
 void tx_run_set_freq(long long tx_freq_hz) {

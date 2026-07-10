@@ -388,9 +388,16 @@ no trips). What landed:
     CW mode queues "V V V TEST DE OK1BR" (Esc aborts). Without the env var no
     key can key the radio (the plain-'k' hotkey was removed by the 2026-07-09
     audit); the real CW source is TCI (F6d-2). Builds; all offline gates pass (cw
-    timing, txprobe OFF-state clean, txgate, swr, txdsp). **★ Live test pending:**
-    first CW keying into a 50 Ω dummy load, operator at the wattmeter (watch `tx:
-    KEY CW` + fwd/SWR). Sidetone + WPM/persistence UI = F6d-1c.
+    timing, txprobe OFF-state clean, txgate, swr, txdsp). **Live-verified
+    2026-07-10** into a 50 Ω dummy load: first dit intact (kick + 30 ms RF hold),
+    break-in feel OK, wattmeter + SWR sane.
+  - **F6d-1c done — CW controls.** Preferences → Radio → "CW" group, all live +
+    persisted: keyer speed (WPM), sidetone pitch (Hz), sidetone level, break-in
+    hang (ms). The sidetone level is its OWN trim (dBFS before the shared
+    Monitor level), default −20 dBFS ≈ piHPSDR's sidetone volume 50/127
+    (0.00196·vol·env, transmitter.c:1491) — the first live test played the
+    sidetone at FULL scale through the voice-calibrated monitor gain and
+    audibly overdrove the speaker.
   - **F6d-2** — **TCI** server endpoint as the CW source (bootstraps a slice of the
     otherwise-deferred TCI transport); the contest program sends CW over TCI.
 

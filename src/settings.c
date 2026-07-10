@@ -140,6 +140,14 @@ int settings_load(Settings *s) {
       s->tx_mon = g_key_file_get_integer(kf, GROUP_TX, "monitor", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "monitor_db", NULL))
       s->tx_mon_db = g_key_file_get_double(kf, GROUP_TX, "monitor_db", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "cw_wpm", NULL))
+      s->cw_wpm = g_key_file_get_integer(kf, GROUP_TX, "cw_wpm", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "cw_pitch", NULL))
+      s->cw_pitch = g_key_file_get_integer(kf, GROUP_TX, "cw_pitch", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "cw_sidetone_db", NULL))
+      s->cw_st_db = g_key_file_get_double(kf, GROUP_TX, "cw_sidetone_db", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "cw_hang", NULL))
+      s->cw_hang = g_key_file_get_integer(kf, GROUP_TX, "cw_hang", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "filt_lo", NULL))
       s->tx_flo = g_key_file_get_double(kf, GROUP_TX, "filt_lo", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "filt_hi", NULL))
@@ -231,6 +239,10 @@ int settings_save(const Settings *s) {
   g_key_file_set_double (kf, GROUP_TX,     "gate_db",   s->tx_gate_db);
   g_key_file_set_integer(kf, GROUP_TX,     "monitor",   s->tx_mon);
   g_key_file_set_double (kf, GROUP_TX,     "monitor_db", s->tx_mon_db);
+  g_key_file_set_integer(kf, GROUP_TX,     "cw_wpm",    s->cw_wpm);
+  g_key_file_set_integer(kf, GROUP_TX,     "cw_pitch",  s->cw_pitch);
+  g_key_file_set_double (kf, GROUP_TX,     "cw_sidetone_db", s->cw_st_db);
+  g_key_file_set_integer(kf, GROUP_TX,     "cw_hang",   s->cw_hang);
   g_key_file_set_double (kf, GROUP_TX,     "filt_lo",   s->tx_flo);
   g_key_file_set_double (kf, GROUP_TX,     "filt_hi",   s->tx_fhi);
   g_key_file_set_double (kf, GROUP_TX,     "pan_high",  s->tx_pan_high);

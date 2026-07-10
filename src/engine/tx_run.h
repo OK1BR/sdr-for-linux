@@ -109,10 +109,13 @@ void tx_run_set_span(double span_hz);
  * the hang time. tx_run_cw_abort() drops the queue. tx_run_set_cw() sets speed
  * (WPM), weight (0-100), rise/fall ramp (ms) and break-in hang (ms). All safe if
  * TX isn't up (no-ops). Keying still only happens in a CW mode + through the gate.
+ * tx_run_set_sidetone() sets the monitor sidetone pitch (Hz) and level (dBFS
+ * before the shared monitor gain; default −20 ≈ piHPSDR sidetone volume 50/127).
  */
 void tx_run_cw_send(const char *text);
 void tx_run_cw_abort(void);
 void tx_run_set_cw(int wpm, double weight, double ramp_ms, int hang_ms);
+void tx_run_set_sidetone(int pitch_hz, double level_db);
 
 /*
  * Request keying. want_mox / want_tune are the operator's intent; the safety gate

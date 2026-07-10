@@ -191,6 +191,10 @@ typedef struct {
   double      tx_mon_db;     /* monitor level dB (persisted)                        */
   double      tx_flo;        /* TX audio filter low edge, Hz (persisted)            */
   double      tx_fhi;        /* TX audio filter high edge, Hz (persisted; eSSB up)  */
+  int         cw_wpm;        /* CW keyer speed, WPM (persisted, F6d-1c)             */
+  int         cw_pitch;      /* CW sidetone pitch, Hz (persisted)                   */
+  double      cw_st_db;      /* CW sidetone level, dBFS (persisted)                 */
+  int         cw_hang;       /* CW break-in hang, ms (persisted)                    */
   double      band_pacal[NBANDS]; /* per-band PA calibration, dB (F6b, persisted)   */
   double      pa_trim[11];   /* wattmeter correction curve, 11 pts W (F6b, persist) */
   GtkWidget  *pacal_spin[NBANDS]; /* per-band PA-cal spin buttons in Preferences    */
@@ -703,6 +707,12 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
 #define MON_DB_MIN   (-40.0)   /* TX monitor level range, dB */
 #define MON_DB_MAX     0.0
 #define MON_DB_DFLT  (-15.0)
+#define CW_WPM_DFLT    20      /* CW keyer (F6d-1c): speed, sidetone, break-in hang */
+#define CW_PITCH_DFLT  700
+#define CW_ST_DB_MIN (-40.0)   /* sidetone level, dBFS before the monitor gain;  */
+#define CW_ST_DB_MAX    0.0    /* −20 ≈ piHPSDR sidetone volume 50/127           */
+#define CW_ST_DB_DFLT (-20.0)
+#define CW_HANG_DFLT   250
 #define TXF_LO_MIN    20.0     /* TX audio filter edges, Hz (150/2850 default;   */
 #define TXF_LO_MAX   500.0     /* high edge up to 6 kHz covers eSSB widths)      */
 #define TXF_HI_MIN  1500.0
@@ -1291,6 +1301,10 @@ static void app_to_settings(const App *app, Settings *s) {
   s->tx_mon_db  = app->tx_mon_db;
   s->tx_flo     = app->tx_flo;
   s->tx_fhi     = app->tx_fhi;
+  s->cw_wpm     = app->cw_wpm;
+  s->cw_pitch   = app->cw_pitch;
+  s->cw_st_db   = app->cw_st_db;
+  s->cw_hang    = app->cw_hang;
   s->tx_pan_high = app->tx_pan_high;
   s->tx_pan_low  = app->tx_pan_low;
   /* per-mode filter memory → "modeid=idx;..." */
@@ -2590,6 +2604,33 @@ static void on_pref_tx_mon_db(GtkRange *r, gpointer data) {
   demod_set_monitor_gain(app->tx_mon_db);
   schedule_save(app);
 }
+
+/* CW (F6d-1c): keyer speed, sidetone + break-in hang → the TX runtime, live.
+ * Weight 50 / ramp 9 ms stay fixed (the piHPSDR-validated envelope shape). */
+static void cw_push(App *app) {
+  tx_run_set_cw(app->cw_wpm, 50.0, 9.0, app->cw_hang);
+  tx_run_set_sidetone(app->cw_pitch, app->cw_st_db);
+}
+static void on_pref_cw_wpm(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->cw_wpm = (int)adw_spin_row_get_value(r);
+  cw_push(app); schedule_save(app);
+}
+static void on_pref_cw_pitch(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->cw_pitch = (int)adw_spin_row_get_value(r);
+  cw_push(app); schedule_save(app);
+}
+static void on_pref_cw_st_db(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  app->cw_st_db = gtk_range_get_value(r);
+  cw_push(app); schedule_save(app);
+}
+static void on_pref_cw_hang(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->cw_hang = (int)adw_spin_row_get_value(r);
+  cw_push(app); schedule_save(app);
+}
 /* TX audio filter edges (Hz). Pushed via tx_push_cfg; applies live even while
  * keyed (gate_slot re-asserts the passband each slot, WDSP no-ops if unchanged). */
 static void on_pref_tx_flo(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
@@ -2759,6 +2800,22 @@ static AdwDialog *build_prefs(App *app) {
   adw_action_row_add_suffix(ADW_ACTION_ROW(reset_row), reset_btn);
   adw_expander_row_add_row(ADW_EXPANDER_ROW(wm_exp), reset_row);
   adw_preferences_group_add(g, wm_exp);
+  adw_preferences_page_add(p, g);
+
+  /* CW (F6d-1c) — keyer + sidetone, like piHPSDR's CW menu. All live. */
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "CW", NULL));
+  adw_preferences_group_add(g, pref_spin("Keyer speed",
+      "WPM · queued CW (dev trigger / TCI) · live",
+      5, 60, app->cw_wpm, G_CALLBACK(on_pref_cw_wpm), app));
+  adw_preferences_group_add(g, pref_spin("Sidetone pitch",
+      "Hz · monitor tone (default 700) · live",
+      200, 1200, app->cw_pitch, G_CALLBACK(on_pref_cw_pitch), app));
+  adw_preferences_group_add(g, pref_slider("Sidetone level",
+      "dBFS before Monitor level · −20 ≈ piHPSDR default · live",
+      CW_ST_DB_MIN, CW_ST_DB_MAX, app->cw_st_db, G_CALLBACK(on_pref_cw_st_db), app));
+  adw_preferences_group_add(g, pref_spin("Break-in hang",
+      "ms · T/R hold after the last element (piHPSDR default 500) · live",
+      0, 1000, app->cw_hang, G_CALLBACK(on_pref_cw_hang), app));
   adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);   /* Drive / Tune drive / Antenna live on the footer bar */
 
@@ -3053,7 +3110,9 @@ static void start_radio(App *app) {
                   .tx_pa = 0, .tx_ant = 0, .tx_drive = 25.0, .tx_tune = 10.0, .tx_swr = 3.0,
                   .mic_gain = 0.0, .audio_rate = 48000,
                   .tx_gate_db = GATE_DB_DFLT, .tx_mon_db = MON_DB_DFLT,
-                  .tx_flo = TXF_LO_DFLT, .tx_fhi = TXF_HI_DFLT };
+                  .tx_flo = TXF_LO_DFLT, .tx_fhi = TXF_HI_DFLT,
+                  .cw_wpm = CW_WPM_DFLT, .cw_pitch = CW_PITCH_DFLT,
+                  .cw_st_db = CW_ST_DB_DFLT, .cw_hang = CW_HANG_DFLT };
   g_strlcpy(st.ip, "192.168.1.247", sizeof(st.ip));
   g_strlcpy(st.region,  "R1", sizeof(st.region));   /* IARU R1 default; country = none */
   g_strlcpy(st.country, "",   sizeof(st.country));
@@ -3101,6 +3160,10 @@ static void start_radio(App *app) {
   app->tx_mon_db     = st.tx_mon_db < MON_DB_MIN ? MON_DB_MIN : (st.tx_mon_db > MON_DB_MAX ? MON_DB_MAX : st.tx_mon_db);
   app->tx_flo        = st.tx_flo < TXF_LO_MIN ? TXF_LO_MIN : (st.tx_flo > TXF_LO_MAX ? TXF_LO_MAX : st.tx_flo);
   app->tx_fhi        = st.tx_fhi < TXF_HI_MIN ? TXF_HI_MIN : (st.tx_fhi > TXF_HI_MAX ? TXF_HI_MAX : st.tx_fhi);
+  app->cw_wpm        = st.cw_wpm   < 5   ? 5   : (st.cw_wpm   > 60   ? 60   : st.cw_wpm);
+  app->cw_pitch      = st.cw_pitch < 200 ? 200 : (st.cw_pitch > 1200 ? 1200 : st.cw_pitch);
+  app->cw_st_db      = st.cw_st_db < CW_ST_DB_MIN ? CW_ST_DB_MIN : (st.cw_st_db > CW_ST_DB_MAX ? CW_ST_DB_MAX : st.cw_st_db);
+  app->cw_hang       = st.cw_hang  < 0   ? 0   : (st.cw_hang  > 1000 ? 1000 : st.cw_hang);
   app->fps    = st.fps;
   app->latency = st.latency;
   /* Clamp to the supported 48-192 k window — a stale >192 k value from an older
@@ -3323,10 +3386,7 @@ static void start_radio(App *app) {
     tx_run_set_monitor(app->tx_mon);                  /* persisted TX monitor (self-listen) */
     demod_set_monitor_gain(app->tx_mon_db);
     tx_run_set_span(tx_span_hz(app));  /* TX span ← saved zoom, matching the RX axis */
-    /* CW speed (F6d): env override for testing until the F6d-1c WPM control lands. */
-    { const char *w = getenv("SDRFL_CW_WPM"); int wpm = w ? atoi(w) : 20;
-      if (wpm < 1) { wpm = 1; } if (wpm > 60) { wpm = 60; }
-      tx_run_set_cw(wpm, 50.0, 9.0, 250); }
+    cw_push(app);   /* persisted CW keyer speed, hang + sidetone (F6d-1c) */
     tx_update_mic(app);   /* open the mic now if we start in a voice mode (no warm-up lag) */
   } else {
     fprintf(stderr, "TX runtime init failed — RX only\n");

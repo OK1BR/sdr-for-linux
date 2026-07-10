@@ -70,6 +70,10 @@ typedef struct {
   double    tx_mon_db;  /* monitor level (dB, -40..0)                             */
   double    tx_flo;     /* TX audio filter low edge (Hz; default 150)             */
   double    tx_fhi;     /* TX audio filter high edge (Hz; default 2850, eSSB up)  */
+  int       cw_wpm;     /* CW keyer speed (WPM, F6d-1c)                           */
+  int       cw_pitch;   /* CW sidetone pitch (Hz)                                 */
+  double    cw_st_db;   /* CW sidetone level (dBFS before monitor gain; -40..0)   */
+  int       cw_hang;    /* CW break-in hang (ms)                                  */
   double    tx_pan_high, tx_pan_low; /* TX panadapter dB window (0/0 = autofit)   */
   char      pa_cal[256];  /* per-band PA calibration (dB), "6m=53.0;20m=53.0;.." */
   char      pa_trim[256]; /* wattmeter correction curve, 11 pts "p0;p1;..;p10"   */
