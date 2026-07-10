@@ -190,7 +190,7 @@ executable('sdrfl-cw-test',
 executable('sdrfl-tci-test',
   ['src/tci_test.c', 'src/tci_server.c'],
   include_directories : [src_inc],
-  dependencies : [glib_dep, lws_dep],
+  dependencies : [glib_dep, lws_dep, wdsp_dep, m_dep],   # wdsp: IQ resampler (2d)
   install : false,
 )
 

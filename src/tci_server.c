@@ -16,6 +16,7 @@
 #include <stdatomic.h>
 
 #include "tci_server.h"
+#include "wdsp.h"                     /* create_resample: IQ decimation (2d) */
 
 #define TCI_MAX_CLIENTS 8
 #define TCI_PROTO_LINE  "protocol:ExpertSDR3,1.9;"   /* clients key on this name */
@@ -30,7 +31,8 @@ typedef struct {
 
 /* Official Stream block header (spec 3.4): 16 × u32 then payload. */
 #define TCI_HDR_U32S     16
-#define TCI_RX_AUDIO     1            /* StreamType                          */
+#define TCI_IQ_STREAM    0            /* StreamType                          */
+#define TCI_RX_AUDIO     1
 #define TCI_TX_AUDIO     2
 #define TCI_TX_CHRONO    3
 #define TCI_FMT_INT16    0            /* SampleType                          */
@@ -62,6 +64,16 @@ typedef struct {
   int         tx_owner;
   uint8_t     bin_buf[16384];             /* WebSocket fragment reassembly   */
   size_t      bin_fill;
+  /* IQ stream subscription (F6d-2d); state under s_lock. The resampler is
+   * created lazily by the pump (LWS thread) and torn down under s_lock. */
+  int         iq_sub;        /* iq_start'ed                                  */
+  int         iq_rate;       /* 48000/96000/192000/384000                    */
+  RESAMPLE    iq_rs;         /* WDSP resampler (NULL = none/bypass)          */
+  int         iq_rs_in;      /* rates iq_rs was planned for                  */
+  int         iq_rs_out;
+  double     *iq_out;        /* resampler output (heap while subscribed)     */
+  float       iq_blk[2 * 2048];  /* IQ frames accumulated for one block      */
+  int         iq_fill;       /* frames in iq_blk                             */
 } Client;
 
 static Client              s_cli[TCI_MAX_CLIENTS];
@@ -81,6 +93,22 @@ static int                 s_debug;       /* SDRFL_TCI_DEBUG=1: log commands  */
 static float            au_ring[AU_RING];
 static _Atomic unsigned au_head, au_tail;
 static _Atomic int      s_au_active;      /* # of audio_start'ed clients      */
+
+/* Raw DDC IQ ring (F6d-2d): producer = P2 feed (radio thread), consumer =
+ * LWS thread. Counted in complex pairs; 2^17 pairs = 85 ms @ 1536 k. */
+#define IQ_RING       131072u
+#define IQ_MASK       (IQ_RING - 1u)
+#define IQ_CHUNK      1024            /* xresample input block, pairs        */
+#define IQ_BLK_FRAMES 2048            /* frames per outgoing Stream block    */
+#define IQ_OUT_MAX    (IQ_CHUNK * 8 + 16)  /* worst upsample 48 k → 384 k    */
+static double           iq_ring[2 * IQ_RING];
+static _Atomic unsigned iq_head, iq_tail;
+static _Atomic int      s_iq_active;      /* # of iq_start'ed clients         */
+static _Atomic int      s_iq_in_rate;     /* engine rate seen by the pusher   */
+static double           s_iq_chunk[2 * IQ_CHUNK]; /* shared resampler input   */
+/* Live-debug knobs (deskHPSDR precedent: some TCI clients expect the
+ * opposite complex spectral orientation): swap I/Q, negate Q. */
+static int              s_iq_swap, s_iq_conj;
 
 /* Last state broadcast by the reporter (main thread only). */
 static struct {
@@ -342,6 +370,15 @@ static void cw_unescape(char *s) {
 
 static int arg_bool(const char *a) { return g_ascii_strcasecmp(a, "true") == 0; }
 
+/* Drop a client's IQ subscription + resampler (caller holds s_lock). Safe
+ * against the pump: it only touches iq_rs/iq_out under the same lock. */
+static void iq_unsub(Client *c) {
+  if (c->iq_sub) { c->iq_sub = 0; atomic_fetch_sub(&s_iq_active, 1); }
+  if (c->iq_rs)  { destroy_resample(c->iq_rs); c->iq_rs = NULL; }
+  if (c->iq_out) { g_free(c->iq_out); c->iq_out = NULL; }
+  c->iq_fill = 0;
+}
+
 /* One parsed command: lowercase name + up to 8 raw args. */
 static void tci_exec(Client *c, char *name, char **av, int ac) {
   for (char *p = name; *p; p++) { *p = (char)g_ascii_tolower(*p); }
@@ -565,6 +602,35 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
       c->au_block_set = 1;
       g_mutex_unlock(&s_lock);
     }
+  } else if (strcmp(name, "iq_samplerate") == 0) {
+    if (ac > 0 && av[0][0]) {
+      int r = atoi(av[0]);
+      if (r == 48000 || r == 96000 || r == 192000 || r == 384000) {
+        g_mutex_lock(&s_lock);
+        c->iq_rate = r;
+        /* rate change → drop the plan; the pump re-plans on the next chunk */
+        if (c->iq_rs) { destroy_resample(c->iq_rs); c->iq_rs = NULL; }
+        c->iq_fill = 0;
+        g_mutex_unlock(&s_lock);
+      }
+    }
+    tci_sendf(c, "iq_samplerate:%d;", c->iq_rate);
+  } else if (strcmp(name, "iq_start") == 0) {
+    /* single receiver: anything but id 0 is ignored (deskHPSDR does the same) */
+    if (ac > 0 && av[0][0] && atoi(av[0]) != 0) { return; }
+    g_mutex_lock(&s_lock);
+    if (!c->iq_sub) { c->iq_sub = 1; atomic_fetch_add(&s_iq_active, 1); }
+    c->iq_fill = 0;
+    g_mutex_unlock(&s_lock);
+    fprintf(stderr, "tci: iq_start — %d Hz float32\n", c->iq_rate);
+    tci_sendf(c, "iq_start:0;");
+  } else if (strcmp(name, "iq_stop") == 0) {
+    if (ac > 0 && av[0][0] && atoi(av[0]) != 0) { return; }
+    g_mutex_lock(&s_lock);
+    iq_unsub(c);
+    g_mutex_unlock(&s_lock);
+    fprintf(stderr, "tci: iq_stop\n");
+    tci_sendf(c, "iq_stop:0;");
   } else if (strcmp(name, "start") == 0 || strcmp(name, "stop") == 0) {
     /* device start/stop — we are always running; acknowledge by echo */
     tci_sendf(c, "%s;", name);
@@ -677,6 +743,7 @@ static int lws_cb(struct lws *wsi, enum lws_callback_reasons reason,
       nc->au_fmt = TCI_FMT_FLOAT32;
       nc->au_ch = 2;
       nc->au_block = 2048;
+      nc->iq_rate = 48000;
       lws_get_peer_simple(wsi, nc->peer, sizeof(nc->peer));
       lws_hdr_copy(wsi, nc->agent, sizeof(nc->agent), WSI_TOKEN_HTTP_USER_AGENT);
     }
@@ -757,6 +824,7 @@ static int lws_cb(struct lws *wsi, enum lws_callback_reasons reason,
       g_idle_add(tx_owner_lost_idle, NULL);
     }
     if (c->au_sub) { atomic_fetch_sub(&s_au_active, 1); }
+    iq_unsub(c);
     c->inuse = 0;
     c->wsi = NULL;
     if (c->txq) {
@@ -852,10 +920,81 @@ static void au_pump(void) {
   }
 }
 
+/* Emit one IQ Stream block for a client (caller holds s_lock). */
+static void iq_emit(Client *c) {
+  int frames = c->iq_fill;
+  size_t len = TCI_HDR_U32S * 4 + (size_t)frames * 2 * sizeof(float);
+  uint8_t *blk = g_malloc0(len);
+  uint32_t *h = (uint32_t *)blk;
+  h[0] = 0;                       /* receiver                                */
+  h[1] = (uint32_t)c->iq_rate;
+  h[2] = TCI_FMT_FLOAT32;
+  h[5] = (uint32_t)(frames * 2);  /* length: scalar sample count             */
+  h[6] = TCI_IQ_STREAM;
+  h[7] = 2;                       /* I + Q                                   */
+  memcpy(blk + TCI_HDR_U32S * 4, c->iq_blk, (size_t)frames * 2 * sizeof(float));
+  cli_send_msg(c, 1, blk, len);
+  g_free(blk);
+  c->iq_fill = 0;
+}
+
+/* Drain the DDC-rate IQ ring in fixed chunks and fan out to subscribed
+ * clients (LWS thread): per-client WDSP decimation to iq_rate, float32
+ * conversion, block accumulation. Bypass when the rates already match. */
+static void iq_pump(void) {
+  int in_rate = atomic_load_explicit(&s_iq_in_rate, memory_order_relaxed);
+  if (in_rate <= 0) { return; }
+  for (;;) {
+    unsigned t = atomic_load_explicit(&iq_tail, memory_order_relaxed);
+    unsigned h = atomic_load_explicit(&iq_head, memory_order_acquire);
+    if (h - t < IQ_CHUNK) { return; }
+    for (int i = 0; i < IQ_CHUNK; i++) {
+      unsigned idx = (t + (unsigned)i) & IQ_MASK;
+      s_iq_chunk[2 * i]     = iq_ring[2 * idx];
+      s_iq_chunk[2 * i + 1] = iq_ring[2 * idx + 1];
+    }
+    atomic_store_explicit(&iq_tail, t + IQ_CHUNK, memory_order_release);
+
+    g_mutex_lock(&s_lock);
+    for (int ci = 0; ci < TCI_MAX_CLIENTS; ci++) {
+      Client *c = &s_cli[ci];
+      if (!c->inuse || !c->iq_sub) { continue; }
+      const double *src = s_iq_chunk;
+      int n_out = IQ_CHUNK;
+      if (c->iq_rate != in_rate) {
+        if (!c->iq_rs || c->iq_rs_in != in_rate || c->iq_rs_out != c->iq_rate) {
+          if (c->iq_rs) { destroy_resample(c->iq_rs); }
+          if (!c->iq_out) { c->iq_out = g_new(double, 2 * IQ_OUT_MAX); }
+          /* fc/ncoef 0 = auto anti-alias at 0.45 × min-rate (piHPSDR usage) */
+          c->iq_rs = create_resample(1, IQ_CHUNK, s_iq_chunk, c->iq_out,
+                                     in_rate, c->iq_rate, 0.0, 0, 1.0);
+          c->iq_rs_in = in_rate;
+          c->iq_rs_out = c->iq_rate;
+        }
+        n_out = xresample(c->iq_rs);
+        src = c->iq_out;
+      }
+      for (int i = 0; i < n_out; i++) {
+        float fi = (float)src[2 * i], fq = (float)src[2 * i + 1];
+        if (s_iq_swap) { float t2 = fi; fi = fq; fq = t2; }
+        if (s_iq_conj) { fq = -fq; }
+        c->iq_blk[2 * c->iq_fill]     = fi;
+        c->iq_blk[2 * c->iq_fill + 1] = fq;
+        if (++c->iq_fill >= IQ_BLK_FRAMES) { iq_emit(c); }
+      }
+      if (c->wsi && c->txq && !g_queue_is_empty(c->txq)) {
+        lws_callback_on_writable(c->wsi);
+      }
+    }
+    g_mutex_unlock(&s_lock);
+  }
+}
+
 static gpointer service_thread(gpointer data) {
   (void)data;
   while (s_run) {
     if (atomic_load(&s_au_active) > 0) { au_pump(); }
+    if (atomic_load(&s_iq_active) > 0) { iq_pump(); }
     if (s_writable) {
       s_writable = 0;
       g_mutex_lock(&s_lock);
@@ -885,6 +1024,24 @@ void tci_server_audio_push(const float *mono48k, int n) {
   /* lws_service blocks until a socket event — kick it so the service loop
    * comes around to au_pump (piHPSDR's tci_audio_wakeup does the same). */
   if (s_ctx) { lws_cancel_service(s_ctx); }
+}
+
+void tci_server_iq_push(const double *iq, int n_pairs, int rate) {
+  if (!s_run || atomic_load_explicit(&s_iq_active, memory_order_relaxed) <= 0) { return; }
+  atomic_store_explicit(&s_iq_in_rate, rate, memory_order_relaxed);
+  unsigned h = atomic_load_explicit(&iq_head, memory_order_relaxed);
+  unsigned t = atomic_load_explicit(&iq_tail, memory_order_acquire);
+  for (int i = 0; i < n_pairs; i++) {
+    if (h - t >= IQ_RING) { break; }          /* full → drop                 */
+    unsigned idx = h & IQ_MASK;
+    iq_ring[2 * idx]     = iq[2 * i];
+    iq_ring[2 * idx + 1] = iq[2 * i + 1];
+    h++;
+  }
+  atomic_store_explicit(&iq_head, h, memory_order_release);
+  /* No service kick: this runs ~6 k×/s at 1536 k, the ring holds 85 ms and
+   * a skimmer does not care about ≤1 ms of extra latency — the service
+   * loop's own 1 ms cadence drains it. */
 }
 
 void tci_server_tx_chrono(int nsamples) {
@@ -920,6 +1077,12 @@ int tci_server_start(int port, const TciOps *ops) {
   atomic_store(&s_au_active, 0);
   atomic_store(&au_head, 0u);
   atomic_store(&au_tail, 0u);
+  atomic_store(&s_iq_active, 0);
+  atomic_store(&iq_head, 0u);
+  atomic_store(&iq_tail, 0u);
+  atomic_store(&s_iq_in_rate, 0);
+  s_iq_swap = g_getenv("SDRFL_TCI_IQ_SWAP") != NULL;
+  s_iq_conj = g_getenv("SDRFL_TCI_IQ_CONJ") != NULL;
 
   struct lws_context_creation_info info;
   memset(&info, 0, sizeof(info));
@@ -969,9 +1132,12 @@ void tci_server_stop(void) {
       while ((m = g_queue_pop_head(s_cli[i].txq))) { g_free(m); }
       g_queue_free(s_cli[i].txq);
     }
+    if (s_cli[i].iq_rs)  { destroy_resample(s_cli[i].iq_rs); }
+    if (s_cli[i].iq_out) { g_free(s_cli[i].iq_out); }
   }
   memset(&s_cli, 0, sizeof(s_cli));
   atomic_store(&s_au_active, 0);
+  atomic_store(&s_iq_active, 0);
   fprintf(stderr, "tci: server stopped\n");
 }
 
@@ -990,10 +1156,11 @@ int tci_server_client_info(int i, char *buf, int len) {
   int ok = 0;
   g_mutex_lock(&s_lock);
   if (s_cli[i].inuse) {
-    snprintf(buf, (size_t)len, "%s%s%s%s",
+    snprintf(buf, (size_t)len, "%s%s%s%s%s",
              s_cli[i].peer[0] ? s_cli[i].peer : "?",
              s_cli[i].agent[0] ? " · " : "", s_cli[i].agent,
-             s_cli[i].au_sub ? " · audio" : "");
+             s_cli[i].au_sub ? " · audio" : "",
+             s_cli[i].iq_sub ? " · iq" : "");
     ok = 1;
   }
   g_mutex_unlock(&s_lock);

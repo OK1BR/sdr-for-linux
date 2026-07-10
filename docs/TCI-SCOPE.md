@@ -129,9 +129,30 @@ platform-library category — do not vendor).
   and the mic stays closed (mode_is_voice). Gate: 23 checks incl. the full
   key→chrono→audio→unkey round-trip. TODO: drive_digi_max-style power cap
   for 100 % duty modes (piHPSDR has one, default uncapped).
-- **F6d-2d — IQ stream (skimmer).** IQ_START/STOP + IQ_SAMPLERATE 48–384k,
-  decimated from the 1536k DDC feed; CW Skimmer via SDC is the acceptance
-  test.
+- **F6d-2d — IQ stream (skimmer). IMPLEMENTED (offline-verified 2026-07-10;
+  SDC/CW Skimmer live test pending).** Note: piHPSDR's tci.c has iq_start/
+  iq_stop as EMPTY STUBS — the working reference here is **deskHPSDR**
+  (github.com/dl1bz/deskhpsdr, tci.c), which however streams at the
+  receiver's native rate and *retunes the whole radio* to the client's rate.
+  We keep the DDC at the operator's rate (1536k panadapter untouched) and
+  **decimate per client with the WDSP resampler** (vendored; create_resample
+  fc/ncoef auto → anti-alias FIR at 0.45×min-rate, same call piHPSDR's soapy
+  path uses). Flow: gui.c feed_cb (raw P2 IQ, real signal even in the post-TX
+  silence window) → tci_server_iq_push (SPSC ring, 2^17 pairs = 85 ms @
+  1536k, no-op while nobody subscribed) → LWS-thread pump drains 1024-pair
+  chunks → per-client xresample (bypass when rates match, re-planned on any
+  rate change) → float32 blocks of 2048 frames, Stream header type=0, 2 ch,
+  length = frames×2 (the convention Decodium already accepted for audio).
+  Commands: iq_samplerate {48,96,192,384}k validated + echoed, iq_start:0 /
+  iq_stop:0 echoed (deskHPSDR semantics; non-zero receiver ids ignored).
+  No CW ±sidetone phase rotation (deskHPSDR needs it for piHPSDR's CW-BFO
+  convention; our DDC centre == reported dds in every mode — revisit if the
+  deferred CW BFO offset lands). Debug knobs for a client expecting the
+  mirrored spectrum: SDRFL_TCI_IQ_SWAP / SDRFL_TCI_IQ_CONJ (deskHPSDR has the
+  same as options). Gate extended to 33 checks: echo round-trips, header
+  fields, and a +12 kHz complex tone through the 192k→48k decimation —
+  correct frequency, amplitude ~0.5, −12 kHz image < −40 dB (catches a
+  swapped/conjugated stream). Prefs TCI page tags streaming clients "· iq".
 - **F6d-2e — spots.** SPOT/SPOT_DELETE/SPOT_CLEAR drawn on the panadapter
   (bandplan-overlay infra reused; callsign labels), RX_CLICKED_ON_SPOT back
   to clients on click. SDC/cluster integration.

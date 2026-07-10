@@ -349,9 +349,16 @@ static const long long TUNE_STEPS[] = { 1, 10, 100, 1000, 10000 };
 static const char * const TUNE_STEP_LABELS[] = { "1 Hz", "10 Hz", "100 Hz", "1 kHz", "10 kHz", NULL };
 #define TUNE_STEP_DEFAULT 100
 
+/* The rate the running engine was actually started with — app->rate may
+ * diverge live (the preference is restart-to-apply). */
+static int s_engine_rate;
+
 static void feed_cb(const double *iq, int n_pairs, void *user) {
   (void)user;
   analyzer_feed(iq, n_pairs);   /* panadapter — always live */
+  /* Raw IQ → TCI skimmers (F6d-2d); no-op while nobody iq_start'ed. Fed the
+   * real signal even during the post-TX silence window — a skimmer copes. */
+  tci_server_iq_push(iq, n_pairs, s_engine_rate);
   /* Anti-AGC-pump: after TX, feed the demod silence for RX_SILENCE_MS so the
    * relay-crosstalk tail can't kick the AGC (the analyzer still gets real IQ). */
   if (g_atomic_int_get(&g_rx_silence) > 0) {
@@ -3679,6 +3686,7 @@ static void start_radio(App *app) {
   }
 
   p2_set_attenuation(app->atten);   /* front-end gain: goes out in the first HP packet */
+  s_engine_rate = rate;
   if (p2_rx_start(dev, app->freq, rate, feed_cb, NULL) != 0) {
     fprintf(stderr, "p2_rx_start failed\n");
     if (app->tx_ready) { tx_run_stop(); app->tx_ready = 0; }

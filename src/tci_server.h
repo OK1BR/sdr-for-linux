@@ -75,6 +75,13 @@ int  tci_server_client_info(int i, char *buf, int len);
  * no-op while no client has audio_start'ed. Callable from any thread. */
 void tci_server_audio_push(const float *mono48k, int n);
 
+/* Raw DDC IQ input (F6d-2d): push interleaved complex pairs at the engine
+ * rate from the P2 feed callback. The server decimates per client to the
+ * requested iq_samplerate (48-384 k, WDSP resampler) and streams type-0
+ * blocks. Lock-free SPSC ring, cheap no-op while no client has iq_start'ed.
+ * Callable from the radio thread. */
+void tci_server_iq_push(const double *iq, int n_pairs, int rate);
+
 /* TX pacing clock (F6d-2c): emit a TX_CHRONO frame asking the TX-owner client
  * for nsamples of TX audio. Wire to tx_run_set_ext_notify; called from the TX
  * feed thread. */

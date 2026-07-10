@@ -15,6 +15,7 @@
  */
 #include <glib.h>
 #include <libwebsockets.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -310,6 +311,86 @@ int main(void) {
     g_usleep(10 * 1000);
   }
   check("rx_channel_sensors + tx_sensors flow at the asked cadence", got_sens);
+
+  /* ---- IQ stream (F6d-2d): subscribe at 48 k (stub engine rate 192 k → ÷4
+   * WDSP decimation), feed a +12 kHz complex tone, expect type-0 Stream
+   * blocks whose spectrum has the tone at +12 kHz and nothing at −12 kHz
+   * (orientation check — catches a swapped/conjugated stream). 12 kHz sits
+   * on an exact DFT bin of the 2048-frame block (512 cycles). */
+  g_mutex_lock(&c_lock);
+  g_byte_array_set_size(c_bin, 0);
+  g_mutex_unlock(&c_lock);
+  client_send("iq_samplerate:48000;iq_start:0;");
+  int got_iq_echo = 0;
+  for (int ms = 0; ms < 2000 && !got_iq_echo; ms += 10) {
+    while (g_main_context_iteration(NULL, FALSE)) {}
+    got_iq_echo = rx_contains("iq_samplerate:48000;") && rx_contains("iq_start:0;");
+    g_usleep(10 * 1000);
+  }
+  check("iq_samplerate + iq_start echo back", got_iq_echo);
+  {
+    static double tone[2 * 1920];
+    double ph = 0.0;
+    const double dph = 2.0 * G_PI * 12000.0 / 192000.0;
+    const size_t need = 64 + 2048 * 2 * sizeof(float);   /* header + 1 block */
+    int got_iq = 0;
+    for (int ms = 0; ms < 5000 && !got_iq; ms += 10) {
+      for (int i = 0; i < 1920; i++) {                   /* 10 ms of 192 k IQ */
+        tone[2 * i]     = 0.5 * cos(ph);
+        tone[2 * i + 1] = 0.5 * sin(ph);
+        ph += dph;
+        if (ph > G_PI) { ph -= 2.0 * G_PI; }
+      }
+      tci_server_iq_push(tone, 1920, 192000);
+      while (g_main_context_iteration(NULL, FALSE)) {}
+      g_mutex_lock(&c_lock);
+      got_iq = c_bin->len >= need;
+      g_mutex_unlock(&c_lock);
+      g_usleep(10 * 1000);
+    }
+    check("iq_start delivers a type-0 Stream block", got_iq);
+    if (got_iq) {
+      g_mutex_lock(&c_lock);
+      guint8 *copy = g_memdup2(c_bin->data, need);
+      g_mutex_unlock(&c_lock);
+      const guint32 *h = (const guint32 *)copy;
+      check("IQ header: rate 48000",       h[1] == 48000);
+      check("IQ header: format float32",   h[2] == 3);
+      check("IQ header: length 4096",      h[5] == 4096);
+      check("IQ header: type IQ(0)",       h[6] == 0);
+      check("IQ header: 2 channels",       h[7] == 2);
+      /* Correlate the payload against e^{∓j2π·12k·t}: the +12 kHz bin must
+       * carry ~the full 0.5 amplitude, the −12 kHz image ~nothing. */
+      const float *p = (const float *)(copy + 64);
+      double pr = 0, pi = 0, nr = 0, ni = 0;
+      for (int i = 0; i < 2048; i++) {
+        double a = 2.0 * G_PI * 12000.0 * (double)i / 48000.0;
+        double ci = p[2 * i], cq = p[2 * i + 1];
+        pr += ci * cos(a) + cq * sin(a);
+        pi += cq * cos(a) - ci * sin(a);
+        nr += ci * cos(a) - cq * sin(a);
+        ni += cq * cos(a) + ci * sin(a);
+      }
+      double pos = sqrt(pr * pr + pi * pi) / 2048.0;
+      double neg = sqrt(nr * nr + ni * ni) / 2048.0;
+      check("tone lands at +12 kHz with amplitude ~0.5", pos > 0.4 && pos < 0.6);
+      check("−12 kHz image suppressed > 40 dB", neg < pos * 0.01);
+      g_free(copy);
+    } else {
+      checks += 7; fails += 7;
+      printf("  FAIL IQ header/content checks skipped (no IQ arrived)\n");
+    }
+  }
+  client_send("iq_stop:0;");
+  {
+    int got_stop = 0;
+    for (int ms = 0; ms < 2000 && !got_stop; ms += 10) {
+      while (g_main_context_iteration(NULL, FALSE)) {}
+      got_stop = rx_contains("iq_stop:0;");
+      g_usleep(10 * 1000);
+    }
+    check("iq_stop echoes back", got_stop);
+  }
 
   /* ---- TX audio over TCI (F6d-2c): key with source tci, get the chrono
    * clock, answer with a TX_AUDIO block, unkey reverts to mic. Runs LAST so
