@@ -1869,6 +1869,15 @@ static void populate_filter_dd(App *app) {
   g_object_unref(m);
 }
 
+/* Push PROC + mic gate to the TX runtime with the digi override: in DIGU/DIGL
+ * the chain must be COMPLETELY clean (Richard's rule — no compressor, leveler,
+ * gate or EQ may touch data audio), regardless of the stored voice settings. */
+static void tx_apply_proc(App *app) {
+  int digi = (app->mode == DEMOD_DIGU || app->mode == DEMOD_DIGL);
+  tx_run_set_comp(digi ? 0 : app->tx_comp, app->tx_comp_db);
+  tx_run_set_gate(digi ? 0 : app->tx_gate, app->tx_gate_db);
+}
+
 static void on_mode_toggled(GtkToggleButton *b, gpointer data) {
   if (!gtk_toggle_button_get_active(b)) { return; }  /* ignore the deselect half */
   App *app = (App *)data;
@@ -1888,6 +1897,7 @@ static void on_mode_toggled(GtkToggleButton *b, gpointer data) {
   populate_filter_dd(app);               /* refill dropdown for the new mode */
   tx_push_cfg(app);                      /* TX runtime learns the mode (CW break-in gates on it) */
   tx_update_mic(app);                    /* voice mode → mic ready; CW/data → mic closed */
+  tx_apply_proc(app);                    /* digi = clean chain (PROC/gate forced off) */
   schedule_save(app);
 }
 
@@ -2259,13 +2269,13 @@ static void on_mic_gain_changed(GtkRange *r, gpointer data) {
 static void on_comp_toggled(GtkToggleButton *b, gpointer data) {
   App *app = (App *)data;
   app->tx_comp = gtk_toggle_button_get_active(b) ? 1 : 0;
-  tx_run_set_comp(app->tx_comp, app->tx_comp_db);   /* live (WDSP setters lock) */
+  tx_apply_proc(app);                   /* live (WDSP setters lock); digi = off */
   schedule_save(app);
 }
 static void on_comp_level_changed(GtkRange *r, gpointer data) {
   App *app = (App *)data;
   app->tx_comp_db = gtk_range_get_value(r);
-  tx_run_set_comp(app->tx_comp, app->tx_comp_db);
+  tx_apply_proc(app);
   schedule_save(app);
 }
 
@@ -2603,13 +2613,13 @@ static void on_pref_tx_swr(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
 static void on_pref_tx_gate(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
   (void)ps; App *app = (App *)data;
   app->tx_gate = adw_switch_row_get_active(r) ? 1 : 0;
-  tx_run_set_gate(app->tx_gate, app->tx_gate_db);
+  tx_apply_proc(app);                   /* digi = gate stays off */
   schedule_save(app);
 }
 static void on_pref_tx_gate_db(GtkRange *r, gpointer data) {
   App *app = (App *)data;
   app->tx_gate_db = gtk_range_get_value(r);
-  tx_run_set_gate(app->tx_gate, app->tx_gate_db);
+  tx_apply_proc(app);
   schedule_save(app);
 }
 static void on_pref_tx_mon_db(GtkRange *r, gpointer data) {
@@ -2760,6 +2770,12 @@ static int tci_get_rate(void) { return tci_app->rate; }
 static double tci_get_smeter(void) {
   return tci_app->audio_ok ? demod_s_meter() : -200.0;
 }
+static int tci_set_tx_src(int on) {
+  if (!tci_app->tx_ready) { return -1; }
+  tx_run_set_ext_source(on);
+  return 0;
+}
+static void tci_tx_audio_push(const float *m, int n) { tx_run_ext_push(m, n); }
 static void tci_get_tx_meters(double *mic_db, double *rms_w, double *pep_w, double *swr) {
   tx_run_status ts;
   memset(&ts, 0, sizeof(ts));
@@ -2777,7 +2793,7 @@ static const TciOps TCI_OPS = {
   tci_get_tune, tci_set_tune, tci_get_volume, tci_set_volume,
   tci_get_mute, tci_set_mute, tci_get_cw_speed, tci_set_cw_speed,
   tci_cw_send, tci_cw_stop, tci_get_tx_enable, tci_get_rate,
-  tci_get_smeter, tci_get_tx_meters,
+  tci_get_smeter, tci_get_tx_meters, tci_set_tx_src, tci_tx_audio_push,
 };
 
 /* Start/stop the TCI server to match app->tci_enable (prefs + startup). */
@@ -2788,9 +2804,12 @@ static void tci_apply(App *app) {
       fprintf(stderr, "tci: start failed on port %d\n", app->tci_port);
     } else {
       demod_set_audio_tap(tci_server_audio_push);   /* RX audio → TCI (F6d-2b) */
+      tx_run_set_ext_notify(tci_server_tx_chrono);  /* TX pacing → TCI (F6d-2c) */
     }
   } else if (!app->tci_enable && tci_server_running()) {
     demod_set_audio_tap(NULL);
+    tx_run_set_ext_notify(NULL);
+    tx_run_set_ext_source(0);                       /* back to the mic         */
     tci_server_stop();
   }
 }
@@ -3648,8 +3667,7 @@ static void start_radio(App *app) {
     app->tx_ready = 1;
     tx_push_cfg(app);
     tx_run_set_mic_gain(app->tx_mic_gain);   /* persisted SSB mic gain into the TX panel */
-    tx_run_set_comp(app->tx_comp, app->tx_comp_db);   /* persisted PROC (COMP + leveler) */
-    tx_run_set_gate(app->tx_gate, app->tx_gate_db);   /* persisted mic noise gate (DEXP) */
+    tx_apply_proc(app);   /* persisted PROC + mic gate (forced OFF in digi modes) */
     tx_run_set_monitor(app->tx_mon);                  /* persisted TX monitor (self-listen) */
     demod_set_monitor_gain(app->tx_mon_db);
     tx_run_set_span(tx_span_hz(app));  /* TX span ← saved zoom, matching the RX axis */

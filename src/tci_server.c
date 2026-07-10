@@ -31,6 +31,8 @@ typedef struct {
 /* Official Stream block header (spec 3.4): 16 × u32 then payload. */
 #define TCI_HDR_U32S     16
 #define TCI_RX_AUDIO     1            /* StreamType                          */
+#define TCI_TX_AUDIO     2
+#define TCI_TX_CHRONO    3
 #define TCI_FMT_INT16    0            /* SampleType                          */
 #define TCI_FMT_FLOAT32  3
 
@@ -56,6 +58,10 @@ typedef struct {
   int         rxsens_on, rxsens_ms;
   int         txsens_on, txsens_ms;
   gint64      rxsens_next, txsens_next;   /* g_get_monotonic_time deadlines  */
+  /* TX audio over TCI (F6d-2c): this client sources the exciter audio. */
+  int         tx_owner;
+  uint8_t     bin_buf[16384];             /* WebSocket fragment reassembly   */
+  size_t      bin_fill;
 } Client;
 
 static Client              s_cli[TCI_MAX_CLIENTS];
@@ -165,7 +171,7 @@ static gboolean tci_sensors_tick(gpointer data) {
     }
     if (c->txsens_on && now >= c->txsens_next) {
       if (!have_tx) { g_mutex_unlock(&s_lock); s_ops.get_tx_meters(&mic, &rms, &pep, &swr); g_mutex_lock(&s_lock); have_tx = 1; }
-      char m[160];
+      char m[192];
       char v1[G_ASCII_DTOSTR_BUF_SIZE], v2[G_ASCII_DTOSTR_BUF_SIZE];
       char v3[G_ASCII_DTOSTR_BUF_SIZE], v4[G_ASCII_DTOSTR_BUF_SIZE];
       g_ascii_formatd(v1, sizeof(v1), "%.1f", mic);
@@ -386,13 +392,38 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
   } else if (strcmp(name, "trx") == 0) {
     if (ac > 1 && av[1][0]) {
       int want = arg_bool(av[1]);
-      /* arg3 "tci" = client wants to source TX audio over TCI — that is
-       * F6d-2c; refuse the key rather than transmit mic audio he didn't
-       * intend. Everything else keys through the normal gate path. */
-      if (want && ac > 2 && g_ascii_strcasecmp(av[2], "tci") == 0) {
-        fprintf(stderr, "tci: trx source 'tci' not supported yet — refusing key\n");
+      int src_tci = (want && ac > 2 && g_ascii_strcasecmp(av[2], "tci") == 0);
+      if (want) {
+        if (src_tci) {
+          /* TX audio over TCI: single owner; source switches BEFORE the key
+           * so no mic audio can leak, and everything still goes via tx_gate. */
+          int busy = 0;
+          g_mutex_lock(&s_lock);
+          for (int i = 0; i < TCI_MAX_CLIENTS; i++) {
+            if (s_cli[i].inuse && s_cli[i].tx_owner && &s_cli[i] != c) { busy = 1; }
+          }
+          if (!busy) { c->tx_owner = 1; }
+          g_mutex_unlock(&s_lock);
+          if (busy) {
+            fprintf(stderr, "tci: trx tci refused — another client owns TX audio\n");
+          } else if (s_ops.set_tx_source_tci(1) != 0 || s_ops.set_trx(1) != 0) {
+            g_mutex_lock(&s_lock);
+            c->tx_owner = 0;
+            g_mutex_unlock(&s_lock);
+            s_ops.set_tx_source_tci(0);
+            fprintf(stderr, "tci: trx tci key refused by the gate\n");
+          }
+        } else {
+          s_ops.set_trx(1);              /* mic-sourced MOX, like the GUI key */
+        }
       } else {
-        s_ops.set_trx(want);
+        s_ops.set_trx(0);
+        int was;
+        g_mutex_lock(&s_lock);
+        was = c->tx_owner;
+        c->tx_owner = 0;
+        g_mutex_unlock(&s_lock);
+        if (was) { s_ops.set_tx_source_tci(0); }
       }
       tci_broadcastf("trx:0,%s;", s_ops.get_trx() ? "true" : "false");
     } else {
@@ -543,6 +574,52 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
   /* anything else: ignored (per spec: invalid commands are ignored) */
 }
 
+/* TX-owner client vanished (disconnect) — unkey + revert to mic, on the main
+ * thread. A dangling key with no audio source must never stay up. */
+static gboolean tx_owner_lost_idle(gpointer data) {
+  (void)data;
+  if (s_run) {
+    s_ops.set_trx(0);
+    s_ops.set_tx_source_tci(0);
+    tci_broadcastf("trx:0,%s;", s_ops.get_trx() ? "true" : "false");
+    fprintf(stderr, "tci: TX-owner client disconnected — unkeyed\n");
+  }
+  return G_SOURCE_REMOVE;
+}
+
+/* TX_AUDIO_STREAM block from the TX-owner client (TCI service thread):
+ * convert to mono 48 k float and push into the exciter ring. */
+static void tci_handle_binary(Client *c, const uint8_t *d, size_t len) {
+  if (!c->tx_owner || len < TCI_HDR_U32S * 4) { return; }
+  const uint32_t *h = (const uint32_t *)d;
+  if (h[6] != TCI_TX_AUDIO) { return; }
+  int rate = (int)h[1];
+  int fmt  = (int)h[2];
+  int ch   = h[7] ? (int)h[7] : 1;
+  uint32_t scalars = h[5];
+  const uint8_t *pl = d + TCI_HDR_U32S * 4;
+  size_t ssz = (fmt == TCI_FMT_INT16) ? 2 : 4;
+  if (fmt != TCI_FMT_INT16 && fmt != TCI_FMT_FLOAT32) { return; }
+  size_t avail = (len - TCI_HDR_U32S * 4) / ssz;
+  if (scalars > avail) { scalars = (uint32_t)avail; }
+  int frames = (int)(scalars / (uint32_t)ch);
+  int up = (rate == 48000) ? 1 : (rate == 24000) ? 2
+         : (rate == 12000) ? 4 : (rate == 8000)  ? 6 : 0;
+  if (!up || frames <= 0) { return; }
+  float buf[2048];
+  int n = 0;
+  for (int i = 0; i < frames; i++) {
+    float v = (fmt == TCI_FMT_INT16)
+                ? (float)((const int16_t *)pl)[i * ch] / 32768.0f
+                : ((const float *)pl)[i * ch];        /* left channel */
+    for (int u = 0; u < up; u++) {                    /* naive upsample */
+      buf[n++] = v;
+      if (n == (int)G_N_ELEMENTS(buf)) { s_ops.tx_audio_push(buf, n); n = 0; }
+    }
+  }
+  if (n) { s_ops.tx_audio_push(buf, n); }
+}
+
 typedef struct {
   Client *client;
   char    msg[1024];
@@ -626,7 +703,20 @@ static int lws_cb(struct lws *wsi, enum lws_callback_reasons reason,
 
   switch (reason) {
   case LWS_CALLBACK_RECEIVE:
-    if (lws_frame_is_binary(wsi)) { return 0; }   /* audio/IQ = later phases */
+    if (lws_frame_is_binary(wsi)) {
+      /* Reassemble WebSocket fragments up to one Stream block, then parse. */
+      if (c->bin_fill + len <= sizeof(c->bin_buf)) {
+        memcpy(c->bin_buf + c->bin_fill, in, len);
+        c->bin_fill += len;
+      } else {
+        c->bin_fill = 0;                           /* oversize → drop        */
+        return 0;
+      }
+      if (!lws_is_final_fragment(wsi)) { return 0; }
+      tci_handle_binary(c, c->bin_buf, c->bin_fill);
+      c->bin_fill = 0;
+      return 0;
+    }
     {
       Payload *p = g_new0(Payload, 1);
       size_t n = len < sizeof(p->msg) - 1 ? len : sizeof(p->msg) - 1;
@@ -662,6 +752,10 @@ static int lws_cb(struct lws *wsi, enum lws_callback_reasons reason,
   case LWS_CALLBACK_CLOSED:
     fprintf(stderr, "tci: client %d disconnected\n", *slot);
     g_mutex_lock(&s_lock);
+    if (c->tx_owner) {                   /* ⛔ never leave a key without owner */
+      c->tx_owner = 0;
+      g_idle_add(tx_owner_lost_idle, NULL);
+    }
     if (c->au_sub) { atomic_fetch_sub(&s_au_active, 1); }
     c->inuse = 0;
     c->wsi = NULL;
@@ -793,6 +887,26 @@ void tci_server_audio_push(const float *mono48k, int n) {
   if (s_ctx) { lws_cancel_service(s_ctx); }
 }
 
+void tci_server_tx_chrono(int nsamples) {
+  if (!s_run || nsamples <= 0) { return; }
+  uint32_t hdr[TCI_HDR_U32S];
+  memset(hdr, 0, sizeof(hdr));
+  hdr[1] = 48000;                      /* the exciter consumes 48 k mono      */
+  hdr[2] = TCI_FMT_FLOAT32;
+  hdr[5] = (uint32_t)nsamples;
+  hdr[6] = TCI_TX_CHRONO;
+  hdr[7] = 1;
+  g_mutex_lock(&s_lock);
+  for (int i = 0; i < TCI_MAX_CLIENTS; i++) {
+    if (s_cli[i].inuse && s_cli[i].tx_owner) {
+      cli_send_msg(&s_cli[i], 1, hdr, sizeof(hdr));
+    }
+  }
+  g_mutex_unlock(&s_lock);
+  s_writable = 1;
+  if (s_ctx) { lws_cancel_service(s_ctx); }
+}
+
 /* ---- public API ------------------------------------------------------------ */
 
 int tci_server_start(int port, const TciOps *ops) {
@@ -830,6 +944,18 @@ int tci_server_start(int port, const TciOps *ops) {
 
 void tci_server_stop(void) {
   if (!s_run) { return; }
+  /* ⛔ if a TCI client owns the key, unkey + revert to mic before teardown */
+  int owned = 0;
+  g_mutex_lock(&s_lock);
+  for (int i = 0; i < TCI_MAX_CLIENTS; i++) {
+    if (s_cli[i].inuse && s_cli[i].tx_owner) { s_cli[i].tx_owner = 0; owned = 1; }
+  }
+  g_mutex_unlock(&s_lock);
+  if (owned) {
+    s_ops.set_trx(0);
+    s_ops.set_tx_source_tci(0);
+    fprintf(stderr, "tci: server stopping while keyed via TCI — unkeyed\n");
+  }
   s_run = 0;
   if (s_reporter_id) { g_source_remove(s_reporter_id); s_reporter_id = 0; }
   lws_cancel_service(s_ctx);

@@ -110,11 +110,21 @@ platform-library category — do not vendor).
   2b:** LINE_OUT stream. ⚠ Locale rule: protocol floats are formatted with
   g_ascii_formatd — the GTK app runs in the user's locale (cs_CZ = decimal
   COMMA) and ',' is a reserved TCI separator.
-- **F6d-2c — TX audio (digital TX).** TRX:0,true,**tci** → mic path switches
-  to the TCI ring: emit TX_CHRONO pacing, accept TX_AUDIO_STREAM, resample to
-  the 48 k TX input. Needs **DIGU/DIGL modes** (flat TX audio path, no
-  proc/gate/leveler bends the data tones — ties into the data-mode TODO) +
-  DIGU_OFFSET/DIGL_OFFSET. ⚠ full TX-SAFETY checklist re-verification.
+- **F6d-2c — TX audio (digital TX). IMPLEMENTED (offline-verified 2026-07-10;
+  live FT8 TX pending).** `trx:0,true,tci` switches the exciter input from
+  the mic to a TCI SPSC ring (tx_run_set_ext_source/ext_push) **before** the
+  key goes down, keys through the same tx_gate as the GUI MOX (SWR trip,
+  in-band, PA, power caps — nothing bypassed), and the TX feed loop's block
+  cadence drives TX_CHRONO frames to the owning client (48 k float32 mono,
+  512/block, 4-block prime on key-on). Binary TX_AUDIO_STREAM blocks are
+  reassembled from WS fragments, int16/float32 + 1-2 ch + 8-48 k accepted
+  (left channel, naive upsample). Safety: single TX owner; owner disconnect,
+  server stop or gate refusal ⇒ immediate unkey + revert to mic. ⛔ Richard's
+  clean-chain rule enforced in the GUI: in DIGU/DIGL, PROC/leveler + DEXP
+  gate are forced OFF regardless of the stored voice settings (tx_apply_proc)
+  and the mic stays closed (mode_is_voice). Gate: 23 checks incl. the full
+  key→chrono→audio→unkey round-trip. TODO: drive_digi_max-style power cap
+  for 100 % duty modes (piHPSDR has one, default uncapped).
 - **F6d-2d — IQ stream (skimmer).** IQ_START/STOP + IQ_SAMPLERATE 48–384k,
   decimated from the 1536k DDC feed; CW Skimmer via SDC is the acceptance
   test.

@@ -50,6 +50,11 @@ typedef struct {
   int       (*get_rate)(void);            /* IQ rate, Hz → IF_LIMITS        */
   double    (*get_smeter)(void);          /* RX signal in the passband, dBm */
   void      (*get_tx_meters)(double *mic_db, double *rms_w, double *pep_w, double *swr);
+  /* TX audio over TCI (F6d-2c). set_tx_source_tci(1) switches the exciter
+   * input from the mic to the TCI ring (0 = back to mic); tx_audio_push MAY
+   * be called from the TCI service thread (must be lock-free/thread-safe). */
+  int       (*set_tx_source_tci)(int on); /* 0 = ok, -1 = not possible      */
+  void      (*tx_audio_push)(const float *mono48k, int n);
 } TciOps;
 
 /* Start/stop the server. start returns 0 on success (port bound). *ops is
@@ -69,5 +74,10 @@ int  tci_server_client_info(int i, char *buf, int len);
  * the demod tap (demod_set_audio_tap → this). Lock-free SPSC ring, cheap
  * no-op while no client has audio_start'ed. Callable from any thread. */
 void tci_server_audio_push(const float *mono48k, int n);
+
+/* TX pacing clock (F6d-2c): emit a TX_CHRONO frame asking the TX-owner client
+ * for nsamples of TX audio. Wire to tx_run_set_ext_notify; called from the TX
+ * feed thread. */
+void tci_server_tx_chrono(int nsamples);
 
 #endif

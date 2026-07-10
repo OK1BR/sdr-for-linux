@@ -30,7 +30,9 @@ static struct {
   int       trx, tune, mute, wpm;
   char      cw_text[256];
   int       cw_stopped;
-} S = { 14100000, "usb", 150, 2850, 25, 10, -12, 0, 0, 0, 20, "", 0 };
+  int       tx_src;         /* TCI is the TX audio source                  */
+  int       txa_samples;    /* TX audio samples received                   */
+} S = { 14100000, "usb", 150, 2850, 25, 10, -12, 0, 0, 0, 20, "", 0, 0, 0 };
 
 static long long s_get_freq(void) { return S.freq; }
 static void s_set_freq(long long f) { S.freq = f; }
@@ -60,13 +62,15 @@ static double s_get_smeter(void) { return -73.5; }
 static void s_get_txm(double *mic, double *rms, double *pep, double *swr) {
   *mic = -20.0; *rms = 47.4; *pep = 67.5; *swr = 1.7;
 }
+static int s_set_tx_src(int on) { S.tx_src = on; return 0; }
+static void s_txa_push(const float *m, int n) { (void)m; S.txa_samples += n; }
 
 static const TciOps STUB_OPS = {
   s_get_freq, s_set_freq, s_get_mode, s_set_mode, s_get_filter, s_set_filter,
   s_get_drive, s_set_drive, s_get_tdrive, s_set_tdrive, s_get_trx, s_set_trx,
   s_get_tune, s_set_tune, s_get_vol, s_set_vol, s_get_mute, s_set_mute,
   s_get_wpm, s_set_wpm, s_cw_send, s_cw_stop, s_get_txen, s_get_rate,
-  s_get_smeter, s_get_txm,
+  s_get_smeter, s_get_txm, s_set_tx_src, s_txa_push,
 };
 
 /* ---- LWS test client -------------------------------------------------------- */
@@ -76,8 +80,10 @@ static GString    *c_rx;          /* text the client received                 */
 static GByteArray *c_bin;         /* binary frames (audio Stream blocks)      */
 static struct lws *c_wsi;
 static struct lws_context *c_ctx;
-static volatile int c_up, c_run = 1, c_send_pending;
+static volatile int c_up, c_run = 1, c_send_pending, c_bin_pending;
 static char        c_out[512];
+static uint8_t     c_bin_out[4096];
+static size_t      c_bin_len;
 
 static int client_cb(struct lws *wsi, enum lws_callback_reasons reason,
                      void *user, void *in, size_t len) {
@@ -104,6 +110,12 @@ static int client_cb(struct lws *wsi, enum lws_callback_reasons reason,
       lws_write(wsi, buf + LWS_PRE, n, LWS_WRITE_TEXT);
       c_send_pending = 0;
     }
+    if (c_bin_pending) {
+      unsigned char buf[LWS_PRE + sizeof(c_bin_out)];
+      memcpy(buf + LWS_PRE, c_bin_out, c_bin_len);
+      lws_write(wsi, buf + LWS_PRE, c_bin_len, LWS_WRITE_BINARY);
+      c_bin_pending = 0;
+    }
     return 0;
   case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
     fprintf(stderr, "client: connection error: %s\n", in ? (char *)in : "?");
@@ -126,7 +138,7 @@ static const struct lws_protocols c_protocols[] = {
 static gpointer client_thread(gpointer data) {
   struct lws_context *ctx = (struct lws_context *)data;
   while (c_run) {
-    if (c_send_pending && c_wsi) { lws_callback_on_writable(c_wsi); }
+    if ((c_send_pending || c_bin_pending) && c_wsi) { lws_callback_on_writable(c_wsi); }
     lws_service(ctx, 0);
     g_usleep(1000);
   }
@@ -138,6 +150,14 @@ static void client_send(const char *msg) {
   c_send_pending = 1;
   /* lws_service blocks on socket events — wake the client loop so the
    * pending write goes out even when the connection is otherwise quiet. */
+  if (c_ctx) { lws_cancel_service(c_ctx); }
+}
+
+static void client_send_bin(const void *data, size_t len) {
+  if (len > sizeof(c_bin_out)) { return; }
+  memcpy(c_bin_out, data, len);
+  c_bin_len = len;
+  c_bin_pending = 1;
   if (c_ctx) { lws_cancel_service(c_ctx); }
 }
 
@@ -176,6 +196,19 @@ static int cond_cwtext(void)  { return strstr(S.cw_text, "TEST: DE OK1BR") != NU
 static int cond_stopped(void) { return S.cw_stopped; }
 static int cond_trx_on(void)  { return S.trx == 1; }
 static int cond_trx_off(void) { return S.trx == 0; }
+static int cond_tci_keyed(void)   { return S.trx == 1 && S.tx_src == 1; }
+static int cond_tci_unkeyed(void) { return S.trx == 0 && S.tx_src == 0; }
+static int cond_txa(void)         { return S.txa_samples >= 512; }
+static int cond_chrono(void) {
+  g_mutex_lock(&c_lock);
+  int hit = 0;
+  if (c_bin->len >= 64) {
+    const guint32 *h = (const guint32 *)c_bin->data;
+    hit = (h[6] == 3 && h[5] == 512);            /* TX_CHRONO for 512 samples */
+  }
+  g_mutex_unlock(&c_lock);
+  return hit;
+}
 static int cond_bc(void)      { return rx_contains("vfo:0,0,7020000;") && rx_contains("modulation:0,cw;"); }
 
 int main(void) {
@@ -228,11 +261,6 @@ int main(void) {
   client_send("cw_macros_stop;");
   check("cw_macros_stop aborts", wait_for(cond_stopped, 2000));
 
-  client_send("trx:0,true,tci;");
-  g_usleep(200 * 1000);
-  while (g_main_context_iteration(NULL, FALSE)) {}
-  check("trx with source 'tci' is refused (no key)", S.trx == 0);
-
   client_send("trx:0,true;");
   check("plain trx keys through the ops path", wait_for(cond_trx_on, 2000));
   client_send("trx:0,false;");
@@ -282,6 +310,31 @@ int main(void) {
     g_usleep(10 * 1000);
   }
   check("rx_channel_sensors + tx_sensors flow at the asked cadence", got_sens);
+
+  /* ---- TX audio over TCI (F6d-2c): key with source tci, get the chrono
+   * clock, answer with a TX_AUDIO block, unkey reverts to mic. Runs LAST so
+   * its binary frames don't pollute the RX-audio header checks above. */
+  client_send("trx:0,true,tci;");
+  check("trx source 'tci' keys with the TCI TX source", wait_for(cond_tci_keyed, 2000));
+  g_mutex_lock(&c_lock);
+  g_byte_array_set_size(c_bin, 0);
+  g_mutex_unlock(&c_lock);
+  tci_server_tx_chrono(512);                    /* the TX feed thread's clock */
+  check("TX_CHRONO frame reaches the TX owner", wait_for(cond_chrono, 2000));
+  {
+    uint32_t hdr[16];
+    float pay[512];
+    uint8_t frame[64 + sizeof(pay)];
+    memset(hdr, 0, sizeof(hdr));
+    hdr[1] = 48000; hdr[2] = 3; hdr[5] = 512; hdr[6] = 2; hdr[7] = 1;
+    for (int i = 0; i < 512; i++) { pay[i] = 0.25f; }
+    memcpy(frame, hdr, 64);
+    memcpy(frame + 64, pay, sizeof(pay));
+    client_send_bin(frame, sizeof(frame));
+  }
+  check("TX_AUDIO block lands in the exciter ring", wait_for(cond_txa, 3000));
+  client_send("trx:0,false;");
+  check("unkey reverts the TX source to mic", wait_for(cond_tci_unkeyed, 2000));
 
   c_run = 0;
   g_thread_join(ct);

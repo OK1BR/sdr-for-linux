@@ -15,6 +15,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #include "protocol2.h"
 #include "tx.h"
@@ -86,6 +87,17 @@ static volatile int      s_want_tune;      /* g_atomic */
 static volatile int      s_want_cw;        /* g_atomic: CW break-in wants key (feed thread) */
 static volatile int      s_mode;           /* g_atomic: current WDSP/demod mode           */
 static volatile int      s_monitor;        /* g_atomic: TX monitor (self-listen) on/off   */
+
+/* External TX audio (TCI, F6d-2c): mono 48 k SPSC ring — producer = the TCI
+ * service thread (tx_run_ext_push), consumer = the feed loop while keyed with
+ * the external source selected. ⛔ Richard's digi rule: this audio is CLEAN —
+ * the GUI forces PROC/leveler/gate OFF in DIGU/DIGL, nothing may bend it. */
+#define EXT_FRAMES 16384u
+#define EXT_MASK   (EXT_FRAMES - 1u)
+static float            ext_ring[EXT_FRAMES];
+static _Atomic unsigned ext_head, ext_tail;
+static volatile int     s_ext_src;              /* g_atomic: TCI feeds TX audio  */
+static void (*_Atomic   s_ext_cb)(int nsamples); /* chrono clock (feed thread)   */
 
 static cw_gen           *s_cw;             /* CW envelope generator (192k), under s_cw_lock */
 static GMutex            s_cw_lock;
@@ -173,7 +185,19 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
      * emits the shaped carrier IQ directly; here we just assert the wire state. */
     tx_dsp_set_mode(cfg.mode, flo, fhi);
     tx_dsp_tune_tone(r.state.tune ? 1 : 0, 0.0);   /* TUNE = post-gen carrier */
-    if (r.state.mox && !cw_key) { mic_flush(); }   /* voice: start on fresh mic audio */
+    if (r.state.mox && !cw_key) {
+      if (g_atomic_int_get(&s_ext_src)) {
+        /* TCI audio: drop stale ring content + prime the client's sender with
+         * a few blocks of lead (TX_STREAM_AUDIO_BUFFERING is 50 ms default). */
+        atomic_store_explicit(&ext_tail,
+            atomic_load_explicit(&ext_head, memory_order_acquire),
+            memory_order_release);
+        void (*ecb)(int) = atomic_load_explicit(&s_ext_cb, memory_order_acquire);
+        if (ecb) { ecb(4 * FEED_BLOCK); }
+      } else {
+        mic_flush();                      /* voice: start on fresh mic audio */
+      }
+    }
     tx_dsp_run(1);
     p2_set_tx_state(&r.state);
     fprintf(stderr, "tx: KEY %s  freq=%lld Hz  PA=%s  ANT%d  drive=%d/255\n",
@@ -302,9 +326,22 @@ static gpointer tx_thread(gpointer u) {
           demod_monitor_push(st, TX_IQ_BLOCK, TX_IQ_RATE);
         }
       } else if (keyed_mox) {
-        /* MOX/voice: pull live mic; pad any underrun with silence so the exciter
-         * never stalls (PACE_US real-time cadence must be met every block). */
-        int got = mic_pull(mic, FEED_BLOCK);
+        /* MOX: pull live mic — or the external TCI ring (digi TX audio) — and
+         * pad any underrun with silence so the exciter never stalls (PACE_US
+         * real-time cadence must be met every block). */
+        int got;
+        if (g_atomic_int_get(&s_ext_src)) {
+          unsigned t = atomic_load_explicit(&ext_tail, memory_order_relaxed);
+          unsigned h = atomic_load_explicit(&ext_head, memory_order_acquire);
+          unsigned avail = h - t;
+          got = avail < FEED_BLOCK ? (int)avail : FEED_BLOCK;
+          for (int i = 0; i < got; i++) { mic[i] = ext_ring[(t + (unsigned)i) & EXT_MASK]; }
+          atomic_store_explicit(&ext_tail, t + (unsigned)got, memory_order_release);
+          void (*ecb)(int) = atomic_load_explicit(&s_ext_cb, memory_order_acquire);
+          if (ecb) { ecb(FEED_BLOCK); }   /* chrono clock: request the next block */
+        } else {
+          got = mic_pull(mic, FEED_BLOCK);
+        }
         for (int i = got; i < FEED_BLOCK; i++) { mic[i] = 0.0f; }
         tx_dsp_feed_mic(mic, FEED_BLOCK);       /* → IQ → framer → port 1029 */
         if (g_atomic_int_get(&s_monitor)) {
@@ -443,6 +480,31 @@ void tx_run_set_cw(int wpm, double weight, double ramp_ms, int hang_ms) {
 void tx_run_set_sidetone(int pitch_hz, double level_db) {
   g_atomic_int_set(&s_st_hz,  CLAMP(pitch_hz, 100, 2000));
   g_atomic_int_set(&s_st_cdb, (int)lrint(CLAMP(level_db, -40.0, 0.0) * 100.0));
+}
+
+void tx_run_set_ext_source(int on) {
+  g_atomic_int_set(&s_ext_src, on ? 1 : 0);
+  if (!on) {                                   /* drop leftover external audio */
+    atomic_store_explicit(&ext_tail,
+        atomic_load_explicit(&ext_head, memory_order_acquire),
+        memory_order_release);
+  }
+}
+
+void tx_run_ext_push(const float *mono48k, int n) {
+  if (!g_atomic_int_get(&s_ext_src)) { return; }
+  unsigned h = atomic_load_explicit(&ext_head, memory_order_relaxed);
+  unsigned t = atomic_load_explicit(&ext_tail, memory_order_acquire);
+  for (int i = 0; i < n; i++) {
+    if (h - t >= EXT_FRAMES) { break; }        /* full → drop */
+    ext_ring[h & EXT_MASK] = mono48k[i];
+    h++;
+  }
+  atomic_store_explicit(&ext_head, h, memory_order_release);
+}
+
+void tx_run_set_ext_notify(void (*cb)(int nsamples)) {
+  atomic_store_explicit(&s_ext_cb, cb, memory_order_release);
 }
 
 void tx_run_set_freq(long long tx_freq_hz) {

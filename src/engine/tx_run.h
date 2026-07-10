@@ -118,6 +118,18 @@ void tx_run_set_cw(int wpm, double weight, double ramp_ms, int hang_ms);
 void tx_run_set_sidetone(int pitch_hz, double level_db);
 
 /*
+ * External TX audio source (TCI, F6d-2c). set_ext_source(1) makes the feed
+ * loop pull mono 48 kHz audio pushed via tx_run_ext_push (thread-safe SPSC —
+ * the TCI service thread produces) instead of the mic; keying still only
+ * happens through tx_gate, exactly like voice MOX. set_ext_notify registers
+ * the pacing clock: called from the TX feed thread with the sample count to
+ * request from the client (TCI TX_CHRONO). All safe when TX isn't up.
+ */
+void tx_run_set_ext_source(int on);
+void tx_run_ext_push(const float *mono48k, int n);
+void tx_run_set_ext_notify(void (*cb)(int nsamples));
+
+/*
  * Request keying. want_mox / want_tune are the operator's intent; the safety gate
  * decides whether it actually keys. (0,0) = unkey. Thread-safe.
  */
