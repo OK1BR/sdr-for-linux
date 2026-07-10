@@ -45,6 +45,15 @@ void ps_stop(void);
 void ps_set(int enable, int att_db, double setpk);
 
 /*
+ * Calibration mode: 0 = continuous (piHPSDR automode; recalibrates forever
+ * while keyed) / 1 = single-cal (piHPSDR ps_oneshot / Thetis "Single Cal":
+ * ONE calibration, then the correction holds frozen). The community
+ * workaround for the picket-fence instability of the continuous loop.
+ * Takes effect on the next resume (enable toggle or auto-att step).
+ */
+void ps_set_oneshot(int oneshot);
+
+/*
  * Key-state hand-off from the tx_run gate slot (~20 Hz, every slot): `keyed`
  * is "MOX/TUNE keyed AND not CW-carrier" (CW bypasses WDSP so feedback is
  * meaningless — piHPSDR transmitter.c:2114-2120). Calls SetPSMox (lock-free)

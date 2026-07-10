@@ -31,6 +31,14 @@ static int      s_att;
 static double   s_setpk = PS_SETPK_DEFAULT;
 
 static volatile gint s_keyed;      /* g_atomic: keyed && !CW (feed gate)        */
+static volatile gint s_oneshot;    /* g_atomic: single-cal mode (hold after 1)  */
+
+/* Arm calibration per the mode (piHPSDR tx_ps_resume, transmitter.c:2544-2556):
+ * continuous = automode, single-cal = one manual calibration then LSTAYON. */
+static void ps_resume(void) {
+  if (g_atomic_int_get(&s_oneshot)) { SetPSControl(s_ch, 0, 1, 0, 0); }
+  else                              { SetPSControl(s_ch, 0, 0, 1, 0); }
+}
 
 /* Feedback accumulator — written ONLY on the P2 listener thread (feed_cb);
  * the fill counter is atomically zeroed from the tx thread on key-on. */
@@ -143,7 +151,7 @@ void ps_set(int enable, int att_db, double setpk) {
      * brings feedback samples — no sleep needed on the RX side. */
     p2_ps_state ps = { .enabled = 1, .attenuation = att_db, .feedback_ant = 0 };
     p2_set_ps(&ps);
-    SetPSControl(s_ch, 0, 0, 1, 0);
+    ps_resume();
   } else if (was_on) {
     /* piHPSDR tx_ps_onoff OFF choreography (transmitter.c:2446-2499): a reset
      * only takes effect while samples keep flowing through pscc, so while
@@ -154,6 +162,20 @@ void ps_set(int enable, int att_db, double setpk) {
       for (int i = 0; i < 7; i++) { pscc(s_ch, PS_BLOCK, zeros, zeros); }
     }
     p2_set_ps(NULL);
+  }
+}
+
+void ps_set_oneshot(int oneshot) {
+  int prev = g_atomic_int_get(&s_oneshot);
+  oneshot = oneshot ? 1 : 0;
+  g_atomic_int_set(&s_oneshot, oneshot);
+  if (prev == oneshot || !s_started) { return; }
+  g_mutex_lock(&s_lock);
+  int on = s_enable;
+  g_mutex_unlock(&s_lock);
+  if (on) {                    /* re-arm in the new mode (drop the held cal) */
+    SetPSControl(s_ch, 1, 0, 0, 0);
+    ps_resume();
   }
 }
 
@@ -209,7 +231,7 @@ void ps_auto_tick(int twotone_keyed) {
     break;
   }
   case 1: SetPSControl(s_ch, 1, 0, 0, 0); a_state = 2; break;
-  case 2: SetPSControl(s_ch, 0, 0, 1, 0); a_state = 0; break;  /* resume automode */
+  case 2: ps_resume(); a_state = 0; break;               /* resume per mode */
   }
 }
 
