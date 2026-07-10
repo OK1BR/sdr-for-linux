@@ -3783,6 +3783,10 @@ static void start_radio(App *app) {
                   .mic_gain = 0.0, .audio_rate = 48000,
                   .tx_gate_db = GATE_DB_DFLT, .tx_mon_db = MON_DB_DFLT,
                   .tx_flo = TXF_LO_DFLT, .tx_fhi = TXF_HI_DFLT,
+                  /* PS: single-cal by default — the continuous loop can diverge
+                   * into the picket-fence comb (live-verified on the G1,
+                   * 2026-07-11; known Thetis/HL2 failure mode). */
+                  .ps_setpk = 0.2899, .ps_oneshot = 1,
                   .cw_wpm = CW_WPM_DFLT, .cw_pitch = CW_PITCH_DFLT,
                   .cw_st_db = CW_ST_DB_DFLT, .cw_hang = CW_HANG_DFLT,
                   .tci_enable = 0, .tci_port = 40001, .tci_iq_rate = 48000 };

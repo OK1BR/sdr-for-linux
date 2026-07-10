@@ -88,6 +88,30 @@ static void feed_cb(const double *txfb, const double *rxfb, int n_pairs, void *u
       acc_tx = acc_rx = 0.0; acc_n = 0;
     }
   }
+  /* SDRFL_PS_DUMP=<path>: capture the first ~2 s of keyed feedback (raw
+   * doubles, [txI txQ rxI rxQ] per pair) for offline analysis — measures the
+   * actual tx/rx alignment (cross-correlation) and the envelope transfer
+   * curve that calcc has to fit. One-shot per run. */
+  static FILE *dumpf; static long dump_left = -1;
+  if (dump_left < 0) {
+    const char *p = getenv("SDRFL_PS_DUMP");
+    dump_left = 0;
+    if (p && *p) {
+      dumpf = fopen(p, "wb");
+      if (dumpf) { dump_left = 2 * 192000; }
+    }
+  }
+  if (dumpf && dump_left > 0) {
+    for (int i = 0; i < n_pairs && dump_left > 0; i++, dump_left--) {
+      double rec[4] = { txfb[2*i], txfb[2*i+1], rxfb[2*i], rxfb[2*i+1] };
+      fwrite(rec, sizeof rec, 1, dumpf);
+    }
+    if (dump_left == 0) {
+      fclose(dumpf); dumpf = NULL;
+      fprintf(stderr, "ps: feedback dump complete (2 s)\n"); fflush(stderr);
+    }
+  }
+
   int fill = g_atomic_int_get(&s_fill);
   for (int i = 0; i < n_pairs; i++) {
     s_txacc[2 * fill]     = txfb[2 * i];
