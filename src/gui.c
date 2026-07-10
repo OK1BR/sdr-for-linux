@@ -1935,6 +1935,16 @@ static void on_bin_toggled(GtkToggleButton *b, gpointer data) {
 /* TX key (F6a): both TUNE and MOX route here; we hand the runtime the combined
  * intent and let tx_gate decide whether it actually keys. MOX is disabled until
  * F6c, so only TUNE can set intent today. */
+/* TX monitor (self-listen): voice mic / CW sidetone into the host audio.
+ * On/off is the header-bar MON toggle (operational control, next to MOX);
+ * only the level lives in Preferences. */
+static void on_mon_toggled(GtkToggleButton *b, gpointer data) {
+  App *app = (App *)data;
+  app->tx_mon = gtk_toggle_button_get_active(b) ? 1 : 0;
+  tx_run_set_monitor(app->tx_mon);
+  schedule_save(app);
+}
+
 static void on_tx_key_toggled(GtkToggleButton *b, gpointer data) {
   (void)b;
   App *app = (App *)data;
@@ -2069,6 +2079,17 @@ static GtkWidget *build_controls(App *app) {
   g_signal_connect(app->mox_btn,  "toggled", G_CALLBACK(on_tx_key_toggled), app);
   gtk_box_append(GTK_BOX(txbox), app->tune_btn);
   gtk_box_append(GTK_BOX(txbox), app->mox_btn);
+  /* MON — TX monitor (self-listen) on/off. Operational control → on the bar
+   * next to MOX (level stays in Preferences). Deliberately NOT .txkey: red
+   * means "transmitting", and MON never keys. Works for CW sidetone too, so
+   * gated on tx_ready only, not on a voice mode. */
+  GtkWidget *mon_b = gtk_toggle_button_new_with_label("MON");
+  gtk_widget_set_tooltip_text(mon_b,
+      "Monitor: hear your own transmission (voice mic / CW sidetone)");
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(mon_b), app->tx_mon != 0);
+  gtk_widget_set_sensitive(mon_b, app->tx_ready);
+  g_signal_connect(mon_b, "toggled", G_CALLBACK(on_mon_toggled), app);
+  gtk_box_append(GTK_BOX(txbox), mon_b);
   gtk_box_append(GTK_BOX(bar), txbox);
 
   app->tx_label = gtk_label_new("");   /* only flashes a refusal/trip reason; empty otherwise */
@@ -2553,13 +2574,6 @@ static void on_pref_tx_gate_db(GtkRange *r, gpointer data) {
   tx_run_set_gate(app->tx_gate, app->tx_gate_db);
   schedule_save(app);
 }
-/* TX monitor (self-listen): voice mic / CW sidetone into the host audio. */
-static void on_pref_tx_mon(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
-  (void)ps; App *app = (App *)data;
-  app->tx_mon = adw_switch_row_get_active(r) ? 1 : 0;
-  tx_run_set_monitor(app->tx_mon);
-  schedule_save(app);
-}
 static void on_pref_tx_mon_db(GtkRange *r, gpointer data) {
   App *app = (App *)data;
   app->tx_mon_db = gtk_range_get_value(r);
@@ -2703,9 +2717,6 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, pref_slider("Gate threshold",
       "dBFS after Mic gain; open above, −20 dB below · live",
       GATE_DB_MIN, GATE_DB_MAX, app->tx_gate_db, G_CALLBACK(on_pref_tx_gate_db), app));
-  adw_preferences_group_add(g, pref_switch("TX monitor",
-      "Hear your own transmission (voice mic / CW sidetone) · live",
-      app->tx_mon, G_CALLBACK(on_pref_tx_mon), app));
   adw_preferences_group_add(g, pref_slider("Monitor level",
       "dB into the RX audio output · live",
       MON_DB_MIN, MON_DB_MAX, app->tx_mon_db, G_CALLBACK(on_pref_tx_mon_db), app));
