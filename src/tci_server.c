@@ -10,8 +10,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <string.h>
 #include <signal.h>
+#include <stdatomic.h>
 
 #include "tci_server.h"
 
@@ -19,11 +21,35 @@
 #define TCI_PROTO_LINE  "protocol:ExpertSDR3,1.9;"   /* clients key on this name */
 #define TCI_DEVICE_LINE "device:SDR-for-Linux;"
 
+/* One queued outgoing WebSocket message (text or binary). */
+typedef struct {
+  int    binary;
+  size_t len;
+  uint8_t data[];
+} Msg;
+
+/* Official Stream block header (spec 3.4): 16 × u32 then payload. */
+#define TCI_HDR_U32S     16
+#define TCI_RX_AUDIO     1            /* StreamType                          */
+#define TCI_FMT_INT16    0            /* SampleType                          */
+#define TCI_FMT_FLOAT32  3
+
 typedef struct {
   struct lws *wsi;
   int         inuse;
   int         init_sent;     /* handshake block queued                       */
-  GQueue     *txq;           /* char* messages waiting for SERVER_WRITEABLE  */
+  GQueue     *txq;           /* Msg* waiting for SERVER_WRITEABLE            */
+  /* RX audio stream subscription (F6d-2b); state under s_lock. */
+  int         au_sub;        /* audio_start'ed                               */
+  int         au_rate;       /* 8000/12000/24000/48000                       */
+  int         au_fmt;        /* TCI_FMT_INT16 / TCI_FMT_FLOAT32              */
+  int         au_ch;         /* 1 or 2 (mono duplicated)                     */
+  int         au_block;      /* Stream.length: scalar samples per packet     */
+  int         au_block_set;  /* client pinned au_block explicitly            */
+  double      au_acc;        /* 48 k → au_rate boxcar decimator              */
+  int         au_acccnt;
+  float       au_buf[2048];  /* mono frames at au_rate awaiting a packet     */
+  int         au_fill;
 } Client;
 
 static Client              s_cli[TCI_MAX_CLIENTS];
@@ -35,6 +61,14 @@ static volatile int        s_writable;    /* wake flag → callback_on_writable 
 static TciOps              s_ops;
 static guint               s_reporter_id;
 static int                 s_cw_delay_ms = 10;  /* cw_macros_delay (stored)  */
+static int                 s_debug;       /* SDRFL_TCI_DEBUG=1: log commands  */
+
+/* RX audio ring: producer = demod tap (feed thread), consumer = LWS thread. */
+#define AU_RING 32768u
+#define AU_MASK (AU_RING - 1u)
+static float            au_ring[AU_RING];
+static _Atomic unsigned au_head, au_tail;
+static _Atomic int      s_au_active;      /* # of audio_start'ed clients      */
 
 /* Last state broadcast by the reporter (main thread only). */
 static struct {
@@ -48,9 +82,17 @@ static struct {
 
 /* ---- send path (any thread; queue under s_lock, LWS thread writes) ------- */
 
-static void cli_send(Client *c, const char *msg) {
+static void cli_send_msg(Client *c, int binary, const void *data, size_t len) {
   if (!c->inuse || !c->txq) { return; }
-  g_queue_push_tail(c->txq, g_strdup(msg));
+  Msg *m = g_malloc(sizeof(Msg) + len);
+  m->binary = binary;
+  m->len = len;
+  memcpy(m->data, data, len);
+  g_queue_push_tail(c->txq, m);
+}
+
+static void cli_send(Client *c, const char *msg) {
+  cli_send_msg(c, 0, msg, strlen(msg));
 }
 
 static void tci_broadcast(const char *msg) {
@@ -183,6 +225,11 @@ static int arg_bool(const char *a) { return g_ascii_strcasecmp(a, "true") == 0; 
 /* One parsed command: lowercase name + up to 8 raw args. */
 static void tci_exec(Client *c, char *name, char **av, int ac) {
   for (char *p = name; *p; p++) { *p = (char)g_ascii_tolower(*p); }
+  if (s_debug) {
+    fprintf(stderr, "tci< %s", name);
+    for (int i = 0; i < ac; i++) { fprintf(stderr, "%c%s", i ? ',' : ':', av[i]); }
+    fprintf(stderr, ";\n");
+  }
 
   if (strcmp(name, "vfo") == 0 || strcmp(name, "dds") == 0) {
     int isvfo = (name[0] == 'v');
@@ -303,6 +350,56 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
     }
   } else if (strcmp(name, "cw_macros_stop") == 0) {
     s_ops.cw_stop();
+  } else if (strcmp(name, "audio_samplerate") == 0) {
+    if (ac > 0 && av[0][0]) {
+      int r = atoi(av[0]);
+      if (r == 8000 || r == 12000 || r == 24000 || r == 48000) {
+        g_mutex_lock(&s_lock);
+        c->au_rate = r;
+        if (!c->au_block_set) {              /* spec default block per rate  */
+          c->au_block = r == 48000 ? 2048 : r == 24000 ? 1024 : r == 12000 ? 512 : 256;
+        }
+        c->au_acc = 0; c->au_acccnt = 0; c->au_fill = 0;
+        g_mutex_unlock(&s_lock);
+      }
+    }
+    tci_sendf(c, "audio_samplerate:%d;", c->au_rate);
+  } else if (strcmp(name, "audio_start") == 0) {
+    g_mutex_lock(&s_lock);
+    if (!c->au_sub) { c->au_sub = 1; atomic_fetch_add(&s_au_active, 1); }
+    c->au_acc = 0; c->au_acccnt = 0; c->au_fill = 0;
+    g_mutex_unlock(&s_lock);
+    fprintf(stderr, "tci: audio_start — %d Hz, fmt %d, %d ch, block %d\n",
+            c->au_rate, c->au_fmt, c->au_ch, c->au_block);
+  } else if (strcmp(name, "audio_stop") == 0) {
+    g_mutex_lock(&s_lock);
+    if (c->au_sub) { c->au_sub = 0; atomic_fetch_sub(&s_au_active, 1); }
+    g_mutex_unlock(&s_lock);
+    fprintf(stderr, "tci: audio_stop\n");
+  } else if (strcmp(name, "audio_stream_sample_type") == 0) {
+    if (ac > 0 && av[0][0]) {
+      g_mutex_lock(&s_lock);
+      /* int24/int32 fall back to float32 — nothing common asks for them */
+      c->au_fmt = g_ascii_strcasecmp(av[0], "int16") == 0 ? TCI_FMT_INT16
+                                                          : TCI_FMT_FLOAT32;
+      g_mutex_unlock(&s_lock);
+    }
+  } else if (strcmp(name, "audio_stream_channels") == 0) {
+    if (ac > 0 && av[0][0]) {
+      g_mutex_lock(&s_lock);
+      c->au_ch = atoi(av[0]) == 1 ? 1 : 2;
+      g_mutex_unlock(&s_lock);
+    }
+  } else if (strcmp(name, "audio_stream_samples") == 0) {
+    if (ac > 0 && av[0][0]) {
+      int n = atoi(av[0]);
+      if (n < 100)  { n = 100; }
+      if (n > 2048) { n = 2048; }
+      g_mutex_lock(&s_lock);
+      c->au_block = n;
+      c->au_block_set = 1;
+      g_mutex_unlock(&s_lock);
+    }
   } else if (strcmp(name, "start") == 0 || strcmp(name, "stop") == 0) {
     /* device start/stop — we are always running; acknowledge by echo */
     tci_sendf(c, "%s;", name);
@@ -358,10 +455,15 @@ static int lws_cb(struct lws *wsi, enum lws_callback_reasons reason,
       if (!s_cli[i].inuse) { idx = i; break; }
     }
     if (idx >= 0) {
-      s_cli[idx].wsi = wsi;
-      s_cli[idx].inuse = 1;
-      s_cli[idx].init_sent = 0;
-      s_cli[idx].txq = g_queue_new();
+      Client *nc = &s_cli[idx];
+      memset(nc, 0, sizeof(*nc));
+      nc->wsi = wsi;
+      nc->inuse = 1;
+      nc->txq = g_queue_new();
+      nc->au_rate = 48000;             /* spec defaults: float32, 2 ch, 2048 */
+      nc->au_fmt = TCI_FMT_FLOAT32;
+      nc->au_ch = 2;
+      nc->au_block = 2048;
     }
     g_mutex_unlock(&s_lock);
     *slot = idx;
@@ -397,7 +499,7 @@ static int lws_cb(struct lws *wsi, enum lws_callback_reasons reason,
     return 0;
 
   case LWS_CALLBACK_SERVER_WRITEABLE: {
-    char *msg = NULL;
+    Msg *msg = NULL;
     int more = 0;
     g_mutex_lock(&s_lock);
     if (c->txq) {
@@ -406,10 +508,10 @@ static int lws_cb(struct lws *wsi, enum lws_callback_reasons reason,
     }
     g_mutex_unlock(&s_lock);
     if (msg) {
-      size_t n = strlen(msg);
-      unsigned char *buf = g_malloc(LWS_PRE + n);
-      memcpy(buf + LWS_PRE, msg, n);
-      int rc = lws_write(wsi, buf + LWS_PRE, n, LWS_WRITE_TEXT);
+      unsigned char *buf = g_malloc(LWS_PRE + msg->len);
+      memcpy(buf + LWS_PRE, msg->data, msg->len);
+      int rc = lws_write(wsi, buf + LWS_PRE, msg->len,
+                         msg->binary ? LWS_WRITE_BINARY : LWS_WRITE_TEXT);
       g_free(buf);
       g_free(msg);
       if (rc < 0) { return -1; }
@@ -421,10 +523,11 @@ static int lws_cb(struct lws *wsi, enum lws_callback_reasons reason,
   case LWS_CALLBACK_CLOSED:
     fprintf(stderr, "tci: client %d disconnected\n", *slot);
     g_mutex_lock(&s_lock);
+    if (c->au_sub) { atomic_fetch_sub(&s_au_active, 1); }
     c->inuse = 0;
     c->wsi = NULL;
     if (c->txq) {
-      char *m;
+      Msg *m;
       while ((m = g_queue_pop_head(c->txq))) { g_free(m); }
       g_queue_free(c->txq);
       c->txq = NULL;
@@ -444,9 +547,82 @@ static const struct lws_protocols s_protocols[] = {
   { NULL, NULL, 0, 0, 0, NULL, 0 }
 };
 
+/* Emit one RX-audio Stream block for a client (caller holds s_lock). The
+ * mono frames in au_buf are duplicated onto 2 channels when asked for. */
+static void au_emit(Client *c) {
+  int frames = c->au_fill;
+  int scalars = frames * c->au_ch;
+  size_t ssize = (c->au_fmt == TCI_FMT_INT16) ? 2 : 4;
+  size_t len = TCI_HDR_U32S * 4 + (size_t)scalars * ssize;
+  uint8_t *blk = g_malloc0(len);
+  uint32_t *h = (uint32_t *)blk;
+  h[0] = 0;                       /* receiver                                */
+  h[1] = (uint32_t)c->au_rate;
+  h[2] = (uint32_t)c->au_fmt;
+  h[3] = 0;                       /* codec                                   */
+  h[4] = 0;                       /* crc                                     */
+  h[5] = (uint32_t)scalars;       /* length: scalar sample count             */
+  h[6] = TCI_RX_AUDIO;
+  h[7] = (uint32_t)c->au_ch;
+  if (c->au_fmt == TCI_FMT_INT16) {
+    int16_t *p = (int16_t *)(blk + TCI_HDR_U32S * 4);
+    for (int i = 0; i < frames; i++) {
+      int16_t v = (int16_t)(c->au_buf[i] * 32767.0f);
+      for (int ch = 0; ch < c->au_ch; ch++) { *p++ = v; }
+    }
+  } else {
+    float *p = (float *)(blk + TCI_HDR_U32S * 4);
+    for (int i = 0; i < frames; i++) {
+      for (int ch = 0; ch < c->au_ch; ch++) { *p++ = c->au_buf[i]; }
+    }
+  }
+  cli_send_msg(c, 1, blk, len);
+  g_free(blk);
+  c->au_fill = 0;
+}
+
+/* Drain the 48 k tap ring and fan out to subscribed clients (LWS thread). */
+static void au_pump(void) {
+  float chunk[2048];
+  for (;;) {
+    unsigned t = atomic_load_explicit(&au_tail, memory_order_relaxed);
+    unsigned h = atomic_load_explicit(&au_head, memory_order_acquire);
+    unsigned avail = h - t;
+    if (avail == 0) { return; }
+    int n = avail < 2048 ? (int)avail : 2048;
+    for (int i = 0; i < n; i++) { chunk[i] = au_ring[(t + (unsigned)i) & AU_MASK]; }
+    atomic_store_explicit(&au_tail, t + (unsigned)n, memory_order_release);
+
+    g_mutex_lock(&s_lock);
+    for (int ci = 0; ci < TCI_MAX_CLIENTS; ci++) {
+      Client *c = &s_cli[ci];
+      if (!c->inuse || !c->au_sub) { continue; }
+      int dec = 48000 / (c->au_rate > 0 ? c->au_rate : 48000);
+      if (dec < 1) { dec = 1; }
+      int fpp = c->au_block / c->au_ch;      /* mono frames per packet       */
+      if (fpp < 1) { fpp = 1; }
+      if (fpp > (int)G_N_ELEMENTS(c->au_buf)) { fpp = (int)G_N_ELEMENTS(c->au_buf); }
+      for (int i = 0; i < n; i++) {
+        c->au_acc += chunk[i];
+        if (++c->au_acccnt >= dec) {
+          c->au_buf[c->au_fill++] = (float)(c->au_acc / dec);
+          c->au_acc = 0.0;
+          c->au_acccnt = 0;
+          if (c->au_fill >= fpp) { au_emit(c); }
+        }
+      }
+      if (c->wsi && c->txq && !g_queue_is_empty(c->txq)) {
+        lws_callback_on_writable(c->wsi);
+      }
+    }
+    g_mutex_unlock(&s_lock);
+  }
+}
+
 static gpointer service_thread(gpointer data) {
   (void)data;
   while (s_run) {
+    if (atomic_load(&s_au_active) > 0) { au_pump(); }
     if (s_writable) {
       s_writable = 0;
       g_mutex_lock(&s_lock);
@@ -463,6 +639,21 @@ static gpointer service_thread(gpointer data) {
   return NULL;
 }
 
+void tci_server_audio_push(const float *mono48k, int n) {
+  if (!s_run || atomic_load_explicit(&s_au_active, memory_order_relaxed) <= 0) { return; }
+  unsigned h = atomic_load_explicit(&au_head, memory_order_relaxed);
+  unsigned t = atomic_load_explicit(&au_tail, memory_order_acquire);
+  for (int i = 0; i < n; i++) {
+    if (h - t >= AU_RING) { break; }          /* full → drop the tail        */
+    au_ring[h & AU_MASK] = mono48k[i];
+    h++;
+  }
+  atomic_store_explicit(&au_head, h, memory_order_release);
+  /* lws_service blocks until a socket event — kick it so the service loop
+   * comes around to au_pump (piHPSDR's tci_audio_wakeup does the same). */
+  if (s_ctx) { lws_cancel_service(s_ctx); }
+}
+
 /* ---- public API ------------------------------------------------------------ */
 
 int tci_server_start(int port, const TciOps *ops) {
@@ -471,6 +662,10 @@ int tci_server_start(int port, const TciOps *ops) {
   memset(&s_cli, 0, sizeof(s_cli));
   memset(&s_last, 0, sizeof(s_last));
   s_cw_delay_ms = 10;
+  s_debug = g_getenv("SDRFL_TCI_DEBUG") != NULL;
+  atomic_store(&s_au_active, 0);
+  atomic_store(&au_head, 0u);
+  atomic_store(&au_tail, 0u);
 
   struct lws_context_creation_info info;
   memset(&info, 0, sizeof(info));
@@ -503,12 +698,13 @@ void tci_server_stop(void) {
   s_ctx = NULL;
   for (int i = 0; i < TCI_MAX_CLIENTS; i++) {
     if (s_cli[i].txq) {
-      char *m;
+      Msg *m;
       while ((m = g_queue_pop_head(s_cli[i].txq))) { g_free(m); }
       g_queue_free(s_cli[i].txq);
     }
   }
   memset(&s_cli, 0, sizeof(s_cli));
+  atomic_store(&s_au_active, 0);
   fprintf(stderr, "tci: server stopped\n");
 }
 

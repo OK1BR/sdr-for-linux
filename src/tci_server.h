@@ -57,4 +57,9 @@ void tci_server_stop(void);
 int  tci_server_running(void);
 int  tci_server_clients(void);   /* connected client count (for the GUI)    */
 
+/* RX audio input (F6d-2b): push volume-independent mono 48 kHz samples from
+ * the demod tap (demod_set_audio_tap → this). Lock-free SPSC ring, cheap
+ * no-op while no client has audio_start'ed. Callable from any thread. */
+void tci_server_audio_push(const float *mono48k, int n);
+
 #endif

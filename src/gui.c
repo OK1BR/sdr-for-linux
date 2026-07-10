@@ -2762,8 +2762,11 @@ static void tci_apply(App *app) {
   if (app->tci_enable && !tci_server_running()) {
     if (tci_server_start(app->tci_port, &TCI_OPS) != 0) {
       fprintf(stderr, "tci: start failed on port %d\n", app->tci_port);
+    } else {
+      demod_set_audio_tap(tci_server_audio_push);   /* RX audio → TCI (F6d-2b) */
     }
   } else if (!app->tci_enable && tci_server_running()) {
+    demod_set_audio_tap(NULL);
     tci_server_stop();
   }
 }

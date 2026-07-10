@@ -62,6 +62,14 @@ static _Atomic unsigned mon_head;   /* producer (TX feed thread) frame index */
 static _Atomic unsigned mon_tail;   /* consumer (RX feed thread) frame index */
 static volatile double  mon_gain = 0.18;   /* linear; demod_set_monitor_gain */
 
+/* RX audio tap (TCI): fixed 48 kHz mono out of the sink-rate output loop.
+ * d_arate is always an integer multiple of 48 k (48/96/192), so a boxcar
+ * average over `factor` samples decimates cleanly. */
+static void (*_Atomic d_tap)(const float *mono48k, int n);
+static double d_tap_acc;     /* boxcar accumulator (feed thread only)       */
+static int    d_tap_cnt;
+static float  d_tap_buf[D_BUFSIZE];   /* ≤ one 48 k sample per input sample */
+
 /* Apply the AGC character (d_agc_mode) + threshold (d_agc_top). Mirrors piHPSDR
  * rx_set_agc: WDSP mode 5 = AGC on, 0 = off; long/slow/med/fast differ only in
  * hang/decay. Caller holds d_lock. */
@@ -218,6 +226,29 @@ void demod_feed(const double *iq, int n_pairs) {
           a = sl < 0 ? -sl : sl;
           if (a > d_peak) { d_peak = a; }
         }
+        /* RX audio tap (TCI): volume-compensated mono (L, pre-mute/pre-monitor)
+         * decimated to a fixed 48 kHz. Runs only while a tap is registered. */
+        void (*tap)(const float *, int) =
+            atomic_load_explicit(&d_tap, memory_order_acquire);
+        if (tap) {
+          int factor = d_arate / 48000;
+          if (factor < 1) { factor = 1; }
+          double pg  = pow(10.0, 0.05 * d_vol_db);   /* undo SetRXAPanelGain1 */
+          double inv = pg > 1e-6 ? 1.0 / pg : 1.0;
+          int n48 = 0;
+          for (int k = 0; k < d_output; k++) {
+            d_tap_acc += d_audio[k * 2] * inv;
+            if (++d_tap_cnt >= factor) {
+              double v = d_tap_acc / factor;
+              if (v >  1.0) { v =  1.0; }
+              if (v < -1.0) { v = -1.0; }
+              d_tap_buf[n48++] = (float)v;
+              d_tap_acc = 0.0;
+              d_tap_cnt = 0;
+            }
+          }
+          if (n48 > 0) { tap(d_tap_buf, n48); }
+        }
         audio_push(d_out, d_output);
         /* SDRFL_DEBUG_LEVELS: once per second dump the WDSP meters piHPSDR shows
          * on its RX meter (needle dBm = RXA_S_AV raw; "Gain" = -RXA_AGC_GAIN;
@@ -365,6 +396,10 @@ void demod_monitor_push(const float *mono, int n, int src_rate) {
 /* Monitor level in dB (≤ 0 sensible; piHPSDR caps its monitor at 0.25 ≈ −12 dB). */
 void demod_set_monitor_gain(double db) {
   mon_gain = pow(10.0, 0.05 * db);
+}
+
+void demod_set_audio_tap(void (*cb)(const float *mono48k, int n)) {
+  atomic_store_explicit(&d_tap, cb, memory_order_release);
 }
 
 void demod_destroy(void) {

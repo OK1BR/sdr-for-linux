@@ -86,11 +86,18 @@ platform-library category — do not vendor).
   tx_enable/tx_frequency. Prefs: Radio → TCI (switch live, port 40001,
   persisted `[tx] tci/tci_port`, off by default). Gate: `sdrfl-tci-test`
   (13 checks) — real WebSocket client against the server with stub ops.
-- **F6d-2b — RX audio + sensors.** RX_AUDIO_STREAM from the demod output
-  (float32 default; resample 48k→24/12/8k as asked), AUDIO_START/STOP + stream
-  params, LINE_OUT stream = same tap pre-volume, RX_CHANNEL_SENSORS (S-meter),
-  TX_SENSORS (mic dBm, RMS W, peak W, SWR — we already track true PEP).
-  Decodium can decode from this alone.
+- **F6d-2b — RX audio. AUDIO STREAM IMPLEMENTED (offline-verified 2026-07-10).**
+  Demod tap: volume-compensated mono (pre-mute/pre-monitor — decode must not
+  depend on the volume knob), fixed 48 kHz, → SPSC ring → LWS thread fans out
+  per client (boxcar to 8/12/24/48 k, float32/int16, 1/2 ch, block size per
+  spec defaults or AUDIO_STREAM_SAMPLES), official Stream header (type=1).
+  `tci_server_audio_push` also kicks lws_cancel_service — lws_service blocks
+  otherwise and audio never pumps (the piHPSDR tci_audio_wakeup trick).
+  Commands: audio_samplerate/_start/_stop/_stream_sample_type/_channels/
+  _samples; SDRFL_TCI_DEBUG=1 logs every received command. Gate extended to
+  19 checks (12 kHz mono subscription delivers correct Stream blocks).
+  **Still pending in 2b:** RX_CHANNEL_SENSORS (S-meter), TX_SENSORS,
+  LINE_OUT stream.
 - **F6d-2c — TX audio (digital TX).** TRX:0,true,**tci** → mic path switches
   to the TCI ring: emit TX_CHRONO pacing, accept TX_AUDIO_STREAM, resample to
   the 48 k TX input. Needs **DIGU/DIGL modes** (flat TX audio path, no

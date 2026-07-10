@@ -67,7 +67,8 @@ static const TciOps STUB_OPS = {
 /* ---- LWS test client -------------------------------------------------------- */
 
 static GMutex      c_lock;
-static GString    *c_rx;          /* everything the client received           */
+static GString    *c_rx;          /* text the client received                 */
+static GByteArray *c_bin;         /* binary frames (audio Stream blocks)      */
 static struct lws *c_wsi;
 static volatile int c_up, c_run = 1, c_send_pending;
 static char        c_out[512];
@@ -82,7 +83,11 @@ static int client_cb(struct lws *wsi, enum lws_callback_reasons reason,
     return 0;
   case LWS_CALLBACK_CLIENT_RECEIVE:
     g_mutex_lock(&c_lock);
-    g_string_append_len(c_rx, (const char *)in, (gssize)len);
+    if (lws_frame_is_binary(wsi)) {
+      g_byte_array_append(c_bin, (const guint8 *)in, (guint)len);
+    } else {
+      g_string_append_len(c_rx, (const char *)in, (gssize)len);
+    }
     g_mutex_unlock(&c_lock);
     return 0;
   case LWS_CALLBACK_CLIENT_WRITEABLE:
@@ -167,6 +172,7 @@ static int cond_bc(void)      { return rx_contains("vfo:0,0,7020000;") && rx_con
 int main(void) {
   printf("=== TCI server gate (offline) ===\n");
   c_rx = g_string_new(NULL);
+  c_bin = g_byte_array_new();
 
   if (tci_server_start(40123, &STUB_OPS) != 0) {
     printf("FAIL — server would not start on :40123\n");
@@ -221,6 +227,40 @@ int main(void) {
   check("plain trx keys through the ops path", wait_for(cond_trx_on, 2000));
   client_send("trx:0,false;");
   check("trx unkey lands", wait_for(cond_trx_off, 2000));
+
+  /* ---- RX audio stream (F6d-2b): subscribe at 12 kHz mono int-block 512,
+   * feed the 48 k tap like the demod would, expect Stream blocks back. */
+  client_send("audio_samplerate:12000;audio_stream_channels:1;audio_start:0;");
+  g_usleep(300 * 1000);
+  while (g_main_context_iteration(NULL, FALSE)) {}
+  float ramp[480];
+  for (int i = 0; i < 480; i++) { ramp[i] = (float)(i % 96) / 96.0f - 0.5f; }
+  int got_audio = 0;
+  for (int ms = 0; ms < 3000 && !got_audio; ms += 10) {
+    tci_server_audio_push(ramp, 480);        /* 10 ms of 48 k mono           */
+    while (g_main_context_iteration(NULL, FALSE)) {}
+    g_mutex_lock(&c_lock);
+    got_audio = c_bin->len >= 64 + 512 * 4;  /* header + one 512-scalar block */
+    g_mutex_unlock(&c_lock);
+    g_usleep(10 * 1000);
+  }
+  check("audio_start delivers a binary Stream block", got_audio);
+  if (got_audio) {
+    g_mutex_lock(&c_lock);
+    const guint32 *h = (const guint32 *)c_bin->data;
+    g_mutex_unlock(&c_lock);
+    check("stream header: rate 12000",       h[1] == 12000);
+    check("stream header: format float32",   h[2] == 3);
+    check("stream header: length 512",       h[5] == 512);
+    check("stream header: type RX_AUDIO(1)", h[6] == 1);
+    check("stream header: 1 channel",        h[7] == 1);
+  } else {
+    checks += 5; fails += 5;
+    printf("  FAIL stream header checks skipped (no audio arrived)\n");
+  }
+  client_send("audio_stop:0;");
+  g_usleep(200 * 1000);
+  while (g_main_context_iteration(NULL, FALSE)) {}
 
   c_run = 0;
   g_thread_join(ct);

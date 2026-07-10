@@ -75,6 +75,15 @@ void demod_set_mute(int on);
 void demod_monitor_push(const float *mono, int n, int src_rate);
 void demod_set_monitor_gain(double db);
 
+/*
+ * RX audio tap (TCI, F6d-2b): when set, the demod feed thread calls cb with
+ * volume-compensated mono audio at a FIXED 48 kHz (decimated from the sink
+ * rate), taken BEFORE the RX-on-TX mute and the TX monitor mix — digital-mode
+ * decoding must not depend on the volume knob or mute state. cb runs on the
+ * demod feed thread: it must be cheap and lock-free (SPSC ring push).
+ */
+void demod_set_audio_tap(void (*cb)(const float *mono48k, int n));
+
 /* Set the filter passband [flo,fhi] Hz live (same mode); thread-safe. */
 void demod_set_passband(double flo, double fhi);
 
