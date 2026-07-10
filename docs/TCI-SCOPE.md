@@ -75,8 +75,12 @@ platform-library category — do not vendor).
   cw_macros — repeated macros queue and send in order (contest style: SDC
   sends each word as its own cw_macros), cw_macros_stop aborts with an
   immediate unkey, real exchanges (`OK1BR`, `5NN 15`) verified at drive 0.
+  **Same evening WITH RF into the dummy load (~2 W element peaks, SWR 1.00),
+  signal quality audited off-air on an IC-705: clean tone (no chirp), zero
+  backwave between elements, first dit intact, key clicks normal.** The CW
+  keying path over TCI is production-ready.
   Note: SDC also pushes its skimmer spots (`spot:<call>,<mode>,<freq>,...`)
-  unprompted — the 2e input data is already flowing, we just ignore it yet. `src/tci_server.[ch]` — own code on
+  unprompted — the 2e input data is already flowing (consumed since 2e). `src/tci_server.[ch]` — own code on
   the piHPSDR LWS pattern (chat/superchat/tci subprotocols, 1 ms service loop,
   per-client queues, commands g_idle_add-dispatched to the GTK main loop, a
   500 ms reporter broadcasts state diffs so GUI-side changes reach clients
