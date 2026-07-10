@@ -86,6 +86,11 @@ void tx_dsp_get_meters(double *mic_pk_db, double *alc_gain_db, double *lvlr_gain
  */
 void tx_dsp_tune_tone(int on, double offset_hz);
 
+/* Two-tone test generator (PS calibration / IMD check): tones at f1/f2 Hz
+ * audio offset, each ~half amplitude (envelope peaks at full scale). The
+ * PostGen replaces the chain signal while running. Negate f1/f2 for LSB. */
+void tx_dsp_two_tone(int on, double f1, double f2);
+
 int  tx_dsp_last_error(void);               /* last non-zero fexchange0 error */
 void tx_dsp_destroy(void);
 

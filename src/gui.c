@@ -937,6 +937,26 @@ static void draw_tx(cairo_t *cr, int w, int h, App *app) {
     cairo_move_to(cr, 44, 88); cairo_show_text(cr, "⚠ HIGH SWR");
   }
 
+  /* PureSignal badge (piHPSDR paints "Correcting" on its TX panadapter too):
+   * green = correction applied; yellow = enabled but calibrating/not locked,
+   * with the live feedback level so the operator can dial the PS attenuator
+   * into the 140-165 window without reading logs. */
+  if (ts.ps_on) {
+    char psb[96];
+    cairo_set_font_size(cr, 18.0);
+    if (ts.ps_correcting) {
+      snprintf(psb, sizeof psb, "PS ✓ correcting · fdbk %d", ts.ps_fdbk);
+      cairo_set_source_rgba(cr, 0.30, 0.95, 0.30, 0.98);
+    } else {
+      snprintf(psb, sizeof psb, "PS calibrating · fdbk %d %s", ts.ps_fdbk,
+               ts.ps_fdbk > 181 ? "(too strong — raise PS att)" :
+               ts.ps_fdbk <  90 ? "(too weak — lower PS att)"  : "");
+      cairo_set_source_rgba(cr, 1.0, 0.85, 0.25, 0.98);
+    }
+    cairo_move_to(cr, 44, ts.high_swr ? 112 : 88);
+    cairo_show_text(cr, psb);
+  }
+
   /* Level meter top-right, where the RX S-meter sits — mic peak + ALC. */
   draw_tx_level_meter(cr, app, w, &ts);
 }
@@ -2607,9 +2627,12 @@ static void show_restart_toast(App *app) {
 /* A restart-to-apply setting changed: just remember it; the toast pops when the
  * Preferences dialog closes (see on_prefs_closed). */
 static void restart_hint(App *app) { app->restart_pending = 1; }
-/* Preferences dialog closed → if a restart-to-apply setting changed, offer it now. */
+/* Preferences dialog closed → if a restart-to-apply setting changed, offer it now.
+ * Also force the two-tone test OFF (piHPSDR does the same on PS-menu close) —
+ * the toggle lives only in this dialog, so it must never outlive it keyed. */
 static void on_prefs_closed(AdwDialog *dlg, gpointer data) {
   (void)dlg; App *app = (App *)data;
+  if (app->tx_ready) { tx_run_set_twotone(0); }
   if (app->restart_pending) { app->restart_pending = 0; show_restart_toast(app); }
 }
 
@@ -2825,6 +2848,12 @@ static void on_pref_ps_setpk(AdwSpinRow *r, GParamSpec *p, gpointer data) {
   (void)p; App *app = (App *)data;
   app->ps_setpk = adw_spin_row_get_value(r);
   ps_apply(app); schedule_save(app);
+}
+/* Two-tone test — a keying intent (⛔ delta #2); tx_gate decides. Not persisted;
+ * forced off when the Preferences dialog closes (on_prefs_closed). */
+static void on_pref_ps_tt(AdwSwitchRow *r, GParamSpec *p, gpointer data) {
+  (void)p; App *app = (App *)data;
+  if (app->tx_ready) { tx_run_set_twotone(adw_switch_row_get_active(r) ? 1 : 0); }
 }
 /* Mic noise gate (DEXP) — tames the PROC leveler pumping room noise up in the
  * gaps between words. Threshold is on the post-mic-gain signal. Applies live. */
@@ -3347,6 +3376,9 @@ static AdwDialog *build_prefs(App *app) {
     g_signal_connect(row, "notify::value", G_CALLBACK(on_pref_ps_setpk), app);
     adw_preferences_group_add(g, row);
   }
+  adw_preferences_group_add(g, pref_switch("Two-tone test",
+      "⚠ KEYS the transmitter (700+1900 Hz at the current drive — dummy load!); off when this dialog closes",
+      0, G_CALLBACK(on_pref_ps_tt), app));
   adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);   /* Drive / Tune drive / Antenna live on the footer bar */
 

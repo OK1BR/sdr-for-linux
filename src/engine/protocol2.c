@@ -757,6 +757,20 @@ static void decode_ps_iq(const unsigned char *buffer, int len) {
   int pairs = p2_ps_decode(buffer, len, txfb, rxfb, NET_BUFFER_SIZE / 12 + 1);
   p2_ps_iq_cb cb = cfg_ps_cb;
   if (pairs > 0 && cb) { cb(txfb, rxfb, pairs, cfg_ps_cb_user); }
+
+  /* Keep the RX/audio chain ticking: during PS-TX the RX DDC carries feedback,
+   * so demod_feed would starve — and with it the TX-monitor ring drain and the
+   * audio sink (the monitor is mixed in AFTER the RX-on-TX mute, demod.c:239).
+   * Feed zero IQ at the configured RX rate, paced by this feedback stream
+   * (each 192 kHz feedback pair ⇔ rate/192k RX samples of real time). The RX
+   * is muted while keyed, so the zeros are inaudible by construction. */
+  if (pairs > 0 && cfg_cb) {
+    static const double zeros[2 * 8 * (NET_BUFFER_SIZE / 12 + 1)];  /* zeroed BSS */
+    int ratio = cfg_sample_rate / 192000;
+    if (ratio < 1) { ratio = 1; }
+    if (ratio > 8) { ratio = 8; }          /* 1536k max ⇒ 8× (buffer bound)     */
+    cfg_cb(zeros, pairs * ratio, cfg_user);
+  }
 }
 
 /* Decode the radio's High-Priority *status* packet (port 1025) — the RX-useful

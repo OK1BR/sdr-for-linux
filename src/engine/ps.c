@@ -155,6 +155,9 @@ void ps_get_status(ps_status *out) {
   GetPSInfo(s_ch, info);
   out->on         = 1;
   out->fdbk       = info[4];
+  out->cals       = info[5];
+  out->sln        = info[6];
   out->correcting = info[14];
   out->state      = info[15];
+  GetPSMaxTX(s_ch, &out->getpk);
 }

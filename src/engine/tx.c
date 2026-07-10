@@ -162,6 +162,26 @@ void tx_dsp_set_compressor(int on, double gain_db) {
   g_mutex_unlock(&t_lock);
 }
 
+/* Two-tone test generator (PureSignal calibration / IMD check; piHPSDR
+ * transmitter.c:2902-2932): two tones just under half amplitude each, so the
+ * two-tone envelope peaks at ~full scale. The PostGen REPLACES the chain
+ * signal, so the mic is irrelevant while it runs. Caller pre-negates the
+ * frequencies for LSB-family modes. */
+void tx_dsp_two_tone(int on, double f1, double f2) {
+  g_mutex_lock(&t_lock);
+  if (t_ready) {
+    if (on) {
+      SetTXAPostGenTTFreq(t_id, f1, f2);
+      SetTXAPostGenTTMag(t_id, 0.49999, 0.49999);
+      SetTXAPostGenMode(t_id, 1);              /* two-tone */
+      SetTXAPostGenRun(t_id, 1);
+    } else {
+      SetTXAPostGenRun(t_id, 0);
+    }
+  }
+  g_mutex_unlock(&t_lock);
+}
+
 void tx_dsp_tune_tone(int on, double offset_hz) {
   g_mutex_lock(&t_lock);
   if (t_ready) {

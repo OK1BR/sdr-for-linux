@@ -86,6 +86,8 @@ static GThread          *s_thread;
 static volatile int      s_running;        /* g_atomic */
 static volatile int      s_want_mox;       /* g_atomic */
 static volatile int      s_want_tune;      /* g_atomic */
+static volatile int      s_want_tt;        /* g_atomic: two-tone test wants key (⛔ delta #2:
+                                              keys via tx_gate like MOX, PS-SCOPE §6) */
 static volatile int      s_want_cw;        /* g_atomic: CW break-in wants key (feed thread) */
 static volatile int      s_mode;           /* g_atomic: current WDSP/demod mode           */
 static volatile int      s_monitor;        /* g_atomic: TX monitor (self-listen) on/off   */
@@ -145,8 +147,12 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
    * OR as the GUI button; tx_gate still decides whether it actually keys. */
   int is_voice  = !is_cw && cfg.mode != DEMOD_DIGU && cfg.mode != DEMOD_DIGL;
   int want_ptt  = cfg.ptt_enabled && is_voice && p2_ptt_get();
+  /* Two-tone test (PS calibration / IMD check) — keys exactly like MOX through
+   * the gate (⛔ approved delta #2); excluded in CW (the feed loop would emit
+   * a CW carrier instead of the WDSP chain). */
+  int want_tt   = g_atomic_int_get(&s_want_tt) && !is_cw;
   /* CW keys through the exciter exactly like MOX (MOX bit + drive, SWR-protected). */
-  int want_mox  = g_atomic_int_get(&s_want_mox) || want_ptt || (is_cw && want_cw);
+  int want_mox  = g_atomic_int_get(&s_want_mox) || want_ptt || want_tt || (is_cw && want_cw);
   int want_tune = g_atomic_int_get(&s_want_tune);
   int want      = want_mox || want_tune;
 
@@ -186,6 +192,13 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   int cw_key = is_cw && r.state.mox && !r.state.tune;   /* MOX-keyed in a CW mode = CW */
   double flo, fhi;
   tx_passband(cfg.mode, cfg.tx_flo, cfg.tx_fhi, &flo, &fhi);
+  /* Two-tone generator follows the keyed state (single tx thread → static is
+   * safe). 700+1900 Hz, negated for the LSB family (piHPSDR transmitter.c:
+   * 2918-2928). Toggleable mid-over: the operator A/Bs PureSignal against a
+   * steady spectrum. */
+  static int tt_applied;
+  double tt_sign = (cfg.mode == DEMOD_LSB || cfg.mode == DEMOD_DIGL) ? -1.0 : 1.0;
+  int tt_want_now = want_tt && keyed && r.state.mox && !r.state.tune && !cw_key;
   if (keyed && !*prev_keyed) {
     /* KEY ON: bring up the DSP first, then assert the gate-approved wire state.
      * (IQ starts on the next feed; the radio ignores it until MOX/relay land, so
@@ -193,6 +206,8 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
      * emits the shaped carrier IQ directly; here we just assert the wire state. */
     tx_dsp_set_mode(cfg.mode, flo, fhi);
     tx_dsp_tune_tone(r.state.tune ? 1 : 0, 0.0);   /* TUNE = post-gen carrier */
+    if (tt_want_now) { tx_dsp_two_tone(1, tt_sign * 700.0, tt_sign * 1900.0); }
+    tt_applied = tt_want_now;
     if (r.state.mox && !cw_key) {
       if (g_atomic_int_get(&s_ext_src)) {
         /* TCI audio: drop stale ring content + prime the client's sender with
@@ -217,6 +232,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
      * tone, flush a little audio, then stop the channel. */
     p2_set_tx_state(NULL);
     tx_dsp_tune_tone(0, 0.0);
+    if (tt_applied) { tx_dsp_two_tone(0, 0.0, 0.0); tt_applied = 0; }
     for (int i = 0; i < 4; i++) { tx_dsp_feed_mic(silence, FEED_BLOCK); }
     tx_dsp_run(0);
     fprintf(stderr, "tx: UNKEY (%s)\n", (r.reason && r.reason[0]) ? r.reason : "release");
@@ -225,13 +241,18 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     p2_set_tx_state(&r.state);   /* refresh (frequency/antenna may have changed) */
     tx_dsp_set_mode(cfg.mode, flo, fhi);   /* live TX-filter change while keyed —
                                               WDSP setters no-op when unchanged */
+    if (tt_want_now != tt_applied) {       /* two-tone toggled mid-over */
+      tx_dsp_two_tone(tt_want_now, tt_sign * 700.0, tt_sign * 1900.0);
+      tt_applied = tt_want_now;
+    }
     if (++s_log_ctr % 20 == 0) {   /* ~1 Hz while keyed */
       ps_status pl; ps_get_status(&pl);
       if (pl.on) {
         fprintf(stderr, "tx: fwd=%.2f W  rev=%.2f W  SWR=%.2f  (fwd_raw=%d rev_raw=%d)"
-                "  PS: state=%d fdbk=%d %s\n",
+                "  PS: state=%d fdbk=%d cals=%d sln=0x%x getpk=%.3f %s\n",
                 tx_meter_fwd_w(), tx_meter_rev_w(), tx_meter_swr(), t.fwd_raw, t.rev_raw,
-                pl.state, pl.fdbk, pl.correcting ? "CORRECTING" : "-");
+                pl.state, pl.fdbk, pl.cals, pl.sln, pl.getpk,
+                pl.correcting ? "CORRECTING" : "-");
       } else {
         fprintf(stderr, "tx: fwd=%.2f W  rev=%.2f W  SWR=%.2f  (fwd_raw=%d rev_raw=%d)\n",
                 tx_meter_fwd_w(), tx_meter_rev_w(), tx_meter_swr(), t.fwd_raw, t.rev_raw);
@@ -447,6 +468,7 @@ void tx_run_stop(void) {
   if (!s_thread) { return; }
   g_atomic_int_set(&s_want_mox, 0);
   g_atomic_int_set(&s_want_tune, 0);
+  g_atomic_int_set(&s_want_tt, 0);
   g_atomic_int_set(&s_want_cw, 0);
   g_atomic_int_set(&s_running, 0);
   g_thread_join(s_thread);
@@ -552,6 +574,13 @@ void tx_run_set_gate(int on, double thresh_db) { tx_dsp_set_gate(on, thresh_db);
 void tx_run_set_monitor(int on) { g_atomic_int_set(&s_monitor, on ? 1 : 0); }
 
 void tx_run_set_span(double span_hz) { tx_analyzer_set_span(span_hz); }   /* TX zoom (analyzer locks) */
+
+/* Two-tone test (⛔ delta #2, PS-SCOPE §6): a keying INTENT like MOX — the
+ * safety gate still decides. Runs at the current drive; not persisted (a test
+ * must never re-arm itself at startup). */
+void tx_run_set_twotone(int on) {
+  g_atomic_int_set(&s_want_tt, on ? 1 : 0);
+}
 
 void tx_run_request(int want_mox, int want_tune) {
   g_atomic_int_set(&s_want_mox,  want_mox  ? 1 : 0);

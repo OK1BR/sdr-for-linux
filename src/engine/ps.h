@@ -59,6 +59,12 @@ typedef struct {
   int correcting; /* info[14]: correction currently applied               */
   int state;      /* info[15]: calcc state machine (0=Reset..9=TurnOn)    */
   int fdbk;       /* info[4]: feedback level — ideal ~152, good 140-165   */
+  int cals;       /* info[5]: calibration attempts (counts up per calc)   */
+  int sln;        /* info[6]: last correction-sanity bitmask (calcc.c     */
+                  /*   scheck: 0x1 NaN, 0x2 empty bin, 0x4 gain>1,        */
+                  /*   0x8 endpoint, 0x10/20 neg gain, 0x40 jump)         */
+  double getpk;   /* GetPSMaxTX: max TX envelope seen while collecting —  */
+                  /*   the measured truth for the SetPk setting           */
 } ps_status;
 void ps_get_status(ps_status *out);
 
