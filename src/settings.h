@@ -61,6 +61,7 @@ typedef struct {
   int       tx_pa;      /* PA enable (0/1) — RF impossible when 0                 */
   int       tx_ant;     /* TX/RX antenna 0/1/2 → ANT1/2/3                         */
   double    tx_drive;   /* MOX/voice power request (W)                            */
+  double    tx_digi_max;/* ⛔ drive cap in DIGU/DIGL, W (100 = uncapped)          */
   double    tx_tune;    /* TUNE power request (W)                                 */
   double    tx_swr;     /* SWR trip threshold                                     */
   double    mic_gain;   /* TX mic gain (dB, SSB voice) — SetTXAPanelGain1         */

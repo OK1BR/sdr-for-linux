@@ -126,6 +126,8 @@ int settings_load(Settings *s) {
       s->tx_ant = g_key_file_get_integer(kf, GROUP_TX, "antenna", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "drive_w", NULL))
       s->tx_drive = g_key_file_get_double(kf, GROUP_TX, "drive_w", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "drive_digi_max", NULL))
+      s->tx_digi_max = g_key_file_get_double(kf, GROUP_TX, "drive_digi_max", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "tune_w", NULL))
       s->tx_tune = g_key_file_get_double(kf, GROUP_TX, "tune_w", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "swr_alarm", NULL))
@@ -242,6 +244,7 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_TX,     "pa_enable", s->tx_pa);
   g_key_file_set_integer(kf, GROUP_TX,     "antenna",   s->tx_ant);
   g_key_file_set_double (kf, GROUP_TX,     "drive_w",   s->tx_drive);
+  g_key_file_set_double (kf, GROUP_TX,     "drive_digi_max", s->tx_digi_max);
   g_key_file_set_double (kf, GROUP_TX,     "tune_w",    s->tx_tune);
   g_key_file_set_double (kf, GROUP_TX,     "swr_alarm", s->tx_swr);
   g_key_file_set_double (kf, GROUP_TX,     "mic_gain",  s->mic_gain);

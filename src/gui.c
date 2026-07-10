@@ -180,6 +180,9 @@ typedef struct {
   int         show_spots;    /* draw the spot overlay (persisted)              */
   int         spot_ttl_min;  /* minutes before an unrefreshed spot expires
                                 (persisted; 10 = casual DX, 1 = contests)      */
+  double      tx_digi_max_w; /* ⛔ drive cap in DIGU/DIGL, W (piHPSDR
+                                drive_digi_max; persisted, 100 = uncapped)     */
+  GtkWidget  *drive_scale;   /* footer Drive slider (digi clamp syncs it)      */
   GtkWidget  *win;           /* top-level window (for size persistence)           */
   GtkWidget  *toast_overlay; /* AdwToastOverlay wrapping the content (restart hint) */
   int         restart_pending;     /* a restart-to-apply setting changed this session */
@@ -1391,6 +1394,7 @@ static void app_to_settings(const App *app, Settings *s) {
   s->tx_pa    = app->tx_pa_enabled;
   s->tx_ant   = app->tx_antenna;
   s->tx_drive = app->tx_drive_w;
+  s->tx_digi_max = app->tx_digi_max_w;
   s->tx_tune  = app->tx_tune_w;
   s->tx_swr   = app->tx_swr_alarm;
   s->mic_gain = app->tx_mic_gain;
@@ -1537,6 +1541,24 @@ static void tx_update_mic(App *app) {
  * pa_calibration follows the CURRENT band (F6b per-band table); out of band it
  * falls back to the default, but the gate refuses OOB keying anyway. Re-called on
  * band change (band_apply) so the drive byte tracks the band's PA calibration. */
+/* ⛔ Digi drive cap (piHPSDR drive_digi_max; radio.c:3293 clamps every set,
+ * transmitter.c:2857 clamps on entering DIGU/DIGL, tx_menu.c:253 on lowering
+ * the limit): digital modes run 100 % duty — a cap protects the PA. Like
+ * piHPSDR we clamp the STORED drive so the slider always shows the truth
+ * (setting the slider re-fires its handler with the clamped value, which
+ * then pushes). Returns 1 when it clamped. */
+static int digi_drive_clamp(App *app) {
+  if ((app->mode == DEMOD_DIGU || app->mode == DEMOD_DIGL) &&
+      app->tx_drive_w > app->tx_digi_max_w) {
+    app->tx_drive_w = app->tx_digi_max_w;
+    if (app->drive_scale) {
+      gtk_range_set_value(GTK_RANGE(app->drive_scale), app->tx_drive_w);
+    }
+    return 1;
+  }
+  return 0;
+}
+
 static void tx_push_cfg(App *app) {
   if (!app->tx_ready) { return; }
   int b = band_for_freq(app->freq);
@@ -1545,6 +1567,11 @@ static void tx_push_cfg(App *app) {
   c.pa_enabled     = app->tx_pa_enabled;
   c.antenna        = app->tx_antenna;
   c.drive_w        = app->tx_drive_w;
+  /* belt & braces: whatever writer forgot to clamp, no digi TX exceeds the cap */
+  if ((app->mode == DEMOD_DIGU || app->mode == DEMOD_DIGL) &&
+      c.drive_w > app->tx_digi_max_w) {
+    c.drive_w = app->tx_digi_max_w;
+  }
   c.tune_w         = app->tx_tune_w;
   c.pa_calibration = (b >= 0) ? pacal_clamp(app->band_pacal[b]) : PACAL_DEFAULT;
   c.swr_protect    = 1;
@@ -2007,6 +2034,7 @@ static void on_mode_toggled(GtkToggleButton *b, gpointer data) {
   tx_push_cfg(app);                      /* TX runtime learns the mode (CW break-in gates on it) */
   tx_update_mic(app);                    /* voice mode → mic ready; CW/data → mic closed */
   tx_apply_proc(app);                    /* digi = clean chain (PROC/gate forced off) */
+  digi_drive_clamp(app);                 /* ⛔ entering DIGU/DIGL caps the drive */
   schedule_save(app);
 }
 
@@ -2356,6 +2384,7 @@ static char *fmt_db(GtkScale *s, double v, gpointer u) {
 static void on_drive_changed(GtkRange *r, gpointer data) {
   App *app = (App *)data;
   app->tx_drive_w = gtk_range_get_value(r);
+  if (digi_drive_clamp(app)) { return; }  /* re-fires with the clamped value */
   tx_push_cfg(app); schedule_save(app);
 }
 static void on_tune_drive_changed(GtkRange *r, gpointer data) {
@@ -2426,6 +2455,7 @@ static GtkWidget *build_bottom_controls(App *app) {
   gtk_scale_set_format_value_func(GTK_SCALE(drv), fmt_watts, NULL, NULL);
   g_signal_connect(drv, "value-changed", G_CALLBACK(on_drive_changed), app);
   gtk_box_append(GTK_BOX(bar), labeled("Drive", drv));
+  app->drive_scale = drv;               /* digi cap syncs the slider (⛔) */
 
   GtkWidget *tdrv = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 100, 1);
   gtk_range_set_value(GTK_RANGE(tdrv), app->tx_tune_w);
@@ -2678,6 +2708,14 @@ static void on_pref_spot_ttl(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   schedule_save(app);
   if (app->area) { gtk_widget_queue_draw(app->area); }   /* prune right away */
 }
+static void on_pref_digi_max(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->tx_digi_max_w = adw_spin_row_get_value(r);
+  digi_drive_clamp(app);          /* lowering the cap in digi mode clamps NOW
+                                     (piHPSDR tx_menu.c:253 behaviour) */
+  tx_push_cfg(app);
+  schedule_save(app);
+}
 static void on_pref_rate(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   (void)ps;
   App *app = (App *)data;
@@ -2830,6 +2868,7 @@ static void tci_set_filter(int lo, int hi) {
 static double tci_get_drive(void) { return tci_app->tx_drive_w; }
 static void tci_set_drive(double v) {
   tci_app->tx_drive_w = v;
+  digi_drive_clamp(tci_app);           /* cap in DIGU/DIGL, slider synced   */
   tx_push_cfg(tci_app);
   schedule_save(tci_app);
 }
@@ -3196,6 +3235,9 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, pref_spin("TX filter high",
       "Hz · voice audio high edge (2850 default; 3500-6000 = eSSB — mind the band plan) · live",
       TXF_HI_MIN, TXF_HI_MAX, app->tx_fhi, G_CALLBACK(on_pref_tx_fhi), app));
+  adw_preferences_group_add(g, pref_spin("Digi max drive",
+      "W cap in DIGU/DIGL — FT8 & co. run 100% duty, protect the PA (100 = off) · live",
+      1, 100, app->tx_digi_max_w, G_CALLBACK(on_pref_digi_max), app));
   /* F6b — per-band PA calibration table (like piHPSDR's PA-calibration menu). The
    * 38.8 dB floor is the safety limit; 53 dB is the validated G1 default. */
   GtkWidget *pacal_exp = g_object_new(ADW_TYPE_EXPANDER_ROW, "title", "PA calibration (per band)",
@@ -3563,7 +3605,8 @@ static void start_radio(App *app) {
                   .db_grid = 1, .db_scale = 1, .freq_grid = 1, .freq_scale = 1,
                   .filter_wf = 1, .filter_op = 60, .avg_spec = -1, .avg_wf = -1,
                   .palette = 0, .band_edges = 1, .show_spots = 1, .spot_ttl = 10,
-                  .tx_pa = 0, .tx_ant = 0, .tx_drive = 25.0, .tx_tune = 10.0, .tx_swr = 3.0,
+                  .tx_pa = 0, .tx_ant = 0, .tx_drive = 25.0, .tx_digi_max = 100.0,
+                  .tx_tune = 10.0, .tx_swr = 3.0,
                   .mic_gain = 0.0, .audio_rate = 48000,
                   .tx_gate_db = GATE_DB_DFLT, .tx_mon_db = MON_DB_DFLT,
                   .tx_flo = TXF_LO_DFLT, .tx_fhi = TXF_HI_DFLT,
@@ -3609,6 +3652,7 @@ static void start_radio(App *app) {
   app->tx_pa_enabled = st.tx_pa ? 1 : 0;
   app->tx_antenna    = st.tx_ant < 0 ? 0 : (st.tx_ant > 2 ? 2 : st.tx_ant);
   app->tx_drive_w    = st.tx_drive < 0.0 ? 0.0 : (st.tx_drive > 100.0 ? 100.0 : st.tx_drive);
+  app->tx_digi_max_w = (st.tx_digi_max >= 1.0 && st.tx_digi_max <= 100.0) ? st.tx_digi_max : 100.0;
   app->tx_tune_w     = st.tx_tune  < 0.0 ? 0.0 : (st.tx_tune  > 100.0 ? 100.0 : st.tx_tune);
   app->tx_swr_alarm  = st.tx_swr   < 2.0 ? 2.0 : (st.tx_swr   > 5.0   ? 5.0   : st.tx_swr);
   app->tx_mic_gain   = st.mic_gain < MIC_GAIN_MIN ? MIC_GAIN_MIN : (st.mic_gain > MIC_GAIN_MAX ? MIC_GAIN_MAX : st.mic_gain);

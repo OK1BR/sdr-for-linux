@@ -129,7 +129,13 @@ path as hazardous and observe, without exception:
 2. Demodulation + audio out (WDSP).
 3. Control surface in GTK4: VFO, mode, filter, AGC, NR/NB/ANF, zoom/pan, band.
 4. RX2; S-meter / TX meters.
-5. **TX + PureSignal**, CAT/rigctl, TCI (last, highest risk).
+5. **TX + PureSignal**, TCI (done 2026-07-10: control+CW+audio+IQ+spots, all
+   live-verified). ~~CAT/rigctl~~ — dropped by decision 2026-07-10: Richard's
+   stack is TCI-native (SDC, Decodium, BRlog is ours), and hamlib-only apps
+   are covered by the third-party [tciadapter](https://github.com/ftl/tciadapter)
+   bridge (verified with WSJT-X/fldigi/CQRLOG) — zero work on our side.
+   Reopen only with a concrete app that neither speaks TCI nor works through
+   tciadapter.
 
 **Next concrete step** (does NOT need the radio free): get **WDSP into the meson
 build** + vendor **Protocol-2 discovery** (find the radio on the LAN). See

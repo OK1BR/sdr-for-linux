@@ -515,6 +515,15 @@ What landed (⚠ = regression tripwire — do not undo casually):
   decision** (the AF band is filter-limited; >192 k is only fatter samples —
   see the audio-rate discussion, 2026-07-10). ⚠ Don't re-add higher AF rates,
   and don't run RXA DSP above 192 k (fixed-length filters lose selectivity).
+- **Digi drive cap** (2026-07-10) — DIGU/DIGL run 100 % duty (FT8 halves the
+  PA's safe dissipation vs SSB peaks): `tx_digi_max_w` clamps the drive, ⚠ at
+  ALL of piHPSDR's three points (every drive set incl. TCI, entering a digi
+  mode, lowering the cap — radio.c:3293 / transmitter.c:2857 / tx_menu.c:253)
+  PLUS a belt-and-braces clamp in tx_push_cfg so no future drive writer can
+  bypass it. The STORED drive is clamped (slider shows the truth, piHPSDR
+  parity). TUNE drive is deliberately NOT capped (parity again — tune is a
+  bounded manual carrier). Prefs → TX "Digi max drive", persisted
+  `[tx] drive_digi_max`, default 100 = uncapped.
 
 **Live-verified operator config (OK1BR, USB, dummy load, 2026-07-10):**
 `mic_gain=11 dB, gate=1 @ −29.5 dBFS, comp(PROC)=off, filt 40-4000 Hz,
