@@ -2616,9 +2616,9 @@ static void on_pref_cw_wpm(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   app->cw_wpm = (int)adw_spin_row_get_value(r);
   cw_push(app); schedule_save(app);
 }
-static void on_pref_cw_pitch(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
-  (void)ps; App *app = (App *)data;
-  app->cw_pitch = (int)adw_spin_row_get_value(r);
+static void on_pref_cw_pitch(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  app->cw_pitch = (int)gtk_range_get_value(r);
   cw_push(app); schedule_save(app);
 }
 static void on_pref_cw_st_db(GtkRange *r, gpointer data) {
@@ -2689,16 +2689,35 @@ static GtkWidget *pref_switch(const char *title, const char *subtitle,
   return row;
 }
 
+/* Live value readout on a slider row ("700 Hz", "-20 dB") — the label carries
+ * its printf format as object data; connected before the user callback. */
+static void pref_slider_lbl(GtkRange *r, gpointer data) {
+  GtkLabel *lbl = GTK_LABEL(data);
+  const char *fmt = g_object_get_data(G_OBJECT(lbl), "fmt");
+  char buf[32];
+  snprintf(buf, sizeof buf, fmt, gtk_range_get_value(r));
+  gtk_label_set_text(lbl, buf);
+}
+
 static GtkWidget *pref_slider(const char *title, const char *subtitle,
-                              double lo, double hi, double val, GCallback cb, App *app) {
+                              double lo, double hi, double val, const char *fmt,
+                              GCallback cb, App *app) {
   GtkWidget *row = g_object_new(ADW_TYPE_ACTION_ROW, "title", title, "subtitle", subtitle, NULL);
   GtkWidget *sc = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, lo, hi, 1);
   gtk_range_set_value(GTK_RANGE(sc), val);
   gtk_widget_set_size_request(sc, 170, -1);
   gtk_widget_set_valign(sc, GTK_ALIGN_CENTER);
   gtk_scale_set_draw_value(GTK_SCALE(sc), FALSE);
+  GtkWidget *lbl = gtk_label_new(NULL);
+  gtk_label_set_width_chars(GTK_LABEL(lbl), 7);
+  gtk_label_set_xalign(GTK_LABEL(lbl), 1.0);
+  gtk_widget_add_css_class(lbl, "numeric");   /* tabular figures — no jitter */
+  g_object_set_data_full(G_OBJECT(lbl), "fmt", g_strdup(fmt), g_free);
+  pref_slider_lbl(GTK_RANGE(sc), lbl);        /* initial text */
+  g_signal_connect(sc, "value-changed", G_CALLBACK(pref_slider_lbl), lbl);
   g_signal_connect(sc, "value-changed", cb, app);
   adw_action_row_add_suffix(ADW_ACTION_ROW(row), sc);
+  adw_action_row_add_suffix(ADW_ACTION_ROW(row), lbl);
   return row;
 }
 
@@ -2767,10 +2786,10 @@ static AdwDialog *build_prefs(App *app) {
       app->tx_gate, G_CALLBACK(on_pref_tx_gate), app));
   adw_preferences_group_add(g, pref_slider("Gate threshold",
       "dBFS after Mic gain; open above, −20 dB below · live",
-      GATE_DB_MIN, GATE_DB_MAX, app->tx_gate_db, G_CALLBACK(on_pref_tx_gate_db), app));
+      GATE_DB_MIN, GATE_DB_MAX, app->tx_gate_db, "%.0f dB", G_CALLBACK(on_pref_tx_gate_db), app));
   adw_preferences_group_add(g, pref_slider("Monitor level",
       "dB into the RX audio output · live",
-      MON_DB_MIN, MON_DB_MAX, app->tx_mon_db, G_CALLBACK(on_pref_tx_mon_db), app));
+      MON_DB_MIN, MON_DB_MAX, app->tx_mon_db, "%.0f dB", G_CALLBACK(on_pref_tx_mon_db), app));
   adw_preferences_group_add(g, pref_spin("TX filter low",
       "Hz · voice audio low edge (default 150) · live",
       TXF_LO_MIN, TXF_LO_MAX, app->tx_flo, G_CALLBACK(on_pref_tx_flo), app));
@@ -2807,12 +2826,12 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, pref_spin("Keyer speed",
       "WPM · queued CW (dev trigger / TCI) · live",
       5, 60, app->cw_wpm, G_CALLBACK(on_pref_cw_wpm), app));
-  adw_preferences_group_add(g, pref_spin("Sidetone pitch",
-      "Hz · monitor tone (default 700) · live",
-      200, 1200, app->cw_pitch, G_CALLBACK(on_pref_cw_pitch), app));
+  adw_preferences_group_add(g, pref_slider("Sidetone pitch",
+      "monitor tone (default 700 Hz) · live",
+      200, 1200, app->cw_pitch, "%.0f Hz", G_CALLBACK(on_pref_cw_pitch), app));
   adw_preferences_group_add(g, pref_slider("Sidetone level",
       "dBFS before Monitor level · −20 ≈ piHPSDR default · live",
-      CW_ST_DB_MIN, CW_ST_DB_MAX, app->cw_st_db, G_CALLBACK(on_pref_cw_st_db), app));
+      CW_ST_DB_MIN, CW_ST_DB_MAX, app->cw_st_db, "%.0f dB", G_CALLBACK(on_pref_cw_st_db), app));
   adw_preferences_group_add(g, pref_spin("Break-in hang",
       "ms · T/R hold after the last element (piHPSDR default 500) · live",
       0, 1000, app->cw_hang, G_CALLBACK(on_pref_cw_hang), app));
@@ -2938,7 +2957,7 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, pref_switch("Filter on waterfall", "Extend passband + centre down",
       app->show_filter_wf, G_CALLBACK(on_pref_filter_wf), app));
   adw_preferences_group_add(g, pref_slider("Filter opacity", "Passband overlay transparency",
-      0, 100, app->filter_op, G_CALLBACK(on_pref_filter_op), app));
+      0, 100, app->filter_op, "%.0f %%", G_CALLBACK(on_pref_filter_op), app));
   adw_preferences_page_add(p, g);
 
   /* Band plan — region + national overlay drive the band-edge overlay. */
