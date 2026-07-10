@@ -104,6 +104,17 @@ static gint      cfg_atten;      /* ADC0 step attenuator dB (0-31), atomic; HP b
 static p2_tx_state cfg_tx;        /* live TX state (F5); applied only when cfg_tx_on */
 static int         cfg_tx_on;     /* 0 = RX-only (the default/off), 1 = apply cfg_tx */
 static GMutex      tx_state_lock; /* fences cfg_tx across the GUI/timer threads */
+/* PureSignal (PS-1): live PS state, fenced by tx_state_lock like cfg_tx. Off by
+ * default → every packet byte-identical to the PS-less build. `ps_txmode` tells
+ * the listener that DDC0's stream is the interleaved feedback pair, not RX IQ;
+ * it is flipped ONLY by the timer thread when it sends the matching RX-specific
+ * config (single writer). A few in-flight packets may hit the old decoder on
+ * the flip — harmless (piHPSDR has the same window; WDSP gates use by mox). */
+static p2_ps_state cfg_ps;
+static int         cfg_ps_on;
+static volatile gint ps_txmode;
+static p2_ps_iq_cb cfg_ps_cb;
+static void       *cfg_ps_cb_user;
 /* TX-state kick: p2_set_tx_state() signals this when the state CHANGES, and the
  * keepalive timer wakes early and applies it to the wire immediately (piHPSDR
  * parity: schedule_high_priority() sends synchronously on every MOX/drive/freq
@@ -156,8 +167,16 @@ int p2_build_general(unsigned char *buf, int pa_enabled) {
 }
 
 /* RX-specific packet — np.c:1609-1711, single-RX subset. n_adc=1; dither/random
- * off; enable one DDC; program its ADC(=0), sample-rate (kHz, BE) and 24 b/s. */
-int p2_build_receive_specific(unsigned char *buf, int device, int sample_rate) {
+ * off; enable one DDC; program its ADC(=0), sample-rate (kHz, BE) and 24 b/s.
+ *
+ * PureSignal (PS-1): with `ps->enabled && xmit`, the PS feedback pair replaces
+ * the normal RX DDC config (np.c:1649-1668) — on the G1 the PS pair *is* the
+ * RX DDC pair (Hermes-class layout), which is fine: non-duplex TX doesn't need
+ * the RX stream, and piHPSDR ignores duplex on this family during PS TX
+ * (action-table case 10110, np.c:441-445). ps==NULL / enabled=0 / !xmit →
+ * byte-identical to today's packet. */
+int p2_build_receive_specific(unsigned char *buf, int device, int sample_rate,
+                              const p2_ps_state *ps, int xmit) {
   int ddc = ddc_for_device(device);
   memset(buf, 0, RX_SPECIFIC_LEN);
   buf[0] = (rx_specific_sequence >> 24) & 0xFF;
@@ -172,6 +191,23 @@ int p2_build_receive_specific(unsigned char *buf, int device, int sample_rate) {
   buf[18 + ddc * 6] = ((sample_rate / 1000) >> 8) & 0xFF;  // rate kHz MSB
   buf[19 + ddc * 6] = ((sample_rate / 1000)     ) & 0xFF;  // rate kHz LSB
   buf[22 + ddc * 6] = 24;            // bits per sample
+
+  if (ps && ps->enabled && xmit) {
+    /* PS feedback pair (np.c:1649-1668): DDC0 ← ADC0 = analog (coupler) RX
+     * feedback; DDC1 ← "ADC number n_adc" = 1 on the G1 = the TX-DAC loopback
+     * pseudo-ADC. Both FIXED 192 kHz / 24-bit regardless of the RX rate.
+     * [1363] = 0x02 = "DDC1 synchronized into DDC0" → one interleaved stream
+     * on DDC0's port; enable bitmap is exactly DDC0 (piHPSDR sends 0x01 in
+     * non-duplex PS TX). Overwrites the generic single-DDC block above. */
+    buf[7]    = 0x01;                // enable DDC0 only (DDC1 rides the sync)
+    buf[17]   = 0;                   // DDC0 ← ADC0 (rx feedback)
+    buf[18]   = 0;  buf[19] = 192;   // DDC0 rate = 192 kHz, fixed
+    buf[22]   = 24;
+    buf[23]   = 1;                   // DDC1 ← pseudo-ADC n_adc = 1 (TX DAC)
+    buf[24]   = 0;  buf[25] = 192;   // DDC1 rate = 192 kHz, fixed
+    buf[26]   = 24;
+    buf[1363] = 0x02;                // sync bitmap: DDC1 → DDC0
+  }
   return RX_SPECIFIC_LEN;
 }
 
@@ -186,11 +222,12 @@ int p2_build_receive_specific(unsigned char *buf, int device, int sample_rate) {
  * 0). Only sdrfl-txprobe passes a non-NULL state, offline, to verify the layout.
  * When tx==NULL the DUC / TX-LPF frequency falls back to the RX frequency. */
 int p2_build_high_priority(unsigned char *buf, int device, long long rx_freq_hz,
-                           int run, const p2_tx_state *tx) {
+                           int run, const p2_tx_state *tx, const p2_ps_state *ps) {
   int ddc = ddc_for_device(device);
   long long rx_freq = rx_freq_hz;    // calibrated_frequency() with cal=0 is identity
 
   /* TX gating — all 0 when tx==NULL (the live path). */
+  int ps_on   = ps && ps->enabled;                 // PureSignal enabled (PS-1)
   int xmit    = tx && (tx->mox || tx->tune);       // keyed?
   int pa_on   = tx && tx->pa_enabled;              // PA enabled for the TX band?
   long long tx_freq = tx ? tx->tx_freq : rx_freq;  // DUC (TX) freq; RX freq if no split
@@ -228,6 +265,16 @@ int p2_build_high_priority(unsigned char *buf, int device, long long rx_freq_hz,
     buf[330] = (duc >> 16) & 0xFF;
     buf[331] = (duc >>  8) & 0xFF;
     buf[332] = (duc      ) & 0xFF;
+    /* PureSignal: both feedback DDCs (DDC0 bytes 9-12, DDC1 bytes 13-16) sit
+     * exactly on the DUC frequency while PS-transmitting (np.c:871-883) — the
+     * feedback then arrives baseband-aligned, no rotation anywhere. Overwrites
+     * the DDC0 RX phase written above. */
+    if (ps_on) {
+      buf[ 9] = buf[13] = (duc >> 24) & 0xFF;
+      buf[10] = buf[14] = (duc >> 16) & 0xFF;
+      buf[11] = buf[15] = (duc >>  8) & 0xFF;
+      buf[12] = buf[16] = (duc      ) & 0xFF;
+    }
   }
 
   /* Exciter drive — byte 345 (np.c:896-900). 0 unless keyed AND in-band (the
@@ -283,6 +330,16 @@ int p2_build_high_priority(unsigned char *buf, int device, long long rx_freq_hz,
       if (xmit) { alex0 |= 0x08000000u; }    // ALEX_TX_RELAY (alex0 only when keyed)
       alex1 |= 0x08000000u;                  // TX-case word carries it always
     }
+    if (ps_on) {                       /* PureSignal (np.c:1034-1038, alex.h:94) */
+      alex1 |= 0x00040000u;                  // ALEX_PS_BIT whenever PS is enabled
+      if (xmit) {
+        alex0 |= 0x00040000u;                // ...and in alex0 while PS-transmitting
+        /* Feedback source (np.c:1288-1354, G1 = Orion2/Saturn decode +100):
+         * internal coupler (0/100) needs NO routing bits; BYPASS (7/107) routes
+         * the RX path around the BPFs. EXT1 does not exist on the G1 family. */
+        if (ps->feedback_ant == 7) { alex0 |= 0x00000800u; }  // ALEX_RX_ANTENNA_BYPASS
+      }
+    }
   }
   buf[1428] = (alex1 >> 24) & 0xFF;
   buf[1429] = (alex1 >> 16) & 0xFF;
@@ -295,11 +352,25 @@ int p2_build_high_priority(unsigned char *buf, int device, long long rx_freq_hz,
 
   /* Step attenuators — ADC0 (byte 1443) = configured value; ADC1 (byte 1442) 0.
    * On TX with PA both forced to 31 dB to protect the RX ADC (np.c:1442-1445).
-   * Live: xmit && pa_on is false → the RX attenuation is preserved unchanged. */
+   * Live: xmit && pa_on is false → the RX attenuation is preserved unchanged.
+   *
+   * ⛔ PureSignal exception — the approved TX-safety delta #1 (PS-SCOPE §6,
+   * Richard 2026-07-10): during PS-TX the ADC0 (feedback) attenuator runs at
+   * the PS value so the coupler feedback hits the ADC in range; ADC1 stays 31.
+   * piHPSDR puts its HP-packet PS value into [1442] = the ADC1 slot
+   * (np.c:1447-1449), contradicting its authoritative TX-specific [59] = ADC0
+   * — a dead-code leftover for pre-2019 firmware. We mirror the TX-specific
+   * mapping into [1443] = ADC0 (divergence documented in PS-SCOPE §2). */
   {
     int atten0 = g_atomic_int_get(&cfg_atten);
     int atten1 = 0;
     if (xmit && pa_on) { atten0 = 31; atten1 = 31; }
+    if (xmit && ps_on) {
+      int a = ps->attenuation;
+      if (a < 0)  { a = 0; }
+      if (a > 31) { a = 31; }
+      atten0 = a;
+    }
     buf[1442] = (unsigned char)atten1;
     buf[1443] = (unsigned char)atten0;
   }
@@ -315,7 +386,8 @@ int p2_build_high_priority(unsigned char *buf, int device, long long rx_freq_hz,
  * (send_transmit_specific) always passes NULL. Only sdrfl-txprobe passes a
  * non-NULL config, offline, to verify the byte layout — never wire a non-NULL
  * config into a live send before F6 (docs/TX-DESIGN.md, docs/TX-SAFETY.md). */
-int p2_build_transmit_specific(unsigned char *buf, const p2_tx_cw *cw) {
+int p2_build_transmit_specific(unsigned char *buf, const p2_tx_cw *cw,
+                               const p2_ps_state *ps) {
   memset(buf, 0, TX_SPECIFIC_LEN);
   buf[0] = (tx_specific_sequence >> 24) & 0xFF;
   buf[1] = (tx_specific_sequence >> 16) & 0xFF;
@@ -355,8 +427,17 @@ int p2_build_transmit_specific(unsigned char *buf, const p2_tx_cw *cw) {
   buf[51] = (unsigned char)((int)((cw->linein_gain_db + 34.0) * 0.6739 + 0.5) & 0xFF);
 
   /* Step attenuators during TX — 31 dB both when the PA is enabled (np.c:1579),
-   * protecting the RX ADC (duplicated from the HP packet for old firmware). */
+   * protecting the RX ADC (duplicated from the HP packet for old firmware).
+   * ⛔ PureSignal exception (approved delta #1, PS-SCOPE §6): byte [59] = ADC0
+   * = the feedback attenuator runs at the PS value (np.c:1584-1586, the
+   * authoritative site per the protocol comment there); [58] = ADC1 stays 31. */
   if (cw->pa_enabled) { buf[58] = 31; buf[59] = 31; }
+  if (ps && ps->enabled) {
+    int a = ps->attenuation;
+    if (a < 0)  { a = 0; }
+    if (a > 31) { a = 31; }
+    buf[59] = (unsigned char)a;
+  }
   return TX_SPECIFIC_LEN;
 }
 
@@ -439,7 +520,17 @@ static void send_general(void) {
 
 static void send_receive_specific(void) {
   unsigned char buf[RX_SPECIFIC_LEN];
-  int len = p2_build_receive_specific(buf, cfg_device, cfg_sample_rate);
+  g_mutex_lock(&tx_state_lock);
+  p2_ps_state ps = cfg_ps;
+  int ps_on = cfg_ps_on;
+  int xmit  = cfg_tx_on;             /* a TX state applied == keyed through tx_gate */
+  g_mutex_unlock(&tx_state_lock);
+  int ps_tx = ps_on && xmit;
+  int len = p2_build_receive_specific(buf, cfg_device, cfg_sample_rate,
+                                      ps_on ? &ps : NULL, xmit);
+  /* Flip the listener's DDC0 interpretation together with the config that
+   * causes it (timer thread = the single writer of both). */
+  g_atomic_int_set(&ps_txmode, ps_tx);
   send_packet(buf, len, &receiver_addr, receiver_len, "rx-specific");
   rx_specific_sequence++;
 }
@@ -449,6 +540,10 @@ static void send_transmit_specific(void) {
   g_mutex_lock(&tx_state_lock);
   int on = cfg_tx_on;
   int pa = cfg_tx.pa_enabled;
+  g_mutex_unlock(&tx_state_lock);
+  g_mutex_lock(&tx_state_lock);
+  p2_ps_state ps = cfg_ps;
+  int ps_on = cfg_ps_on;
   g_mutex_unlock(&tx_state_lock);
   int len;
   if (on) {
@@ -464,9 +559,9 @@ static void send_transmit_specific(void) {
     cw.pa_enabled       = pa;
     cw.mic_ptt_disabled = !g_atomic_int_get(&cfg_ptt_enable);
     cw.mic_ptt_tip      =  g_atomic_int_get(&cfg_ptt_tip);
-    len = p2_build_transmit_specific(buf, &cw);
+    len = p2_build_transmit_specific(buf, &cw, ps_on ? &ps : NULL);
   } else {
-    len = p2_build_transmit_specific(buf, NULL);  /* all-zero (RX, no keyer) */
+    len = p2_build_transmit_specific(buf, NULL, NULL);  /* all-zero (RX, no keyer) */
   }
   send_packet(buf, len, &transmitter_addr, transmitter_len, "tx-specific");
   tx_specific_sequence++;
@@ -480,9 +575,12 @@ static void send_high_priority(int run) {
   g_mutex_lock(&tx_state_lock);
   int on = cfg_tx_on;
   p2_tx_state tx = cfg_tx;
+  p2_ps_state ps = cfg_ps;
+  int ps_on = cfg_ps_on;
   g_mutex_unlock(&tx_state_lock);
   if (on && tx.tx_freq == 0) { tx.tx_freq = freq; }  /* default TX freq = RX freq (no split) */
-  int len = p2_build_high_priority(buf, cfg_device, freq, run, on ? &tx : NULL);
+  int len = p2_build_high_priority(buf, cfg_device, freq, run, on ? &tx : NULL,
+                                   ps_on ? &ps : NULL);
   send_packet(buf, len, &high_priority_addr, high_priority_len, "high-priority");
   high_priority_sequence++;
 }
@@ -531,6 +629,32 @@ void p2_set_tx_state(const p2_tx_state *tx) {
     g_cond_signal(&kick_cond);
     g_mutex_unlock(&kick_lock);
   }
+}
+
+void p2_set_ps(const p2_ps_state *ps) {
+  int changed;
+  g_mutex_lock(&tx_state_lock);
+  if (ps) {
+    changed = !cfg_ps_on || memcmp(&cfg_ps, ps, sizeof(cfg_ps)) != 0;
+    cfg_ps = *ps;
+    cfg_ps_on = 1;
+  } else {
+    changed = cfg_ps_on != 0;
+    memset(&cfg_ps, 0, sizeof(cfg_ps));
+    cfg_ps_on = 0;
+  }
+  g_mutex_unlock(&tx_state_lock);
+  if (changed) {                     /* PS on/off/att edge → wire it now */
+    g_mutex_lock(&kick_lock);
+    kick_pending = 1;
+    g_cond_signal(&kick_cond);
+    g_mutex_unlock(&kick_lock);
+  }
+}
+
+void p2_set_ps_iq_cb(p2_ps_iq_cb cb, void *user) {
+  cfg_ps_cb_user = user;
+  cfg_ps_cb = cb;                    /* set user first; cb is the enable flag */
 }
 
 void p2_get_telemetry(p2_telemetry *out) {
@@ -595,6 +719,44 @@ static void decode_iq(const unsigned char *buffer) {
     iq[2 * i + 1] = (double)rightsample * 1.1920928955078125E-7;  // Q
   }
   if (cfg_cb) { cfg_cb(iq, samplesperframe, cfg_user); }
+}
+
+/* De-interleave one PS-synced DDC0 packet (np.c process_ps_iq_data:2525-2589).
+ * [14..15] counts TOTAL samples across both DDCs; the pairs come in DDC-number
+ * order: first = DDC0 = analog RX feedback, second = DDC1 = TX-DAC loopback.
+ * Same 24-bit-BE decode + 1/2^23 scale as decode_iq. Pure → offline-testable. */
+int p2_ps_decode(const unsigned char *pkt, int len,
+                 double *txfb, double *rxfb, int max_pairs) {
+  if (len < 16) { return 0; }
+  int total = ((pkt[14] & 0xFF) << 8) + (pkt[15] & 0xFF);
+  int pairs = total / 2;
+  if (total < 0 || 16 + 6 * total > len) { return 0; }
+  if (pairs > max_pairs) { pairs = max_pairs; }
+  int b = 16;
+  for (int i = 0; i < pairs; i++) {
+    double s[4];                       /* I0 Q0 (DDC0=rxfb)  I1 Q1 (DDC1=txfb) */
+    for (int k = 0; k < 4; k++) {
+      int v;
+      v  = (int)((signed char) pkt[b++]) << 16;
+      v |= (int)((((unsigned char)pkt[b++]) << 8) & 0xFF00);
+      v |= (int)((unsigned char)pkt[b++] & 0xFF);
+      s[k] = (double)v * 1.1920928955078125E-7;   /* 1/2^23 */
+    }
+    rxfb[2 * i] = s[0];  rxfb[2 * i + 1] = s[1];
+    txfb[2 * i] = s[2];  txfb[2 * i + 1] = s[3];
+  }
+  return pairs;
+}
+
+/* Listener-side PS hand-off: split the interleaved stream and deliver both
+ * feedback buffers (pscc argument order: tx first) to the registered consumer. */
+static void decode_ps_iq(const unsigned char *buffer, int len) {
+  /* 119 pairs per full 1444-byte packet (238 samples × 6 B + 16 B header) */
+  double txfb[2 * (NET_BUFFER_SIZE / 12 + 1)];
+  double rxfb[2 * (NET_BUFFER_SIZE / 12 + 1)];
+  int pairs = p2_ps_decode(buffer, len, txfb, rxfb, NET_BUFFER_SIZE / 12 + 1);
+  p2_ps_iq_cb cb = cfg_ps_cb;
+  if (pairs > 0 && cb) { cb(txfb, rxfb, pairs, cfg_ps_cb_user); }
 }
 
 /* Decode the radio's High-Priority *status* packet (port 1025) — the RX-useful
@@ -697,7 +859,13 @@ static gpointer listener_thread(gpointer data) {
                 ddc, ddc_sequence[ddc], seq);
       }
       ddc_sequence[ddc] = seq + 1;
-      decode_iq(buffer);
+      /* PS-TX window: DDC0 carries the interleaved feedback pair, not RX IQ
+       * (flag flipped by the timer thread with the matching RX-specific). */
+      if (ddc == 0 && g_atomic_int_get(&ps_txmode)) {
+        decode_ps_iq(buffer, bytesread);
+      } else {
+        decode_iq(buffer);
+      }
     } else if (sourceport == HIGH_PRIORITY_TO_HOST_PORT) {
       parse_high_priority_status(buffer, bytesread);
     }
@@ -837,6 +1005,9 @@ int p2_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
   g_mutex_lock(&tx_state_lock);          /* start RX-only: no latched TX state */
   memset(&cfg_tx, 0, sizeof(cfg_tx));
   cfg_tx_on = 0;
+  memset(&cfg_ps, 0, sizeof(cfg_ps));    /* PS off until the GUI re-applies it */
+  cfg_ps_on = 0;
+  g_atomic_int_set(&ps_txmode, 0);
   g_mutex_unlock(&tx_state_lock);
   g_mutex_lock(&kick_lock);              /* drop a stale kick from a prior session */
   kick_pending = 0;

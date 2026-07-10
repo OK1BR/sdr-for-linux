@@ -131,6 +131,61 @@ typedef struct {
   int       antenna;     /* 0/1/2 → ALEX_TX_ANTENNA_1/2/3 (clamped to ANT1 if bad) */
 } p2_tx_state;
 
+/*
+ * ---- PureSignal (F7 / PS-1, docs/PS-SCOPE.md) ------------------------------
+ *
+ * PS state for the packet builders. NULL (or enabled=0) → every packet is
+ * byte-identical to today's build — that is the PS-off regression guarantee,
+ * enforced by sdrfl-txprobe. With enabled=1:
+ *  - RX-specific (only while a TX state is applied): DDC0 ← ADC0 = RX feedback,
+ *    DDC1 ← pseudo-ADC 1 (TX-DAC loopback), both fixed 192 kHz/24-bit, byte
+ *    [1363]=0x02 syncs DDC1 into DDC0's stream (np.c:1649-1668) — one
+ *    interleaved stream replaces the normal RX DDC while keyed.
+ *  - High-priority: DDC0+DDC1 NCOs forced to the DUC (TX) frequency while
+ *    keyed (np.c:871-883; feedback arrives baseband-aligned), ALEX_PS_BIT in
+ *    alex1 always / alex0 while keyed (np.c:1034-1038), and — ⛔ the approved
+ *    TX-safety delta #1 (PS-SCOPE §6, Richard 2026-07-10) — the ADC0 step
+ *    attenuator runs at `attenuation` during PS-TX instead of the forced 31;
+ *    ADC1 stays 31. NOTE: piHPSDR writes its HP-packet PS value into [1442]
+ *    (the ADC1 slot, np.c:1447-1449), contradicting its authoritative
+ *    TX-specific [59]=ADC0 — a dead-code leftover for old firmware. We mirror
+ *    the TX-specific mapping into [1443]=ADC0 (documented divergence).
+ *  - TX-specific: byte [59] (ADC0) = `attenuation` (np.c:1584-1586).
+ */
+typedef struct {
+  int enabled;      /* PS on (operator setting; also affects RX-time alex1)     */
+  int attenuation;  /* ADC0 step attenuator during PS-TX, 0-31 dB               */
+  int feedback_ant; /* 0 = internal coupler (no Alex routing bits on the G1
+                       family, np.c:1333-1336); 7 = BYPASS (ALEX_RX_ANTENNA_
+                       BYPASS). EXT1 does not exist on the G1.                  */
+} p2_ps_state;
+
+/*
+ * Live PS state (like p2_set_tx_state; NULL = off). Thread-safe; the keepalive
+ * timer applies it — RX-specific/HP/TX-specific all pick it up on the next
+ * send (kicked immediately on change). ⛔ The attenuation exception only ever
+ * reaches the wire while a TX state is also applied, i.e. keyed through
+ * tx_gate; with PS off (the default) nothing changes, bit-for-bit.
+ */
+void p2_set_ps(const p2_ps_state *ps);
+
+/*
+ * PS feedback delivery. While the PS-TX DDC config is on the wire, DDC0's
+ * port carries interleaved sample pairs: first = DDC0 = RX feedback (coupler),
+ * second = DDC1 = TX-DAC loopback (np.c:2554-2571). The listener splits them
+ * and calls `cb` from the listener thread with `n_pairs` samples per stream
+ * (interleaved complex doubles, 1/2^23 scaled — WDSP pscc's expected form;
+ * txfb/rxfb in pscc argument order). Keep the callback fast (accumulate only).
+ */
+typedef void (*p2_ps_iq_cb)(const double *txfb, const double *rxfb,
+                            int n_pairs, void *user);
+void p2_set_ps_iq_cb(p2_ps_iq_cb cb, void *user);
+
+/* Pure decoder for one PS-synced DDC packet (offline-testable): de-interleave
+ * into txfb/rxfb (each 2*max_pairs doubles), return pair count (≤ max_pairs). */
+int p2_ps_decode(const unsigned char *pkt, int len,
+                 double *txfb, double *rxfb, int max_pairs);
+
 /* Transmit-specific config (CW keyer + mic/line). NULL → the all-zero TX-off
  * packet the live path sends today (no internal keyer → the FPGA cannot key CW). */
 typedef struct {
@@ -166,10 +221,12 @@ typedef struct {
  * by sdrfl-txprobe.
  */
 int p2_build_general(unsigned char *buf, int pa_enabled);
-int p2_build_receive_specific(unsigned char *buf, int device, int sample_rate);
+int p2_build_receive_specific(unsigned char *buf, int device, int sample_rate,
+                              const p2_ps_state *ps, int xmit);
 int p2_build_high_priority(unsigned char *buf, int device, long long rx_freq_hz,
-                           int run, const p2_tx_state *tx);
-int p2_build_transmit_specific(unsigned char *buf, const p2_tx_cw *cw);
+                           int run, const p2_tx_state *tx, const p2_ps_state *ps);
+int p2_build_transmit_specific(unsigned char *buf, const p2_tx_cw *cw,
+                               const p2_ps_state *ps);
 
 /*
  * Live TX state for the running link (F5, docs/TX-DESIGN.md). Pass a non-NULL
