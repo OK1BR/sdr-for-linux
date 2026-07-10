@@ -129,30 +129,55 @@ platform-library category — do not vendor).
   and the mic stays closed (mode_is_voice). Gate: 23 checks incl. the full
   key→chrono→audio→unkey round-trip. TODO: drive_digi_max-style power cap
   for 100 % duty modes (piHPSDR has one, default uncapped).
-- **F6d-2d — IQ stream (skimmer). IMPLEMENTED (offline-verified 2026-07-10;
-  SDC/CW Skimmer live test pending).** Note: piHPSDR's tci.c has iq_start/
-  iq_stop as EMPTY STUBS — the working reference here is **deskHPSDR**
+- **F6d-2d — IQ stream (skimmer). LIVE-VERIFIED with SDC + CW Skimmer
+  2026-07-10** (skimmer decodes, spectrum centre matches ours exactly,
+  spot-click tunes correctly). Note: piHPSDR's tci.c has iq_start/iq_stop as
+  EMPTY STUBS — the working reference here is **deskHPSDR**
   (github.com/dl1bz/deskhpsdr, tci.c), which however streams at the
   receiver's native rate and *retunes the whole radio* to the client's rate.
   We keep the DDC at the operator's rate (1536k panadapter untouched) and
   **decimate per client with the WDSP resampler** (vendored; create_resample
   fc/ncoef auto → anti-alias FIR at 0.45×min-rate, same call piHPSDR's soapy
-  path uses). Flow: gui.c feed_cb (raw P2 IQ, real signal even in the post-TX
-  silence window) → tci_server_iq_push (SPSC ring, 2^17 pairs = 85 ms @
-  1536k, no-op while nobody subscribed) → LWS-thread pump drains 1024-pair
-  chunks → per-client xresample (bypass when rates match, re-planned on any
-  rate change) → float32 blocks of 2048 frames, Stream header type=0, 2 ch,
-  length = frames×2 (the convention Decodium already accepted for audio).
-  Commands: iq_samplerate {48,96,192,384}k validated + echoed, iq_start:0 /
-  iq_stop:0 echoed (deskHPSDR semantics; non-zero receiver ids ignored).
-  No CW ±sidetone phase rotation (deskHPSDR needs it for piHPSDR's CW-BFO
-  convention; our DDC centre == reported dds in every mode — revisit if the
-  deferred CW BFO offset lands). Debug knobs for a client expecting the
-  mirrored spectrum: SDRFL_TCI_IQ_SWAP / SDRFL_TCI_IQ_CONJ (deskHPSDR has the
-  same as options). Gate extended to 33 checks: echo round-trips, header
-  fields, and a +12 kHz complex tone through the 192k→48k decimation —
-  correct frequency, amplitude ~0.5, −12 kHz image < −40 dB (catches a
-  swapped/conjugated stream). Prefs TCI page tags streaming clients "· iq".
+  path uses; measured live ~12 % of one core for 1536k→48k or →384k). Flow:
+  gui.c feed_cb (raw P2 IQ, real signal even in the post-TX silence window)
+  → tci_server_iq_push (SPSC ring, 2^17 pairs = 85 ms @ 1536k, no-op while
+  nobody subscribed) → LWS-thread pump drains 1024-pair chunks → per-client
+  xresample (bypass when rates match, re-planned on any rate change) →
+  float32 blocks of 2048 frames, Stream header type=0, 2 ch, length =
+  frames×2 (the convention Decodium already accepted for audio). Commands:
+  iq_samplerate {48,96,192,384}k validated + echoed, iq_start:0 / iq_stop:0
+  echoed (deskHPSDR semantics; non-zero receiver ids ignored).
+  **Three findings the live SDC test forced, all missed by the first gate:**
+  1. **lws_service wakeup**: the service loop BLOCKS on socket events —
+     tci_server_iq_push must lws_cancel_service like the audio path, else IQ
+     only flushes when unrelated traffic (a dds broadcast on retune) wakes
+     the loop ("spectrum jumps only when I retune"). The gate had masked it
+     via the sensors test's 100 ms notifications — sensors now switch off
+     before the IQ checks.
+  2. **iq_samplerate is RADIO state, not connection state**: SDC sends it
+     only at its own startup; after an app restart it reconnects with just
+     iq_start and would get the 48k default while its skimmer expects 384k
+     (stream 8× slow + spectrally wrong = "empty"). Accepted rates now stick
+     as the device-global default, the init block announces the current rate
+     (SDC sees a mismatch and re-sends its rate — verified live), and it
+     persists in config.ini ([tx] tci_iq_rate).
+  3. **ExpertSDR IQ orientation = complex CONJUGATE of the HPSDR DDC feed**
+     (mirrored skimmer spectrum until fixed; deskHPSDR ships the same as an
+     option). Conjugation is the default now; SDRFL_TCI_IQ_RAW=1 exports the
+     raw DDC orientation. The gate codifies the wire convention: +12 kHz DDC
+     tone must appear at −12 kHz in the stream (amp ~0.5, image < −40 dB).
+  No CW ±sidetone IQ phase rotation needed even with the CW BFO offset in
+  place: the BFO lives in the WDSP RXA shifter (demod), not in the DDC —
+  our DDC centre == reported dds in every mode (deskHPSDR must rotate
+  because piHPSDR shifts the DDC itself). Gate: 35 checks. Prefs TCI page
+  tags streaming clients "· iq".
+  **Spin-off — CW BFO offset (was deferred "after TCI"):** the skimmer flow
+  made it acute — spots are carrier frequencies, and clicking one tuned into
+  zero-beat silence. Done piHPSDR-style (rx_set_offset + receiver.c:1481) but
+  in the RXA shifter: in CWU/CWL the dial reads the carrier, the demod
+  shifts spectrum + passband by the sidetone pitch (Prefs → CW, live), GUI
+  passbands stay symmetric around the dial. Zero-beat TX now lands on the
+  station's frequency.
 - **F6d-2e — spots.** SPOT/SPOT_DELETE/SPOT_CLEAR drawn on the panadapter
   (bandplan-overlay infra reused; callsign labels), RX_CLICKED_ON_SPOT back
   to clients on click. SDC/cluster integration.

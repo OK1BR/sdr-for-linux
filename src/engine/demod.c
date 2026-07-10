@@ -49,6 +49,29 @@ static double   d_mute_gain = 1.0; /* applied output gain, ramped → target (fe
 #define D_FADE_STEP (1.0 / 960.0)  /* ~20 ms mute/unmute fade at 48 kHz (no click) */
 static int      d_dbg_blocks;      /* fexchange0 calls since last dump       */
 static double   d_dbg_pk;          /* raw WDSP-out peak since last dump      */
+static int      d_mode = DEMOD_USB;   /* current WDSP RXA mode                */
+static double   d_flo, d_fhi;         /* GUI-space passband (around the dial) */
+static int      d_cw_pitch = 600;     /* CW sidetone pitch (BFO offset), Hz   */
+
+/* CW BFO offset (piHPSDR rx_set_offset @2312 + receiver.c:1481-1488): in CW
+ * the dial reads the CARRIER — shift the spectrum by the sidetone pitch and
+ * move the passband along, so a station exactly on the dial is heard AT the
+ * pitch. (Before this, dial-on-signal = zero beat = silence, and clicking a
+ * skimmer spot — spots are carrier frequencies — tuned into silence.) The
+ * GUI keeps its passbands symmetric around the dial; the translation lives
+ * here only. Caller holds d_lock with d_ready. */
+static void apply_passband(void) {
+  double off = 0.0, lo = d_flo, hi = d_fhi;
+  if (d_mode == DEMOD_CWU) {
+    off = -(double)d_cw_pitch; lo += d_cw_pitch; hi += d_cw_pitch;
+  } else if (d_mode == DEMOD_CWL) {
+    off =  (double)d_cw_pitch; lo -= d_cw_pitch; hi -= d_cw_pitch;
+  }
+  SetRXAShiftFreq(d_id, off);
+  RXANBPSetShiftFrequency(d_id, off);
+  SetRXAShiftRun(d_id, off != 0.0);
+  RXASetPassband(d_id, lo, hi);
+}
 
 /* TX monitor (hear your own transmission): mono ring at the sink rate, SPSC —
  * producer = the TX feed thread (demod_monitor_push: mic while voice-keyed /
@@ -169,7 +192,8 @@ int demod_create(int id, int in_rate, int mode, double flo, double fhi, double v
   SetRXAPanelSelect(id, 3);              /* use both I and Q */
   SetRXAPanelBinaural(id, d_binaural);   /* copy=1 (L=R, mono) off / copy=0 (L=I,R=Q) on */
   SetRXAMode(id, mode);
-  RXASetPassband(id, flo, fhi);
+  d_mode = mode; d_flo = flo; d_fhi = fhi;
+  apply_passband();                     /* passband + CW BFO offset            */
   apply_agc();                          /* AGC character + threshold (d_agc_mode/d_agc_top) */
   setup_noise();                        /* NR/NB/ANF params + on-off flags */
   SetRXAPanelGain1(id, pow(10.0, 0.05 * volume));  /* AF gain dB → linear */
@@ -285,10 +309,19 @@ double demod_s_meter(void) {
 
 void demod_set_mode(int mode, double flo, double fhi) {
   g_mutex_lock(&d_lock);
+  d_mode = mode; d_flo = flo; d_fhi = fhi;
   if (d_ready) {
     SetRXAMode(d_id, mode);
-    RXASetPassband(d_id, flo, fhi);
+    apply_passband();
   }
+  g_mutex_unlock(&d_lock);
+}
+
+/* CW sidetone pitch = the CW BFO offset (live; re-shifts a running CW RX). */
+void demod_set_cw_pitch(int hz) {
+  g_mutex_lock(&d_lock);
+  d_cw_pitch = hz < 200 ? 200 : (hz > 1200 ? 1200 : hz);
+  if (d_ready) { apply_passband(); }
   g_mutex_unlock(&d_lock);
 }
 
@@ -358,7 +391,8 @@ void demod_set_binaural(int on) {
 
 void demod_set_passband(double flo, double fhi) {
   g_mutex_lock(&d_lock);
-  if (d_ready) { RXASetPassband(d_id, flo, fhi); }
+  d_flo = flo; d_fhi = fhi;
+  if (d_ready) { apply_passband(); }
   g_mutex_unlock(&d_lock);
 }
 

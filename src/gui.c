@@ -2643,6 +2643,7 @@ static void on_pref_tx_mon_db(GtkRange *r, gpointer data) {
 static void cw_push(App *app) {
   tx_run_set_cw(app->cw_wpm, 50.0, 9.0, app->cw_hang);
   tx_run_set_sidetone(app->cw_pitch, app->cw_st_db);
+  demod_set_cw_pitch(app->cw_pitch);   /* RX CW BFO offset = the same pitch */
 }
 static void on_pref_cw_wpm(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   (void)ps; App *app = (App *)data;

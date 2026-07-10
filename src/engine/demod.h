@@ -88,8 +88,14 @@ void demod_set_monitor_gain(double db);
  */
 void demod_set_audio_tap(void (*cb)(const float *mono48k, int n));
 
-/* Set the filter passband [flo,fhi] Hz live (same mode); thread-safe. */
+/* Set the filter passband [flo,fhi] Hz live (same mode); thread-safe.
+ * Passbands are GUI-space (symmetric around the dial); in CW modes the demod
+ * shifts them (and the spectrum) by the sidetone pitch internally — the dial
+ * reads the carrier and a spot-on station is heard at the pitch. */
 void demod_set_passband(double flo, double fhi);
+
+/* CW sidetone pitch = the CW BFO offset, Hz (live; thread-safe). */
+void demod_set_cw_pitch(int hz);
 
 void demod_destroy(void);
 
