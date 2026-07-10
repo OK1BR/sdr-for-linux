@@ -322,10 +322,11 @@ int main(void) {
   while (g_main_context_iteration(NULL, FALSE)) {}
 
   /* ---- IQ stream (F6d-2d): subscribe at 48 k (stub engine rate 192 k → ÷4
-   * WDSP decimation), feed a +12 kHz complex tone, expect type-0 Stream
-   * blocks whose spectrum has the tone at +12 kHz and nothing at −12 kHz
-   * (orientation check — catches a swapped/conjugated stream). 12 kHz sits
-   * on an exact DFT bin of the 2048-frame block (512 cycles). */
+   * WDSP decimation), feed a +12 kHz complex tone. ExpertSDR's IQ
+   * orientation is the CONJUGATE of the DDC feed (live-verified with
+   * SDC/CW Skimmer), so the tone must appear at −12 kHz on the wire and
+   * nothing at +12 kHz. 12 kHz sits on an exact DFT bin of the 2048-frame
+   * block (512 cycles). */
   g_mutex_lock(&c_lock);
   g_byte_array_set_size(c_bin, 0);
   g_mutex_unlock(&c_lock);
@@ -368,8 +369,9 @@ int main(void) {
       check("IQ header: length 4096",      h[5] == 4096);
       check("IQ header: type IQ(0)",       h[6] == 0);
       check("IQ header: 2 channels",       h[7] == 2);
-      /* Correlate the payload against e^{∓j2π·12k·t}: the +12 kHz bin must
-       * carry ~the full 0.5 amplitude, the −12 kHz image ~nothing. */
+      /* Correlate the payload against e^{∓j2π·12k·t}: the −12 kHz bin must
+       * carry ~the full 0.5 amplitude (conjugated wire orientation), the
+       * +12 kHz image ~nothing. */
       const float *p = (const float *)(copy + 64);
       double pr = 0, pi = 0, nr = 0, ni = 0;
       for (int i = 0; i < 2048; i++) {
@@ -382,8 +384,9 @@ int main(void) {
       }
       double pos = sqrt(pr * pr + pi * pi) / 2048.0;
       double neg = sqrt(nr * nr + ni * ni) / 2048.0;
-      check("tone lands at +12 kHz with amplitude ~0.5", pos > 0.4 && pos < 0.6);
-      check("−12 kHz image suppressed > 40 dB", neg < pos * 0.01);
+      check("tone lands at −12 kHz, amp ~0.5 (ExpertSDR = conjugated DDC)",
+            neg > 0.4 && neg < 0.6);
+      check("+12 kHz image suppressed > 40 dB", pos < neg * 0.01);
       g_free(copy);
     } else {
       checks += 7; fails += 7;

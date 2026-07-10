@@ -106,9 +106,11 @@ static _Atomic unsigned iq_head, iq_tail;
 static _Atomic int      s_iq_active;      /* # of iq_start'ed clients         */
 static _Atomic int      s_iq_in_rate;     /* engine rate seen by the pusher   */
 static double           s_iq_chunk[2 * IQ_CHUNK]; /* shared resampler input   */
-/* Live-debug knobs (deskHPSDR precedent: some TCI clients expect the
- * opposite complex spectral orientation): swap I/Q, negate Q. */
-static int              s_iq_swap, s_iq_conj;
+/* ExpertSDR's IQ orientation is the complex CONJUGATE of the HPSDR DDC
+ * feed — live-verified 2026-07-10: SDC/CW Skimmer showed a mirrored
+ * spectrum until we conjugated (deskHPSDR ships the same as an option).
+ * Conjugate by default; SDRFL_TCI_IQ_RAW=1 exports the raw DDC orientation. */
+static int              s_iq_conj;
 /* Device-global IQ rate (see tci_server.h): new clients inherit it. Written
  * on the main thread, read by the LWS thread at ESTABLISHED → atomic. */
 static _Atomic int      s_iq_rate_dflt = 48000;
@@ -984,7 +986,6 @@ static void iq_pump(void) {
       }
       for (int i = 0; i < n_out; i++) {
         float fi = (float)src[2 * i], fq = (float)src[2 * i + 1];
-        if (s_iq_swap) { float t2 = fi; fi = fq; fq = t2; }
         if (s_iq_conj) { fq = -fq; }
         c->iq_blk[2 * c->iq_fill]     = fi;
         c->iq_blk[2 * c->iq_fill + 1] = fq;
@@ -1091,8 +1092,7 @@ int tci_server_start(int port, const TciOps *ops) {
   atomic_store(&iq_head, 0u);
   atomic_store(&iq_tail, 0u);
   atomic_store(&s_iq_in_rate, 0);
-  s_iq_swap = g_getenv("SDRFL_TCI_IQ_SWAP") != NULL;
-  s_iq_conj = g_getenv("SDRFL_TCI_IQ_CONJ") != NULL;
+  s_iq_conj = g_getenv("SDRFL_TCI_IQ_RAW") == NULL;
 
   struct lws_context_creation_info info;
   memset(&info, 0, sizeof(info));
