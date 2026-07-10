@@ -1019,9 +1019,12 @@ int p2_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
   g_mutex_lock(&tx_state_lock);          /* start RX-only: no latched TX state */
   memset(&cfg_tx, 0, sizeof(cfg_tx));
   cfg_tx_on = 0;
-  memset(&cfg_ps, 0, sizeof(cfg_ps));    /* PS off until the GUI re-applies it */
-  cfg_ps_on = 0;
-  g_atomic_int_set(&ps_txmode, 0);
+  /* cfg_ps deliberately SURVIVES the (re)start — it is operator config like
+   * cfg_atten, not keyed state. Clearing it here silently disarmed PS whenever
+   * the GUI applied settings before p2_rx_start (the "PS dead unless you
+   * re-toggle something" bug, 2026-07-11). The attenuator exception only
+   * reaches the wire inside a keyed TX state anyway. */
+  g_atomic_int_set(&ps_txmode, 0);       /* listener routing state — reset     */
   g_mutex_unlock(&tx_state_lock);
   g_mutex_lock(&kick_lock);              /* drop a stale kick from a prior session */
   kick_pending = 0;
