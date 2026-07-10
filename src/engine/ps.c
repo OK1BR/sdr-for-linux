@@ -58,7 +58,14 @@ static void apply_params(void) {
   SetPSHWPeak(s_ch, s_setpk);
   SetPSMapMode(s_ch, 1);
   SetPSPtol(s_ch, 0.8);
-  SetPSStabilize(s_ch, 0);
+  /* STBL on — the Thetis-recommended setup (PIN+STBL; HL2 PS thread). Voice
+   * envelopes make noisy fits: without stabilization successive calibrations
+   * disagree, trip the jump/gain sanity checks (sln 0x40/0x4) and the
+   * correction flaps on/off (live-observed on the G1, log 2026-07-11).
+   * Stabilize blends each new calibration into an exponential average
+   * (calcc.c:354-357, alpha 0.9) instead of replacing the last one.
+   * (piHPSDR runs stbl=0 — the one place we follow Thetis instead.) */
+  SetPSStabilize(s_ch, 1);
   SetPSPinMode(s_ch, 1);
   SetPSMoxDelay(s_ch, 0.2);
   SetPSTXDelay(s_ch, 150e-9);      /* amp delay 150 ns */
