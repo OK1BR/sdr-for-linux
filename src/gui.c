@@ -586,9 +586,9 @@ static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
   double left_hz   = (double)app->freq + pan_off - span / 2.0;
   double right_hz  = left_hz + span;
   double rowend[3] = { -1e9, -1e9, -1e9 };
-  const double y0 = 30.0, rh = 14.0;           /* label rows under the ruler */
+  const double y0 = 32.0, rh = 17.0;           /* label rows under the ruler */
   cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-  cairo_set_font_size(cr, 11.0);
+  cairo_set_font_size(cr, 13.0);
   cairo_set_line_width(cr, 1.0);
   for (int i = 0; i < n; i++) {
     struct spot *s = &app->spots[i];
@@ -612,7 +612,7 @@ static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
       cairo_move_to(cr, x + 3.0, ly);
       cairo_show_text(cr, s->call);
       s->hx0 = x - 3.0; s->hx1 = x + te.width + 6.0;
-      s->hy0 = ly - 11.0; s->hy1 = ly + 3.0;
+      s->hy0 = ly - 13.0; s->hy1 = ly + 4.0;
     }
     cairo_set_source_rgba(cr, r, g, b, 0.5);   /* tick even when the label didn't fit */
     cairo_move_to(cr, x, row >= 0 ? ly + 3.0 : y0);
