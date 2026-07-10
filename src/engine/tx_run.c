@@ -265,6 +265,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
    * bypassed in CW → feedback is meaningless, piHPSDR transmitter.c:2114-2120).
    * Every slot — ps_key edge-detects internally; SetPSMox is lock-free. */
   ps_key(keyed && !cw_key);
+  ps_auto_tick(tt_applied);    /* auto-attenuate runs only during the two-tone */
 
   tx_run_status st;
   memset(&st, 0, sizeof st);
@@ -286,6 +287,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   st.ps_correcting = pss.correcting;
   st.ps_state      = pss.state;
   st.ps_fdbk       = pss.fdbk;
+  st.ps_att        = pss.att;
   g_strlcpy(st.reason, r.reason ? r.reason : "", sizeof st.reason);
   publish(&st);
 

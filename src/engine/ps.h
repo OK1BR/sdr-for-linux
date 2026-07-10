@@ -65,7 +65,14 @@ typedef struct {
                   /*   0x8 endpoint, 0x10/20 neg gain, 0x40 jump)         */
   double getpk;   /* GetPSMaxTX: max TX envelope seen while collecting —  */
                   /*   the measured truth for the SetPk setting           */
+  int att;        /* current PS ADC0 attenuator (may differ from the      */
+                  /*   operator's setting after auto-attenuate)           */
 } ps_status;
 void ps_get_status(ps_status *out);
+
+/* Auto-attenuate (piHPSDR ps_menu.c:169-281): while the two-tone test keys,
+ * steps the ADC0 attenuator toward feedback ≈152 on each new calibration.
+ * Call every gate slot with "two-tone currently keyed". */
+void ps_auto_tick(int twotone_keyed);
 
 #endif /* SDRFL_ENGINE_PS_H */

@@ -10,6 +10,9 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include <glib.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "wdsp.h"
@@ -57,6 +60,26 @@ static void apply_params(void) {
 static void feed_cb(const double *txfb, const double *rxfb, int n_pairs, void *user) {
   (void)user;
   if (!g_atomic_int_get(&s_keyed)) { return; }
+  /* SDRFL_PS_DEBUG=1: ~1 Hz RMS of both streams. Ground-truth discriminator
+   * for the wire pair order: the COUPLER stream tracks the ADC0 attenuator,
+   * the DAC loopback does not. If "tx" moves with the att slider, the pair
+   * is swapped on the wire and the decode must flip. */
+  static int dbg = -1;
+  if (dbg < 0) { dbg = getenv("SDRFL_PS_DEBUG") != NULL; }
+  if (dbg) {
+    static double acc_tx, acc_rx; static long acc_n;
+    for (int i = 0; i < n_pairs; i++) {
+      acc_tx += txfb[2*i]*txfb[2*i] + txfb[2*i+1]*txfb[2*i+1];
+      acc_rx += rxfb[2*i]*rxfb[2*i] + rxfb[2*i+1]*rxfb[2*i+1];
+    }
+    acc_n += n_pairs;
+    if (acc_n >= 192000) {
+      fprintf(stderr, "ps dbg: rms_tx(DAC)=%.4f  rms_rx(coupler)=%.4f\n",
+              sqrt(acc_tx / acc_n), sqrt(acc_rx / acc_n));
+      fflush(stderr);
+      acc_tx = acc_rx = 0.0; acc_n = 0;
+    }
+  }
   int fill = g_atomic_int_get(&s_fill);
   for (int i = 0; i < n_pairs; i++) {
     s_txacc[2 * fill]     = txfb[2 * i];
@@ -144,16 +167,64 @@ void ps_key(int keyed) {
   SetPSMox(s_ch, keyed);             /* lock-free in calcc — safe from the keying path */
 }
 
+/* Auto-attenuate — piHPSDR ps_calibration_timer verbatim (ps_menu.c:169-281),
+ * active only while the two-tone experiment keys (piHPSDR scopes it the same
+ * way; in normal QSO the attenuator stays put). On each NEW calibration with
+ * the feedback level outside the 140-165 accept band, step the ADC0 attenuator
+ * by 20·log10(fdbk/152.293) dB (±15 dB jumps at the clip/noise extremes), then
+ * run the reset → apply → reset → resume choreography so the next calibration
+ * starts clean at the new level. Called from the tx_run gate slot (~20 Hz). */
+void ps_auto_tick(int twotone_keyed) {
+  static int a_state, a_last_cals;
+  if (!s_started) { return; }
+  g_mutex_lock(&s_lock);
+  int on = s_enable, att = s_att;
+  g_mutex_unlock(&s_lock);
+  if (!on || !twotone_keyed) { a_state = 0; return; }
+
+  int info[16];
+  GetPSInfo(s_ch, info);
+  int newcal = info[5] != a_last_cals;
+  a_last_cals = info[5];
+
+  switch (a_state) {
+  case 0: {
+    if (!newcal) { return; }
+    int f = info[4];
+    if (f >= 140 && f <= 165) { return; }        /* ±0.7 dB accept band */
+    int delta;
+    if      (f > 275) { delta =  15; }           /* clipped — real level unknown */
+    else if (f <  25) { delta = -15; }           /* buried — jump up             */
+    else              { delta = (int)lround(20.0 * log10((double)f / 152.293)); }
+    int na = att + delta;
+    if (na < 0)  { na = 0; }
+    if (na > 31) { na = 31; }
+    if (na == att) { return; }
+    SetPSControl(s_ch, 1, 0, 0, 0);              /* drop the (mis-scaled) cal    */
+    g_mutex_lock(&s_lock); s_att = na; g_mutex_unlock(&s_lock);
+    p2_ps_state ps = { .enabled = 1, .attenuation = na, .feedback_ant = 0 };
+    p2_set_ps(&ps);                              /* new level on the wire (kick) */
+    fprintf(stderr, "ps: auto-att %d -> %d dB (fdbk %d)\n", att, na, f);
+    a_state = 1;
+    break;
+  }
+  case 1: SetPSControl(s_ch, 1, 0, 0, 0); a_state = 2; break;
+  case 2: SetPSControl(s_ch, 0, 0, 1, 0); a_state = 0; break;  /* resume automode */
+  }
+}
+
 void ps_get_status(ps_status *out) {
   if (!out) { return; }
   memset(out, 0, sizeof(*out));
   g_mutex_lock(&s_lock);
   int on = s_started && s_enable;
+  int att = s_att;
   g_mutex_unlock(&s_lock);
   if (!on) { return; }
   int info[16];
   GetPSInfo(s_ch, info);
   out->on         = 1;
+  out->att        = att;
   out->fdbk       = info[4];
   out->cals       = info[5];
   out->sln        = info[6];

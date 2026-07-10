@@ -323,6 +323,7 @@ static void update_band_highlight(App *app) {
 
 static void tx_push_cfg(App *app);   /* fwd: re-push TX cfg when the band changes */
 static void ps_apply(App *app);      /* fwd: PureSignal enable/att/SetPk → engine */
+static void schedule_save(App *app); /* fwd: GUI tick persists auto-att changes   */
 
 /* On a band change, load that band's remembered dB window (out-of-band keeps
  * the current one). Called each tick — freq changes via buttons/tune/click. */
@@ -948,10 +949,12 @@ static void draw_tx(cairo_t *cr, int w, int h, App *app) {
     char psb[96];
     cairo_set_font_size(cr, 18.0);
     if (ts.ps_correcting) {
-      snprintf(psb, sizeof psb, "PS ✓ correcting · fdbk %d", ts.ps_fdbk);
+      snprintf(psb, sizeof psb, "PS ✓ correcting · fdbk %d · att %d dB",
+               ts.ps_fdbk, ts.ps_att);
       cairo_set_source_rgba(cr, 0.30, 0.95, 0.30, 0.98);
     } else {
-      snprintf(psb, sizeof psb, "PS calibrating · fdbk %d %s", ts.ps_fdbk,
+      snprintf(psb, sizeof psb, "PS calibrating · fdbk %d · att %d dB %s",
+               ts.ps_fdbk, ts.ps_att,
                ts.ps_fdbk > 181 ? "(too strong — raise PS att)" :
                ts.ps_fdbk <  90 ? "(too weak — lower PS att)"  : "");
       cairo_set_source_rgba(cr, 1.0, 0.85, 0.25, 0.98);
@@ -1348,6 +1351,12 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
           g_strlcpy(app->tx_reason, ts.reason[0] ? ts.reason : "TX refused", sizeof app->tx_reason);
           app->tx_reason_until = now + 4 * G_USEC_PER_SEC;
           gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->tune_btn), FALSE);
+        }
+        /* Auto-attenuate (two-tone) may move the PS attenuator — adopt the
+         * engine's value so it persists and the Preferences spin shows truth. */
+        if (ts.ps_on && ts.ps_att != app->ps_att) {
+          app->ps_att = ts.ps_att;
+          schedule_save(app);
         }
         /* Same pop-back for the two-tone toggle — its key intent must not
          * outlive a trip/refusal (the handler then clears the engine flag). */

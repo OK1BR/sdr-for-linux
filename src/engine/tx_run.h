@@ -67,6 +67,7 @@ typedef struct {
   int    ps_correcting; /* correction applied right now (GetPSInfo[14])         */
   int    ps_state;      /* calcc state machine (GetPSInfo[15], 0=Reset..9)      */
   int    ps_fdbk;       /* feedback level (GetPSInfo[4]) — ideal ~152, 140-165  */
+  int    ps_att;        /* current PS ADC0 attenuator (auto-att may move it)    */
   char   reason[64];/* "" or why refused/tripped (for the UI/log)          */
 } tx_run_status;
 
