@@ -44,6 +44,7 @@
 #include "bandplan.h"
 #include "wisdom_gate.h"
 #include "picker.h"
+#include "radio_support.h"
 #include "tci_server.h"
 #include "tx_run.h"
 #include "tx.h"   /* tx_dsp_in_rate() — mic capture rate must match the WDSP TX input */
@@ -3812,6 +3813,15 @@ static void start_radio(App *app) {
   p2_discovery();
   if (devices <= 0) { fprintf(stderr, "no radio found\n"); return; }
   const DISCOVERED *dev = &discovered[selected_device];
+  /* ⛔ Whitelist gate (radio_support.h): also covers SDRFL_RADIO_IP and the
+   * picker's "Add by IP" — an untested model must never take this path, its
+   * Alex/PA bytes are unverified and could damage the hardware. */
+  if (!radio_supported(dev)) {
+    fprintf(stderr, "radio '%s' at %s (device %d) is NOT SUPPORTED YET — every model "
+            "must be brought up and live-tested first; this build supports the ANAN G1 only\n",
+            dev->name, inet_ntoa(dev->network.address.sin_addr), dev->device);
+    return;
+  }
   if (dev->status == 3) {   /* P2 discovery reply byte[4]: 2 = idle, 3 = streaming */
     fprintf(stderr, "radio at %s is IN USE by another program (piHPSDR?) — close it first\n",
             inet_ntoa(dev->network.address.sin_addr));

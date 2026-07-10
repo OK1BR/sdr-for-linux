@@ -15,6 +15,7 @@
 #include "discovered.h"
 #include "discovery.h"
 #include "picker.h"
+#include "radio_support.h"
 
 typedef struct {
   GMainLoop *loop;
@@ -95,17 +96,23 @@ static gboolean fill_list(gpointer data) {
              d->software_version / 10, d->software_version % 10,
              d->protocol == NEW_PROTOCOL ? "Protocol 2" : "Protocol 1");
 
+    /* ⛔ Whitelist: untested models are shown but cannot be started — their
+     * Alex/PA bytes are unverified and could damage hardware (radio_support.h). */
+    int ok = radio_supported(d);
     GtkWidget *r = g_object_new(ADW_TYPE_ACTION_ROW, "title", name[0] ? name : "HPSDR radio",
-                                "subtitle", sub, "activatable", TRUE, NULL);
-    GtkWidget *st = gtk_label_new(d->status == STATE_AVAILABLE ? "Available"
+                                "subtitle", sub, "activatable", ok ? TRUE : FALSE, NULL);
+    GtkWidget *st = gtk_label_new(!ok ? "Not supported yet"
+                                : d->status == STATE_AVAILABLE ? "Available"
                                 : d->status == STATE_SENDING   ? "In use" : "Incompatible");
-    gtk_widget_add_css_class(st, d->status == STATE_AVAILABLE ? "success"
+    gtk_widget_add_css_class(st, !ok ? "error"
+                               : d->status == STATE_AVAILABLE ? "success"
                                : d->status == STATE_SENDING   ? "warning" : "error");
     adw_action_row_add_suffix(ADW_ACTION_ROW(r), st);
-    g_object_set_data_full(G_OBJECT(r), "ip", g_strdup(ip), g_free);
+    if (ok) { g_object_set_data_full(G_OBJECT(r), "ip", g_strdup(ip), g_free); }
+    else    { gtk_widget_set_sensitive(r, FALSE); }   /* no "ip" data → pick_row no-op */
     gtk_list_box_append(GTK_LIST_BOX(p->list), r);
     shown++;
-    if (p->last_ip[0] && strcmp(ip, p->last_ip) == 0) { preselect = GTK_LIST_BOX_ROW(r); }
+    if (ok && p->last_ip[0] && strcmp(ip, p->last_ip) == 0) { preselect = GTK_LIST_BOX_ROW(r); }
   }
 
   char msg[64];
