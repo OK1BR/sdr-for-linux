@@ -90,6 +90,12 @@ static int fwd_acc = 0, rev_acc = 0, ex_acc = 0;
  * HP packets arrive ~1 kHz, so the raw max IS the PEP. Decayed by the consumer,
  * p2_tx_fwd_max_take(). */
 static volatile gint tlm_fwd_max  = 0;
+/* Hardware PTT (footswitch): state of HP-status byte [4] bit 0 (np.c:2624).
+ * Plain state mirror — no latch; the tx_run gate polls it at ~20 Hz. */
+static volatile gint tlm_ptt      = 0;
+/* PTT input config for TX-specific byte 50 (np.c:1553-1558), set by the GUI. */
+static volatile gint cfg_ptt_enable = 0;   /* keep PTT readable during TX      */
+static volatile gint cfg_ptt_tip    = 0;   /* PTT on mic-jack tip (vs ring)    */
 
 static int       cfg_device;
 static long long cfg_freq;       /* read by the timer thread, written by p2_set_frequency */
@@ -447,11 +453,17 @@ static void send_transmit_specific(void) {
   int len;
   if (on) {
     /* Minimal TX-specific for keying: nDAC=1 + attenuators (with PA). NO internal
-     * CW keyer (the FPGA must never key CW here) and mic PTT disabled. */
+     * CW keyer (the FPGA must never key CW here). Mic PTT stays disabled UNLESS
+     * the operator enabled the footswitch — then the input must stay live during
+     * TX so the pedal *release* is still reported in HP-status (np.c:1553-1558;
+     * piHPSDR keeps the user's PTT-enable across RX/TX the same way). On RX the
+     * all-zero packet below leaves the PTT input enabled, which is what makes
+     * the pedal readable before keying — unchanged, verified bytes. */
     p2_tx_cw cw;
     memset(&cw, 0, sizeof(cw));
     cw.pa_enabled       = pa;
-    cw.mic_ptt_disabled = 1;
+    cw.mic_ptt_disabled = !g_atomic_int_get(&cfg_ptt_enable);
+    cw.mic_ptt_tip      =  g_atomic_int_get(&cfg_ptt_tip);
     len = p2_build_transmit_specific(buf, &cw);
   } else {
     len = p2_build_transmit_specific(buf, NULL);  /* all-zero (RX, no keyer) */
@@ -534,6 +546,15 @@ void p2_get_telemetry(p2_telemetry *out) {
   out->adc1_overload = g_atomic_int_and(&tlm_adc1_ovl, 0);
 }
 
+int p2_ptt_get(void) {
+  return g_atomic_int_get(&tlm_ptt);
+}
+
+void p2_set_ptt_input(int enabled, int tip) {
+  g_atomic_int_set(&cfg_ptt_enable, enabled ? 1 : 0);
+  g_atomic_int_set(&cfg_ptt_tip,    tip     ? 1 : 0);
+}
+
 /* Read the PEP tracker and decay it — piHPSDR transmitter.c:578-580 verbatim,
  * except the factor: piHPSDR decays ×7/8 per ~10 Hz meter update; our caller
  * (the tx_run gate slot) runs at ~20 Hz, so ×15/16 gives the same ~0.5 s
@@ -585,6 +606,12 @@ static void decode_iq(const unsigned char *buffer) {
  * Nothing here is ever echoed back to the radio. */
 static void parse_high_priority_status(const unsigned char *buf, int len) {
   if (len < 60) { return; }               /* need through the analog words + byte 59 */
+
+  /* byte 4 bit 0: hardware PTT input — the footswitch (np.c:2624). Mirrored as
+   * plain state; the tx_run gate turns it into a MOX intent when the operator
+   * enabled the footswitch setting. Bits 1/2 (CW dot/dash) stay unused — no
+   * physical-key support by decision. */
+  g_atomic_int_set(&tlm_ptt, buf[4] & 0x01);
 
   /* byte 5: ADC overload (np.c:2642-2643). Latch — a clip may last one 50 ms
    * status packet, shorter than a slow GUI frame; the reader clears it. */
@@ -805,6 +832,7 @@ int p2_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
   g_atomic_int_set(&tlm_fwd, 0);
   g_atomic_int_set(&tlm_rev, 0);
   g_atomic_int_set(&tlm_exciter, 0);
+  g_atomic_int_set(&tlm_ptt, 0);         /* footswitch state re-learned from status */
   fwd_acc = rev_acc = ex_acc = 0;
   g_mutex_lock(&tx_state_lock);          /* start RX-only: no latched TX state */
   memset(&cfg_tx, 0, sizeof(cfg_tx));

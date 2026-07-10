@@ -40,6 +40,9 @@ typedef struct {
   int         region;          /* band-plan region index (bp_region_t)             */
   const char *country_key;     /* "" / "CZ" / "US" (copied internally)             */
   int         mode;            /* WDSP/demod mode for the TX channel               */
+  int         ptt_enabled;     /* footswitch: radio PTT input = MOX intent (voice
+                                  modes only; still gated by tx_gate like the
+                                  MOX button — never keys on its own)             */
   double      pa_trim[11];     /* wattmeter correction curve, W (F6b; identity dflt)*/
   double      tx_flo, tx_fhi;  /* TX audio passband edges, Hz (0/0 = 150/2850);
                                   sideband sign is applied per mode internally     */

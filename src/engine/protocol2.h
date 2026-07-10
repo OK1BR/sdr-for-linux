@@ -81,6 +81,25 @@ typedef struct {
 void p2_get_telemetry(p2_telemetry *out);
 
 /*
+ * Hardware PTT (footswitch) state as reported by the radio in the HP-status
+ * packet, byte [4] bit 0 (np.c:2624). Non-destructive read (a state, not an
+ * event) — poll from the tx_run gate slot. 0 until the first status packet.
+ * Reading this changes nothing we send; whether the PTT *keys* is decided by
+ * tx_gate like any other MOX intent.
+ */
+int p2_ptt_get(void);
+
+/*
+ * Configure the radio's PTT input (TX-specific byte 50, np.c:1553-1558):
+ * `enabled` clears the 0x04 "mic PTT disabled" bit while transmitting, so the
+ * release of a footswitch is still reported mid-over; `tip` selects the PTT
+ * contact on the mic-jack tip (0x08; default ring, piHPSDR default). Stored
+ * atomically; the keepalive timer sends it in the next TX-specific packet.
+ * With enabled=0 the TX-time packet keeps PTT disabled (today's behavior).
+ */
+void p2_set_ptt_input(int enabled, int tip);
+
+/*
  * PEP: read the raw per-packet forward-power maximum and decay it ×15/16
  * (piHPSDR alex_forward_max + transmitter.c:580 ballistics, rate-adjusted to
  * the ~20 Hz tx_run slot). Destructive read — single consumer (tx_run) only;

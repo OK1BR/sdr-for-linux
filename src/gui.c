@@ -208,6 +208,8 @@ typedef struct {
   double      tx_comp_db;    /* PROC compression dB, 0-20 (persisted)               */
   int         tx_gate;       /* mic noise gate (DEXP) on/off (persisted)            */
   double      tx_gate_db;    /* gate threshold dBFS post-mic-gain (persisted)       */
+  int         tx_ptt_enabled;/* footswitch: radio PTT input = MOX (persisted)       */
+  int         tx_ptt_tip;    /* PTT contact on mic-jack tip vs ring (persisted)     */
   char        picked_ip[64]; /* radio chosen in the startup picker ("" = none)      */
   int         tci_enable;    /* TCI server on/off (persisted, F6d-2a)               */
   int         tci_port;      /* TCI server port (persisted; ExpertSDR default 40001)*/
@@ -1320,6 +1322,16 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
           app->tx_reason_until = now + 4 * G_USEC_PER_SEC;
           gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->tune_btn), FALSE);
         }
+        /* Footswitch keys without the MOX toggle — paint the button red while the
+         * pedal transmits (red = transmitting, same as .txkey:checked). The intent
+         * stays in the engine, so releasing the pedal unkeys even if this GUI tick
+         * is throttled (the gate lives on the TX thread, not the frame clock). */
+        if (app->mox_btn) {
+          int pedal_live = ts.mox &&
+              !gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(app->mox_btn));
+          if (pedal_live) { gtk_widget_add_css_class(app->mox_btn, "ptt-live"); }
+          else            { gtk_widget_remove_css_class(app->mox_btn, "ptt-live"); }
+        }
         /* On the RX↔TX transition. Key up: fade RX audio out, start a fresh TX
          * trace. Unkey: keep the audio muted through the AGC-recovery window
          * (TX_SETTLE_MS) and only then fade it back in — otherwise the wound-up
@@ -1393,6 +1405,8 @@ static void app_to_settings(const App *app, Settings *s) {
   s->anf     = app->anf;
   s->binaural = app->binaural;
   s->tx_pa    = app->tx_pa_enabled;
+  s->tx_ptt   = app->tx_ptt_enabled;
+  s->tx_ptt_tip = app->tx_ptt_tip;
   s->tx_ant   = app->tx_antenna;
   s->tx_drive = app->tx_drive_w;
   s->tx_digi_max = app->tx_digi_max_w;
@@ -1581,6 +1595,7 @@ static void tx_push_cfg(App *app) {
   c.region         = app->bp_region;
   c.country_key    = bp_country_key(app->bp_country);
   c.mode           = app->mode;
+  c.ptt_enabled    = app->tx_ptt_enabled;
   c.tx_flo         = app->tx_flo;
   c.tx_fhi         = app->tx_fhi;
   for (int i = 0; i < 11; i++) { c.pa_trim[i] = app->pa_trim[i]; }
@@ -2526,7 +2541,8 @@ static void css_load(void) {
     "button.mode, button.band { min-width: 30px; padding-left: 7px; padding-right: 7px; }"
     "button.mode:checked, button.band:checked { background: #1d6fa5; color: #fff; }"
     "button.txkey { min-width: 42px; padding-left: 9px; padding-right: 9px; }"
-    "button.txkey:checked { background: #c8321e; color: #fff; }";
+    "button.txkey:checked { background: #c8321e; color: #fff; }"
+    "button.txkey.ptt-live { background: #c8321e; color: #fff; }";
   gtk_css_provider_load_from_string(p, c);
   gtk_style_context_add_provider_for_display(gdk_display_get_default(),
       GTK_STYLE_PROVIDER(p), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
@@ -2767,6 +2783,21 @@ static void on_pref_tx_swr(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   (void)ps; App *app = (App *)data;
   app->tx_swr_alarm = adw_spin_row_get_value(r);
   tx_push_cfg(app); schedule_save(app);
+}
+/* Footswitch PTT (Richard's contest ask): the radio's PTT input keys like the
+ * MOX button — intent only, tx_gate still decides. Applies live: the gate polls
+ * p2_ptt_get() each slot, and the byte-50 PTT-enable rides the next TX-specific. */
+static void on_pref_tx_ptt(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->tx_ptt_enabled = adw_switch_row_get_active(r) ? 1 : 0;
+  p2_set_ptt_input(app->tx_ptt_enabled, app->tx_ptt_tip);
+  tx_push_cfg(app); schedule_save(app);
+}
+static void on_pref_tx_ptt_tip(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->tx_ptt_tip = adw_switch_row_get_active(r) ? 1 : 0;
+  p2_set_ptt_input(app->tx_ptt_enabled, app->tx_ptt_tip);
+  schedule_save(app);
 }
 /* Mic noise gate (DEXP) — tames the PROC leveler pumping room noise up in the
  * gaps between words. Threshold is on the post-mic-gain signal. Applies live. */
@@ -3221,6 +3252,12 @@ static AdwDialog *build_prefs(App *app) {
       app->tx_pa_enabled, G_CALLBACK(on_pref_tx_pa), app));
   adw_preferences_group_add(g, pref_spin("SWR alarm", "Trip: drop MOX + refuse re-key",
       2, 5, app->tx_swr_alarm, G_CALLBACK(on_pref_tx_swr), app));
+  adw_preferences_group_add(g, pref_switch("Footswitch PTT",
+      "Radio PTT input keys like MOX (voice modes; same safety gate) · live",
+      app->tx_ptt_enabled, G_CALLBACK(on_pref_tx_ptt), app));
+  adw_preferences_group_add(g, pref_switch("PTT on mic tip",
+      "PTT contact on the mic-jack tip (off = ring, the Apache default) · live",
+      app->tx_ptt_tip, G_CALLBACK(on_pref_tx_ptt_tip), app));
   adw_preferences_group_add(g, pref_switch("Mic noise gate",
       "Mutes room noise between words (−20 dB) — pair with PROC · live",
       app->tx_gate, G_CALLBACK(on_pref_tx_gate), app));
@@ -3661,6 +3698,9 @@ static void start_radio(App *app) {
   app->tx_comp_db    = st.tx_comp_db < COMP_DB_MIN ? COMP_DB_MIN : (st.tx_comp_db > COMP_DB_MAX ? COMP_DB_MAX : st.tx_comp_db);
   app->tx_gate       = st.tx_gate ? 1 : 0;
   app->tx_gate_db    = st.tx_gate_db < GATE_DB_MIN ? GATE_DB_MIN : (st.tx_gate_db > GATE_DB_MAX ? GATE_DB_MAX : st.tx_gate_db);
+  app->tx_ptt_enabled = st.tx_ptt ? 1 : 0;
+  app->tx_ptt_tip     = st.tx_ptt_tip ? 1 : 0;
+  p2_set_ptt_input(app->tx_ptt_enabled, app->tx_ptt_tip);  /* atomics; safe pre-connect */
   app->tx_mon        = st.tx_mon ? 1 : 0;
   app->tx_mon_db     = st.tx_mon_db < MON_DB_MIN ? MON_DB_MIN : (st.tx_mon_db > MON_DB_MAX ? MON_DB_MAX : st.tx_mon_db);
   app->tx_flo        = st.tx_flo < TXF_LO_MIN ? TXF_LO_MIN : (st.tx_flo > TXF_LO_MAX ? TXF_LO_MAX : st.tx_flo);

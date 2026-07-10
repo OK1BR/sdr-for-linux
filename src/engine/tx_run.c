@@ -75,6 +75,7 @@ typedef struct {
   int    swr_protect;
   double swr_alarm;
   int    allow_oob, region, mode;
+  int    ptt_enabled;      /* footswitch (radio PTT input) may raise MOX intent */
   char   country_key[8];
   double pa_trim[11];
   double tx_flo, tx_fhi;   /* TX audio passband edges (Hz, positive lo<hi) */
@@ -133,10 +134,18 @@ static void publish(const tx_run_status *st) {
  * state (p2_set_tx_state) + DSP transitions (tone/run) on key/unkey edges. */
 static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
                      int *keyed_mox, int *keyed_cw) {
+  g_mutex_lock(&s_cfg_lock);  tx_cfg_i cfg = s_cfg;  g_mutex_unlock(&s_cfg_lock);
+
   int is_cw     = TX_MODE_IS_CW(g_atomic_int_get(&s_mode));
   int want_cw   = g_atomic_int_get(&s_want_cw);      /* CW break-in (feed thread) */
+  /* Footswitch (radio PTT input, HP-status byte 4 bit 0): a remote MOX button.
+   * Voice modes only — in CW the break-in keys, in DIGU/DIGL the TCI client
+   * keys (and the pedal would put mic audio on a digi frequency). Same intent
+   * OR as the GUI button; tx_gate still decides whether it actually keys. */
+  int is_voice  = !is_cw && cfg.mode != DEMOD_DIGU && cfg.mode != DEMOD_DIGL;
+  int want_ptt  = cfg.ptt_enabled && is_voice && p2_ptt_get();
   /* CW keys through the exciter exactly like MOX (MOX bit + drive, SWR-protected). */
-  int want_mox  = g_atomic_int_get(&s_want_mox) || (is_cw && want_cw);
+  int want_mox  = g_atomic_int_get(&s_want_mox) || want_ptt || (is_cw && want_cw);
   int want_tune = g_atomic_int_get(&s_want_tune);
   int want      = want_mox || want_tune;
 
@@ -144,8 +153,6 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
    * a new deliberate key starts clean. While the operator keeps holding after a
    * trip (no rising edge) the latch is preserved by tx_gate. */
   if (want && !*prev_want) { tx_gate_reset(); tx_meter_reset(); }
-
-  g_mutex_lock(&s_cfg_lock);  tx_cfg_i cfg = s_cfg;  g_mutex_unlock(&s_cfg_lock);
   g_mutex_lock(&s_freq_lock); long long freq = s_freq; g_mutex_unlock(&s_freq_lock);
   int is_6m = freq >= 50000000LL && freq < 54000000LL;
 
@@ -451,6 +458,7 @@ void tx_run_set_cfg(const tx_run_cfg *cfg) {
   s_cfg.allow_oob      = cfg->allow_oob;
   s_cfg.region         = cfg->region;
   s_cfg.mode           = cfg->mode;
+  s_cfg.ptt_enabled    = cfg->ptt_enabled;
   s_cfg.tx_flo         = cfg->tx_flo;
   s_cfg.tx_fhi         = cfg->tx_fhi;
   g_strlcpy(s_cfg.country_key, cfg->country_key ? cfg->country_key : "", sizeof s_cfg.country_key);

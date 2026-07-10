@@ -25,6 +25,17 @@ This matches exactly what piHPSDR sends when "PA enable" is off: piHPSDR
 adds ALEX_TX_RELAY to alex1 only `if (!txband->disablePA && pa_enabled)`
 (new_protocol.c:1026) — with PA disabled it omits it, and so do we.
 
+Footswitch PTT (the "Footswitch PTT" setting): the pedal state is *read*
+from the incoming HP-status packet, byte 4 bit 0 (np.c:2624), and turned
+into a MOX **intent** in the tx_run gate slot — voice modes only, and
+tx_gate still decides (in-band, PA, SWR trip, whitelist), exactly like the
+MOX button. The pedal never keys on its own on the host side; a firmware-
+local key with our RX state on the wire produces no RF (layers 2+3 above).
+While transmitting with the setting on, TX-specific byte 50 keeps the PTT
+input enabled (np.c:1553-1558) so the pedal *release* is still reported
+mid-over; with the setting off the TX-time packet keeps PTT disabled and
+the status bit is ignored (today's behavior, bit-for-bit).
+
 ## Checklist to port before enabling TX (piHPSDR references)
 
 - [ ] **PA gating**: general[58] PA-enable tied to a user setting AND per-band

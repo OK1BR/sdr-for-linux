@@ -69,6 +69,8 @@ typedef struct {
   double    tx_comp_db; /* PROC compression (dB, 0-20; 0 = auto-leveler only)     */
   int       tx_gate;    /* mic noise gate (DEXP) on/off                           */
   double    tx_gate_db; /* gate threshold (dBFS, post-mic-gain; -60..-10)         */
+  int       tx_ptt;     /* footswitch: radio PTT input keys like MOX (0/1)        */
+  int       tx_ptt_tip; /* PTT contact on mic-jack tip (0 = ring, Apache default) */
   int       tx_mon;     /* TX monitor (self-listen: voice mic / CW sidetone)      */
   double    tx_mon_db;  /* monitor level (dB, -40..0)                             */
   double    tx_flo;     /* TX audio filter low edge (Hz; default 150)             */
