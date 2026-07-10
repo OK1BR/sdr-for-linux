@@ -311,9 +311,10 @@ static gpointer tx_thread(gpointer u) {
         }
         on_tx_iq(cwiq, TX_IQ_BLOCK, NULL);
         if (g_atomic_int_get(&s_monitor)) {
-          /* Sidetone: the SAME envelope that keys the RF, on a local tone, scaled
-           * to the sidetone level (its own trim — the shared monitor gain is
-           * calibrated for the much quieter voice-mic signal). */
+          /* Sidetone: the SAME envelope that keys the RF, on a local tone. Its
+           * trim is the FINAL level — demod_monitor_absolute(1) bypasses the
+           * voice-calibrated monitor gain, so the slider has real authority
+           * regardless of the monitor/volume settings (piHPSDR parity). */
           static double ph;
           float st[TX_IQ_BLOCK];
           double amp  = pow(10.0, (double)g_atomic_int_get(&s_st_cdb) / 2000.0);
@@ -323,6 +324,7 @@ static gpointer tx_thread(gpointer u) {
             ph += step;
             if (ph > 2.0 * G_PI) { ph -= 2.0 * G_PI; }
           }
+          demod_monitor_absolute(1);
           demod_monitor_push(st, TX_IQ_BLOCK, TX_IQ_RATE);
         }
       } else if (keyed_mox) {
@@ -347,6 +349,7 @@ static gpointer tx_thread(gpointer u) {
         if (g_atomic_int_get(&s_monitor)) {
           /* Voice monitor: the raw mic block, like piHPSDR's audiomonitor
            * (transmitter.c:1953 plays mic_sample × capped volume). */
+          demod_monitor_absolute(0);
           demod_monitor_push(mic, FEED_BLOCK, tx_dsp_in_rate());
         }
       } else {

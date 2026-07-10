@@ -84,6 +84,11 @@ static float           mon_ring[MON_FRAMES];
 static _Atomic unsigned mon_head;   /* producer (TX feed thread) frame index */
 static _Atomic unsigned mon_tail;   /* consumer (RX feed thread) frame index */
 static volatile double  mon_gain = 0.18;   /* linear; demod_set_monitor_gain */
+/* 1 = ring content is ABSOLUTE (CW sidetone: its own trim is the final
+ * level, mon_gain is skipped — piHPSDR's sidetone volume is independent of
+ * the monitor too). 0 = voice monitor, scaled by mon_gain. Set by the
+ * producer per push; content types never mix within one key-down. */
+static _Atomic int      mon_abs;
 
 /* RX audio tap (TCI): fixed 48 kHz mono out of the sink-rate output loop.
  * d_arate is always an integer multiple of 48 k (48/96/192), so a boxcar
@@ -238,7 +243,9 @@ void demod_feed(const double *iq, int n_pairs) {
             unsigned mh = atomic_load_explicit(&mon_head, memory_order_acquire);
             unsigned mt = atomic_load_explicit(&mon_tail, memory_order_relaxed);
             if (mt != mh) {
-              mon = (double)mon_ring[mt & MON_MASK] * mon_gain;
+              double g = atomic_load_explicit(&mon_abs, memory_order_relaxed)
+                           ? 1.0 : mon_gain;
+              mon = (double)mon_ring[mt & MON_MASK] * g;
               atomic_store_explicit(&mon_tail, mt + 1, memory_order_release);
             }
           }
@@ -428,6 +435,10 @@ void demod_monitor_push(const float *mono, int n, int src_rate) {
 }
 
 /* Monitor level in dB (≤ 0 sensible; piHPSDR caps its monitor at 0.25 ≈ −12 dB). */
+void demod_monitor_absolute(int on) {
+  atomic_store_explicit(&mon_abs, on ? 1 : 0, memory_order_relaxed);
+}
+
 void demod_set_monitor_gain(double db) {
   mon_gain = pow(10.0, 0.05 * db);
 }

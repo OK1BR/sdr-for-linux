@@ -728,8 +728,8 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
 #define MON_DB_DFLT  (-15.0)
 #define CW_WPM_DFLT    20      /* CW keyer (F6d-1c): speed, sidetone, break-in hang */
 #define CW_PITCH_DFLT  700
-#define CW_ST_DB_MIN (-40.0)   /* sidetone level, dBFS before the monitor gain;  */
-#define CW_ST_DB_MAX    0.0    /* −20 ≈ piHPSDR sidetone volume 50/127           */
+#define CW_ST_DB_MIN (-40.0)   /* sidetone level, ABSOLUTE output dBFS (bypasses */
+#define CW_ST_DB_MAX    0.0    /* the monitor gain); −20 ≈ piHPSDR vol 50/127    */
 #define CW_ST_DB_DFLT (-20.0)
 #define CW_HANG_DFLT   250
 #define TXF_LO_MIN    20.0     /* TX audio filter edges, Hz (150/2850 default;   */
@@ -3080,7 +3080,7 @@ static AdwDialog *build_prefs(App *app) {
       "monitor tone (default 700 Hz) · live",
       200, 1200, app->cw_pitch, "%.0f Hz", G_CALLBACK(on_pref_cw_pitch), app));
   adw_preferences_group_add(g, pref_slider("Sidetone level",
-      "dBFS before Monitor level · −20 ≈ piHPSDR default · live",
+      "absolute dBFS, independent of Monitor level · −20 ≈ piHPSDR default · live",
       CW_ST_DB_MIN, CW_ST_DB_MAX, app->cw_st_db, "%.0f dB", G_CALLBACK(on_pref_cw_st_db), app));
   adw_preferences_group_add(g, pref_spin("Break-in hang",
       "ms · T/R hold after the last element (piHPSDR default 500) · live",

@@ -79,6 +79,12 @@ void demod_set_mute(int on);
 void demod_monitor_push(const float *mono, int n, int src_rate);
 void demod_set_monitor_gain(double db);
 
+/* Monitor content type: 1 = absolute (CW sidetone — the producer's own trim
+ * is the final level, the monitor gain is skipped; piHPSDR's sidetone volume
+ * is likewise independent), 0 = voice (scaled by the monitor gain). The TX
+ * feed thread sets this alongside each push. */
+void demod_monitor_absolute(int on);
+
 /*
  * RX audio tap (TCI, F6d-2b): when set, the demod feed thread calls cb with
  * volume-compensated mono audio at a FIXED 48 kHz (decimated from the sink
