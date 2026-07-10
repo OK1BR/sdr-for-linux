@@ -110,8 +110,12 @@ platform-library category — do not vendor).
   2b:** LINE_OUT stream. ⚠ Locale rule: protocol floats are formatted with
   g_ascii_formatd — the GTK app runs in the user's locale (cs_CZ = decimal
   COMMA) and ',' is a reserved TCI separator.
-- **F6d-2c — TX audio (digital TX). IMPLEMENTED (offline-verified 2026-07-10;
-  live FT8 TX pending).** `trx:0,true,tci` switches the exciter input from
+- **F6d-2c — TX audio (digital TX). LIVE-VERIFIED ON AIR 2026-07-10:** first
+  complete FT8 QSO made through the app (Decodium → TCI → DIGU, 20 m);
+  PSK Reporter shows OK1BR received by 113 reporters in 32 countries within
+  24 h. Some QSOs unfinished — attributed to band congestion; watch-items:
+  exact system clock (FT8 periods) and key-to-audio latency (~42 ms prime,
+  should be negligible). `trx:0,true,tci` switches the exciter input from
   the mic to a TCI SPSC ring (tx_run_set_ext_source/ext_push) **before** the
   key goes down, keys through the same tx_gate as the GUI MOX (SWR trip,
   in-band, PA, power caps — nothing bypassed), and the TX feed loop's block
