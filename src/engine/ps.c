@@ -207,8 +207,17 @@ void ps_recal(void) {
   if (!s_started) { return; }
   g_mutex_lock(&s_lock);
   int on = s_enable;
+  s_att = 0;                         /* see below — restart the level hunt at 0 */
   g_mutex_unlock(&s_lock);
   if (!on) { return; }
+  /* piHPSDR resume_cb (ps_menu.c:537-545): "a very high attenuation could
+   * mean WDSP never calibrates, so auto-adjust would never trigger" — with a
+   * too-weak feedback the COLLECT bins never fill, no calibration completes,
+   * and auto-att (which only steps on NEW calibrations) deadlocks. Restarting
+   * from 0 dB always yields completing (if initially clipped) calibrations,
+   * so the auto-att walk-up converges. Richard hit exactly this deadlock. */
+  p2_ps_state ps = { .enabled = 1, .attenuation = 0, .feedback_ant = 0 };
+  p2_set_ps(&ps);
   SetPSControl(s_ch, 1, 0, 0, 0);    /* drop the held/stale correction */
   ps_resume();                       /* re-arm per mode (one cal / automode) */
 }
@@ -230,13 +239,13 @@ void ps_key(int keyed) {
  * by 20·log10(fdbk/152.293) dB (±15 dB jumps at the clip/noise extremes), then
  * run the reset → apply → reset → resume choreography so the next calibration
  * starts clean at the new level. Called from the tx_run gate slot (~20 Hz). */
-void ps_auto_tick(int twotone_keyed) {
+void ps_auto_tick(int keyed) {
   static int a_state, a_last_cals;
   if (!s_started) { return; }
   g_mutex_lock(&s_lock);
   int on = s_enable, att = s_att;
   g_mutex_unlock(&s_lock);
-  if (!on || !twotone_keyed) { a_state = 0; return; }
+  if (!on || !keyed) { a_state = 0; return; }
 
   int info[16];
   GetPSInfo(s_ch, info);

@@ -88,9 +88,11 @@ typedef struct {
 } ps_status;
 void ps_get_status(ps_status *out);
 
-/* Auto-attenuate (piHPSDR ps_menu.c:169-281): while the two-tone test keys,
- * steps the ADC0 attenuator toward feedback ≈152 on each new calibration.
- * Call every gate slot with "two-tone currently keyed". */
-void ps_auto_tick(int twotone_keyed);
+/* Auto-attenuate (piHPSDR ps_menu.c:169-281 algorithm, Thetis-style scoping:
+ * any keyed PS TX, not just two-tone): steps the ADC0 attenuator toward
+ * feedback ≈152 on each NEW calibration — a frozen single-cal produces no new
+ * calibrations, so it never steps mid-QSO. Call every gate slot with "keyed
+ * non-CW". */
+void ps_auto_tick(int keyed);
 
 #endif /* SDRFL_ENGINE_PS_H */
