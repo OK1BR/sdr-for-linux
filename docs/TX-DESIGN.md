@@ -519,8 +519,13 @@ What landed (⚠ = regression tripwire — do not undo casually):
 **Live-verified operator config (OK1BR, USB, dummy load, 2026-07-10):**
 `mic_gain=11 dB, gate=1 @ −29.5 dBFS, comp(PROC)=off, filt 40-4000 Hz,
 drive_w=63` — voice peaks 1-24 W on the averaged wattmeter with SWR 1.00,
-gate visibly closing in speech gaps (GATE indicator). PROC remains available
-when more punch is wanted; with it on, re-tune the gate threshold first.
+gate visibly closing in speech gaps (GATE indicator).
+
+**PROC live-verified (same day, later):** A/B mid-transmission (PROC applies
+live), leveler + COMP at 7 dB — power density audibly up, monitor sound
+credible ("chová se mnohem lépe než Zeus SDR"), gate threshold did NOT need
+re-tuning (room noise stayed below −29.5 dBFS in speech gaps). Operator keeps
+PROC on at 7 dB: `comp=1, comp_db=7`.
 
 *Written F0, updated through F6c-4, 2026-07-10. Byte offsets cross-verified
 against piHPSDR @974acba by first-hand read (MOX/`TX_RELAY`/atten/SWR) +
