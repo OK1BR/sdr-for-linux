@@ -1039,9 +1039,11 @@ void tci_server_iq_push(const double *iq, int n_pairs, int rate) {
     h++;
   }
   atomic_store_explicit(&iq_head, h, memory_order_release);
-  /* No service kick: this runs ~6 k×/s at 1536 k, the ring holds 85 ms and
-   * a skimmer does not care about ≤1 ms of extra latency — the service
-   * loop's own 1 ms cadence drains it. */
+  /* lws_service BLOCKS until a socket event — kick it like the audio path
+   * does, or the stream only flushes when unrelated traffic (a dds
+   * broadcast) happens to wake the loop. Found live with SDC: the IQ
+   * "jumped" only on frequency changes. */
+  if (s_ctx) { lws_cancel_service(s_ctx); }
 }
 
 void tci_server_tx_chrono(int nsamples) {

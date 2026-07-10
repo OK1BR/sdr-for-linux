@@ -312,6 +312,13 @@ int main(void) {
   }
   check("rx_channel_sensors + tx_sensors flow at the asked cadence", got_sens);
 
+  /* Sensors OFF before the IQ test: their 100 ms text traffic wakes the
+   * blocking lws_service loop and would mask a missing IQ wakeup kick —
+   * exactly the bug SDC found live (IQ only flushed on dds broadcasts). */
+  client_send("rx_sensors_enable:false;tx_sensors_enable:false;");
+  g_usleep(300 * 1000);
+  while (g_main_context_iteration(NULL, FALSE)) {}
+
   /* ---- IQ stream (F6d-2d): subscribe at 48 k (stub engine rate 192 k → ÷4
    * WDSP decimation), feed a +12 kHz complex tone, expect type-0 Stream
    * blocks whose spectrum has the tone at +12 kHz and nothing at −12 kHz
