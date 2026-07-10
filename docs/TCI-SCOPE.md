@@ -70,8 +70,13 @@ platform-library category — do not vendor).
 
 ## Phases (each independently testable; RX-side needs no keying)
 
-- **F6d-2a — server + control + CW. IMPLEMENTED (offline-verified 2026-07-10;
-  live test with a real client pending).** `src/tci_server.[ch]` — own code on
+- **F6d-2a — server + control + CW. LIVE-VERIFIED 2026-07-10 with Decodium
+  (control) and SDC (CW keying):** SDC's keyer terminal keys the radio via
+  cw_macros — repeated macros queue and send in order (contest style: SDC
+  sends each word as its own cw_macros), cw_macros_stop aborts with an
+  immediate unkey, real exchanges (`OK1BR`, `5NN 15`) verified at drive 0.
+  Note: SDC also pushes its skimmer spots (`spot:<call>,<mode>,<freq>,...`)
+  unprompted — the 2e input data is already flowing, we just ignore it yet. `src/tci_server.[ch]` — own code on
   the piHPSDR LWS pattern (chat/superchat/tci subprotocols, 1 ms service loop,
   per-client queues, commands g_idle_add-dispatched to the GTK main loop, a
   500 ms reporter broadcasts state diffs so GUI-side changes reach clients
