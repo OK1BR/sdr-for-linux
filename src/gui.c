@@ -234,6 +234,8 @@ typedef struct {
   GtkWidget  *patrim_spin[11];    /* wattmeter-trim spin buttons in Preferences     */
   GtkWidget  *tune_btn;      /* TUNE toggle                                         */
   GtkWidget  *mox_btn;       /* MOX toggle (disabled until F6c)                     */
+  GtkWidget  *ps_btn;        /* PureSignal toggle (header bar, after MOX)           */
+  GtkWidget  *tt_btn;        /* two-tone test toggle (header bar; KEYS → .txkey)    */
   GtkWidget  *tx_label;      /* live TX power/SWR + refusal reason readout          */
   char        tx_reason[64]; /* last refusal/trip reason to flash                   */
   gint64      tx_reason_until;/* monotonic µs until which to show tx_reason         */
@@ -320,6 +322,7 @@ static void update_band_highlight(App *app) {
 }
 
 static void tx_push_cfg(App *app);   /* fwd: re-push TX cfg when the band changes */
+static void ps_apply(App *app);      /* fwd: PureSignal enable/att/SetPk → engine */
 
 /* On a band change, load that band's remembered dB window (out-of-band keeps
  * the current one). Called each tick — freq changes via buttons/tune/click. */
@@ -1346,6 +1349,14 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
           app->tx_reason_until = now + 4 * G_USEC_PER_SEC;
           gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->tune_btn), FALSE);
         }
+        /* Same pop-back for the two-tone toggle — its key intent must not
+         * outlive a trip/refusal (the handler then clears the engine flag). */
+        if (app->tt_btn && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(app->tt_btn))
+            && (ts.tripped || !ts.allowed)) {
+          g_strlcpy(app->tx_reason, ts.reason[0] ? ts.reason : "TX refused", sizeof app->tx_reason);
+          app->tx_reason_until = now + 4 * G_USEC_PER_SEC;
+          gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->tt_btn), FALSE);
+        }
         /* Footswitch keys without the MOX toggle — paint the button red while the
          * pedal transmits (red = transmitting, same as .txkey:checked). The intent
          * stays in the engine, so releasing the pedal unkeys even if this GUI tick
@@ -1577,6 +1588,12 @@ static void tx_update_mic(App *app) {
   /* MOX/voice is only meaningful with the mic open (a voice mode); grey it out for
    * CW/data, exactly like the mic itself. Button may not exist yet during startup. */
   if (app->mox_btn) { gtk_widget_set_sensitive(app->mox_btn, want); }
+  /* Two-tone works in any non-CW mode (the WDSP chain runs; in CW the feed
+   * loop emits the carrier instead). */
+  if (app->tt_btn) {
+    gtk_widget_set_sensitive(app->tt_btn,
+        app->tx_ready && app->mode != DEMOD_CWL && app->mode != DEMOD_CWU);
+  }
 }
 
 /* Push the operator's persisted TX settings into the runtime. Safe if TX isn't up.
@@ -2193,6 +2210,20 @@ static void on_band_clicked(GtkButton *b, gpointer data) {
   schedule_save(app);
 }
 
+/* PS — PureSignal on/off from the header bar (operational control, Richard's
+ * placement: after MOX). Attenuator + SetPk stay in Preferences. */
+static void on_ps_toggled(GtkToggleButton *b, gpointer data) {
+  App *app = (App *)data;
+  app->ps_enable = gtk_toggle_button_get_active(b) ? 1 : 0;
+  ps_apply(app); schedule_save(app);
+}
+/* 2T — two-tone test (⛔ delta #2: a keying intent; tx_gate decides). Never
+ * persisted — a test must not re-arm itself at startup. */
+static void on_tt_toggled(GtkToggleButton *b, gpointer data) {
+  App *app = (App *)data;
+  if (app->tx_ready) { tx_run_set_twotone(gtk_toggle_button_get_active(b) ? 1 : 0); }
+}
+
 /* Small "label: widget" pair for the strip. */
 static GtkWidget *labeled(const char *text, GtkWidget *w) {
   GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
@@ -2237,16 +2268,8 @@ static GtkWidget *build_controls(App *app) {
   populate_filter_dd(app);
   gtk_box_append(GTK_BOX(bar), labeled("Filter", app->filter_dd));
 
-  /* RF attenuator (front-end gain): ADC0 step attenuator, 0-31 dB, 0 = max sens. */
-  GtkWidget *att = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 31, 1);
-  gtk_range_set_value(GTK_RANGE(att), app->atten);      /* before wiring: no spurious send */
-  gtk_widget_set_size_request(att, 110, -1);
-  gtk_scale_set_draw_value(GTK_SCALE(att), TRUE);
-  gtk_scale_set_value_pos(GTK_SCALE(att), GTK_POS_RIGHT);
-  g_signal_connect(att, "value-changed", G_CALLBACK(on_atten_changed), app);
-  gtk_box_append(GTK_BOX(bar), labeled("Att", att));
-
-  /* AGC character + AGC-T (threshold/gain). NR·NB·ANF still placeholders below. */
+  /* AGC character (the AGC-T / Att / AF sliders live on the footer — the top
+   * bar got full once PS + 2T arrived; Richard's layout call 2026-07-10). */
   GtkWidget *agc_dd = gtk_drop_down_new_from_strings(
       (const char *[]){"Med","Fast","Slow","Long","Off", NULL});
   guint aidx = 0;
@@ -2256,14 +2279,6 @@ static GtkWidget *build_controls(App *app) {
   gtk_drop_down_set_selected(GTK_DROP_DOWN(agc_dd), aidx);   /* before wiring: no re-fire */
   g_signal_connect(agc_dd, "notify::selected", G_CALLBACK(on_agc_changed), app);
   gtk_box_append(GTK_BOX(bar), labeled("AGC", agc_dd));
-
-  GtkWidget *agct = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, -20, 120, 1);
-  gtk_range_set_value(GTK_RANGE(agct), app->agc_gain);       /* before wiring */
-  gtk_widget_set_size_request(agct, 110, -1);
-  gtk_scale_set_draw_value(GTK_SCALE(agct), TRUE);
-  gtk_scale_set_value_pos(GTK_SCALE(agct), GTK_POS_RIGHT);
-  g_signal_connect(agct, "value-changed", G_CALLBACK(on_agct_changed), app);
-  gtk_box_append(GTK_BOX(bar), labeled("AGC-T", agct));
 
   GtkWidget *nrbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_add_css_class(nrbox, "linked");
@@ -2307,6 +2322,26 @@ static GtkWidget *build_controls(App *app) {
   g_signal_connect(app->mox_btn,  "toggled", G_CALLBACK(on_tx_key_toggled), app);
   gtk_box_append(GTK_BOX(txbox), app->tune_btn);
   gtk_box_append(GTK_BOX(txbox), app->mox_btn);
+  /* PS — PureSignal on/off (after MOX per Richard). NOT .txkey: enabling PS
+   * never keys, it only arms calibration for the next keyed over. Att + SetPk
+   * stay in Preferences → PureSignal. */
+  app->ps_btn = gtk_toggle_button_new_with_label("PS");
+  gtk_widget_set_tooltip_text(app->ps_btn,
+      "PureSignal: TX predistortion — calibrates from the feedback while transmitting");
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->ps_btn), app->ps_enable != 0);
+  gtk_widget_set_sensitive(app->ps_btn, app->tx_ready);
+  g_signal_connect(app->ps_btn, "toggled", G_CALLBACK(on_ps_toggled), app);
+  gtk_box_append(GTK_BOX(txbox), app->ps_btn);
+  /* 2T — two-tone test. IS a key source (⛔ delta #2) → .txkey, red while on.
+   * Greyed in CW modes (the gate excludes them anyway). */
+  app->tt_btn = gtk_toggle_button_new_with_label("2T");
+  gtk_widget_add_css_class(app->tt_btn, "txkey");
+  gtk_widget_set_tooltip_text(app->tt_btn,
+      "Two-tone test: KEYS a 700+1900 Hz two-tone at the current drive (dummy load!)");
+  gtk_widget_set_sensitive(app->tt_btn,
+      app->tx_ready && app->mode != DEMOD_CWL && app->mode != DEMOD_CWU);
+  g_signal_connect(app->tt_btn, "toggled", G_CALLBACK(on_tt_toggled), app);
+  gtk_box_append(GTK_BOX(txbox), app->tt_btn);
   /* MON — TX monitor (self-listen) on/off. Operational control → on the bar
    * next to MOX (level stays in Preferences). Deliberately NOT .txkey: red
    * means "transmitting", and MON never keys. Works for CW sidetone too, so
@@ -2323,14 +2358,6 @@ static GtkWidget *build_controls(App *app) {
   app->tx_label = gtk_label_new("");   /* only flashes a refusal/trip reason; empty otherwise */
   gtk_widget_add_css_class(app->tx_label, "span");
   gtk_box_append(GTK_BOX(bar), app->tx_label);
-
-  /* AF volume — live. */
-  GtkWidget *vol = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, -40, 0, 1);
-  gtk_range_set_value(GTK_RANGE(vol), app->volume);
-  gtk_widget_set_size_request(vol, 130, -1);
-  gtk_scale_set_draw_value(GTK_SCALE(vol), FALSE);
-  g_signal_connect(vol, "value-changed", G_CALLBACK(on_volume_changed), app);
-  gtk_box_append(GTK_BOX(bar), labeled("AF", vol));
 
   GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_set_hexpand(spacer, TRUE);
@@ -2489,6 +2516,31 @@ static GtkWidget *build_bottom_controls(App *app) {
   app->step_dd = sdd;
   gtk_box_append(GTK_BOX(bar), labeled("Step", sdd));
 
+  /* RX gain controls — moved down from the top bar (Richard 2026-07-10: the
+   * top bar filled up once PS + 2T joined the TX group). Same handlers. */
+  GtkWidget *vol = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, -40, 0, 1);
+  gtk_range_set_value(GTK_RANGE(vol), app->volume);      /* before wiring: no send */
+  gtk_widget_set_size_request(vol, 110, -1);
+  gtk_scale_set_draw_value(GTK_SCALE(vol), FALSE);
+  g_signal_connect(vol, "value-changed", G_CALLBACK(on_volume_changed), app);
+  gtk_box_append(GTK_BOX(bar), labeled("AF", vol));
+
+  GtkWidget *att = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 31, 1);
+  gtk_range_set_value(GTK_RANGE(att), app->atten);       /* before wiring: no send */
+  gtk_widget_set_size_request(att, 100, -1);
+  gtk_scale_set_draw_value(GTK_SCALE(att), TRUE);
+  gtk_scale_set_value_pos(GTK_SCALE(att), GTK_POS_RIGHT);
+  g_signal_connect(att, "value-changed", G_CALLBACK(on_atten_changed), app);
+  gtk_box_append(GTK_BOX(bar), labeled("Att", att));
+
+  GtkWidget *agct = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, -20, 120, 1);
+  gtk_range_set_value(GTK_RANGE(agct), app->agc_gain);   /* before wiring: no send */
+  gtk_widget_set_size_request(agct, 110, -1);
+  gtk_scale_set_draw_value(GTK_SCALE(agct), TRUE);
+  gtk_scale_set_value_pos(GTK_SCALE(agct), GTK_POS_RIGHT);
+  g_signal_connect(agct, "value-changed", G_CALLBACK(on_agct_changed), app);
+  gtk_box_append(GTK_BOX(bar), labeled("AGC-T", agct));
+
   /* TX drive (MOX/voice, W) + tune drive (W) + antenna — operational TX controls. */
   GtkWidget *drv = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 100, 1);
   gtk_range_set_value(GTK_RANGE(drv), app->tx_drive_w);        /* before wiring: no send */
@@ -2628,11 +2680,10 @@ static void show_restart_toast(App *app) {
  * Preferences dialog closes (see on_prefs_closed). */
 static void restart_hint(App *app) { app->restart_pending = 1; }
 /* Preferences dialog closed → if a restart-to-apply setting changed, offer it now.
- * Also force the two-tone test OFF (piHPSDR does the same on PS-menu close) —
- * the toggle lives only in this dialog, so it must never outlive it keyed. */
+ * (The two-tone toggle lives on the always-visible header bar — red while
+ * keyed — so no force-off on close is needed anymore.) */
 static void on_prefs_closed(AdwDialog *dlg, gpointer data) {
   (void)dlg; App *app = (App *)data;
-  if (app->tx_ready) { tx_run_set_twotone(0); }
   if (app->restart_pending) { app->restart_pending = 0; show_restart_toast(app); }
 }
 
@@ -2834,11 +2885,6 @@ static void on_pref_tx_ptt_tip(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
 static void ps_apply(App *app) {
   if (app->tx_ready) { ps_set(app->ps_enable, app->ps_att, app->ps_setpk); }
 }
-static void on_pref_ps_enable(AdwSwitchRow *r, GParamSpec *p, gpointer data) {
-  (void)p; App *app = (App *)data;
-  app->ps_enable = adw_switch_row_get_active(r) ? 1 : 0;
-  ps_apply(app); schedule_save(app);
-}
 static void on_pref_ps_att(AdwSpinRow *r, GParamSpec *p, gpointer data) {
   (void)p; App *app = (App *)data;
   app->ps_att = (int)adw_spin_row_get_value(r);
@@ -2848,12 +2894,6 @@ static void on_pref_ps_setpk(AdwSpinRow *r, GParamSpec *p, gpointer data) {
   (void)p; App *app = (App *)data;
   app->ps_setpk = adw_spin_row_get_value(r);
   ps_apply(app); schedule_save(app);
-}
-/* Two-tone test — a keying intent (⛔ delta #2); tx_gate decides. Not persisted;
- * forced off when the Preferences dialog closes (on_prefs_closed). */
-static void on_pref_ps_tt(AdwSwitchRow *r, GParamSpec *p, gpointer data) {
-  (void)p; App *app = (App *)data;
-  if (app->tx_ready) { tx_run_set_twotone(adw_switch_row_get_active(r) ? 1 : 0); }
 }
 /* Mic noise gate (DEXP) — tames the PROC leveler pumping room noise up in the
  * gaps between words. Threshold is on the post-mic-gain signal. Applies live. */
@@ -3357,14 +3397,12 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, wm_exp);
   adw_preferences_page_add(p, g);
 
-  /* PureSignal (F7/PS-2) — minimal controls; two-tone + auto-att land in PS-3.
+  /* PureSignal (F7/PS-2) — parameters; the on/off + two-tone toggles live on
+   * the header bar next to MOX (Richard's layout call 2026-07-10).
    * ⛔ Delta #1 (approved): with PS on, the ADC0 attenuator runs at "PS TX
    * attenuator" during TX instead of the forced 31 dB (ADC1 stays 31). */
   g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "PureSignal",
-      "description", "TX predistortion — calibrates from the internal feedback while transmitting.", NULL));
-  adw_preferences_group_add(g, pref_switch("PureSignal",
-      "Continuous calibration while keyed (voice/tune; not CW) · live",
-      app->ps_enable, G_CALLBACK(on_pref_ps_enable), app));
+      "description", "TX predistortion parameters — the PS + 2T toggles sit on the header bar next to MOX.", NULL));
   adw_preferences_group_add(g, pref_spin("PS TX attenuator",
       "dB · ADC0 feedback level during TX — aim for feedback 140-165 · live",
       0, 31, app->ps_att, G_CALLBACK(on_pref_ps_att), app));
@@ -3376,9 +3414,6 @@ static AdwDialog *build_prefs(App *app) {
     g_signal_connect(row, "notify::value", G_CALLBACK(on_pref_ps_setpk), app);
     adw_preferences_group_add(g, row);
   }
-  adw_preferences_group_add(g, pref_switch("Two-tone test",
-      "⚠ KEYS the transmitter (700+1900 Hz at the current drive — dummy load!); off when this dialog closes",
-      0, G_CALLBACK(on_pref_ps_tt), app));
   adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);   /* Drive / Tune drive / Antenna live on the footer bar */
 
