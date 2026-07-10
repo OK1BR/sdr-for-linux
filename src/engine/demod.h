@@ -9,7 +9,11 @@
 #define SDRFL_ENGINE_DEMOD_H
 
 /* WDSP mode ids (match wdsp/RXA.h and piHPSDR mode.h). */
-enum { DEMOD_LSB = 0, DEMOD_USB = 1, DEMOD_CWL = 3, DEMOD_CWU = 4, DEMOD_AM = 6 };
+/* Mode ids == WDSP RXA/TXA mode enum (RXA.h): LSB 0, USB 1, DSB 2, CWL 3,
+ * CWU 4, FM 5, AM 6, DIGU 7, SPEC 8, DIGL 9, SAM 10, DRM 11. */
+enum { DEMOD_LSB = 0, DEMOD_USB = 1, DEMOD_CWL = 3, DEMOD_CWU = 4, DEMOD_AM = 6,
+       DEMOD_DIGU = 7, DEMOD_DIGL = 9 };
+#define DEMOD_NMODES 12   /* size for mode-indexed tables (ids are sparse) */
 
 /*
  * Set the RX audio OUTPUT sample rate (Hz) for the next demod_create(). This is

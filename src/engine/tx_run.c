@@ -54,11 +54,12 @@
 static void tx_passband(int mode, double lo, double hi, double *flo, double *fhi) {
   if (!(lo > 0.0) || !(hi > lo + 100.0)) { lo = TX_FLO; hi = TX_FHI; }  /* sane fallback */
   switch (mode) {
-  case DEMOD_LSB: *flo = -hi;    *fhi = -lo;   break;
+  case DEMOD_LSB:
+  case DEMOD_DIGL: *flo = -hi;    *fhi = -lo;   break;  /* piHPSDR: LSB+DIGL mirror */
   case DEMOD_CWL:
-  case DEMOD_CWU: *flo = -150.0; *fhi = 150.0; break;
-  case DEMOD_AM:  *flo = -hi;    *fhi = hi;    break;   /* carrier ± high */
-  default:        *flo = lo;     *fhi = hi;    break;   /* USB + future DIGU */
+  case DEMOD_CWU:  *flo = -150.0; *fhi = 150.0; break;
+  case DEMOD_AM:   *flo = -hi;    *fhi = hi;    break;  /* carrier ± high */
+  default:         *flo = lo;     *fhi = hi;    break;  /* USB + DIGU     */
   }
 }
 #define FEED_BLOCK    512      /* mic samples per fexchange0 (matches tx.c TX_BUFSIZE)   */

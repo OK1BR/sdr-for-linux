@@ -189,7 +189,7 @@ static gboolean send_initial_idle(gpointer data) {
   cli_send(c, "vfo_limits:0,61440000;");
   g_mutex_unlock(&s_lock);
   tci_sendf(c, "if_limits:-%d,%d;", s_ops.get_rate() / 2, s_ops.get_rate() / 2);
-  tci_sendf(c, "modulations_list:am,lsb,usb,cwl,cwu;");
+  tci_sendf(c, "modulations_list:am,lsb,usb,cw,cwl,cwu,digu,digl;");
   tci_sendf(c, "mute:%s;", s_ops.get_mute() ? "true" : "false");
   tci_sendf(c, "volume:%d;", (int)(s_ops.get_volume() - 0.5));
   tci_sendf(c, "dds:0,%lld;", s_ops.get_freq());
@@ -350,6 +350,14 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
     }
   } else if (strcmp(name, "cw_macros_stop") == 0) {
     s_ops.cw_stop();
+  } else if (strcmp(name, "digu_offset") == 0 || strcmp(name, "digl_offset") == 0) {
+    /* Digimode display offsets: stored + echoed so clients see a consistent
+     * value; we do not shift the VFO (no CTUN yet — audio carries the full
+     * passband either way). */
+    static int s_dig_off[2];
+    int isl = (name[3] == 'l');
+    if (ac > 0 && av[0][0]) { s_dig_off[isl] = atoi(av[0]); }
+    tci_broadcastf("%s:%d;", isl ? "digl_offset" : "digu_offset", s_dig_off[isl]);
   } else if (strcmp(name, "audio_samplerate") == 0) {
     if (ac > 0 && av[0][0]) {
       int r = atoi(av[0]);

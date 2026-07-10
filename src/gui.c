@@ -121,7 +121,7 @@ typedef struct {
 
   Waterfall  *wf;
   GtkWidget  *area;
-  GtkWidget  *mode_btns[7];  /* toggle per DEMOD_* id (keys ↔ buttons in sync) */
+  GtkWidget  *mode_btns[DEMOD_NMODES];  /* toggle per DEMOD_* id (keys ↔ buttons) */
   double      zoom;          /* current display zoom (1 = full span)           */
   long long   tune_step;     /* scroll-tuning step (Hz); freq snaps to it       */
   GtkWidget  *step_dd;       /* footer step selector                           */
@@ -129,8 +129,8 @@ typedef struct {
   double      pending_zoom;  /* slider target; applied ≤1×/frame in tick_cb    */
   int         zoom_dirty;    /* pending_zoom needs applying                    */
   int         filter_idx;    /* selected preset (0-9) or Var (10=Var1, 11=Var2)  */
-  int         filter_by_mode[8]; /* remembered preset per DEMOD_* mode (-1=default)*/
-  int         var_low[8][2], var_high[8][2];  /* editable Var1/Var2 per mode (Hz)  */
+  int         filter_by_mode[DEMOD_NMODES]; /* remembered preset per mode (-1=dflt) */
+  int         var_low[DEMOD_NMODES][2], var_high[DEMOD_NMODES][2]; /* Var1/2 (Hz)   */
   int         drag_edge;     /* dragging a Var passband edge: 0 none, 1 low, 2 high */
   double      drag_begin_x;  /* pointer x at drag-begin (for edge drag)           */
   double      pan;           /* off-centre pan [-1,1]: 0 = VFO centred (zoom>1 only) */
@@ -398,12 +398,14 @@ static const FilterPreset FILT_AM[] = {
 static const FilterPreset *mode_filters(int mode, int *n, int *deflt) {
   *n = 10;
   switch (mode) {
-    case DEMOD_LSB: *deflt = 5; return FILT_LSB;   /* 2.7k */
-    case DEMOD_USB: *deflt = 5; return FILT_USB;   /* 2.7k */
+    case DEMOD_LSB:  *deflt = 5; return FILT_LSB;   /* 2.7k */
+    case DEMOD_USB:  *deflt = 5; return FILT_USB;   /* 2.7k */
     case DEMOD_CWL:
-    case DEMOD_CWU: *deflt = 4; return FILT_CW;    /* 500  */
-    case DEMOD_AM:  *deflt = 4; return FILT_AM;    /* 6.6k */
-    default:        *deflt = 5; return FILT_USB;
+    case DEMOD_CWU:  *deflt = 4; return FILT_CW;    /* 500  */
+    case DEMOD_AM:   *deflt = 4; return FILT_AM;    /* 6.6k */
+    case DEMOD_DIGU: *deflt = 2; return FILT_USB;   /* 3.8k — FT8 slots up to ~3.1 kHz */
+    case DEMOD_DIGL: *deflt = 2; return FILT_LSB;   /* 3.8k mirrored                   */
+    default:         *deflt = 5; return FILT_USB;
   }
 }
 
@@ -422,11 +424,13 @@ static void filter_lohi(App *app, int mode, int idx, int *lo, int *hi) {
 
 /* Parse a mode name (USB/LSB/CWU/CWL/AM) to a DEMOD_* id; -1 if unknown/NULL. */
 static int mode_from_name(const char *m) {
-  if      (m && !strcasecmp(m, "usb")) return DEMOD_USB;
-  else if (m && !strcasecmp(m, "lsb")) return DEMOD_LSB;
-  else if (m && !strcasecmp(m, "cwu")) return DEMOD_CWU;
-  else if (m && !strcasecmp(m, "cwl")) return DEMOD_CWL;
-  else if (m && !strcasecmp(m, "am"))  return DEMOD_AM;
+  if      (m && !strcasecmp(m, "usb"))  return DEMOD_USB;
+  else if (m && !strcasecmp(m, "lsb"))  return DEMOD_LSB;
+  else if (m && !strcasecmp(m, "cwu"))  return DEMOD_CWU;
+  else if (m && !strcasecmp(m, "cwl"))  return DEMOD_CWL;
+  else if (m && !strcasecmp(m, "am"))   return DEMOD_AM;
+  else if (m && !strcasecmp(m, "digu")) return DEMOD_DIGU;
+  else if (m && !strcasecmp(m, "digl")) return DEMOD_DIGL;
   return -1;
 }
 
@@ -1316,14 +1320,14 @@ static void app_to_settings(const App *app, Settings *s) {
   s->tx_pan_low  = app->tx_pan_low;
   /* per-mode filter memory → "modeid=idx;..." */
   char *mp = s->mode_filt; size_t mrem = sizeof(s->mode_filt); mp[0] = '\0';
-  for (int i = 0; i < 8; i++) {
+  for (int i = 0; i < DEMOD_NMODES; i++) {
     int n = snprintf(mp, mrem, "%s%d=%d", i ? ";" : "", i, app->filter_by_mode[i]);
     if (n < 0 || (size_t)n >= mrem) { break; }
     mp += n; mrem -= (size_t)n;
   }
   /* Var1/Var2 per mode → "modeid/v1lo/v1hi/v2lo/v2hi;..." */
   char *vp = s->var_filt; size_t vrem = sizeof(s->var_filt); vp[0] = '\0';
-  for (int i = 0; i < 8; i++) {
+  for (int i = 0; i < DEMOD_NMODES; i++) {
     int n = snprintf(vp, vrem, "%s%d/%d/%d/%d/%d", i ? ";" : "", i,
                      app->var_low[i][0], app->var_high[i][0],
                      app->var_low[i][1], app->var_high[i][1]);
@@ -2013,12 +2017,13 @@ static GtkWidget *build_controls(App *app) {
   gtk_widget_add_css_class(bar, "controlbar");
 
   /* Mode — segmented, grouped; keep a handle per DEMOD id for key sync. */
-  static const int         mids[]   = {DEMOD_USB, DEMOD_LSB, DEMOD_CWL, DEMOD_CWU, DEMOD_AM};
-  static const char *const mlabels[] = {"USB", "LSB", "CWL", "CWU", "AM"};
+  static const int         mids[]   = {DEMOD_USB, DEMOD_LSB, DEMOD_CWL, DEMOD_CWU, DEMOD_AM,
+                                       DEMOD_DIGU, DEMOD_DIGL};
+  static const char *const mlabels[] = {"USB", "LSB", "CWL", "CWU", "AM", "DIGU", "DIGL"};
   GtkWidget *modebox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_add_css_class(modebox, "linked");
   GtkWidget *group = NULL;
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < (int)G_N_ELEMENTS(mids); i++) {
     GtkWidget *b = gtk_toggle_button_new_with_label(mlabels[i]);
     gtk_widget_add_css_class(b, "mode");
     g_object_set_data(G_OBJECT(b), "mode", GINT_TO_POINTER(mids[i]));
@@ -2655,12 +2660,14 @@ static void tci_set_freq(long long f) {
 }
 static const char *tci_get_mode(void) {
   switch (tci_app->mode) {
-    case DEMOD_LSB: return "lsb";
-    case DEMOD_USB: return "usb";
-    case DEMOD_CWL: return "cwl";
-    case DEMOD_CWU: return "cw";     /* ExpertSDR calls the USB-side CW "cw" */
-    case DEMOD_AM:  return "am";
-    default:        return "usb";
+    case DEMOD_LSB:  return "lsb";
+    case DEMOD_USB:  return "usb";
+    case DEMOD_CWL:  return "cwl";
+    case DEMOD_CWU:  return "cw";    /* ExpertSDR calls the USB-side CW "cw" */
+    case DEMOD_AM:   return "am";
+    case DEMOD_DIGU: return "digu";
+    case DEMOD_DIGL: return "digl";
+    default:         return "usb";
   }
 }
 static int tci_set_mode(const char *m) {
@@ -2670,6 +2677,8 @@ static int tci_set_mode(const char *m) {
   else if (strcmp(m, "cw") == 0 || strcmp(m, "cwu") == 0) { mode = DEMOD_CWU; }
   else if (strcmp(m, "cwl") == 0) { mode = DEMOD_CWL; }
   else if (strcmp(m, "am") == 0)  { mode = DEMOD_AM; }
+  else if (strcmp(m, "digu") == 0) { mode = DEMOD_DIGU; }
+  else if (strcmp(m, "digl") == 0) { mode = DEMOD_DIGL; }
   else { return -1; }
   if (tci_app->mode_btns[mode]) {
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(tci_app->mode_btns[mode]), TRUE);
@@ -3423,7 +3432,7 @@ static void start_radio(App *app) {
       for (int i = 0; i < NBANDS; i++) {
         if (strcmp(tok, BANDS[i].key) == 0) {
           app->band_high[i] = hi; app->band_low[i] = lo;
-          if (md >= 0 && md < 8) { app->band_mode[i] = md; }
+          if (md >= 0 && md < DEMOD_NMODES) { app->band_mode[i] = md; }
           if (bf >= BANDS[i].lo && bf <= BANDS[i].hi) { app->band_freq[i] = bf; }
           break;
         }
@@ -3513,17 +3522,17 @@ static void start_radio(App *app) {
   mode_filters(mode, &nf, &dfl);
   /* Var1/Var2 editable filters: seed per mode (Var1 = default preset, Var2 =
    * widest), then apply saved "modeid/v1lo/v1hi/v2lo/v2hi;..." overrides. */
-  for (int i = 0; i < 8; i++) {
+  for (int i = 0; i < DEMOD_NMODES; i++) {
     int nn, dd; const FilterPreset *f = mode_filters(i, &nn, &dd);
     app->var_low[i][0] = f[dd].low; app->var_high[i][0] = f[dd].high;
     app->var_low[i][1] = f[0].low;  app->var_high[i][1] = f[0].high;
   }
-  char vfbuf[256];
+  char vfbuf[512];
   g_strlcpy(vfbuf, st.var_filt, sizeof vfbuf);
   char *vfsv = NULL;
   for (char *tok = strtok_r(vfbuf, ";", &vfsv); tok; tok = strtok_r(NULL, ";", &vfsv)) {
     int mo, a, b, c, d;
-    if (sscanf(tok, "%d/%d/%d/%d/%d", &mo, &a, &b, &c, &d) == 5 && mo >= 0 && mo < 8 && b > a && d > c) {
+    if (sscanf(tok, "%d/%d/%d/%d/%d", &mo, &a, &b, &c, &d) == 5 && mo >= 0 && mo < DEMOD_NMODES && b > a && d > c) {
       app->var_low[mo][0] = a; app->var_high[mo][0] = b;
       app->var_low[mo][1] = c; app->var_high[mo][1] = d;
     }
@@ -3531,14 +3540,14 @@ static void start_radio(App *app) {
   app->filter_idx = (st.filter >= 0 && st.filter < nf + 2) ? st.filter : dfl;  /* saved or default */
   /* Per-mode filter memory: seed every mode with its default, the current mode
    * with the loaded filter, then apply the saved "id=idx;..." overrides. */
-  for (int i = 0; i < 8; i++) { int nn, dd; mode_filters(i, &nn, &dd); app->filter_by_mode[i] = dd; }
+  for (int i = 0; i < DEMOD_NMODES; i++) { int nn, dd; mode_filters(i, &nn, &dd); app->filter_by_mode[i] = dd; }
   app->filter_by_mode[mode] = app->filter_idx;
   char mfbuf[128];
   g_strlcpy(mfbuf, st.mode_filt, sizeof mfbuf);
   char *mfsv = NULL;
   for (char *tok = strtok_r(mfbuf, ";", &mfsv); tok; tok = strtok_r(NULL, ";", &mfsv)) {
     int mid, fi;
-    if (sscanf(tok, "%d=%d", &mid, &fi) == 2 && mid >= 0 && mid < 8) {
+    if (sscanf(tok, "%d=%d", &mid, &fi) == 2 && mid >= 0 && mid < DEMOD_NMODES) {
       int nn, dd; mode_filters(mid, &nn, &dd);
       if (fi >= 0 && fi < nn + 2) { app->filter_by_mode[mid] = fi; }
     }
