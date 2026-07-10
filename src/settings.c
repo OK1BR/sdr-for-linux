@@ -82,6 +82,8 @@ int settings_load(Settings *s) {
       s->band_edges = g_key_file_get_integer(kf, GROUP_DISPLAY, "band_edges", NULL);
     if (g_key_file_has_key(kf, GROUP_DISPLAY, "spots", NULL))
       s->show_spots = g_key_file_get_integer(kf, GROUP_DISPLAY, "spots", NULL);
+    if (g_key_file_has_key(kf, GROUP_DISPLAY, "spot_ttl", NULL))
+      s->spot_ttl = g_key_file_get_integer(kf, GROUP_DISPLAY, "spot_ttl", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "region", NULL)) {
       char *r = g_key_file_get_string(kf, GROUP_RX, "region", NULL);
       if (r) { g_strlcpy(s->region, r, sizeof(s->region)); g_free(r); }
@@ -233,6 +235,7 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_DISPLAY, "palette",    s->palette);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "band_edges", s->band_edges);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "spots",      s->show_spots);
+  g_key_file_set_integer(kf, GROUP_DISPLAY, "spot_ttl",   s->spot_ttl);
   g_key_file_set_string (kf, GROUP_RX,      "region",     s->region);
   g_key_file_set_string (kf, GROUP_RX,      "country",    s->country);
   g_key_file_set_string (kf, GROUP_DISPLAY, "band_levels", s->band_levels);

@@ -178,6 +178,8 @@ typedef struct {
   }           spots[MAX_SPOTS];
   int         nspots;
   int         show_spots;    /* draw the spot overlay (persisted)              */
+  int         spot_ttl_min;  /* minutes before an unrefreshed spot expires
+                                (persisted; 10 = casual DX, 1 = contests)      */
   GtkWidget  *win;           /* top-level window (for size persistence)           */
   GtkWidget  *toast_overlay; /* AdwToastOverlay wrapping the content (restart hint) */
   int         restart_pending;     /* a restart-to-apply setting changed this session */
@@ -558,10 +560,10 @@ static void draw_band_edges(cairo_t *cr, App *app, int w, int ph) {
 
 /* DX-spot overlay (F6d-2e): callsign labels in up to three stacked rows under
  * the frequency ruler + a tick down toward the signal, coloured by the
- * client's ARGB. Spots expire after SPOT_TTL (SDC re-announces live ones);
- * each drawn label remembers its hit box for click-to-tune. Same freq→x
- * frame as draw_band_edges. */
-#define SPOT_TTL_US (10ll * 60 * 1000000)
+ * client's ARGB. Spots expire after spot_ttl_min without a re-announce (SDC
+ * re-announces live ones; contests want ~1 min, casual DX ~10); each drawn
+ * label remembers its hit box for click-to-tune. Same freq→x frame as
+ * draw_band_edges. */
 static int spot_cmp_hz(const void *a, const void *b) {
   long long d = ((const struct spot *)a)->hz - ((const struct spot *)b)->hz;
   return d < 0 ? -1 : (d > 0 ? 1 : 0);
@@ -569,9 +571,10 @@ static int spot_cmp_hz(const void *a, const void *b) {
 static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
   if (!app->show_spots || app->nspots <= 0 || w < 2 || app->rate <= 0 || app->zoom <= 0.0) { return; }
   gint64 now = g_get_monotonic_time();
+  gint64 ttl = (gint64)(app->spot_ttl_min > 0 ? app->spot_ttl_min : 10) * 60000000ll;
   int n = 0;                                   /* prune expired in place */
   for (int i = 0; i < app->nspots; i++) {
-    if (now - app->spots[i].ts <= SPOT_TTL_US) {
+    if (now - app->spots[i].ts <= ttl) {
       if (n != i) { app->spots[n] = app->spots[i]; }
       n++;
     }
@@ -1438,6 +1441,7 @@ static void app_to_settings(const App *app, Settings *s) {
   s->palette    = app->palette;
   s->band_edges = app->show_band_edges;
   s->show_spots = app->show_spots;
+  s->spot_ttl   = app->spot_ttl_min;
   g_strlcpy(s->region,  bp_region_key(app->bp_region),   sizeof(s->region));
   g_strlcpy(s->country, bp_country_key(app->bp_country), sizeof(s->country));
   s->win_w   = app->win_w;
@@ -2668,6 +2672,12 @@ static void on_pref_spots(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
   schedule_save(app);
   if (app->area) { gtk_widget_queue_draw(app->area); }
 }
+static void on_pref_spot_ttl(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->spot_ttl_min = (int)adw_spin_row_get_value(r);
+  schedule_save(app);
+  if (app->area) { gtk_widget_queue_draw(app->area); }   /* prune right away */
+}
 static void on_pref_rate(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   (void)ps;
   App *app = (App *)data;
@@ -3408,6 +3418,9 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, pref_switch("DX spots (TCI)",
       "Callsigns from a connected skimmer/cluster client (SDC); click a spot to tune",
       app->show_spots, G_CALLBACK(on_pref_spots), app));
+  adw_preferences_group_add(g, pref_spin("Spot lifetime",
+      "minutes before an unrefreshed spot expires · 1-2 for contests, 10 for DX · live",
+      1, 60, app->spot_ttl_min, G_CALLBACK(on_pref_spot_ttl), app));
   adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);
 
@@ -3549,7 +3562,7 @@ static void start_radio(App *app) {
                   .pan_high = PAN_HIGH_DEFAULT, .pan_low = PAN_LOW_DEFAULT,
                   .db_grid = 1, .db_scale = 1, .freq_grid = 1, .freq_scale = 1,
                   .filter_wf = 1, .filter_op = 60, .avg_spec = -1, .avg_wf = -1,
-                  .palette = 0, .band_edges = 1, .show_spots = 1,
+                  .palette = 0, .band_edges = 1, .show_spots = 1, .spot_ttl = 10,
                   .tx_pa = 0, .tx_ant = 0, .tx_drive = 25.0, .tx_tune = 10.0, .tx_swr = 3.0,
                   .mic_gain = 0.0, .audio_rate = 48000,
                   .tx_gate_db = GATE_DB_DFLT, .tx_mon_db = MON_DB_DFLT,
@@ -3738,6 +3751,7 @@ static void start_radio(App *app) {
   waterfall_set_palette(app->tx_wf, app->palette);
   app->show_band_edges = st.band_edges ? 1 : 0;
   app->show_spots      = st.show_spots ? 1 : 0;
+  app->spot_ttl_min    = (st.spot_ttl >= 1 && st.spot_ttl <= 60) ? st.spot_ttl : 10;
   { int r = bp_region_from_key(st.region);  app->bp_region  = r >= 0 ? r : 0; }
   { int c = bp_country_from_key(st.country); app->bp_country = c >= 0 ? c : 0; }
   app->win_w   = st.win_w   > 0 ? st.win_w : 1320;
