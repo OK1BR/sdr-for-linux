@@ -203,6 +203,16 @@ void ps_set_oneshot(int oneshot) {
   }
 }
 
+void ps_recal(void) {
+  if (!s_started) { return; }
+  g_mutex_lock(&s_lock);
+  int on = s_enable;
+  g_mutex_unlock(&s_lock);
+  if (!on) { return; }
+  SetPSControl(s_ch, 1, 0, 0, 0);    /* drop the held/stale correction */
+  ps_resume();                       /* re-arm per mode (one cal / automode) */
+}
+
 void ps_key(int keyed) {
   if (!s_started) { return; }
   int prev = g_atomic_int_get(&s_keyed);

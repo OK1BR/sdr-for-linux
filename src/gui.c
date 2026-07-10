@@ -347,6 +347,8 @@ static void band_apply(App *app) {
   /* The new band has its own PA calibration → recompute the drive byte. Guarded
    * internally by tx_ready; no-op until TX is up. */
   tx_push_cfg(app);
+  /* New band = new PA working point → a held PS correction is stale; re-arm. */
+  if (app->ps_enable) { ps_recal(); }
 }
 
 /* Supply-voltage calibration: V = k * raw_adc1. No G1 divider is documented, so
@@ -2467,6 +2469,9 @@ static void on_drive_changed(GtkRange *r, gpointer data) {
   app->tx_drive_w = gtk_range_get_value(r);
   if (digi_drive_clamp(app)) { return; }  /* re-fires with the clamped value */
   tx_push_cfg(app); schedule_save(app);
+  /* A held PS correction is only valid at the power it was calibrated for —
+   * re-arm on drive change (Richard's ask: piHPSDR-like adaptation). */
+  if (app->ps_enable) { ps_recal(); }
 }
 static void on_tune_drive_changed(GtkRange *r, gpointer data) {
   App *app = (App *)data;
