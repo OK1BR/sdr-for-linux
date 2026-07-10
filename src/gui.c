@@ -48,6 +48,7 @@
 #include "tci_server.h"
 #include "tx_run.h"
 #include "tx.h"   /* tx_dsp_in_rate() — mic capture rate must match the WDSP TX input */
+#include "ps.h"   /* PureSignal runtime — enable/att/SetPk from Preferences (F7/PS-2) */
 
 #define ENGINE_PIXELS 2048
 #define ENGINE_FPS    25
@@ -210,6 +211,9 @@ typedef struct {
   double      tx_gate_db;    /* gate threshold dBFS post-mic-gain (persisted)       */
   int         tx_ptt_enabled;/* footswitch: radio PTT input = MOX (persisted)       */
   int         tx_ptt_tip;    /* PTT contact on mic-jack tip vs ring (persisted)     */
+  int         ps_enable;     /* PureSignal on/off (persisted)                       */
+  int         ps_att;        /* PS ADC0 feedback attenuator during TX, dB (persisted)*/
+  double      ps_setpk;      /* PS SetPk — expected full-scale envelope (persisted) */
   char        picked_ip[64]; /* radio chosen in the startup picker ("" = none)      */
   int         tci_enable;    /* TCI server on/off (persisted, F6d-2a)               */
   int         tci_port;      /* TCI server port (persisted; ExpertSDR default 40001)*/
@@ -1407,6 +1411,9 @@ static void app_to_settings(const App *app, Settings *s) {
   s->tx_pa    = app->tx_pa_enabled;
   s->tx_ptt   = app->tx_ptt_enabled;
   s->tx_ptt_tip = app->tx_ptt_tip;
+  s->ps_enable = app->ps_enable;
+  s->ps_att    = app->ps_att;
+  s->ps_setpk  = app->ps_setpk;
   s->tx_ant   = app->tx_antenna;
   s->tx_drive = app->tx_drive_w;
   s->tx_digi_max = app->tx_digi_max_w;
@@ -2799,6 +2806,26 @@ static void on_pref_tx_ptt_tip(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
   p2_set_ptt_input(app->tx_ptt_enabled, app->tx_ptt_tip);
   schedule_save(app);
 }
+/* PureSignal (F7/PS-2) — enable/att/SetPk into the PS runtime, live. The wire
+ * side only ever changes while keyed through tx_gate (approved delta #1). */
+static void ps_apply(App *app) {
+  if (app->tx_ready) { ps_set(app->ps_enable, app->ps_att, app->ps_setpk); }
+}
+static void on_pref_ps_enable(AdwSwitchRow *r, GParamSpec *p, gpointer data) {
+  (void)p; App *app = (App *)data;
+  app->ps_enable = adw_switch_row_get_active(r) ? 1 : 0;
+  ps_apply(app); schedule_save(app);
+}
+static void on_pref_ps_att(AdwSpinRow *r, GParamSpec *p, gpointer data) {
+  (void)p; App *app = (App *)data;
+  app->ps_att = (int)adw_spin_row_get_value(r);
+  ps_apply(app); schedule_save(app);
+}
+static void on_pref_ps_setpk(AdwSpinRow *r, GParamSpec *p, gpointer data) {
+  (void)p; App *app = (App *)data;
+  app->ps_setpk = adw_spin_row_get_value(r);
+  ps_apply(app); schedule_save(app);
+}
 /* Mic noise gate (DEXP) — tames the PROC leveler pumping room noise up in the
  * gaps between words. Threshold is on the post-mic-gain signal. Applies live. */
 static void on_pref_tx_gate(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
@@ -3300,6 +3327,27 @@ static AdwDialog *build_prefs(App *app) {
   adw_expander_row_add_row(ADW_EXPANDER_ROW(wm_exp), reset_row);
   adw_preferences_group_add(g, wm_exp);
   adw_preferences_page_add(p, g);
+
+  /* PureSignal (F7/PS-2) — minimal controls; two-tone + auto-att land in PS-3.
+   * ⛔ Delta #1 (approved): with PS on, the ADC0 attenuator runs at "PS TX
+   * attenuator" during TX instead of the forced 31 dB (ADC1 stays 31). */
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "PureSignal",
+      "description", "TX predistortion — calibrates from the internal feedback while transmitting.", NULL));
+  adw_preferences_group_add(g, pref_switch("PureSignal",
+      "Continuous calibration while keyed (voice/tune; not CW) · live",
+      app->ps_enable, G_CALLBACK(on_pref_ps_enable), app));
+  adw_preferences_group_add(g, pref_spin("PS TX attenuator",
+      "dB · ADC0 feedback level during TX — aim for feedback 140-165 · live",
+      0, 31, app->ps_att, G_CALLBACK(on_pref_ps_att), app));
+  {
+    GtkAdjustment *a = gtk_adjustment_new(app->ps_setpk, 0.01, 1.01, 0.005, 0.05, 0);
+    GtkWidget *row = g_object_new(ADW_TYPE_SPIN_ROW, "title", "PS SetPk",
+        "subtitle", "expected full-scale TX envelope (G1 start 0.2899; measure via GetPk) · live",
+        "adjustment", a, "digits", 4, NULL);
+    g_signal_connect(row, "notify::value", G_CALLBACK(on_pref_ps_setpk), app);
+    adw_preferences_group_add(g, row);
+  }
+  adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);   /* Drive / Tune drive / Antenna live on the footer bar */
 
   /* CW — own page (F6d-1c): keyer + sidetone, like piHPSDR's CW menu. All live. */
@@ -3701,6 +3749,9 @@ static void start_radio(App *app) {
   app->tx_ptt_enabled = st.tx_ptt ? 1 : 0;
   app->tx_ptt_tip     = st.tx_ptt_tip ? 1 : 0;
   p2_set_ptt_input(app->tx_ptt_enabled, app->tx_ptt_tip);  /* atomics; safe pre-connect */
+  app->ps_enable = st.ps_enable ? 1 : 0;
+  app->ps_att    = st.ps_att < 0 ? 0 : (st.ps_att > 31 ? 31 : st.ps_att);
+  app->ps_setpk  = (st.ps_setpk >= 0.01 && st.ps_setpk <= 1.01) ? st.ps_setpk : 0.2899;
   app->tx_mon        = st.tx_mon ? 1 : 0;
   app->tx_mon_db     = st.tx_mon_db < MON_DB_MIN ? MON_DB_MIN : (st.tx_mon_db > MON_DB_MAX ? MON_DB_MAX : st.tx_mon_db);
   app->tx_flo        = st.tx_flo < TXF_LO_MIN ? TXF_LO_MIN : (st.tx_flo > TXF_LO_MAX ? TXF_LO_MAX : st.tx_flo);
@@ -3946,6 +3997,7 @@ static void start_radio(App *app) {
     demod_set_monitor_gain(app->tx_mon_db);
     tx_run_set_span(tx_span_hz(app));  /* TX span ← saved zoom, matching the RX axis */
     cw_push(app);   /* persisted CW keyer speed, hang + sidetone (F6d-1c) */
+    ps_apply(app);  /* persisted PureSignal (F7/PS-2; off by default)     */
     tci_apply(app); /* persisted TCI server (F6d-2a; off by default)      */
     tx_update_mic(app);   /* open the mic now if we start in a voice mode (no warm-up lag) */
   } else {

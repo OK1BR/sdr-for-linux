@@ -65,6 +65,9 @@ void tx_dsp_set_gate(int on, double thresh_db);
  */
 int  tx_dsp_in_rate(void);
 
+/* WDSP TXA channel id (-1 before tx_dsp_create) — PureSignal targets it. */
+int  tx_dsp_channel(void);
+
 /*
  * Live WDSP TX level meters, in dB (GetTXAMeter, like piHPSDR): `mic_pk_db` is the
  * mic-input peak in dBFS (≤ 0; -99 floor; measured before the noise gate),

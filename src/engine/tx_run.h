@@ -62,6 +62,11 @@ typedef struct {
   double mic_pk;    /* mic-input peak, dBFS (≤ 0; -99 floor); valid while keyed */
   double alc_gain;  /* ALC gain reduction, dB (0 = none, negative = clamping)   */
   double lvlr_gain; /* leveler makeup gain, dB (0..+8; valid only with PROC on) */
+  /* PureSignal (F7/PS-2; zeros when the setting is off): */
+  int    ps_on;         /* PS enabled                                           */
+  int    ps_correcting; /* correction applied right now (GetPSInfo[14])         */
+  int    ps_state;      /* calcc state machine (GetPSInfo[15], 0=Reset..9)      */
+  int    ps_fdbk;       /* feedback level (GetPSInfo[4]) — ideal ~152, 140-165  */
   char   reason[64];/* "" or why refused/tripped (for the UI/log)          */
 } tx_run_status;
 

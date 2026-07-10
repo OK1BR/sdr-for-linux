@@ -146,6 +146,12 @@ int settings_load(Settings *s) {
       s->tx_ptt = g_key_file_get_integer(kf, GROUP_TX, "ptt_pedal", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "ptt_tip", NULL))
       s->tx_ptt_tip = g_key_file_get_integer(kf, GROUP_TX, "ptt_tip", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "ps_enable", NULL))
+      s->ps_enable = g_key_file_get_integer(kf, GROUP_TX, "ps_enable", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "ps_att", NULL))
+      s->ps_att = g_key_file_get_integer(kf, GROUP_TX, "ps_att", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "ps_setpk", NULL))
+      s->ps_setpk = g_key_file_get_double(kf, GROUP_TX, "ps_setpk", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "monitor", NULL))
       s->tx_mon = g_key_file_get_integer(kf, GROUP_TX, "monitor", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "monitor_db", NULL))
@@ -258,6 +264,9 @@ int settings_save(const Settings *s) {
   g_key_file_set_double (kf, GROUP_TX,     "gate_db",   s->tx_gate_db);
   g_key_file_set_integer(kf, GROUP_TX,     "ptt_pedal", s->tx_ptt);
   g_key_file_set_integer(kf, GROUP_TX,     "ptt_tip",   s->tx_ptt_tip);
+  g_key_file_set_integer(kf, GROUP_TX,     "ps_enable", s->ps_enable);
+  g_key_file_set_integer(kf, GROUP_TX,     "ps_att",    s->ps_att);
+  g_key_file_set_double (kf, GROUP_TX,     "ps_setpk",  s->ps_setpk);
   g_key_file_set_integer(kf, GROUP_TX,     "monitor",   s->tx_mon);
   g_key_file_set_double (kf, GROUP_TX,     "monitor_db", s->tx_mon_db);
   g_key_file_set_integer(kf, GROUP_TX,     "cw_wpm",    s->cw_wpm);

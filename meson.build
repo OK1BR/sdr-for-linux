@@ -84,6 +84,7 @@ executable('sdr-for-linux',
     'src/engine/tx_gate.c',   # TX safety gate (F4)
     'src/engine/tx_analyzer.c', # TX panadapter analyzer (F6a)
     'src/engine/tx_run.c',    # TX runtime thread — GUI keying (F6a)
+    'src/engine/ps.c',        # PureSignal runtime — WDSP calcc wiring (F7/PS-2)
     'src/engine/cw_gen.c',    # CW Morse envelope generator (F6d)
   ] + engine_sources + ui_sources,
   include_directories : [vendor_inc, src_inc, engine_inc],

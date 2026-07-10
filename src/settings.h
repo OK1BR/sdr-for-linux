@@ -71,6 +71,9 @@ typedef struct {
   double    tx_gate_db; /* gate threshold (dBFS, post-mic-gain; -60..-10)         */
   int       tx_ptt;     /* footswitch: radio PTT input keys like MOX (0/1)        */
   int       tx_ptt_tip; /* PTT contact on mic-jack tip (0 = ring, Apache default) */
+  int       ps_enable;  /* PureSignal on/off (F7/PS-2)                            */
+  int       ps_att;     /* PS ADC0 feedback attenuator during TX (dB, 0-31)       */
+  double    ps_setpk;   /* PS SetPk (0.01-1.01; 0 = unset → default 0.2899)       */
   int       tx_mon;     /* TX monitor (self-listen: voice mic / CW sidetone)      */
   double    tx_mon_db;  /* monitor level (dB, -40..0)                             */
   double    tx_flo;     /* TX audio filter low edge (Hz; default 150)             */

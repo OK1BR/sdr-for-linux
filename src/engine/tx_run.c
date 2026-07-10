@@ -25,6 +25,7 @@
 #include "tx_run.h"
 #include "mic_pw.h"   /* live host-soundcard mic → exciter while MOX is keyed (F6c) */
 #include "cw_gen.h"   /* CW Morse envelope → keyed carrier (F6d)                    */
+#include "ps.h"       /* PureSignal runtime — key hand-off + status (F7/PS-2)       */
 #include "demod.h"    /* DEMOD_* mode ids + demod_monitor_push (TX monitor)         */
 
 #define CW_SIDETONE_HZ  700     /* sidetone pitch default, Hz — tx_run_set_sidetone      */
@@ -225,11 +226,24 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     tx_dsp_set_mode(cfg.mode, flo, fhi);   /* live TX-filter change while keyed —
                                               WDSP setters no-op when unchanged */
     if (++s_log_ctr % 20 == 0) {   /* ~1 Hz while keyed */
-      fprintf(stderr, "tx: fwd=%.2f W  rev=%.2f W  SWR=%.2f  (fwd_raw=%d rev_raw=%d)\n",
-              tx_meter_fwd_w(), tx_meter_rev_w(), tx_meter_swr(), t.fwd_raw, t.rev_raw);
+      ps_status pl; ps_get_status(&pl);
+      if (pl.on) {
+        fprintf(stderr, "tx: fwd=%.2f W  rev=%.2f W  SWR=%.2f  (fwd_raw=%d rev_raw=%d)"
+                "  PS: state=%d fdbk=%d %s\n",
+                tx_meter_fwd_w(), tx_meter_rev_w(), tx_meter_swr(), t.fwd_raw, t.rev_raw,
+                pl.state, pl.fdbk, pl.correcting ? "CORRECTING" : "-");
+      } else {
+        fprintf(stderr, "tx: fwd=%.2f W  rev=%.2f W  SWR=%.2f  (fwd_raw=%d rev_raw=%d)\n",
+                tx_meter_fwd_w(), tx_meter_rev_w(), tx_meter_swr(), t.fwd_raw, t.rev_raw);
+      }
       fflush(stderr);
     }
   }
+
+  /* PureSignal key hand-off: MOX/TUNE keyed but NOT the CW carrier (WDSP is
+   * bypassed in CW → feedback is meaningless, piHPSDR transmitter.c:2114-2120).
+   * Every slot — ps_key edge-detects internally; SetPSMox is lock-free. */
+  ps_key(keyed && !cw_key);
 
   tx_run_status st;
   memset(&st, 0, sizeof st);
@@ -246,6 +260,11 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   st.swr       = tx_meter_swr();
   if (keyed) { tx_dsp_get_meters(&st.mic_pk, &st.alc_gain, &st.lvlr_gain); }  /* live WDSP TX level */
   else       { st.mic_pk = -99.0; st.alc_gain = 0.0; st.lvlr_gain = 0.0; }
+  ps_status pss; ps_get_status(&pss);          /* zeros when PS is off */
+  st.ps_on         = pss.on;
+  st.ps_correcting = pss.correcting;
+  st.ps_state      = pss.state;
+  st.ps_fdbk       = pss.fdbk;
   g_strlcpy(st.reason, r.reason ? r.reason : "", sizeof st.reason);
   publish(&st);
 
@@ -417,6 +436,7 @@ int tx_run_start(long long tx_freq_hz, int pan_pixels, int fps) {
   tx_analyzer_create(pan_pixels, TX_IQ_RATE, TX_IQ_BLOCK, fps);
   tx_meter_reset();
   tx_gate_reset();
+  ps_start();               /* PureSignal runtime (stays OFF until the GUI arms it) */
 
   g_atomic_int_set(&s_running, 1);
   s_thread = g_thread_new("sdrfl-tx", tx_thread, NULL);
@@ -431,6 +451,7 @@ void tx_run_stop(void) {
   g_atomic_int_set(&s_running, 0);
   g_thread_join(s_thread);
   s_thread = NULL;
+  ps_stop();               /* unhook the feedback callback before the channel dies */
   p2_set_tx_state(NULL);   /* belt-and-braces: ensure the wire state is RX-only */
   tx_dsp_destroy();
   tx_analyzer_destroy();
