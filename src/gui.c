@@ -44,6 +44,7 @@
 #include "bandplan.h"
 #include "wisdom_gate.h"
 #include "picker.h"
+#include "tci_server.h"
 #include "tx_run.h"
 #include "tx.h"   /* tx_dsp_in_rate() — mic capture rate must match the WDSP TX input */
 
@@ -189,6 +190,8 @@ typedef struct {
   int         tx_gate;       /* mic noise gate (DEXP) on/off (persisted)            */
   double      tx_gate_db;    /* gate threshold dBFS post-mic-gain (persisted)       */
   char        picked_ip[64]; /* radio chosen in the startup picker ("" = none)      */
+  int         tci_enable;    /* TCI server on/off (persisted, F6d-2a)               */
+  int         tci_port;      /* TCI server port (persisted; ExpertSDR default 40001)*/
   int         tx_mon;        /* TX monitor (self-listen) on/off (persisted)         */
   double      tx_mon_db;     /* monitor level dB (persisted)                        */
   double      tx_flo;        /* TX audio filter low edge, Hz (persisted)            */
@@ -1307,6 +1310,8 @@ static void app_to_settings(const App *app, Settings *s) {
   s->cw_pitch   = app->cw_pitch;
   s->cw_st_db   = app->cw_st_db;
   s->cw_hang    = app->cw_hang;
+  s->tci_enable = app->tci_enable;
+  s->tci_port   = app->tci_port;
   s->tx_pan_high = app->tx_pan_high;
   s->tx_pan_low  = app->tx_pan_low;
   /* per-mode filter memory → "modeid=idx;..." */
@@ -2633,6 +2638,151 @@ static void on_pref_cw_hang(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   app->cw_hang = (int)adw_spin_row_get_value(r);
   cw_push(app); schedule_save(app);
 }
+
+/* ---- TCI server glue (F6d-2a) --------------------------------------------
+ * The ops run on the GTK main thread (tci_server dispatches there) and reuse
+ * the SAME paths as the on-screen controls — keying lands in tx_gate via the
+ * MOX/TUNE toggle handlers, never directly. */
+static App *tci_app;
+static int  tci_muted;
+
+static long long tci_get_freq(void) { return tci_app->freq; }
+static void tci_set_freq(long long f) {
+  if (f < 1) { return; }
+  tci_app->freq = f;                 /* same as the tuning wheel */
+  p2_set_frequency(f);
+  schedule_save(tci_app);
+}
+static const char *tci_get_mode(void) {
+  switch (tci_app->mode) {
+    case DEMOD_LSB: return "lsb";
+    case DEMOD_USB: return "usb";
+    case DEMOD_CWL: return "cwl";
+    case DEMOD_CWU: return "cw";     /* ExpertSDR calls the USB-side CW "cw" */
+    case DEMOD_AM:  return "am";
+    default:        return "usb";
+  }
+}
+static int tci_set_mode(const char *m) {
+  int mode;
+  if      (strcmp(m, "lsb") == 0) { mode = DEMOD_LSB; }
+  else if (strcmp(m, "usb") == 0) { mode = DEMOD_USB; }
+  else if (strcmp(m, "cw") == 0 || strcmp(m, "cwu") == 0) { mode = DEMOD_CWU; }
+  else if (strcmp(m, "cwl") == 0) { mode = DEMOD_CWL; }
+  else if (strcmp(m, "am") == 0)  { mode = DEMOD_AM; }
+  else { return -1; }
+  if (tci_app->mode_btns[mode]) {
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(tci_app->mode_btns[mode]), TRUE);
+  }
+  return 0;
+}
+static void tci_get_filter(int *lo, int *hi) { *lo = tci_app->flo; *hi = tci_app->fhi; }
+static void tci_set_filter(int lo, int hi) {
+  if (hi <= lo) { return; }
+  tci_app->flo = lo;
+  tci_app->fhi = hi;
+  demod_set_passband(lo, hi);
+  gtk_widget_queue_draw(tci_app->area);
+}
+static double tci_get_drive(void) { return tci_app->tx_drive_w; }
+static void tci_set_drive(double v) {
+  tci_app->tx_drive_w = v;
+  tx_push_cfg(tci_app);
+  schedule_save(tci_app);
+}
+static double tci_get_tune_drive(void) { return tci_app->tx_tune_w; }
+static void tci_set_tune_drive(double v) {
+  tci_app->tx_tune_w = v;
+  tx_push_cfg(tci_app);
+  schedule_save(tci_app);
+}
+static int tci_get_trx(void) {
+  return tci_app->mox_btn &&
+         gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(tci_app->mox_btn));
+}
+static int tci_set_trx(int on) {
+  if (!tci_app->tx_ready || !tci_app->mox_btn) { return -1; }
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(tci_app->mox_btn), on ? TRUE : FALSE);
+  return 0;
+}
+static int tci_get_tune(void) {
+  return tci_app->tune_btn &&
+         gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(tci_app->tune_btn));
+}
+static int tci_set_tune(int on) {
+  if (!tci_app->tx_ready || !tci_app->tune_btn) { return -1; }
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(tci_app->tune_btn), on ? TRUE : FALSE);
+  return 0;
+}
+static double tci_get_volume(void) { return tci_app->volume; }
+static void tci_set_volume(double db) {
+  if (db < -60.0) { db = -60.0; }
+  if (db > 0.0)   { db = 0.0; }
+  tci_app->volume = db;
+  if (!tci_muted) { demod_set_volume(db); }
+  schedule_save(tci_app);
+}
+static int tci_get_mute(void) { return tci_muted; }
+static void tci_set_mute(int on) {
+  tci_muted = on ? 1 : 0;
+  demod_set_volume(tci_muted ? -60.0 : tci_app->volume);
+}
+static int tci_get_cw_speed(void) { return tci_app->cw_wpm; }
+static void tci_set_cw_speed(int wpm) {
+  if (wpm < 5)  { wpm = 5; }
+  if (wpm > 60) { wpm = 60; }
+  tci_app->cw_wpm = wpm;
+  cw_push(tci_app);
+  schedule_save(tci_app);
+}
+static void tci_cw_send(const char *t) {
+  /* Queue only in a CW mode — otherwise the text would sit in the generator
+   * and key unexpectedly when the operator later switches to CW. */
+  if (tci_app->tx_ready &&
+      (tci_app->mode == DEMOD_CWL || tci_app->mode == DEMOD_CWU)) {
+    tx_run_cw_send(t);
+  }
+}
+static void tci_cw_stop(void) { if (tci_app->tx_ready) { tx_run_cw_abort(); } }
+static int tci_get_tx_enable(void) { return tci_app->tx_ready && tci_app->tx_pa_enabled; }
+static int tci_get_rate(void) { return tci_app->rate; }
+
+static const TciOps TCI_OPS = {
+  tci_get_freq, tci_set_freq, tci_get_mode, tci_set_mode,
+  tci_get_filter, tci_set_filter, tci_get_drive, tci_set_drive,
+  tci_get_tune_drive, tci_set_tune_drive, tci_get_trx, tci_set_trx,
+  tci_get_tune, tci_set_tune, tci_get_volume, tci_set_volume,
+  tci_get_mute, tci_set_mute, tci_get_cw_speed, tci_set_cw_speed,
+  tci_cw_send, tci_cw_stop, tci_get_tx_enable, tci_get_rate,
+};
+
+/* Start/stop the TCI server to match app->tci_enable (prefs + startup). */
+static void tci_apply(App *app) {
+  tci_app = app;
+  if (app->tci_enable && !tci_server_running()) {
+    if (tci_server_start(app->tci_port, &TCI_OPS) != 0) {
+      fprintf(stderr, "tci: start failed on port %d\n", app->tci_port);
+    }
+  } else if (!app->tci_enable && tci_server_running()) {
+    tci_server_stop();
+  }
+}
+
+static void on_pref_tci_enable(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->tci_enable = adw_switch_row_get_active(r);
+  tci_apply(app);
+  schedule_save(app);
+}
+static void on_pref_tci_port(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->tci_port = (int)adw_spin_row_get_value(r);
+  if (tci_server_running()) {          /* live port move: restart the server */
+    tci_server_stop();
+    tci_apply(app);
+  }
+  schedule_save(app);
+}
 /* TX audio filter edges (Hz). Pushed via tx_push_cfg; applies live even while
  * keyed (gate_slot re-asserts the passband each slot, WDSP no-ops if unchanged). */
 static void on_pref_tx_flo(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
@@ -2838,6 +2988,17 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, pref_spin("Break-in hang",
       "ms · T/R hold after the last element (piHPSDR default 500) · live",
       0, 1000, app->cw_hang, G_CALLBACK(on_pref_cw_hang), app));
+  adw_preferences_page_add(p, g);
+
+  /* TCI (F6d-2a) — ExpertSDR-compatible server for loggers/digimode SW. */
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "TCI",
+      "description", "ExpertSDR-compatible control server (CW keying, frequency/mode; audio streams come later)", NULL));
+  adw_preferences_group_add(g, pref_switch("TCI server",
+      "WebSocket for SDC, loggers, Decodium… · live",
+      app->tci_enable, G_CALLBACK(on_pref_tci_enable), app));
+  adw_preferences_group_add(g, pref_spin("TCI port",
+      "ExpertSDR default 40001 · applies on server toggle",
+      1024, 65535, app->tci_port, G_CALLBACK(on_pref_tci_port), app));
   adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);   /* Drive / Tune drive / Antenna live on the footer bar */
 
@@ -3134,7 +3295,8 @@ static void start_radio(App *app) {
                   .tx_gate_db = GATE_DB_DFLT, .tx_mon_db = MON_DB_DFLT,
                   .tx_flo = TXF_LO_DFLT, .tx_fhi = TXF_HI_DFLT,
                   .cw_wpm = CW_WPM_DFLT, .cw_pitch = CW_PITCH_DFLT,
-                  .cw_st_db = CW_ST_DB_DFLT, .cw_hang = CW_HANG_DFLT };
+                  .cw_st_db = CW_ST_DB_DFLT, .cw_hang = CW_HANG_DFLT,
+                  .tci_enable = 0, .tci_port = 40001 };
   g_strlcpy(st.ip, "", sizeof(st.ip));   /* no radio default: the picker (or a
                                             saved config) provides the IP; empty
                                             = discovery falls back to broadcast */
@@ -3189,6 +3351,8 @@ static void start_radio(App *app) {
   app->cw_pitch      = st.cw_pitch < 200 ? 200 : (st.cw_pitch > 1200 ? 1200 : st.cw_pitch);
   app->cw_st_db      = st.cw_st_db < CW_ST_DB_MIN ? CW_ST_DB_MIN : (st.cw_st_db > CW_ST_DB_MAX ? CW_ST_DB_MAX : st.cw_st_db);
   app->cw_hang       = st.cw_hang  < 0   ? 0   : (st.cw_hang  > 1000 ? 1000 : st.cw_hang);
+  app->tci_enable    = st.tci_enable ? 1 : 0;
+  app->tci_port      = st.tci_port < 1024 ? 40001 : (st.tci_port > 65535 ? 40001 : st.tci_port);
   app->fps    = st.fps;
   app->latency = st.latency;
   /* Clamp to the supported 48-192 k window — a stale >192 k value from an older
@@ -3412,6 +3576,7 @@ static void start_radio(App *app) {
     demod_set_monitor_gain(app->tx_mon_db);
     tx_run_set_span(tx_span_hz(app));  /* TX span ← saved zoom, matching the RX axis */
     cw_push(app);   /* persisted CW keyer speed, hang + sidetone (F6d-1c) */
+    tci_apply(app); /* persisted TCI server (F6d-2a; off by default)      */
     tx_update_mic(app);   /* open the mic now if we start in a voice mode (no warm-up lag) */
   } else {
     fprintf(stderr, "TX runtime init failed — RX only\n");
@@ -3492,6 +3657,7 @@ int main(int argc, char **argv) {
   if (app.radio_mode) {
     if (app.save_timer_id) { g_source_remove(app.save_timer_id); app.save_timer_id = 0; }
     if (app.rate > 0) { Settings s; app_to_settings(&app, &s); settings_save(&s); }
+    tci_server_stop();                     /* drop TCI clients before the engine goes away */
     if (app.tx_ready) { tx_run_stop(); }   /* unkey + stop TX thread before the socket closes */
     if (app.mic_open) { mic_stop(); app.mic_open = 0; }
     if (app.engine_ok) { p2_rx_stop(); }

@@ -148,6 +148,10 @@ int settings_load(Settings *s) {
       s->cw_st_db = g_key_file_get_double(kf, GROUP_TX, "cw_sidetone_db", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "cw_hang", NULL))
       s->cw_hang = g_key_file_get_integer(kf, GROUP_TX, "cw_hang", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "tci", NULL))
+      s->tci_enable = g_key_file_get_integer(kf, GROUP_TX, "tci", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "tci_port", NULL))
+      s->tci_port = g_key_file_get_integer(kf, GROUP_TX, "tci_port", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "filt_lo", NULL))
       s->tx_flo = g_key_file_get_double(kf, GROUP_TX, "filt_lo", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "filt_hi", NULL))
@@ -243,6 +247,8 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_TX,     "cw_pitch",  s->cw_pitch);
   g_key_file_set_double (kf, GROUP_TX,     "cw_sidetone_db", s->cw_st_db);
   g_key_file_set_integer(kf, GROUP_TX,     "cw_hang",   s->cw_hang);
+  g_key_file_set_integer(kf, GROUP_TX,     "tci",       s->tci_enable);
+  g_key_file_set_integer(kf, GROUP_TX,     "tci_port",  s->tci_port);
   g_key_file_set_double (kf, GROUP_TX,     "filt_lo",   s->tx_flo);
   g_key_file_set_double (kf, GROUP_TX,     "filt_hi",   s->tx_fhi);
   g_key_file_set_double (kf, GROUP_TX,     "pan_high",  s->tx_pan_high);

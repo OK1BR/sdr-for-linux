@@ -70,13 +70,22 @@ platform-library category — do not vendor).
 
 ## Phases (each independently testable; RX-side needs no keying)
 
-- **F6d-2a — server + control + CW.** LWS server on :40001 (persisted enable
-  + port in Preferences → Radio), init handshake, DDS/IF/VFO/MODULATION/
-  RX_FILTER_BAND/DRIVE/TUNE_DRIVE + TRX/TUNE keying **through tx_gate only**,
-  CW_MACROS/_STOP/_SPEED/_DELAY → cw_gen queue + `cw_wpm` setting, cw_msg
-  incl. correction (import the piHPSDR state machine), TX_ENABLE/TX_FREQUENCY
-  notifications. Gate: `sdrfl-tci-test` — headless client exercising the
-  handshake + command round-trips offline (no radio).
+- **F6d-2a — server + control + CW. IMPLEMENTED (offline-verified 2026-07-10;
+  live test with a real client pending).** `src/tci_server.[ch]` — own code on
+  the piHPSDR LWS pattern (chat/superchat/tci subprotocols, 1 ms service loop,
+  per-client queues, commands g_idle_add-dispatched to the GTK main loop, a
+  500 ms reporter broadcasts state diffs so GUI-side changes reach clients
+  without instrumenting the GUI). Ops table in gui.c reuses the on-screen
+  control paths — TRX/TUNE toggle the real MOX/TUNE buttons (→ tx_gate),
+  cw_macros → tx_run_cw_send **only in a CW mode** (queued text must never
+  key later as a surprise), `trx:0,true,tci` (TCI audio source) is refused
+  until F6d-2c. Covered: handshake (protocol:ExpertSDR3,1.9 … ready;),
+  dds/if/vfo, modulation (ExpertSDR "cw" ↔ our CWU; cwl kept), rx_filter_band,
+  drive/tune_drive, volume/mute, cw_macros(+escapes)/_stop/_speed(_up/_down)/
+  _delay, basic cw_msg ($N repeats; live callsign correction NOT yet),
+  tx_enable/tx_frequency. Prefs: Radio → TCI (switch live, port 40001,
+  persisted `[tx] tci/tci_port`, off by default). Gate: `sdrfl-tci-test`
+  (13 checks) — real WebSocket client against the server with stub ops.
 - **F6d-2b — RX audio + sensors.** RX_AUDIO_STREAM from the demod output
   (float32 default; resample 48k→24/12/8k as asked), AUDIO_START/STOP + stream
   params, LINE_OUT stream = same tap pre-volume, RX_CHANNEL_SENSORS (S-meter),

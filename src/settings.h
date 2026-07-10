@@ -74,6 +74,8 @@ typedef struct {
   int       cw_pitch;   /* CW sidetone pitch (Hz)                                 */
   double    cw_st_db;   /* CW sidetone level (dBFS before monitor gain; -40..0)   */
   int       cw_hang;    /* CW break-in hang (ms)                                  */
+  int       tci_enable; /* TCI server on/off (F6d-2a)                             */
+  int       tci_port;   /* TCI server port (ExpertSDR default 40001)              */
   double    tx_pan_high, tx_pan_low; /* TX panadapter dB window (0/0 = autofit)   */
   char      pa_cal[256];  /* per-band PA calibration (dB), "6m=53.0;20m=53.0;.." */
   char      pa_trim[256]; /* wattmeter correction curve, 11 pts "p0;p1;..;p10"   */

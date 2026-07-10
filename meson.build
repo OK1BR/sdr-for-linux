@@ -28,6 +28,7 @@ fftw3f_dep  = dependency('fftw3f')
 fftw3_dep   = dependency('fftw3')
 # Native PipeWire for the low-latency RX audio sink (src/engine/audio_pw.c).
 pipewire_dep = dependency('libpipewire-0.3')
+lws_dep      = dependency('libwebsockets')   # TCI server (F6d-2; distro platform lib)
 threads_dep = dependency('threads')
 m_dep       = cc.find_library('m', required : false)
 
@@ -70,6 +71,7 @@ executable('sdr-for-linux',
     'src/bandplan.c',
     'src/wisdom_gate.c',
     'src/picker.c',           # startup radio picker (discovery dialog)
+    'src/tci_server.c',       # TCI server — ExpertSDR-compatible control (F6d-2a)
     'src/client.c',
     'src/protocol.c',
     'src/transport.c',
@@ -87,7 +89,7 @@ executable('sdr-for-linux',
   include_directories : [vendor_inc, src_inc, engine_inc],
   # engine (protocol2 + analyzer + demod + PipeWire audio) alongside the v0
   # network client; WDSP's comm.h/wdsp.h need the GNU dialect (as sdrfl-wdsp-smoke).
-  dependencies : common_deps + [adw_dep, glib_dep, wdsp_dep, m_dep, pipewire_dep],
+  dependencies : common_deps + [adw_dep, glib_dep, wdsp_dep, m_dep, pipewire_dep, lws_dep],
   override_options : ['c_std=gnu11'],
   install : false,
 )
@@ -179,6 +181,16 @@ executable('sdrfl-cw-test',
   ['src/cw_test.c', 'src/engine/cw_gen.c'],
   include_directories : [engine_inc],
   dependencies : [m_dep],
+  install : false,
+)
+
+# Offline TCI gate (F6d-2a, docs/TCI-SCOPE.md). Starts the TCI server with
+# stub ops, connects a real WebSocket client and verifies the handshake,
+# control round-trips + broadcasts, and CW queue/stop. NO radio, NO GUI.
+executable('sdrfl-tci-test',
+  ['src/tci_test.c', 'src/tci_server.c'],
+  include_directories : [src_inc],
+  dependencies : [glib_dep, lws_dep],
   install : false,
 )
 
