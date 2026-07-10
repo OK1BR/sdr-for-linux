@@ -3061,8 +3061,11 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_dialog_add(dlg, p);
   tci_clients_tick(app);            /* fill immediately, then 1 s refresh */
   if (!app->tci_timer) { app->tci_timer = g_timeout_add(1000, tci_clients_tick, app); }
-  adw_dialog_set_content_width(ADW_DIALOG(dlg), 780);   /* roomier than the default */
-  adw_dialog_set_content_height(ADW_DIALOG(dlg), 680);
+  /* Wide enough that AdwPreferencesDialog keeps the page switcher in the header
+   * (top) instead of dropping it to a bottom bar — it falls back to the bottom
+   * bar when the six pages don't fit across the top. */
+  adw_dialog_set_content_width(ADW_DIALOG(dlg), 1000);
+  adw_dialog_set_content_height(ADW_DIALOG(dlg), 700);
 
   /* Audio — ALL audio settings in one place (Richard's ask, 2026-07-10):
    * devices + shared sample rate + gain/latency. One sample rate for the RX

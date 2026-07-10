@@ -185,23 +185,32 @@ static gboolean send_initial_idle(gpointer data) {
   int lo, hi;
   if (!s_run || !c->inuse) { return G_SOURCE_REMOVE; }
   s_ops.get_filter(&lo, &hi);
+  long long f = s_ops.get_freq();
+  const char *mode = s_ops.get_mode();
   g_mutex_lock(&s_lock);
   cli_send(c, TCI_PROTO_LINE);
   cli_send(c, TCI_DEVICE_LINE);
   cli_send(c, "receive_only:false;");
   cli_send(c, "trx_count:1;");
-  cli_send(c, "channel_count:1;");
+  /* piHPSDR/ExpertSDR spell it "channels_count" (not the spec's CHANNEL_COUNT)
+   * and report 2 A/B channels per receiver — Decodium waits for that. */
+  cli_send(c, "channels_count:2;");
   cli_send(c, "vfo_limits:0,61440000;");
   g_mutex_unlock(&s_lock);
   tci_sendf(c, "if_limits:-%d,%d;", s_ops.get_rate() / 2, s_ops.get_rate() / 2);
   tci_sendf(c, "modulations_list:am,lsb,usb,cw,cwl,cwu,digu,digl;");
   tci_sendf(c, "mute:%s;", s_ops.get_mute() ? "true" : "false");
   tci_sendf(c, "volume:%d;", (int)(s_ops.get_volume() - 0.5));
-  tci_sendf(c, "dds:0,%lld;", s_ops.get_freq());
+  tci_sendf(c, "dds:0,%lld;", f);
+  /* Both channels (A/B) of receiver 0: IF offset 0, VFO on the same freq —
+   * piHPSDR emits the full per-channel set before the client proceeds. */
   tci_sendf(c, "if:0,0,0;");
-  tci_sendf(c, "vfo:0,0,%lld;", s_ops.get_freq());
-  tci_sendf(c, "modulation:0,%s;", s_ops.get_mode());
+  tci_sendf(c, "if:0,1,0;");
+  tci_sendf(c, "vfo:0,0,%lld;", f);
+  tci_sendf(c, "vfo:0,1,%lld;", f);
+  tci_sendf(c, "modulation:0,%s;", mode);
   tci_sendf(c, "rx_filter_band:0,%d,%d;", lo, hi);
+  tci_sendf(c, "rx_enable:0,true;");         /* receiver 0 is running — Decodium gates audio on this */
   tci_sendf(c, "trx:0,%s;", s_ops.get_trx() ? "true" : "false");
   tci_sendf(c, "tune:0,%s;", s_ops.get_tune() ? "true" : "false");
   tci_sendf(c, "drive:0,%d;", (int)(s_ops.get_drive() + 0.5));
@@ -209,7 +218,7 @@ static gboolean send_initial_idle(gpointer data) {
   tci_sendf(c, "cw_macros_speed:%d;", s_ops.get_cw_speed());
   tci_sendf(c, "cw_macros_delay:%d;", s_cw_delay_ms);
   tci_sendf(c, "tx_enable:0,%s;", s_ops.get_tx_enable() ? "true" : "false");
-  tci_sendf(c, "tx_frequency:%lld;", s_ops.get_freq());
+  tci_sendf(c, "tx_frequency:%lld;", f);
   tci_sendf(c, "ready;");
   return G_SOURCE_REMOVE;
 }
