@@ -33,7 +33,12 @@ static struct {
   int       cw_stopped;
   int       tx_src;         /* TCI is the TX audio source                  */
   int       txa_samples;    /* TX audio samples received                   */
-} S = { 14100000, "usb", 150, 2850, 25, 10, -12, 0, 0, 0, 20, "", 0, 0, 0 };
+  char      spot_call[20];  /* last spot received (F6d-2e)                 */
+  long long spot_hz;
+  unsigned  spot_argb;
+  int       spot_deleted, spot_cleared;
+} S = { 14100000, "usb", 150, 2850, 25, 10, -12, 0, 0, 0, 20, "", 0, 0, 0,
+        "", 0, 0, 0, 0 };
 
 static long long s_get_freq(void) { return S.freq; }
 static void s_set_freq(long long f) { S.freq = f; }
@@ -65,6 +70,15 @@ static void s_get_txm(double *mic, double *rms, double *pep, double *swr) {
 }
 static int s_set_tx_src(int on) { S.tx_src = on; return 0; }
 static void s_txa_push(const float *m, int n) { (void)m; S.txa_samples += n; }
+static void s_spot_add(const char *call, const char *mode, long long hz,
+                       unsigned argb, const char *text) {
+  (void)mode; (void)text;
+  g_strlcpy(S.spot_call, call, sizeof(S.spot_call));
+  S.spot_hz = hz;
+  S.spot_argb = argb;
+}
+static void s_spot_del(const char *call) { (void)call; S.spot_deleted = 1; }
+static void s_spot_clear(void) { S.spot_cleared = 1; }
 
 static const TciOps STUB_OPS = {
   s_get_freq, s_set_freq, s_get_mode, s_set_mode, s_get_filter, s_set_filter,
@@ -73,6 +87,7 @@ static const TciOps STUB_OPS = {
   s_get_wpm, s_set_wpm, s_cw_send, s_cw_stop, s_get_txen, s_get_rate,
   s_get_smeter, s_get_txm, s_set_tx_src, s_txa_push,
   NULL,                                    /* iq_rate_changed: no persistence */
+  s_spot_add, s_spot_del, s_spot_clear,
 };
 
 /* ---- LWS test client -------------------------------------------------------- */
@@ -416,6 +431,31 @@ int main(void) {
       g_usleep(10 * 1000);
     }
     check("accepted iq_samplerate sticks as the device default", sticky);
+  }
+
+  /* ---- DX spots (F6d-2e): client pushes a spot (SDC skimmer style), the
+   * ops table receives it; a panadapter click broadcasts back. */
+  client_send("spot:LZ2PP,CW,14010840,4278255615,test;spot_delete:LZ2PP;spot_clear;");
+  {
+    int got_spot = 0;
+    for (int ms = 0; ms < 2000 && !got_spot; ms += 10) {
+      while (g_main_context_iteration(NULL, FALSE)) {}
+      got_spot = strcmp(S.spot_call, "LZ2PP") == 0 && S.spot_hz == 14010840 &&
+                 S.spot_argb == 4278255615u && S.spot_deleted && S.spot_cleared;
+      g_usleep(10 * 1000);
+    }
+    check("spot + spot_delete + spot_clear land in the ops", got_spot);
+  }
+  tci_server_spot_clicked("LZ2PP", 14010840);
+  {
+    int got_click = 0;
+    for (int ms = 0; ms < 2000 && !got_click; ms += 10) {
+      while (g_main_context_iteration(NULL, FALSE)) {}
+      got_click = rx_contains("rx_clicked_on_spot:0,0,LZ2PP,14010840;") &&
+                  rx_contains("clicked_on_spot:LZ2PP,14010840;");
+      g_usleep(10 * 1000);
+    }
+    check("spot click broadcasts rx_clicked_on_spot (+legacy)", got_click);
   }
 
   /* ---- TX audio over TCI (F6d-2c): key with source tci, get the chrono

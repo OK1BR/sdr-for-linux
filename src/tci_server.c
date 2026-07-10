@@ -608,6 +608,18 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
       c->au_block_set = 1;
       g_mutex_unlock(&s_lock);
     }
+  } else if (strcmp(name, "spot") == 0) {
+    /* spot:callsign,mode,freq,ARGB,text; (spec 4.x, unidirectional client→
+     * server). SDC streams its skimmer decodes this way continuously. */
+    if (ac > 2 && av[0][0] && s_ops.spot_add) {
+      unsigned argb = (ac > 3 && av[3][0]) ? (unsigned)g_ascii_strtoull(av[3], NULL, 10) : 0;
+      s_ops.spot_add(av[0], ac > 1 ? av[1] : "", g_ascii_strtoll(av[2], NULL, 10),
+                     argb, ac > 4 ? av[4] : "");
+    }
+  } else if (strcmp(name, "spot_delete") == 0) {
+    if (ac > 0 && av[0][0] && s_ops.spot_delete) { s_ops.spot_delete(av[0]); }
+  } else if (strcmp(name, "spot_clear") == 0) {
+    if (s_ops.spot_clear) { s_ops.spot_clear(); }
   } else if (strcmp(name, "iq_samplerate") == 0) {
     if (ac > 0 && av[0][0]) {
       int r = atoi(av[0]);
@@ -1152,6 +1164,13 @@ void tci_server_stop(void) {
 }
 
 int tci_server_running(void) { return s_run; }
+
+void tci_server_spot_clicked(const char *callsign, long long hz) {
+  if (!s_run || !callsign) { return; }
+  /* receiver 0, channel 0 (A); plus the legacy spelling for older clients */
+  tci_broadcastf("rx_clicked_on_spot:0,0,%s,%lld;", callsign, hz);
+  tci_broadcastf("clicked_on_spot:%s,%lld;", callsign, hz);
+}
 
 void tci_server_set_iq_rate(int rate) {
   if (rate == 48000 || rate == 96000 || rate == 192000 || rate == 384000) {

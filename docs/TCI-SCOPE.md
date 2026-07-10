@@ -183,9 +183,18 @@ platform-library category — do not vendor).
   shifts spectrum + passband by the sidetone pitch (Prefs → CW, live), GUI
   passbands stay symmetric around the dial. Zero-beat TX now lands on the
   station's frequency.
-- **F6d-2e — spots.** SPOT/SPOT_DELETE/SPOT_CLEAR drawn on the panadapter
-  (bandplan-overlay infra reused; callsign labels), RX_CLICKED_ON_SPOT back
-  to clients on click. SDC/cluster integration.
+- **F6d-2e — spots. IMPLEMENTED (offline-verified; live check with SDC
+  running).** SPOT:call,mode,freq,ARGB,text / SPOT_DELETE:call / SPOT_CLEAR
+  → TciOps (spot_add/spot_delete/spot_clear) → a 192-entry main-thread store
+  in the GUI (dedup by callsign, re-announce refreshes, 10 min TTL — SDC
+  re-announces live spots — oldest evicted when full). draw_spots: callsign
+  labels in ≤3 stacked rows under the frequency ruler (greedy left→right
+  packing on hz-sorted spots; tick toward the signal even when the label
+  didn't fit), client ARGB colour (near-black → amber fallback), RX spectrum
+  only. Click on a label = exact-Hz tune + rx_clicked_on_spot:0,0,call,hz
+  (+ legacy clicked_on_spot) broadcast back to clients. Prefs → Display →
+  "DX spots (TCI)" switch, persisted ([display] spots, default on). Gate:
+  37 checks (spot ops round-trip + click broadcast).
 
 ## Safety (unchanged, non-negotiable)
 

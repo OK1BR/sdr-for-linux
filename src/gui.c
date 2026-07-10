@@ -165,6 +165,19 @@ typedef struct {
   int         bp_region;     /* band-plan region index (0=R1) — see bandplan.h     */
   int         bp_country;    /* band-plan country/overlay index (0=none)           */
   int         show_band_edges; /* draw band-plan edges + band name on the spectrum */
+  /* DX spots pushed over TCI (F6d-2e; SDC streams its skimmer decodes). The
+   * store lives here (main thread only: TCI ops + draw + click). hit_* are
+   * the label rectangles of the last draw, for click-to-tune. */
+#define MAX_SPOTS 192
+  struct spot {
+    char      call[20], mode[12];
+    long long hz;
+    unsigned  argb;
+    gint64    ts;              /* g_get_monotonic_time of (re)announcement    */
+    double    hx0, hx1, hy0, hy1;  /* label hit box (px; 0 = not drawn)       */
+  }           spots[MAX_SPOTS];
+  int         nspots;
+  int         show_spots;    /* draw the spot overlay (persisted)              */
   GtkWidget  *win;           /* top-level window (for size persistence)           */
   GtkWidget  *toast_overlay; /* AdwToastOverlay wrapping the content (restart hint) */
   int         restart_pending;     /* a restart-to-apply setting changed this session */
@@ -543,6 +556,71 @@ static void draw_band_edges(cairo_t *cr, App *app, int w, int ph) {
   cairo_set_dash(cr, NULL, 0, 0);
 }
 
+/* DX-spot overlay (F6d-2e): callsign labels in up to three stacked rows under
+ * the frequency ruler + a tick down toward the signal, coloured by the
+ * client's ARGB. Spots expire after SPOT_TTL (SDC re-announces live ones);
+ * each drawn label remembers its hit box for click-to-tune. Same freq→x
+ * frame as draw_band_edges. */
+#define SPOT_TTL_US (10ll * 60 * 1000000)
+static int spot_cmp_hz(const void *a, const void *b) {
+  long long d = ((const struct spot *)a)->hz - ((const struct spot *)b)->hz;
+  return d < 0 ? -1 : (d > 0 ? 1 : 0);
+}
+static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
+  if (!app->show_spots || app->nspots <= 0 || w < 2 || app->rate <= 0 || app->zoom <= 0.0) { return; }
+  gint64 now = g_get_monotonic_time();
+  int n = 0;                                   /* prune expired in place */
+  for (int i = 0; i < app->nspots; i++) {
+    if (now - app->spots[i].ts <= SPOT_TTL_US) {
+      if (n != i) { app->spots[n] = app->spots[i]; }
+      n++;
+    }
+  }
+  app->nspots = n;
+  if (n <= 0) { return; }
+  qsort(app->spots, (size_t)n, sizeof(app->spots[0]), spot_cmp_hz);   /* left→right packing */
+
+  double span      = (double)app->rate / app->zoom;
+  double hz_per_px = span / w;
+  double pan_off   = pan_offset_hz(app);
+  double left_hz   = (double)app->freq + pan_off - span / 2.0;
+  double right_hz  = left_hz + span;
+  double rowend[3] = { -1e9, -1e9, -1e9 };
+  const double y0 = 30.0, rh = 14.0;           /* label rows under the ruler */
+  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_set_font_size(cr, 11.0);
+  cairo_set_line_width(cr, 1.0);
+  for (int i = 0; i < n; i++) {
+    struct spot *s = &app->spots[i];
+    s->hx0 = s->hx1 = 0.0;
+    if ((double)s->hz < left_hz || (double)s->hz > right_hz) { continue; }
+    double x = floor(((double)s->hz - left_hz) / hz_per_px) + 0.5;
+    double r = ((s->argb >> 16) & 0xffu) / 255.0;
+    double g = ((s->argb >>  8) & 0xffu) / 255.0;
+    double b = ( s->argb        & 0xffu) / 255.0;
+    if (r + g + b < 0.25) { r = 1.0; g = 0.85; b = 0.3; }  /* unset/black → amber */
+    cairo_text_extents_t te;
+    cairo_text_extents(cr, s->call, &te);
+    int row = -1;
+    for (int k = 0; k < 3; k++) {
+      if (x - 2.0 > rowend[k]) { row = k; break; }
+    }
+    double ly = y0 + (row < 0 ? 0 : row) * rh;
+    if (row >= 0) {                            /* label fits in a free row */
+      rowend[row] = x + te.width + 8.0;
+      cairo_set_source_rgba(cr, r, g, b, 0.95);
+      cairo_move_to(cr, x + 3.0, ly);
+      cairo_show_text(cr, s->call);
+      s->hx0 = x - 3.0; s->hx1 = x + te.width + 6.0;
+      s->hy0 = ly - 11.0; s->hy1 = ly + 3.0;
+    }
+    cairo_set_source_rgba(cr, r, g, b, 0.5);   /* tick even when the label didn't fit */
+    cairo_move_to(cr, x, row >= 0 ? ly + 3.0 : y0);
+    cairo_line_to(cr, x, ph * 0.45);
+    cairo_stroke(cr);
+  }
+}
+
 /* Top-right meter geometry — shared by the RX S-meter and the TX power meter so
  * the two read as one family. METER_BY aligns the bar with the frequency readout
  * (its tick labels line up with the big number's top); METER_RM keeps it off the
@@ -904,6 +982,7 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
   }
   if (app->radio_mode) {
     draw_band_edges(cr, app, w, ph);
+    if (!app->tx_display) { draw_spots(cr, app, w, ph); }  /* RX spectrum only */
   }
   /* Filter passband overlay (Model A: VFO = span centre). Just the fill + the
    * two edges here — the VFO centre is the amber line panadapter.c already draws
@@ -1358,6 +1437,7 @@ static void app_to_settings(const App *app, Settings *s) {
   s->avg_wf     = app->avg_wf_ms;
   s->palette    = app->palette;
   s->band_edges = app->show_band_edges;
+  s->show_spots = app->show_spots;
   g_strlcpy(s->region,  bp_region_key(app->bp_region),   sizeof(s->region));
   g_strlcpy(s->country, bp_country_key(app->bp_country), sizeof(s->country));
   s->win_w   = app->win_w;
@@ -1727,6 +1807,22 @@ static void on_pressed(GtkGestureClick *g, int n_press, double x, double y, gpoi
   }
   if (n_press == 2 && !in_gutter(app, x, y) && app->pan != 0.0) {   /* recentre the pan */
     app->pan = 0.0; analyzer_set_pan(0.0); gtk_widget_queue_draw(app->area); return;
+  }
+  /* Spot label hit → tune exactly to the spot + tell TCI clients (F6d-2e).
+   * Checked before select mode so a spot click always wins over recentre. */
+  if (n_press == 1 && app->show_spots && !app->tx_display && !in_gutter(app, x, y)) {
+    for (int i = 0; i < app->nspots; i++) {
+      struct spot *s = &app->spots[i];
+      if (s->hx1 > s->hx0 && x >= s->hx0 && x <= s->hx1 && y >= s->hy0 && y <= s->hy1) {
+        app->freq = s->hz;                     /* like click_tune, exact Hz */
+        if (app->pan != 0.0) { app->pan = 0.0; analyzer_set_pan(0.0); }
+        p2_set_frequency(s->hz);
+        schedule_save(app);
+        tci_server_spot_clicked(s->call, s->hz);
+        gtk_widget_queue_draw(app->area);
+        return;
+      }
+    }
   }
   if (app->select_mode && n_press == 1 && !in_gutter(app, x, y)) { click_tune(app, x); }
 }
@@ -2566,6 +2662,12 @@ static void on_pref_band_edges(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
   schedule_save(app);
   if (app->area) { gtk_widget_queue_draw(app->area); }
 }
+static void on_pref_spots(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->show_spots = adw_switch_row_get_active(r);
+  schedule_save(app);
+  if (app->area) { gtk_widget_queue_draw(app->area); }
+}
 static void on_pref_rate(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   (void)ps;
   App *app = (App *)data;
@@ -2790,6 +2892,48 @@ static void tci_iq_rate_changed(int rate) {
   tci_app->tci_iq_rate = rate;
   schedule_save(tci_app);
 }
+/* DX spots from TCI clients (F6d-2e). Main thread (tci_exec dispatch). */
+static void tci_spot_add(const char *call, const char *mode, long long hz,
+                         unsigned argb, const char *text) {
+  (void)text;
+  App *app = tci_app;
+  if (!call || !*call || hz <= 0) { return; }
+  struct spot *sl = NULL;
+  for (int i = 0; i < app->nspots; i++) {          /* re-announce → refresh */
+    if (strcmp(app->spots[i].call, call) == 0) { sl = &app->spots[i]; break; }
+  }
+  if (!sl) {
+    if (app->nspots < MAX_SPOTS) { sl = &app->spots[app->nspots++]; }
+    else {                                          /* full → evict the oldest */
+      sl = &app->spots[0];
+      for (int i = 1; i < MAX_SPOTS; i++) {
+        if (app->spots[i].ts < sl->ts) { sl = &app->spots[i]; }
+      }
+    }
+    memset(sl, 0, sizeof *sl);
+  }
+  g_strlcpy(sl->call, call, sizeof sl->call);
+  g_strlcpy(sl->mode, mode ? mode : "", sizeof sl->mode);
+  sl->hz = hz;
+  sl->argb = argb;
+  sl->ts = g_get_monotonic_time();
+  if (app->show_spots && app->area) { gtk_widget_queue_draw(app->area); }
+}
+static void tci_spot_del(const char *call) {
+  App *app = tci_app;
+  if (!call) { return; }
+  for (int i = 0; i < app->nspots; i++) {
+    if (strcmp(app->spots[i].call, call) == 0) {
+      app->spots[i] = app->spots[--app->nspots];   /* order restored at draw */
+      if (app->area) { gtk_widget_queue_draw(app->area); }
+      return;
+    }
+  }
+}
+static void tci_spot_clear(void) {
+  tci_app->nspots = 0;
+  if (tci_app->area) { gtk_widget_queue_draw(tci_app->area); }
+}
 static void tci_get_tx_meters(double *mic_db, double *rms_w, double *pep_w, double *swr) {
   tx_run_status ts;
   memset(&ts, 0, sizeof(ts));
@@ -2808,7 +2952,7 @@ static const TciOps TCI_OPS = {
   tci_get_mute, tci_set_mute, tci_get_cw_speed, tci_set_cw_speed,
   tci_cw_send, tci_cw_stop, tci_get_tx_enable, tci_get_rate,
   tci_get_smeter, tci_get_tx_meters, tci_set_tx_src, tci_tx_audio_push,
-  tci_iq_rate_changed,
+  tci_iq_rate_changed, tci_spot_add, tci_spot_del, tci_spot_clear,
 };
 
 /* Start/stop the TCI server to match app->tci_enable (prefs + startup). */
@@ -3261,6 +3405,9 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, cty);
   adw_preferences_group_add(g, pref_switch("Show band plan", "Edges, usage segments + band name",
       app->show_band_edges, G_CALLBACK(on_pref_band_edges), app));
+  adw_preferences_group_add(g, pref_switch("DX spots (TCI)",
+      "Callsigns from a connected skimmer/cluster client (SDC); click a spot to tune",
+      app->show_spots, G_CALLBACK(on_pref_spots), app));
   adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);
 
@@ -3402,7 +3549,7 @@ static void start_radio(App *app) {
                   .pan_high = PAN_HIGH_DEFAULT, .pan_low = PAN_LOW_DEFAULT,
                   .db_grid = 1, .db_scale = 1, .freq_grid = 1, .freq_scale = 1,
                   .filter_wf = 1, .filter_op = 60, .avg_spec = -1, .avg_wf = -1,
-                  .palette = 0, .band_edges = 1,
+                  .palette = 0, .band_edges = 1, .show_spots = 1,
                   .tx_pa = 0, .tx_ant = 0, .tx_drive = 25.0, .tx_tune = 10.0, .tx_swr = 3.0,
                   .mic_gain = 0.0, .audio_rate = 48000,
                   .tx_gate_db = GATE_DB_DFLT, .tx_mon_db = MON_DB_DFLT,
@@ -3590,6 +3737,7 @@ static void start_radio(App *app) {
   waterfall_set_palette(app->wf, app->palette);   /* app->wf created in main() before activation */
   waterfall_set_palette(app->tx_wf, app->palette);
   app->show_band_edges = st.band_edges ? 1 : 0;
+  app->show_spots      = st.show_spots ? 1 : 0;
   { int r = bp_region_from_key(st.region);  app->bp_region  = r >= 0 ? r : 0; }
   { int c = bp_country_from_key(st.country); app->bp_country = c >= 0 ? c : 0; }
   app->win_w   = st.win_w   > 0 ? st.win_w : 1320;

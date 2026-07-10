@@ -57,6 +57,12 @@ typedef struct {
   void      (*tx_audio_push)(const float *mono48k, int n);
   /* IQ stream rate changed by a client (F6d-2d) — persist it. May be NULL. */
   void      (*iq_rate_changed)(int rate);
+  /* DX spots pushed by clients (F6d-2e; SDC sends its skimmer decodes).
+   * argb = client-chosen colour. Any of these may be NULL. */
+  void      (*spot_add)(const char *call, const char *mode, long long hz,
+                        unsigned argb, const char *text);
+  void      (*spot_delete)(const char *call);
+  void      (*spot_clear)(void);
 } TciOps;
 
 /* Start/stop the server. start returns 0 on success (port bound). *ops is
@@ -91,6 +97,10 @@ void tci_server_iq_push(const double *iq, int n_pairs, int rate);
  * inherit it, and the init block announces it. */
 void tci_server_set_iq_rate(int rate);
 int  tci_server_get_iq_rate(void);
+
+/* Operator clicked a spot on our panadapter (F6d-2e): notify every client
+ * (rx_clicked_on_spot + the legacy clicked_on_spot). Main thread. */
+void tci_server_spot_clicked(const char *callsign, long long hz);
 
 /* TX pacing clock (F6d-2c): emit a TX_CHRONO frame asking the TX-owner client
  * for nsamples of TX audio. Wire to tx_run_set_ext_notify; called from the TX

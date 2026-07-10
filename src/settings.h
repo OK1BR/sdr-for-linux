@@ -43,6 +43,7 @@ typedef struct {
   char      region[8]; /* band-plan region key: "R1" / "R2" / "R3"    */
   char      country[8];/* band-plan national overlay: "" / "CZ" / "US"*/
   int       band_edges;/* draw band-plan edges + band name overlay    */
+  int       show_spots;/* draw TCI DX-spot overlay (F6d-2e)           */
   int       win_w;     /* window width (px, 0 = default)             */
   int       win_h;     /* window height (px, 0 = default)            */
   int       win_max;   /* window maximized                          */
