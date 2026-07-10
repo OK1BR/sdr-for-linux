@@ -30,14 +30,21 @@ void tx_meter_reset(void);
 void tx_meter_set_trim(const double trim[11]);
 
 /*
- * Feed one set of averaged coupler words (p2_telemetry.fwd_raw / rev_raw) and
- * advance the smoothed SWR by one step. `is_6m` selects the 6 m reverse constant.
+ * Feed one set of averaged coupler words (p2_telemetry.fwd_raw / rev_raw) plus
+ * the decaying raw forward maximum (p2_tx_fwd_max_take()) and advance the
+ * smoothed SWR by one step. `is_6m` selects the 6 m reverse constant.
  * Call at the meter rate (~10-20 Hz), like piHPSDR's tx_update_display.
+ *
+ * fwd/rev/SWR come from the EMA words (piHPSDR parity: SWR + protection always
+ * act on the averages); fwd_pep comes from fwd_max_raw through the SAME
+ * volts²+trim conversion (piHPSDR metermode 0, transmitter.c:760-766). On a
+ * steady carrier PEP == avg; on voice the avg under-reads by ~6 dB.
  */
-void tx_meter_update(int fwd_raw, int rev_raw, int is_6m);
+void tx_meter_update(int fwd_raw, int rev_raw, int fwd_max_raw, int is_6m);
 
-double tx_meter_fwd_w(void);   /* smoothed forward power, watts   */
-double tx_meter_rev_w(void);   /* smoothed reverse power, watts   */
-double tx_meter_swr(void);     /* smoothed VSWR (>= 1.0)          */
+double tx_meter_fwd_w(void);     /* smoothed forward power, watts   */
+double tx_meter_fwd_pep_w(void); /* PEP forward power, watts        */
+double tx_meter_rev_w(void);     /* smoothed reverse power, watts   */
+double tx_meter_swr(void);       /* smoothed VSWR (>= 1.0)          */
 
 #endif /* SDRFL_ENGINE_TX_METER_H */

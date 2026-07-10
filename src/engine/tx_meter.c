@@ -27,7 +27,8 @@
 #define G1_FWD_OFF   48      /* fwd_cal_offset                    */
 #define G1_REV_OFF   42      /* rev_cal_offset                    */
 
-static double m_fwd = 0.0;   /* forward watts */
+static double m_fwd = 0.0;   /* forward watts (EMA words)      */
+static double m_pep = 0.0;   /* forward PEP watts (raw maximum) */
 static double m_rev = 0.0;   /* reverse watts */
 static double m_swr = 1.0;   /* smoothed VSWR */
 
@@ -41,6 +42,7 @@ static double m_trim[11] = { 0.0, 10.0, 20.0, 30.0, 40.0, 50.0,
 
 void tx_meter_reset(void) {
   m_fwd = 0.0;
+  m_pep = 0.0;
   m_rev = 0.0;
   m_swr = 1.0;
 }
@@ -74,8 +76,9 @@ static double raw_to_watts(int raw, int cal_offset, double rconstant) {
   return compute_power((v * v) / rconstant);
 }
 
-void tx_meter_update(int fwd_raw, int rev_raw, int is_6m) {
+void tx_meter_update(int fwd_raw, int rev_raw, int fwd_max_raw, int is_6m) {
   m_fwd = raw_to_watts(fwd_raw, G1_FWD_OFF, G1_C2);
+  m_pep = raw_to_watts(fwd_max_raw, G1_FWD_OFF, G1_C2);
   m_rev = raw_to_watts(rev_raw, G1_REV_OFF, is_6m ? G1_RC2_6M : G1_RC2_HF);
 
   if (m_fwd > 0.25) {
@@ -87,6 +90,7 @@ void tx_meter_update(int fwd_raw, int rev_raw, int is_6m) {
   }
 }
 
-double tx_meter_fwd_w(void) { return m_fwd; }
-double tx_meter_rev_w(void) { return m_rev; }
-double tx_meter_swr(void)   { return m_swr; }
+double tx_meter_fwd_w(void)     { return m_fwd; }
+double tx_meter_fwd_pep_w(void) { return m_pep; }
+double tx_meter_rev_w(void)     { return m_rev; }
+double tx_meter_swr(void)       { return m_swr; }

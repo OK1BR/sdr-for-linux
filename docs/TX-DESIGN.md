@@ -489,6 +489,18 @@ What landed (⚠ = regression tripwire — do not undo casually):
 - **TX meter** — Lev bar (TXA_LVLR_GAIN, the pump made visible), gate
   threshold tick + GATE state, ALC bar; Mic −6..0 dBFS is a TARGET zone (full
   PEP needs peaks at the top), not a keep-out.
+- **True-PEP wattmeter** (post-§8 follow-up, 2026-07-10) — the 16-EMA coupler
+  word reads the voice envelope *average*; squared into watts that's ~6 dB
+  under PEP (measured: 4× vs an external PEP meter, while TUNE matched).
+  `protocol2.c` now also tracks the RAW pre-EMA forward max at the ~1 kHz TX
+  packet rate (piHPSDR `alex_forward_max`, np.c:2657) and the big GUI number
+  shows watts from it (piHPSDR metermode 0, transmitter.c:760-766). Verified
+  live: steady 1 kHz tone through the mic reads identical on the tuner's
+  wattmeter; speech/hum legitimately reads above the analog needle (crest
+  factor). ⚠ `p2_tx_fwd_max_take()` decays the max ×15/16 per call — exactly
+  ONE consumer (the tx_run slot), a second reader doubles the decay. ⚠ SWR +
+  tx_gate stay on the EMA averages (piHPSDR computes SWR *before* the PEP
+  substitution) — never feed the PEP value into the gate.
 - Removed the `'k'` CW test hotkey (one keypress = real RF); Esc still aborts.
 - Audio prefs consolidated on the Audio page; **AF output caps at 192 kHz by
   decision** (the AF band is filter-limited; >192 k is only fatter samples —

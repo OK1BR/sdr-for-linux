@@ -148,7 +148,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
    * curve is (re)installed here so it stays owned by this worker thread. */
   tx_meter_set_trim(cfg.pa_trim);
   p2_telemetry t; p2_get_telemetry(&t);
-  tx_meter_update(t.fwd_raw, t.rev_raw, is_6m);
+  tx_meter_update(t.fwd_raw, t.rev_raw, p2_tx_fwd_max_take(), is_6m);
 
   tx_gate_in in = { .want_mox = want_mox, .want_tune = want_tune, .freq_hz = freq,
                     .swr = tx_meter_swr(), .fwd_w = tx_meter_fwd_w(), .rev_w = tx_meter_rev_w() };
@@ -202,9 +202,10 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   st.tripped = r.tripped;
   st.allowed = r.allowed;
   st.high_swr = r.high_swr;
-  st.fwd_w   = tx_meter_fwd_w();
-  st.rev_w   = tx_meter_rev_w();
-  st.swr     = tx_meter_swr();
+  st.fwd_w     = tx_meter_fwd_w();
+  st.fwd_pep_w = tx_meter_fwd_pep_w();
+  st.rev_w     = tx_meter_rev_w();
+  st.swr       = tx_meter_swr();
   if (keyed) { tx_dsp_get_meters(&st.mic_pk, &st.alc_gain, &st.lvlr_gain); }  /* live WDSP TX level */
   else       { st.mic_pk = -99.0; st.alc_gain = 0.0; st.lvlr_gain = 0.0; }
   g_strlcpy(st.reason, r.reason ? r.reason : "", sizeof st.reason);

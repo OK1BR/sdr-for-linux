@@ -26,7 +26,8 @@ static void ok(const char *what, int cond, const char *detail) {
  * and return the final SWR (fwd/rev watts are readable afterwards via getters). */
 static double converge(int fwd_raw, int rev_raw, int is_6m, int iters) {
   tx_meter_reset();
-  for (int i = 0; i < iters; i++) { tx_meter_update(fwd_raw, rev_raw, is_6m); }
+  /* steady words → PEP == avg, so feed fwd_raw as the raw max too */
+  for (int i = 0; i < iters; i++) { tx_meter_update(fwd_raw, rev_raw, fwd_raw, is_6m); }
   return tx_meter_swr();
 }
 

@@ -83,6 +83,13 @@ static volatile gint tlm_fwd      = 0;
 static volatile gint tlm_rev      = 0;
 static volatile gint tlm_exciter  = 0;
 static int fwd_acc = 0, rev_acc = 0, ex_acc = 0;
+/* PEP tracker (piHPSDR alex_forward_max, radio.h:221 "// PEP"): max of the RAW
+ * per-packet forward word, NOT of the 16-EMA. The SSB envelope fluctuates at
+ * audio rate, so the EMA reads near the envelope *average* — squared into watts
+ * that's ~6 dB under PEP on speech (the "4× menší než wattmetr" bug). During TX
+ * HP packets arrive ~1 kHz, so the raw max IS the PEP. Decayed by the consumer,
+ * p2_tx_fwd_max_take(). */
+static volatile gint tlm_fwd_max  = 0;
 
 static int       cfg_device;
 static long long cfg_freq;       /* read by the timer thread, written by p2_set_frequency */
@@ -527,6 +534,17 @@ void p2_get_telemetry(p2_telemetry *out) {
   out->adc1_overload = g_atomic_int_and(&tlm_adc1_ovl, 0);
 }
 
+/* Read the PEP tracker and decay it — piHPSDR transmitter.c:578-580 verbatim,
+ * except the factor: piHPSDR decays ×7/8 per ~10 Hz meter update; our caller
+ * (the tx_run gate slot) runs at ~20 Hz, so ×15/16 gives the same ~0.5 s
+ * half-life. MUST be called from exactly ONE place (tx_run) — every call
+ * decays the peak, so a second reader would double the decay rate. */
+int p2_tx_fwd_max_take(void) {
+  int m = g_atomic_int_get(&tlm_fwd_max);
+  g_atomic_int_set(&tlm_fwd_max, (m * 15) / 16);
+  return m;
+}
+
 /* ---- incoming IQ ---------------------------------------------------------- */
 
 /*
@@ -585,6 +603,10 @@ static void parse_high_priority_status(const unsigned char *buf, int len) {
   int pw;
   pw = ((buf[ 6] & 0xFF) << 8) | (buf[ 7] & 0xFF);  ex_acc  = (15 * ex_acc)  / 16 + pw;
   pw = ((buf[14] & 0xFF) << 8) | (buf[15] & 0xFF);  fwd_acc = (15 * fwd_acc) / 16 + pw;
+  /* PEP: raw pre-EMA max (np.c:2657). Benign race with the decay in
+   * p2_tx_fwd_max_take() — worst case one peak is overwritten by the decayed
+   * value and re-arms on the next syllable; piHPSDR has the same. */
+  if (pw > g_atomic_int_get(&tlm_fwd_max)) { g_atomic_int_set(&tlm_fwd_max, pw); }
   pw = ((buf[22] & 0xFF) << 8) | (buf[23] & 0xFF);  rev_acc = (15 * rev_acc) / 16 + pw;
   g_atomic_int_set(&tlm_exciter, ex_acc  / 16);
   g_atomic_int_set(&tlm_fwd,     fwd_acc / 16);

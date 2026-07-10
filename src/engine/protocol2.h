@@ -81,6 +81,14 @@ typedef struct {
 void p2_get_telemetry(p2_telemetry *out);
 
 /*
+ * PEP: read the raw per-packet forward-power maximum and decay it ×15/16
+ * (piHPSDR alex_forward_max + transmitter.c:580 ballistics, rate-adjusted to
+ * the ~20 Hz tx_run slot). Destructive read — single consumer (tx_run) only;
+ * the 16-EMA fwd_raw above under-reads voice PEP by ~6 dB, this doesn't.
+ */
+int p2_tx_fwd_max_take(void);
+
+/*
  * ---- TX byte construction (F1, docs/TX-DESIGN.md) -------------------------
  *
  * ⛔ SAFETY: these structs let the builders CONSTRUCT the TX bytes; they do NOT

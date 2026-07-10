@@ -163,7 +163,7 @@ int main(void) {
       if (gs != gate_slot) {
         gate_slot = gs;
         p2_telemetry t; p2_get_telemetry(&t);
-        tx_meter_update(t.fwd_raw, t.rev_raw, is_6m);
+        tx_meter_update(t.fwd_raw, t.rev_raw, p2_tx_fwd_max_take(), is_6m);
         tx_gate_in in = { .want_tune = 1, .freq_hz = freq, .swr = tx_meter_swr(),
                           .fwd_w = tx_meter_fwd_w(), .rev_w = tx_meter_rev_w() };
         tx_gate_result r; tx_gate_evaluate(&cfg, &in, &r);
