@@ -52,6 +52,10 @@ typedef struct {
   int         au_acccnt;
   float       au_buf[2048];  /* mono frames at au_rate awaiting a packet     */
   int         au_fill;
+  /* Sensor notifications (RX_SENSORS_ENABLE / TX_SENSORS_ENABLE). */
+  int         rxsens_on, rxsens_ms;
+  int         txsens_on, txsens_ms;
+  gint64      rxsens_next, txsens_next;   /* g_get_monotonic_time deadlines  */
 } Client;
 
 static Client              s_cli[TCI_MAX_CLIENTS];
@@ -137,6 +141,50 @@ static void tci_broadcastf(const char *fmt, ...) {
 /* Broadcast every state item that changed since the last look. This is how
  * GUI-initiated changes (tuning wheel, mode buttons) reach TCI clients
  * without instrumenting every GUI path — the server polls its own ops. */
+/* Sensor notifications (fast timer, 100 ms): per-client cadence. Getters run
+ * on the main thread like every ops call. */
+static gboolean tci_sensors_tick(gpointer data) {
+  (void)data;
+  if (!s_run) { return G_SOURCE_REMOVE; }
+  gint64 now = g_get_monotonic_time();
+  double sm = 0.0, mic = 0.0, rms = 0.0, pep = 0.0, swr = 0.0;
+  int have_sm = 0, have_tx = 0;
+  g_mutex_lock(&s_lock);
+  for (int i = 0; i < TCI_MAX_CLIENTS; i++) {
+    Client *c = &s_cli[i];
+    if (!c->inuse) { continue; }
+    if (c->rxsens_on && now >= c->rxsens_next) {
+      if (!have_sm) { g_mutex_unlock(&s_lock); sm = s_ops.get_smeter(); g_mutex_lock(&s_lock); have_sm = 1; }
+      /* g_ascii_formatd: the app runs in the user's locale (cs_CZ prints a
+       * DECIMAL COMMA) but ',' is a reserved TCI separator — always '.'. */
+      char m[96], v[G_ASCII_DTOSTR_BUF_SIZE];
+      g_ascii_formatd(v, sizeof(v), "%.1f", sm);
+      snprintf(m, sizeof(m), "rx_channel_sensors:0,0,%s;", v);
+      cli_send(c, m);
+      c->rxsens_next = now + (gint64)c->rxsens_ms * 1000;
+    }
+    if (c->txsens_on && now >= c->txsens_next) {
+      if (!have_tx) { g_mutex_unlock(&s_lock); s_ops.get_tx_meters(&mic, &rms, &pep, &swr); g_mutex_lock(&s_lock); have_tx = 1; }
+      char m[160];
+      char v1[G_ASCII_DTOSTR_BUF_SIZE], v2[G_ASCII_DTOSTR_BUF_SIZE];
+      char v3[G_ASCII_DTOSTR_BUF_SIZE], v4[G_ASCII_DTOSTR_BUF_SIZE];
+      g_ascii_formatd(v1, sizeof(v1), "%.1f", mic);
+      g_ascii_formatd(v2, sizeof(v2), "%.1f", rms);
+      g_ascii_formatd(v3, sizeof(v3), "%.1f", pep);
+      g_ascii_formatd(v4, sizeof(v4), "%.2f", swr);
+      snprintf(m, sizeof(m), "tx_sensors:0,%s,%s,%s,%s;", v1, v2, v3, v4);
+      cli_send(c, m);
+      c->txsens_next = now + (gint64)c->txsens_ms * 1000;
+    }
+  }
+  g_mutex_unlock(&s_lock);
+  if (have_sm || have_tx) {
+    s_writable = 1;
+    if (s_ctx) { lws_cancel_service(s_ctx); }
+  }
+  return G_SOURCE_CONTINUE;
+}
+
 static gboolean tci_reporter(gpointer data) {
   (void)data;
   if (!s_run) { s_reporter_id = 0; return G_SOURCE_REMOVE; }
@@ -424,6 +472,18 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
     int isl = (name[3] == 'l');
     if (ac > 0 && av[0][0]) { s_dig_off[isl] = atoi(av[0]); }
     tci_broadcastf("%s:%d;", isl ? "digl_offset" : "digu_offset", s_dig_off[isl]);
+  } else if (strcmp(name, "rx_sensors_enable") == 0 || strcmp(name, "tx_sensors_enable") == 0) {
+    int istx = (name[0] == 't');
+    if (ac > 0 && av[0][0]) {
+      int on = arg_bool(av[0]);
+      int ms = (ac > 1 && av[1][0]) ? atoi(av[1]) : 500;
+      if (ms < 100)  { ms = 100; }
+      if (ms > 1000) { ms = 1000; }
+      g_mutex_lock(&s_lock);
+      if (istx) { c->txsens_on = on; c->txsens_ms = ms; c->txsens_next = 0; }
+      else      { c->rxsens_on = on; c->rxsens_ms = ms; c->rxsens_next = 0; }
+      g_mutex_unlock(&s_lock);
+    }
   } else if (strcmp(name, "audio_samplerate") == 0) {
     if (ac > 0 && av[0][0]) {
       int r = atoi(av[0]);
@@ -763,6 +823,7 @@ int tci_server_start(int port, const TciOps *ops) {
   s_run = 1;
   s_thread = g_thread_new("sdrfl-tci", service_thread, NULL);
   s_reporter_id = g_timeout_add(500, tci_reporter, NULL);
+  g_timeout_add(100, tci_sensors_tick, NULL);   /* self-removes when !s_run */
   fprintf(stderr, "tci: server up on port %d\n", port);
   return 0;
 }

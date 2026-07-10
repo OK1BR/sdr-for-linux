@@ -2757,6 +2757,18 @@ static void tci_cw_send(const char *t) {
 static void tci_cw_stop(void) { if (tci_app->tx_ready) { tx_run_cw_abort(); } }
 static int tci_get_tx_enable(void) { return tci_app->tx_ready && tci_app->tx_pa_enabled; }
 static int tci_get_rate(void) { return tci_app->rate; }
+static double tci_get_smeter(void) {
+  return tci_app->audio_ok ? demod_s_meter() : -200.0;
+}
+static void tci_get_tx_meters(double *mic_db, double *rms_w, double *pep_w, double *swr) {
+  tx_run_status ts;
+  memset(&ts, 0, sizeof(ts));
+  if (tci_app->tx_ready) { tx_run_get_status(&ts); }
+  *mic_db = ts.mic_pk;
+  *rms_w  = ts.fwd_w;
+  *pep_w  = ts.fwd_pep_w;
+  *swr    = ts.swr;
+}
 
 static const TciOps TCI_OPS = {
   tci_get_freq, tci_set_freq, tci_get_mode, tci_set_mode,
@@ -2765,6 +2777,7 @@ static const TciOps TCI_OPS = {
   tci_get_tune, tci_set_tune, tci_get_volume, tci_set_volume,
   tci_get_mute, tci_set_mute, tci_get_cw_speed, tci_set_cw_speed,
   tci_cw_send, tci_cw_stop, tci_get_tx_enable, tci_get_rate,
+  tci_get_smeter, tci_get_tx_meters,
 };
 
 /* Start/stop the TCI server to match app->tci_enable (prefs + startup). */

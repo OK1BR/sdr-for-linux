@@ -96,8 +96,20 @@ platform-library category — do not vendor).
   Commands: audio_samplerate/_start/_stop/_stream_sample_type/_channels/
   _samples; SDRFL_TCI_DEBUG=1 logs every received command. Gate extended to
   19 checks (12 kHz mono subscription delivers correct Stream blocks).
-  **Still pending in 2b:** RX_CHANNEL_SENSORS (S-meter), TX_SENSORS,
-  LINE_OUT stream.
+  **Sensors done too (LIVE with Decodium 2026-07-10):** RX_CHANNEL_SENSORS
+  (WDSP S-meter dBm) + TX_SENSORS (mic dBFS, RMS W, PEP W, SWR from
+  tx_run_status) on a 100 ms timer honouring each client's
+  RX/TX_SENSORS_ENABLE cadence (100–1000 ms). Decodium end-to-end verified:
+  RX audio decodes, frequency syncs both ways. Compat lessons that unblocked
+  it (each one stalled the client silently): `channels_count:2` (piHPSDR
+  spelling + A/B count, not the spec's CHANNEL_COUNT), `rx_enable:0,true;`,
+  per-channel if/vfo state, the full piHPSDR-style init block, `start;`
+  after `ready;`, and an **echo layer** — every bidirectional set MUST come
+  back as a broadcast, so backend-less commands (split/RIT/XIT/squelch/
+  noise/agc/rx_mute…) are accepted, stored and echoed. **Still pending in
+  2b:** LINE_OUT stream. ⚠ Locale rule: protocol floats are formatted with
+  g_ascii_formatd — the GTK app runs in the user's locale (cs_CZ = decimal
+  COMMA) and ',' is a reserved TCI separator.
 - **F6d-2c — TX audio (digital TX).** TRX:0,true,**tci** → mic path switches
   to the TCI ring: emit TX_CHRONO pacing, accept TX_AUDIO_STREAM, resample to
   the 48 k TX input. Needs **DIGU/DIGL modes** (flat TX audio path, no

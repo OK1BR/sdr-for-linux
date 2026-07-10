@@ -56,12 +56,17 @@ static void s_cw_send(const char *t) { g_strlcat(S.cw_text, t, sizeof(S.cw_text)
 static void s_cw_stop(void) { S.cw_stopped = 1; }
 static int s_get_txen(void) { return 1; }
 static int s_get_rate(void) { return 192000; }
+static double s_get_smeter(void) { return -73.5; }
+static void s_get_txm(double *mic, double *rms, double *pep, double *swr) {
+  *mic = -20.0; *rms = 47.4; *pep = 67.5; *swr = 1.7;
+}
 
 static const TciOps STUB_OPS = {
   s_get_freq, s_set_freq, s_get_mode, s_set_mode, s_get_filter, s_set_filter,
   s_get_drive, s_set_drive, s_get_tdrive, s_set_tdrive, s_get_trx, s_set_trx,
   s_get_tune, s_set_tune, s_get_vol, s_set_vol, s_get_mute, s_set_mute,
   s_get_wpm, s_set_wpm, s_cw_send, s_cw_stop, s_get_txen, s_get_rate,
+  s_get_smeter, s_get_txm,
 };
 
 /* ---- LWS test client -------------------------------------------------------- */
@@ -70,6 +75,7 @@ static GMutex      c_lock;
 static GString    *c_rx;          /* text the client received                 */
 static GByteArray *c_bin;         /* binary frames (audio Stream blocks)      */
 static struct lws *c_wsi;
+static struct lws_context *c_ctx;
 static volatile int c_up, c_run = 1, c_send_pending;
 static char        c_out[512];
 
@@ -130,6 +136,9 @@ static gpointer client_thread(gpointer data) {
 static void client_send(const char *msg) {
   g_strlcpy(c_out, msg, sizeof(c_out));
   c_send_pending = 1;
+  /* lws_service blocks on socket events — wake the client loop so the
+   * pending write goes out even when the connection is otherwise quiet. */
+  if (c_ctx) { lws_cancel_service(c_ctx); }
 }
 
 /* ---- helpers ---------------------------------------------------------------- */
@@ -187,6 +196,7 @@ int main(void) {
   info.gid = -1;
   info.uid = -1;
   struct lws_context *cctx = lws_create_context(&info);
+  c_ctx = cctx;
 
   struct lws_client_connect_info ci;
   memset(&ci, 0, sizeof(ci));
@@ -261,6 +271,17 @@ int main(void) {
   client_send("audio_stop:0;");
   g_usleep(200 * 1000);
   while (g_main_context_iteration(NULL, FALSE)) {}
+
+  /* Sensors (2b): subscribe at the fastest cadence, expect both streams. */
+  client_send("rx_sensors_enable:true,100;tx_sensors_enable:true,100;");
+  int got_sens = 0;
+  for (int ms = 0; ms < 2000 && !got_sens; ms += 10) {
+    while (g_main_context_iteration(NULL, FALSE)) {}
+    got_sens = rx_contains("rx_channel_sensors:0,0,-73.5;") &&
+               rx_contains("tx_sensors:0,-20.0,47.4,67.5,1.70;");
+    g_usleep(10 * 1000);
+  }
+  check("rx_channel_sensors + tx_sensors flow at the asked cadence", got_sens);
 
   c_run = 0;
   g_thread_join(ct);

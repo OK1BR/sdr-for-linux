@@ -48,6 +48,8 @@ typedef struct {
   void      (*cw_stop)(void);             /* abort the CW queue             */
   int       (*get_tx_enable)(void);       /* 1 = TX possible (PA on, ready) */
   int       (*get_rate)(void);            /* IQ rate, Hz → IF_LIMITS        */
+  double    (*get_smeter)(void);          /* RX signal in the passband, dBm */
+  void      (*get_tx_meters)(double *mic_db, double *rms_w, double *pep_w, double *swr);
 } TciOps;
 
 /* Start/stop the server. start returns 0 on success (port bound). *ops is
