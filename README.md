@@ -81,7 +81,10 @@ chmod +x SDR_for_Linux-*.AppImage
 ./SDR_for_Linux-*.AppImage
 ```
 
-**Arch Linux (AUR)** — coming with the first tagged release.
+**Arch Linux (AUR)** — planned; blocked for now on AUR's upstream freeze of
+new-account registrations (June 2026 malware cleanup). Meanwhile the
+AppImage runs fine on Arch, or build from source below —
+`packaging/PKGBUILD` works locally with `makepkg`.
 
 **Build from source** — the DSP engine (**WDSP**, plus **rnnoise** and
 **libspecbleach**) is vendored in `vendor/` and built from source; only
