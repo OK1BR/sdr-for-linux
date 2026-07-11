@@ -288,8 +288,10 @@ Pořadí prací (dávky podle závislostí a rizika):
   (b1fef7d, +2 testy, Richardův bezpečnostní audit).
 - **Dávka C — design k diskusi:** #7 CW TX HUD (návrh: sent-text
   s progresem + WPM + hang stav; digi HUD otázka otevřená).
-- **Pojistky:** #6 (IQ při CW TX nese signál) + #9 (spot_delete case
-  v sdrfl-tci-test) — přidat do gate testů.
+- **Pojistky: ✅ (4ed6d3e)** — #9 spot_delete už kryje sdrfl-tci-test
+  (ověřeno, case existuje); #6 + invarianty dávky B zapsány jako
+  tripwires do TX-DESIGN §8 + kontraktový komentář u IQ tapu
+  (offline test pro #6 nepraktický — tap je za live TX; hlídá doc+kód).
 
 Roadmapa po dořešení: viz níže (10E → HL2 → Square SDR).
 
