@@ -64,7 +64,10 @@
  * receiver.c:1355-1369, radio.c:2168-2207 — 31 ms for TUNE). The panadapter
  * keeps its live RX IQ, so only the audio path (AGC) is silenced. */
 #define RX_SILENCE_MS 20    /* brief demod-input silence to swallow the literal T/R tail */
-#define TX_SETTLE_MS  200   /* keep RX audio muted + ADC-OVL suppressed this long after */
+#define TX_SETTLE_MS  200   /* keep RX audio muted + ADC-OVL suppressed this long after
+                               a voice/tune over (AGC recovery window)                  */
+#define TX_SETTLE_CW_MS 100 /* CW break-in runs AGC Fast (per-mode memory) — a shorter
+                               settle wins 100 ms of contest turnaround; revisit by ear */
                             /* unkey, so the AGC recovers before the audio fades back in */
 static volatile int g_rx_silence;   /* g_atomic: RX IQ pairs still to silence to the demod */
 
@@ -261,6 +264,10 @@ typedef struct {
                              /* suppressed through the TX→RX AGC-recovery window     */
 } App;
 
+/* The one live App, for callbacks with no user-data slot (TCI ops glue, the
+ * IQ-router's mode-aware settle). Set in tci_apply() at startup. */
+static App *tci_app;
+
 /* dB-scale limits for the grab-to-move axis. */
 #define PAN_HIGH_DEFAULT  -50.0
 #define PAN_LOW_DEFAULT  -140.0
@@ -401,6 +408,20 @@ static void feed_cb(const double *iq, int n_pairs, void *user) {
   {
     static int    rx_prev_keyed;
     static gint64 rx_unmute_at;
+    {   /* latency audit: expose RX-stream pauses (T/R turnaround attribution) */
+      static const char *lat; static int lat_init;
+      if (!lat_init) { lat = g_getenv("SDRFL_LAT_DEBUG"); lat_init = 1; }
+      if (lat && lat[0] == '1') {
+        static gint64 rx_prev_pkt;
+        gint64 tnow = g_get_monotonic_time();
+        if (rx_prev_pkt && tnow - rx_prev_pkt > 20000) {
+          fprintf(stderr, "LAT %lld rx_gap %lld ms\n", (long long)tnow,
+                  (long long)((tnow - rx_prev_pkt) / 1000));
+          fflush(stderr);
+        }
+        rx_prev_pkt = tnow;
+      }
+    }
     int keyed = tx_run_keyed();
     if (keyed != rx_prev_keyed) {
       rx_prev_keyed = keyed;
@@ -408,8 +429,12 @@ static void feed_cb(const double *iq, int n_pairs, void *user) {
         demod_set_mute(1);
         rx_unmute_at = 0;
       } else {
+        /* CW break-in (AGC Fast per-mode default) recovers faster → shorter
+         * settle; voice/tune keeps the full AGC-recovery window. */
+        int cw = tci_app && (tci_app->mode == DEMOD_CWL || tci_app->mode == DEMOD_CWU);
         g_atomic_int_set(&g_rx_silence, s_engine_rate * RX_SILENCE_MS / 1000);
-        rx_unmute_at = g_get_monotonic_time() + (gint64)TX_SETTLE_MS * 1000;
+        rx_unmute_at = g_get_monotonic_time()
+                       + (gint64)(cw ? TX_SETTLE_CW_MS : TX_SETTLE_MS) * 1000;
       }
       const char *lat = g_getenv("SDRFL_LAT_DEBUG");
       if (lat && lat[0] == '1') {
@@ -3075,8 +3100,8 @@ static void on_pref_cw_hang(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
 /* ---- TCI server glue (F6d-2a) --------------------------------------------
  * The ops run on the GTK main thread (tci_server dispatches there) and reuse
  * the SAME paths as the on-screen controls — keying lands in tx_gate via the
- * MOX/TUNE toggle handlers, never directly. */
-static App *tci_app;
+ * MOX/TUNE toggle handlers, never directly. (tci_app lives up by the App
+ * typedef — the IQ router needs it too.) */
 static int  tci_muted;
 
 static long long tci_get_freq(void) { return tci_app->freq; }

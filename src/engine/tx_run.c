@@ -256,6 +256,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     }
     tx_dsp_run(1);
     p2_set_tx_state(&r.state);
+    g_atomic_int_set(&s_keyed_pub, 1);   /* RX mute router keys off this NOW */
     LAT("key_on %s", r.state.tune ? "TUNE" : (cw_key ? "CW" : "MOX"));
     fprintf(stderr, "tx: KEY %s  freq=%lld Hz  PA=%s  ANT%d  drive=%d/255\n",
             r.state.tune ? "TUNE" : (cw_key ? "CW" : "MOX"), freq,
@@ -265,6 +266,9 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     /* KEY OFF (operator release OR protection trip): drop MOX first, stop the
      * tone, flush a little audio, then stop the channel. */
     p2_set_tx_state(NULL);
+    /* Unkey flag FIRST: the WDSP flush below blocks ~100 ms (measured) and the
+     * RX-audio settle window must not wait for it — it starts at the T/R drop. */
+    g_atomic_int_set(&s_keyed_pub, 0);
     LAT("key_off");
     tx_dsp_tune_tone(0, 0.0);
     if (tt_applied) { tx_dsp_two_tone(0, 0.0, 0.0); tt_applied = 0; }
@@ -327,6 +331,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   st.ps_fdbk       = pss.fdbk;
   st.ps_att        = pss.att;
   g_strlcpy(st.reason, r.reason ? r.reason : "", sizeof st.reason);
+  if (lat_on() && keyed != *prev_keyed) { LAT("keyed_pub %d", keyed); }
   g_atomic_int_set(&s_keyed_pub, keyed);
   publish(&st);
 
