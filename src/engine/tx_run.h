@@ -75,11 +75,12 @@ typedef struct {
   char   reason[64];/* "" or why refused/tripped (for the UI/log)          */
 } tx_run_status;
 
-/* CW TX HUD snapshot (display-only, contest note #7): the queued Morse text
- * around the playhead. `text` holds a few already-sent chars of history plus
- * everything still to sound; `cur` indexes the first unsent char; `active` =
- * Morse is still sounding; `hang_frac` = fraction of the break-in hang left
- * (meaningful only when !active). Thread-safe; zeros when TX isn't up. */
+/* CW TX HUD snapshot (display-only, contest note #7): the CURRENT over's
+ * Morse text around the playhead — a send starting from idle begins a new
+ * over and clears the record (no memory of previous keying, Richard's call).
+ * `cur` indexes the first unsent char; `active` = Morse is still sounding;
+ * `hang_frac` = fraction of the break-in hang left (meaningful only when
+ * !active). Thread-safe; zeros when TX isn't up. */
 typedef struct {
   char   text[160];
   int    cur;

@@ -25,8 +25,6 @@
 typedef struct { int down; int len; } seg;
 typedef struct { char ch; long long end; } cwch;   /* queued char + schedule end pos */
 
-#define CW_HIST 12   /* already-sent chars kept in the progress snapshot (HUD) */
-
 struct cw_gen {
   int    sr;
   int    dot;        /* dot length, samples */
@@ -44,9 +42,10 @@ struct cw_gen {
 
   /* Progress bookkeeping for the CW TX HUD (contest note #7): the sample clock
    * advanced by pull(), the schedule end position advanced by push_seg, and a
-   * ring of queued characters annotated with where in the schedule each one
-   * finishes sounding. Chars with end <= clock have been sent. Display only —
-   * nothing here feeds back into the envelope. */
+   * ring of the CURRENT over's characters annotated with where in the schedule
+   * each one finishes sounding (a send from idle starts a new over and clears
+   * the ring). Chars with end <= clock have been sent. Display only — nothing
+   * here feeds back into the envelope. */
   long long clock;      /* samples emitted since creation                     */
   long long sched_end;  /* clock position where the queued schedule ends      */
   cwch  *cq;            /* queued-text ring */
@@ -158,7 +157,11 @@ void cw_gen_send_text(cw_gen *g, const char *text) {
    * still busy the leading space is a genuine word gap and is kept. */
   int at_start = cw_gen_idle(g);
   /* Progress clock: a schedule queued onto an emptied generator starts sounding
-   * at the CURRENT sample position, not where the last schedule ended. */
+   * at the CURRENT sample position, not where the last schedule ended. A send
+   * from idle is a NEW over — drop the previous over's char record, so the HUD
+   * shows only the sequence being transmitted now (Richard, live 2026-07-11).
+   * When the queue is still busy the incoming text APPENDS to the same over. */
+  if (at_start) { g->chead = g->ctail = 0; }
   if (g->sched_end < g->clock) { g->sched_end = g->clock; }
   for (const char *p = text; *p; p++) {
     if (*p == ' ' || *p == '\t' || *p == '\n') {
@@ -224,10 +227,6 @@ int cw_gen_progress(cw_gen *g, char *buf, int buflen, int *cur) {
   int sent = 0;                          /* chars fully sounded (end <= clock) */
   for (int i = g->chead; i != g->ctail; i = (i + 1) % g->ccap) {
     if (g->cq[i].end <= g->clock) { sent++; } else { break; }
-  }
-  while (sent > CW_HIST) {               /* keep the history window bounded */
-    g->chead = (g->chead + 1) % g->ccap;
-    sent--;
   }
   int n = 0;
   for (int i = g->chead; i != g->ctail && n < buflen - 1; i = (i + 1) % g->ccap) {

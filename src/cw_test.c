@@ -109,7 +109,15 @@ int main(void) {
     cw_gen_progress(g, buf, sizeof buf, &cur);
     chk("progress: all sent", cur, n, 0);
     if (!cw_gen_idle(g)) { printf("  progress: not idle after drain  FAIL\n"); fails++; }
-    cw_gen_send_text(g, "TEST");
+    /* A send from idle starts a NEW over: the previous record must be gone. */
+    cw_gen_send_text(g, "K");
+    n = cw_gen_progress(g, buf, sizeof buf, &cur);
+    chk("progress: new over shows only itself", n, 1, 0);
+    chk("progress: new over playhead at 0", cur, 0, 0);
+    /* ...while a send onto a BUSY queue appends to the same over. */
+    cw_gen_send_text(g, "R");
+    n = cw_gen_progress(g, buf, sizeof buf, &cur);
+    chk("progress: mid-over send appends", n, 2, 0);
     cw_gen_flush(g);
     n = cw_gen_progress(g, buf, sizeof buf, &cur);
     chk("progress: flush clears the text", n, 0, 0);

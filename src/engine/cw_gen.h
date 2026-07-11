@@ -45,10 +45,11 @@ void    cw_gen_flush(cw_gen *g);
 
 /*
  * HUD progress snapshot (display-only bookkeeping — the envelope schedule is
- * untouched). Copies the queued text — a few already-sent characters of history
- * plus everything still to sound — into buf (NUL-terminated) and sets *cur to
- * the index of the first character that has NOT finished sounding yet (== the
- * returned length once everything queued has been sent). Returns the number of
+ * untouched). Copies the CURRENT over's text — from its first character to the
+ * end of the queue; a send starting from idle begins a new over and drops the
+ * previous record — into buf (NUL-terminated) and sets *cur to the index of
+ * the first character that has NOT finished sounding yet (== the returned
+ * length once everything queued has been sent). Returns the number of
  * characters written. Thread-note: call from the same side as pull().
  */
 int     cw_gen_progress(cw_gen *g, char *buf, int buflen, int *cur);
