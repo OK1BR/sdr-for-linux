@@ -612,6 +612,32 @@ skimming with a 384 kHz IQ client).
 **⛔ PureSignal is LOCKED OUT on Hermes-class (`radio_ps_supported()`, G2E
 only).** Live, twice: keying the 10E with PS enabled kills the radio mid-TX
 ("no packets from the radio for 3 s"), network stack gone (no ARP) until a
-power cycle. The PS wire config is piHPSDR's for every P2 device — Hermes
-fw 10.3 simply cannot execute the feedback-DDC reconfig. Firmware
-limitation; re-evaluate only on newer Hermes firmware, live, dummy-load.
+power cycle.
+
+**Root cause (piHPSDR + Thetis audits, 2026-07-12).** Not a firmware
+limitation, a *sequencing* one:
+- piHPSDR reads the discovery P2-protocol-version byte (buffer[12]; 10E=31,
+  G2E=44) and throws it away ("Info not yet made use of"); PS has no
+  device/firmware gating at all and its P2 wire bytes match ours — piHPSDR
+  would wedge a 10E over P2 exactly the same way. Its July-2023 "PURESIGNAL
+  now works with ANAN-10E/100B" changelog is the **P1** `anan10E` path
+  (feedback via fixed RX1/RX2 channels, no DDC sync; P1 PS toggle does a
+  full protocol stop/restart because HPSDR firmwares historically hang on
+  live stream reconfig — piHPSDR OZY comment).
+- Thetis 2.10.3.15 **supports P2 PS on the 10E** with the byte-identical
+  feedback config (enable DDC0 only, sync [1363]=0x02, DDC1←ADC1, both
+  192k, n_adc=1) and hard-gates HermesII on **fw >= 10.3** ("Invalid
+  Firmware! Requires 10.3 or greater") — 10.3 is exactly the P2-PS-capable
+  minimum. The working difference is ORDER: at key-down Thetis sends the DDC
+  reconfig (CmdRx) *before* the HP packet that raises PTT; at key-up it
+  restores the RX DDC config *before* dropping PTT; rate changes outside TX
+  are quiesced (DDCs disabled + 20 ms). On the 10E it also sacrifices both
+  DDCs (disables both WDSP RX channels during PS TX) and forces RX2 rate =
+  RX1. Our keepalive can emit the MOX HP up to 200 ms before the PS
+  RX-specific → fw 10.3 switches sync mode mid-transmission and wedges; the
+  G2E's 4.4-class firmware tolerates the loose ordering.
+
+Lifting the lockout = implement the Thetis ordering (PS RX-specific before
+MOX on key-down, RX restore before un-MOX on key-up, ± quiesce) and re-test
+live — each failed attempt costs a power cycle. Alternative for the 10E:
+PureSignal over Protocol 1 once P1 lands (HL2 milestone).

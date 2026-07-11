@@ -50,11 +50,18 @@ static inline int radio_tx_supported(const DISCOVERED *d) {
 /* ⛔ PureSignal whitelist — G2E only. LIVE EVIDENCE (2026-07-12, twice on the
  * ANAN 10E, Hermes fw 10.3): keying with PS enabled kills the radio outright —
  * mid-TX "no packets from the radio for 3 s", then the network stack is gone
- * (no ARP) until a power cycle. The PS wire config (RX-specific feedback pair
- * DDC0+DDC1, sync bitmap [1363]=0x02, pseudo-ADC n_adc) is exactly piHPSDR's
- * for every P2 device — the old Hermes firmware just cannot execute it. So
- * this is a firmware limitation, not an app-side setting to fix: PS stays
- * locked out on Hermes-class until proven live on newer firmware. */
+ * (no ARP) until a power cycle.
+ *
+ * Root cause (piHPSDR + Thetis audit, 2026-07-12; TX-DESIGN §9): NOT a
+ * firmware limitation — Thetis runs P2 PS on the 10E with the byte-identical
+ * feedback config and gates on exactly fw >= 10.3. The difference is
+ * SEQUENCING: Thetis reconfigures the DDCs (sync + 192k) BEFORE the HP packet
+ * that raises PTT, and restores the RX config BEFORE dropping PTT on unkey.
+ * Our keepalive (like piHPSDR, which has no proven 10E-P2-PS either) can put
+ * the MOX HP up to 200 ms before the PS RX-specific — the fw 10.3 FPGA
+ * wedges on switching sync mode while already transmitting; the G2E (fw
+ * 4.4-class) tolerates it. Lifting this requires the Thetis key-down/key-up
+ * ordering in the TX path + a live re-test (each failed try = power cycle). */
 static inline int radio_ps_supported(const DISCOVERED *d) {
   return d != NULL && d->protocol == NEW_PROTOCOL && d->device == NEW_DEVICE_G1;
 }
