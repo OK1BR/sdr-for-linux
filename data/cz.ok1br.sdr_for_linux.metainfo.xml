@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>cz.ok1br.sdr_for_linux</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>SDR for Linux</name>
+  <summary>Software-defined radio for HPSDR / ANAN transceivers</summary>
+  <description>
+    <p>
+      A modern GTK4/libadwaita application for HPSDR Protocol 2 radios, built
+      on the proven piHPSDR engine and the WDSP DSP library. Full-resolution
+      floating-point panadapter and waterfall, RX demodulation (SSB, CW, AM,
+      digi) with low-latency PipeWire audio, and SSB/CW transmit with
+      PureSignal linearization.
+    </p>
+    <p>
+      Includes a TCI server (ExpertSDR3-compatible) for skimmers, loggers and
+      digimode software. Alpha software: the Apache Labs ANAN G1 is currently
+      the only radio verified on real hardware — other models are blocked by
+      a safety whitelist until they are tested.
+    </p>
+  </description>
+  <developer id="cz.ok1br">
+    <name>Richard Fakenberg, OK1BR</name>
+  </developer>
+  <launchable type="desktop-id">cz.ok1br.sdr_for_linux.desktop</launchable>
+  <url type="homepage">https://github.com/OK1BR/sdr-for-linux</url>
+  <url type="bugtracker">https://github.com/OK1BR/sdr-for-linux/issues</url>
+  <url type="vcs-browser">https://github.com/OK1BR/sdr-for-linux</url>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+    <category>HamRadio</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0-alpha" date="2026-07-11">
+      <description>
+        <p>
+          First alpha: Protocol 2 RX/TX for the ANAN G1 — panadapter,
+          waterfall, SSB/CW/AM/digi demodulation, SSB and CW transmit,
+          PureSignal, TCI server, band plan overlay, DX spots.
+        </p>
+      </description>
+    </release>
+  </releases>
+</component>

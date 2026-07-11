@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- SDR for Linux application icon: panadapter trace + waterfall + VFO line -->
+  <defs>
+    <clipPath id="plate">
+      <rect x="8" y="8" width="112" height="112" rx="26"/>
+    </clipPath>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#232833"/>
+      <stop offset="1" stop-color="#0c0e13"/>
+    </linearGradient>
+    <linearGradient id="trace-fill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4fd2ff" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#4fd2ff" stop-opacity="0.06"/>
+    </linearGradient>
+    <linearGradient id="wf" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#123a5e"/>
+      <stop offset="1" stop-color="#0a1626"/>
+    </linearGradient>
+    <linearGradient id="streak" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#bdf0ff" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#2f9fd8" stop-opacity="0.55"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <g clip-path="url(#plate)">
+    <rect x="8" y="8" width="112" height="112" fill="url(#bg)"/>
+
+    <!-- faint grid -->
+    <g stroke="#ffffff" stroke-opacity="0.05" stroke-width="1">
+      <path d="M8 32h112M8 52h112M8 72h112"/>
+      <path d="M36 8v72M64 8v72M92 8v72"/>
+    </g>
+
+    <!-- waterfall (bottom band) -->
+    <rect x="8" y="84" width="112" height="36" fill="url(#wf)"/>
+    <g>
+      <rect x="58" y="84" width="12" height="36" fill="url(#streak)"/>
+      <rect x="84" y="84" width="5" height="36" fill="url(#streak)" opacity="0.45"/>
+      <rect x="33" y="84" width="4" height="36" fill="url(#streak)" opacity="0.30"/>
+    </g>
+    <rect x="8" y="83" width="112" height="1.5" fill="#ffffff" fill-opacity="0.12"/>
+
+    <!-- spectrum trace: filled area + line -->
+    <path d="M8 68 L14 66 L20 63 L24 65 L28 61 L32 64 L36 52 L40 63 L44 60 L48 64
+             L52 58 L56 62 L58 50 L60 34 L62 24 L64 20 L66 24 L68 34 L70 50 L72 62
+             L76 60 L80 64 L84 58 L86 48 L88 44 L90 48 L92 60 L96 63 L100 60
+             L104 64 L108 62 L114 65 L120 64 L120 79 L8 79 Z"
+          fill="url(#trace-fill)"/>
+    <path d="M8 68 L14 66 L20 63 L24 65 L28 61 L32 64 L36 52 L40 63 L44 60 L48 64
+             L52 58 L56 62 L58 50 L60 34 L62 24 L64 20 L66 24 L68 34 L70 50 L72 62
+             L76 60 L80 64 L84 58 L86 48 L88 44 L90 48 L92 60 L96 63 L100 60
+             L104 64 L108 62 L114 65 L120 64"
+          fill="none" stroke="#7fe3ff" stroke-width="2.5"
+          stroke-linejoin="round" stroke-linecap="round"/>
+
+    <!-- VFO line through the tuned peak -->
+    <rect x="63" y="8" width="2" height="112" fill="#ff5252" fill-opacity="0.85"/>
+
+    <!-- top gloss -->
+    <rect x="8" y="8" width="112" height="40" fill="url(#gloss)"/>
+  </g>
+
+  <!-- plate edge -->
+  <rect x="8.5" y="8.5" width="111" height="111" rx="25.5" fill="none"
+        stroke="#ffffff" stroke-opacity="0.08"/>
+</svg>
