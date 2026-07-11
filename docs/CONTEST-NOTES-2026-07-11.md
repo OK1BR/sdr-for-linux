@@ -272,13 +272,20 @@ Pořadí prací (dávky podle závislostí a rizika):
   fresh_meter); (3) mute řízený enginem z IQ routeru (−110 ms na
   odpadnutí; GUI tick jen backstop, NESMÍ znovu nastavovat g_rx_silence).
   **Naměřeno (35 overů): náběh TCI→RF 320-360 → 32-42 ms** (z toho
-  32 = PTT delay, záměr); **release 445 → 407 ms** (hang 96 + ~106
-  detekce + settle 200,0 + fade 5). IC-705: první/poslední znak čistý;
-  SSB klíčování OK. **Otevřeno pro příště:** ~106 ms mezi key_off a
-  první RX aktivitou vypadá na turnaround rádia (DDC restart po T/R) →
-  potvrdit a případně settle okno spustit od key_off (−100 ms);
-  settle 200 přehodnotit s CW=Fast (→ ~100?); B3 (piHPSDR reference)
-  neměřeno — už není třeba pro rozhodnutí, jen pro srovnání.
+  32 = PTT delay, záměr); release 445 → 407 ms. IC-705: první/poslední
+  znak čistý; SSB klíčování OK.
+  **Kolo 2 (9dd8e5a, tentýž večer): release 407 → 201 ms.** Atribuce
+  (keyed_pub + rx_gap značky): těch ~106 ms NEBYL turnaround rádia
+  (RX stream nemá jedinou pauzu), ale náš WDSP flush v unkey větvi
+  blokující publikaci flagu — unkey se teď publikuje hned při
+  p2_set_tx_state(NULL), flush běží dál souběžně. Settle per-mode:
+  CW 100 ms (AGC Fast), hlas/TUNE 200 ms. Richard: „svižnější", AGC
+  nepumpuje. Výsledek: 201 ms = hang 96 (jeho volba) + settle 100 +
+  fade 5 → při 30 WPM &lt;1 znak. Čistě RX-audio timing, TX dráta ani
+  ochrany nedotčeny (SWR audit + stale-reading fix viz b1fef7d).
+  B3 (piHPSDR reference) neměřeno — není už k rozhodnutí potřeba.
+  Bokem opraveno: SWR 2-consecutive filtr počítá jen čerstvá čtení
+  (b1fef7d, +2 testy, Richardův bezpečnostní audit).
 - **Dávka C — design k diskusi:** #7 CW TX HUD (návrh: sent-text
   s progresem + WPM + hang stav; digi HUD otázka otevřená).
 - **Pojistky:** #6 (IQ při CW TX nese signál) + #9 (spot_delete case
