@@ -1,5 +1,5 @@
 project('sdr-for-linux', 'c',
-  version : '0.0.1',
+  version : '0.1.0-alpha',
   license : 'GPL-3.0-or-later',
   default_options : [
     'c_std=c11',
@@ -9,6 +9,8 @@ project('sdr-for-linux', 'c',
 )
 
 add_project_arguments('-D_GNU_SOURCE', language : 'c')
+add_project_arguments('-DSDRFL_VERSION="@0@"'.format(meson.project_version()),
+                      language : 'c')
 
 # --- Dependencies -----------------------------------------------------------
 # gtk4/opus come in transitively via the vendored piHPSDR headers; openssl is
@@ -92,8 +94,10 @@ executable('sdr-for-linux',
   # network client; WDSP's comm.h/wdsp.h need the GNU dialect (as sdrfl-wdsp-smoke).
   dependencies : common_deps + [adw_dep, glib_dep, wdsp_dep, m_dep, pipewire_dep, lws_dep],
   override_options : ['c_std=gnu11'],
-  install : false,
+  install : true,
 )
+
+subdir('data')   # .desktop + icon + AppStream metainfo (install only)
 
 # First-run FFTW wisdom builder + progress window, exercised without the radio
 # (SDRFL_WISDOM_DIR overrides the cache dir so a throwaway build can be tested).
@@ -245,6 +249,6 @@ executable('sdrfl-render-test',
     'src/transport.c',
   ] + ui_sources,
   include_directories : [vendor_inc, src_inc],
-  dependencies : common_deps,
+  dependencies : common_deps + [m_dep],   # explicit -lm: --as-needed link (packaging)
   install : false,
 )

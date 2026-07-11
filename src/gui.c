@@ -3665,6 +3665,35 @@ static void act_prefs(GSimpleAction *a, GVariant *param, gpointer data) {
   adw_dialog_present(dlg, GTK_WIDGET(win));
 }
 
+static void act_about(GSimpleAction *a, GVariant *param, gpointer data) {
+  (void)a; (void)param; (void)data;
+  GtkWindow *win = gtk_application_get_active_window(
+      GTK_APPLICATION(g_application_get_default()));
+  AdwDialog *dlg = adw_about_dialog_new();
+  AdwAboutDialog *ad = ADW_ABOUT_DIALOG(dlg);
+  adw_about_dialog_set_application_name(ad, "SDR for Linux");
+  adw_about_dialog_set_application_icon(ad, "cz.ok1br.sdr_for_linux");
+  adw_about_dialog_set_version(ad, SDRFL_VERSION);
+  adw_about_dialog_set_developer_name(ad, "Richard Fakenberg, OK1BR");
+  adw_about_dialog_set_comments(ad,
+      "A modern GTK4 SDR application for HPSDR / ANAN radios, "
+      "built on the piHPSDR engine and the WDSP DSP library.");
+  adw_about_dialog_set_website(ad, "https://github.com/OK1BR/sdr-for-linux");
+  adw_about_dialog_set_issue_url(ad, "https://github.com/OK1BR/sdr-for-linux/issues");
+  adw_about_dialog_set_copyright(ad, "© 2026 Richard Fakenberg, OK1BR");
+  adw_about_dialog_set_license_type(ad, GTK_LICENSE_GPL_3_0);
+  const char *engine[] = {
+    "piHPSDR — Christoph van Wüllen DL1YCF, John Melton G0ORX https://github.com/dl1ycf/pihpsdr",
+    "WDSP — Warren Pratt NR0V",
+    "Thetis (PureSignal reference) https://github.com/ramdor/Thetis",
+    NULL };
+  adw_about_dialog_add_acknowledgement_section(ad, "Engine and references", engine);
+  const char *vendored[] = { "rnnoise — Xiph.Org / Mozilla",
+                             "libspecbleach — Luciano Dato", NULL };
+  adw_about_dialog_add_acknowledgement_section(ad, "Vendored libraries", vendored);
+  adw_dialog_present(dlg, GTK_WIDGET(win));
+}
+
 /* Persist window geometry as the user resizes / maximizes (debounced). GTK4
  * keeps default-width/height at the current *restore* size, so this survives
  * maximize too. */
@@ -3698,14 +3727,20 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
   GtkWidget *status = gtk_label_new(app->radio_mode ? "●  ANAN G1" : "●  server");
   gtk_widget_add_css_class(status, "dim");
   adw_header_bar_pack_start(ADW_HEADER_BAR(header), status);
-  if (app->radio_mode) {
-    GSimpleAction *pa = g_simple_action_new("preferences", NULL);
-    g_signal_connect(pa, "activate", G_CALLBACK(act_prefs), app);
-    g_action_map_add_action(G_ACTION_MAP(gtkapp), G_ACTION(pa));
-    g_object_unref(pa);
-
+  {
     GMenu *m = g_menu_new();
-    g_menu_append(m, "Preferences", "app.preferences");
+    if (app->radio_mode) {
+      GSimpleAction *pa = g_simple_action_new("preferences", NULL);
+      g_signal_connect(pa, "activate", G_CALLBACK(act_prefs), app);
+      g_action_map_add_action(G_ACTION_MAP(gtkapp), G_ACTION(pa));
+      g_object_unref(pa);
+      g_menu_append(m, "Preferences", "app.preferences");
+    }
+    GSimpleAction *aa = g_simple_action_new("about", NULL);
+    g_signal_connect(aa, "activate", G_CALLBACK(act_about), app);
+    g_action_map_add_action(G_ACTION_MAP(gtkapp), G_ACTION(aa));
+    g_object_unref(aa);
+    g_menu_append(m, "About SDR for Linux", "app.about");
     GtkWidget *menu = gtk_menu_button_new();
     gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(menu), "open-menu-symbolic");
     gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(menu), G_MENU_MODEL(m));
@@ -4135,6 +4170,32 @@ static gboolean on_signal(gpointer data) {
 }
 
 int main(int argc, char **argv) {
+  if (argc > 1 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0)) {
+    printf("sdr-for-linux %s\n", SDRFL_VERSION);
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "--help") == 0) {
+    printf("sdr-for-linux %s — GTK4 SDR application for HPSDR / ANAN radios\n"
+           "\n"
+           "Usage:\n"
+           "  sdr-for-linux                       direct radio (discovery picker)\n"
+           "  sdr-for-linux --server [host] [port] [password]\n"
+           "                                      remote head onto a piHPSDR server\n"
+           "  sdr-for-linux --version | --help\n"
+           "\n"
+           "Environment:\n"
+           "  SDRFL_RADIO_IP   radio IP (skips the picker)\n"
+           "  PIHPSDR_PWD      password for --server mode\n"
+           "  GSK_RENDERER     GTK renderer override (default here: cairo)\n",
+           SDRFL_VERSION);
+    return 0;
+  }
+
+  /* GTK4's GL renderer crashes on NVIDIA+Wayland; our drawing is pure Cairo
+   * anyway, so default to the cairo renderer. FALSE = an operator's explicit
+   * GSK_RENDERER always wins. Must precede any GTK init (the picker's too). */
+  g_setenv("GSK_RENDERER", "cairo", FALSE);
+
   g_orig_argv = argv;   /* for the in-app "Restart now" toast */
   App app;
   memset(&app, 0, sizeof(app));
