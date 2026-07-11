@@ -7,7 +7,7 @@ static void activate(GtkApplication *app, gpointer d) {
   (void)d;
   mock_css();
   GtkWidget *win = adw_application_window_new(app);
-  gtk_window_set_title(GTK_WINDOW(win), "SDR for Linux — ANAN G1  [libadwaita]");
+  gtk_window_set_title(GTK_WINDOW(win), "SDR for Linux — ANAN G2E  [libadwaita]");
   gtk_window_set_default_size(GTK_WINDOW(win), 1320, 760);
 
   GtkWidget *header = adw_header_bar_new();
@@ -17,7 +17,7 @@ static void activate(GtkApplication *app, gpointer d) {
   adw_header_bar_pack_end(ADW_HEADER_BAR(header), menu);
   GtkWidget *rec = gtk_button_new_from_icon_name("media-record-symbolic");
   adw_header_bar_pack_start(ADW_HEADER_BAR(header), rec);
-  GtkWidget *dot = gtk_label_new("●  ANAN G1");
+  GtkWidget *dot = gtk_label_new("●  ANAN G2E");
   gtk_widget_add_css_class(dot, "dim");
   adw_header_bar_pack_start(ADW_HEADER_BAR(header), dot);
   GtkWidget *badge = gtk_label_new("LIBADWAITA");

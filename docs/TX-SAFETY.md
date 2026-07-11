@@ -94,7 +94,7 @@ Thetis implements the same protections differently; adopt the best of both:
 - [ ] **TX attenuation lives in TX-specific bytes 57-59 too** (0-31 dB,
       Thetis default 31; forced 31 when PureSignal off or CW/QSK) — piHPSDR
       duplicates it in HP bytes 1442/1443 for old firmware. Send BOTH.
-- [ ] **Fwd/rev power calibration is per-model**: G1/G2 bridge 0.12 V fwd /
+- [ ] **Fwd/rev power calibration is per-model**: G2E/G2 bridge 0.12 V fwd /
       0.15 V rev (0.7 on 6 m), ref 5.0 V, ADC offsets 32/28
       (console.cs:25009-25017) — needed before SWR numbers mean anything.
 - [ ] **Watchdog stays on**: we run General[38]=1 + HP every 100 ms (piHPSDR

@@ -1,7 +1,7 @@
 /*
  * sdr-for-linux — TX runtime. See tx_run.h.
  *
- * This is sdrfl-txkey's keying loop (F5, validated live on the ANAN G1) turned
+ * This is sdrfl-txkey's keying loop (F5, validated live on the ANAN G2E) turned
  * into a persistent worker thread that the GUI drives by intent. It never sends
  * control packets itself: keying is expressed by p2_set_tx_state(&state)/NULL,
  * which the engine's single keepalive thread applies atomically (a consistent
@@ -509,14 +509,14 @@ int tx_run_start(long long tx_freq_hz, int pan_pixels, int fps) {
   g_mutex_lock(&s_cfg_lock);
   memset(&s_cfg, 0, sizeof s_cfg);
   s_cfg.pa_enabled     = 0;      /* RF impossible until the operator enables the PA */
-  s_cfg.pa_calibration = 53.0;   /* G1 default (validated); per-band pushed by GUI */
+  s_cfg.pa_calibration = 53.0;   /* G2E default (validated); per-band pushed by GUI */
   s_cfg.swr_protect    = 1;
   s_cfg.swr_alarm      = 3.0;
   s_cfg.mode           = TX_MODE_DFLT;
   s_cfg.tx_flo         = TX_FLO;
   s_cfg.tx_fhi         = TX_FHI;
   s_cfg.country_key[0] = '\0';
-  for (int i = 0; i < 11; i++) { s_cfg.pa_trim[i] = i * 10.0; }  /* G1 identity curve (PA_100W: piHPSDR radio.c:1330) */
+  for (int i = 0; i < 11; i++) { s_cfg.pa_trim[i] = i * 10.0; }  /* G2E identity curve (PA_100W: piHPSDR radio.c:1330) */
   g_mutex_unlock(&s_cfg_lock);
 
   g_mutex_lock(&s_freq_lock); s_freq = tx_freq_hz; g_mutex_unlock(&s_freq_lock);

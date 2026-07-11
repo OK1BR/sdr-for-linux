@@ -171,7 +171,7 @@ executable('sdrfl-txdsp-test',
 )
 
 # Offline TX metering + SWR gate (F3, docs/TX-DESIGN.md). Pure math on synthetic
-# ALEX coupler words — G1 watts + SWR vs piHPSDR. NO radio, NO WDSP.
+# ALEX coupler words — G2E watts + SWR vs piHPSDR. NO radio, NO WDSP.
 executable('sdrfl-swr-test',
   ['src/swr_test.c', 'src/engine/tx_meter.c'],
   include_directories : [engine_inc],

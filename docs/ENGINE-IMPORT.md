@@ -19,7 +19,7 @@ GTK), fills `rx->pixel_samples`, and our GTK4 side reads it on a tick. GLib
 | Area | Files | Notes |
 |---|---|---|
 | Discovery | `discovery.c` | UDP broadcast to find the radio on the LAN. |
-| **Protocol 2** (our G1) | `new_protocol.c`, `protocols.c` | Start radio, RX IQ stream, command channel. |
+| **Protocol 2** (our G2E) | `new_protocol.c`, `protocols.c` | Start radio, RX IQ stream, command channel. |
 | Protocol 1 (other ANANs) | `old_protocol.c` | Later / optional. |
 | Radio + RX state | `radio.c`, `receiver.c` | `receiver.c` drives the **WDSP analyzer** (`XCreateAnalyzer`, `SetAnalyzer`, `Spectrum0`) and fills `rx->pixel_samples` (float). Trim to what RX needs. |
 | DSP | `../wdsp/` | WDSP library — **build & link, do not modify.** |
@@ -33,12 +33,12 @@ GTK), fills `rx->pixel_samples`, and our GTK4 side reads it on a tick. GLib
    the GNU dialect). Commit `4f06c05`.
 2. ✅ **Discovery.** Headless GLib-only engine layer `src/engine/`
    (`discovery_p2.c`, adapted from `new_discovery.c`; `discovered.h` vendored
-   verbatim). Gate: `sdrfl-discover` — verified live, found the ANAN G1 at
+   verbatim). Gate: `sdrfl-discover` — verified live, found the ANAN G2E at
    192.168.1.247 while piHPSDR was streaming (read-only, does not disturb).
    Commit `2bd329e`.
 3. ✅ **Protocol 2 RX.** Lean RX-only `src/engine/protocol2.c` (Option B, scope in
    [`P2-RX-SCOPE.md`](P2-RX-SCOPE.md)): one DDC over P2, IQ → `on_rx_iq` callback.
-   Gate `sdrfl-rxprobe` — verified **live** on the G1: 14.1 MHz @ 192 kHz,
+   Gate `sdrfl-rxprobe` — verified **live** on the G2E: 14.1 MHz @ 192 kHz,
    ~191.9 kHz effective rate, IQ RMS ~−59 dBFS, clean sequence. `SDRFL_DRYRUN`
    hexdumps the packets offline. Wire-critical bytes copied verbatim from
    `new_protocol.c` @ 974acba.
@@ -48,7 +48,7 @@ GTK), fills `rx->pixel_samples`, and our GTK4 side reads it on a tick. GLib
    `double` I/Q re-buffered to WDSP's 1024 block. Values mirror `receiver.c` @
    974acba.
 5. ✅ **Render.** `GetPixels` `float` dBm → our `panadapter_draw()` (already had a
-   float path). Gate `sdrfl-panprobe` — verified **live** on the G1: 14.1 MHz @
+   float path). Gate `sdrfl-panprobe` — verified **live** on the G2E: 14.1 MHz @
    192 kHz, 40 frames, noise floor ~−115 dBm, real 20 m signals rendered (CW
    cluster below centre on the correct side). `SDRFL_SELFTEST` checks the
    analyzer + feed order offline (no radio).
@@ -70,7 +70,7 @@ Then: controls, then RX2, then TX/PureSignal.
 ## Milestone 3 — on-window controls (mostly DONE, 2026-07-07)
 
 The GTK4 window is a live **libadwaita** control surface (framework decision +
-mockups: `docs/mockups/`). Done this session, all live-verified on the ANAN G1:
+mockups: `docs/mockups/`). Done this session, all live-verified on the ANAN G2E:
 - **Tuning:** scroll-wheel (Ctrl 10 Hz / Shift 1 kHz / else 100 Hz) + left-drag
   pan → `p2_set_frequency()` (stores freq; keepalive timer sends it ≤100 ms, so
   no send-side concurrency). Model A: VFO = DDC centre = span centre.

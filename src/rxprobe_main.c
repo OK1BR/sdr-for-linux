@@ -74,11 +74,11 @@ int main(void) {
   int        secs = (int)getenv_ll("SDRFL_SECS", 2);
 
   if (getenv("SDRFL_DRYRUN")) {
-    // Offline: build the three outgoing packets and hexdump them. Device G1 is
+    // Offline: build the three outgoing packets and hexdump them. Device G2E is
     // assumed for the DDC mapping; check offsets against docs/P2-RX-SCOPE.md.
     unsigned char buf[1500];
     int dev = NEW_DEVICE_G1;
-    printf("sdrfl-rxprobe DRYRUN: device=G1(%d) freq=%lld Hz rate=%d Hz\n\n", dev, freq, rate);
+    printf("sdrfl-rxprobe DRYRUN: device=G2E(%d) freq=%lld Hz rate=%d Hz\n\n", dev, freq, rate);
     hexdump("General [37]=08 [38]=01", buf, p2_build_general(buf, 0), 48);
     hexdump("RX-specific [4]=n_adc [7]=DDC-en [17]=adc [18/19]=rate/1k [22]=24",
             buf, p2_build_receive_specific(buf, dev, rate, NULL, 0), 48);

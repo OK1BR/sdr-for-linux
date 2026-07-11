@@ -63,7 +63,7 @@ typedef struct {
   int adc0_overload;  /* ADC0 clipped since the last poll (latched, read+clear) */
   int adc1_overload;  /* ADC1 clipped since the last poll (latched, read+clear) */
   int raw_adc0;       /* raw AIN word ADC0 (bytes 57-58) — "PA voltage" per     */
-                      /* hpsdrsim; UNCALIBRATED for the G1 (needs a live scale) */
+                      /* hpsdrsim; UNCALIBRATED for the G2E (needs a live scale) */
   int raw_adc1;       /* raw AIN word ADC1 (bytes 55-56), uncalibrated          */
   /* TX power sensors (F3, np.c:2652-2667). 16-value moving average of the raw
    * ALEX coupler words; ~0 on RX (no TX). Convert to watts/SWR via tx_meter.c. */
@@ -155,9 +155,9 @@ typedef struct {
 typedef struct {
   int enabled;      /* PS on (operator setting; also affects RX-time alex1)     */
   int attenuation;  /* ADC0 step attenuator during PS-TX, 0-31 dB               */
-  int feedback_ant; /* 0 = internal coupler (no Alex routing bits on the G1
+  int feedback_ant; /* 0 = internal coupler (no Alex routing bits on the G2E
                        family, np.c:1333-1336); 7 = BYPASS (ALEX_RX_ANTENNA_
-                       BYPASS). EXT1 does not exist on the G1.                  */
+                       BYPASS). EXT1 does not exist on the G2E.                  */
 } p2_ps_state;
 
 /*

@@ -19,6 +19,8 @@
 #include "discovered.h"
 
 static inline int radio_supported(const DISCOVERED *d) {
+  /* NEW_DEVICE_G1 = the ANAN G2E (official name; piHPSDR's vendored
+   * discovered.h calls device id 20 "G1" — kept unmodified per policy). */
   return d != NULL && d->protocol == NEW_PROTOCOL && d->device == NEW_DEVICE_G1;
 }
 

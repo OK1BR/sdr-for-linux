@@ -66,7 +66,7 @@ obálka → P2. Kandidáti na fixní zpoždění:
 - lws wakeup + fronta mezi TCI threadem a klíčovacím slotem;
 - `s_cw_delay_ms` (default 10, „stored" — ověřit, jestli se neaplikuje
   i na start sekvence, ne jen mezi makry);
-- radio-side TR sekvence G1 (fyzika, ~ms, neovlivníme);
+- radio-side TR sekvence G2E (fyzika, ~ms, neovlivníme);
 - druhý výklad „náběhu": tvar/šířka raised-cosine rampy elementu —
   kdyby šlo o attack každé značky, ne o start sekvence.
 
@@ -209,7 +209,7 @@ proto to Richard odjinud nezná.
 sdrfl-tci-test pokrývá spot_delete (pokud ne, přidat case). Spolu s #6
 tvoří kategorii „emergentní/spec chování ověřené závodem = smluvní".
 
-### 10. ✅ OPRAVENO: picker s dvěma rádii ukázal jen jedno (G1 „zmizela")
+### 10. ✅ OPRAVENO: picker s dvěma rádii ukázal jen jedno (G2E „zmizela")
 **Hlášení:** „výběr rádia nefunguje — zapnul jsem druhé rádio (ANAN 10E),
 to správně je unsupported, ale G1 z výpisu úplně zmizela."
 
@@ -241,7 +241,7 @@ rezervace. Náš kód IP jen zobrazuje — oprava pravděpodobně není u nás,
 ale zaslouží ověření při bring-upu.
 
 ### 10c. ✅ OPRAVENO (kritické): engine startoval discovered[0], ne vybrané rádio
-**Hlášení:** „nepřipojí se — radio not found on lan" (po výběru G1
+**Hlášení:** „nepřipojí se — radio not found on lan" (po výběru G2E
 v pickeru, s běžící 10E v LAN).
 
 **Příčina (log potvrdil):** `start_radio` bral slepě

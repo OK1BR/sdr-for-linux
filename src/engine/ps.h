@@ -36,7 +36,7 @@ void ps_stop(void);
  * `enable` arms/disarms the whole feature (wire config via p2_set_ps + WDSP
  * automode via SetPSControl); `att_db` is the ADC0 feedback attenuator used
  * during PS-TX (0-31, the approved delta #1); `setpk` is WDSP's expected
- * full-scale TX envelope (SetPSHWPeak; G1/P2 default 0.2899 — too small
+ * full-scale TX envelope (SetPSHWPeak; G2E/P2 default 0.2899 — too small
  * causes "very strange things" per piHPSDR, so values < 0.01 are clamped
  * to the default). Disabling follows piHPSDR's reset choreography: correction
  * off + ~7 zero buffers through pscc so the reset takes effect while no

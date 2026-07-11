@@ -298,20 +298,20 @@ static int band_for_freq(long long f) {
   return -1;
 }
 
-/* Device-specific TX-calibration DEFAULTS, pulled from piHPSDR for the ANAN G1.
+/* Device-specific TX-calibration DEFAULTS, pulled from piHPSDR for the ANAN G2E.
  * These would differ for another radio type (piHPSDR device-switches them in
- * radio.c) — if this app ever supports a non-G1, they must be switched too.
+ * radio.c) — if this app ever supports a non-G2E, they must be switched too.
  *
  *   pa_calibration: piHPSDR band.c table = 53.0 dB for every band (the only
- *     device override is HermesLite2 → 40.5; the G1 keeps 53.0). Live-validated
- *     on this G1 (docs/TX-DESIGN.md §5). The 38.8 dB FLOOR (band.c:571-577) is the
+ *     device override is HermesLite2 → 40.5; the G2E keeps 53.0). Live-validated
+ *     on this G2E (docs/TX-DESIGN.md §5). The 38.8 dB FLOOR (band.c:571-577) is the
  *     safety limit — a lower value raises the drive byte for a given watts request.
- *   pa_trim step: piHPSDR radio.c:1308 sets the G1 to pa_power=PA_100W (100 W
+ *   pa_trim step: piHPSDR radio.c:1308 sets the G2E to pa_power=PA_100W (100 W
  *     rated), so radio.c:1330 seeds pa_trim[i] = i * 100 * 0.1 = i * 10 W. */
 #define PACAL_MIN     38.8
 #define PACAL_MAX     70.0
-#define PACAL_DEFAULT 53.0     /* G1: piHPSDR band.c table (not HL2's 40.5)        */
-#define PATRIM_STEP   10.0     /* G1: PA_100W → 10 W per 10 % step (radio.c:1330)  */
+#define PACAL_DEFAULT 53.0     /* G2E: piHPSDR band.c table (not HL2's 40.5)        */
+#define PATRIM_STEP   10.0     /* G2E: PA_100W → 10 W per 10 % step (radio.c:1330)  */
 static inline double pacal_clamp(double v) {
   return v < PACAL_MIN ? PACAL_MIN : (v > PACAL_MAX ? PACAL_MAX : v);
 }
@@ -362,8 +362,8 @@ static void band_apply(App *app) {
   tx_push_cfg(app);
 }
 
-/* Supply-voltage calibration: V = k * raw_adc1. No G1 divider is documented, so
- * k is anchored empirically — Richard's Microset measured 13.46 V while the G1
+/* Supply-voltage calibration: V = k * raw_adc1. No G2E divider is documented, so
+ * k is anchored empirically — Richard's Microset measured 13.46 V while the G2E
  * reported raw_adc1 ~= 797.5 (bytes 55-56). SDRFL_VOLT_CAL overrides k (V per
  * count) for a precise re-trim without a rebuild. */
 #define SUPPLY_V_PER_COUNT (13.46 / 797.5)
@@ -2919,7 +2919,7 @@ static const int PREF_RATES[] = {48000, 96000, 192000, 384000, 768000, 1536000};
 
 static char **g_orig_argv;   /* main()'s argv — for the in-app restart */
 
-/* Restart the app in place: spawn a detached relauncher that waits ~5 s (the G1
+/* Restart the app in place: spawn a detached relauncher that waits ~5 s (the G2E
  * needs that long after we disconnect before it answers discovery again — the
  * restart-pause gotcha) then re-execs this binary with the same args, and quit so
  * main()'s normal cleanup parks the RF path and saves settings. Env is inherited. */
@@ -3671,7 +3671,7 @@ static AdwDialog *build_prefs(App *app) {
       "W cap in DIGU/DIGL — FT8 & co. run 100% duty, protect the PA (100 = off) · live",
       1, 100, app->tx_digi_max_w, G_CALLBACK(on_pref_digi_max), app));
   /* F6b — per-band PA calibration table (like piHPSDR's PA-calibration menu). The
-   * 38.8 dB floor is the safety limit; 53 dB is the validated G1 default. */
+   * 38.8 dB floor is the safety limit; 53 dB is the validated G2E default. */
   GtkWidget *pacal_exp = g_object_new(ADW_TYPE_EXPANDER_ROW, "title", "PA calibration (per band)",
       "subtitle", "dB · higher = less drive for the same power request", NULL);
   for (int i = 0; i < NBANDS; i++) {
@@ -3707,7 +3707,7 @@ static AdwDialog *build_prefs(App *app) {
   {
     GtkAdjustment *a = gtk_adjustment_new(app->ps_setpk, 0.01, 1.01, 0.005, 0.05, 0);
     GtkWidget *row = g_object_new(ADW_TYPE_SPIN_ROW, "title", "PS SetPk",
-        "subtitle", "expected full-scale TX envelope (G1 start 0.2899; measure via GetPk) · live",
+        "subtitle", "expected full-scale TX envelope (G2E start 0.2899; measure via GetPk) · live",
         "adjustment", a, "digits", 4, NULL);
     g_signal_connect(row, "notify::value", G_CALLBACK(on_pref_ps_setpk), app);
     adw_preferences_group_add(g, row);
@@ -3995,7 +3995,7 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
   g_signal_connect(win, "notify::maximized",      G_CALLBACK(on_win_size), app);
 
   GtkWidget *header = adw_header_bar_new();
-  GtkWidget *status = gtk_label_new(app->radio_mode ? "●  ANAN G1" : "●  server");
+  GtkWidget *status = gtk_label_new(app->radio_mode ? "●  ANAN G2E" : "●  server");
   gtk_widget_add_css_class(status, "dim");
   adw_header_bar_pack_start(ADW_HEADER_BAR(header), status);
   {
@@ -4335,7 +4335,7 @@ static void start_radio(App *app) {
   /* Select the radio the operator actually chose. discovered[] can hold
    * SEVERAL radios (broadcast rounds from the picker accumulate, plus the
    * directed round above) — blindly taking index 0 started whichever radio
-   * answered first (contest note #10c: picked the G1, engine tried the 10E;
+   * answered first (contest note #10c: picked the G2E, engine tried the 10E;
    * only the whitelist stopped a wrong-radio start). */
   const DISCOVERED *dev = NULL;
   if (ipaddr_radio[0]) {
@@ -4360,7 +4360,7 @@ static void start_radio(App *app) {
    * Alex/PA bytes are unverified and could damage the hardware. */
   if (!radio_supported(dev)) {
     fprintf(stderr, "radio '%s' at %s (device %d) is NOT SUPPORTED YET — every model "
-            "must be brought up and live-tested first; this build supports the ANAN G1 only\n",
+            "must be brought up and live-tested first; this build supports the ANAN G2E only\n",
             dev->name, inet_ntoa(dev->network.address.sin_addr), dev->device);
     return;
   }

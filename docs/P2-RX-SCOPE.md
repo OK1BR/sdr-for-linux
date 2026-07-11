@@ -1,7 +1,7 @@
 # Milestone 1 · Step 3 — Protocol-2 RX + IQ stream: scope plan
 
 Scope for importing the **RX half** of piHPSDR's Protocol-2 link into
-`sdr-for-linux`. Get the ANAN G1 started over P2, run **one** DDC (receiver), and
+`sdr-for-linux`. Get the ANAN G2E started over P2, run **one** DDC (receiver), and
 deliver the RX **IQ stream** into a buffer we own. Source of truth:
 `/home/rfa/.local/opt/pihpsdr` @ `974acba`. All upstream line numbers below are in
 `src/new_protocol.c` unless another file is named.
@@ -107,8 +107,8 @@ only by port (radio IP constant). Source port of an incoming packet selects its 
 | ← radio | High-Priority status (PTT/overload) | 1025 | defer (S-meter later) |
 | ← radio | command-resp / mic / wideband | 1024/1026/1027 | drop |
 
-**G1 gotcha:** the ANAN G1 is classed with HERMES, not Saturn/ORION2 — so **RX1 =
-DDC0 = port 1035** (not DDC2). Comment at `new_protocol.c:376`; G1 absent from the
+**G2E gotcha:** the ANAN G2E is classed with HERMES, not Saturn/ORION2 — so **RX1 =
+DDC0 = port 1035** (not DDC2). Comment at `new_protocol.c:376`; G2E absent from the
 `ddc = 2+i` remap at 1630. Get this wrong → listening on a silent socket.
 
 ### 3.2 Outgoing packets (byte offsets to copy verbatim)
@@ -130,8 +130,8 @@ DDC0 = port 1035** (not DDC2). Comment at `new_protocol.c:376`; G1 absent from t
   Phase = `(uint32_t)((vfo[id].frequency - vfo[id].lo) × 2³²/122 880 000)`
   (line 784+817). `lo=0` without a transverter but the subtraction is unconditional.
 - Everything else (DUC phase 329, drive 345, ALEX words 1428/1432, attenuators
-  1442/1443) → **0** for a bare G1 RX. (On ALEX radios `[1432..1435]`=alex0 selects
-  RX band-pass relays; for the G1 RMS-only probe, default relays are fine — noted
+  1442/1443) → **0** for a bare G2E RX. (On ALEX radios `[1432..1435]`=alex0 selects
+  RX band-pass relays; for the G2E RMS-only probe, default relays are fine — noted
   as a minor risk, §6.)
 
 ### 3.3 Send order + keepalive
@@ -167,7 +167,7 @@ handled upstream). High-Priority-status (1025) carries ADC-overload + PTT — **
 Not piHPSDR's `receiver.h`/`radio.h` (those drag WDSP+GTK). A small
 `engine_state.h`/`.c` (extend the existing `engine_state.c`) exposes just:
 
-| State | Value for single-RX G1 |
+| State | Value for single-RX G2E |
 |---|---|
 | `radio->network.{…}` | from discovery (already populated) |
 | `protocol` | `NEW_PROTOCOL` (1) |
@@ -201,11 +201,11 @@ No WDSP dependency for this gate (`engine_deps = [glib_dep, threads_dep]`).
 - **Wrong byte offset / phase word → silent socket.** Copy wire-critical bytes
   verbatim; diff a `sdrfl-rxprobe` hexdump against a Wireshark capture of piHPSDR
   starting the same radio, before trusting the decode.
-- **G1 DDC/port assumption.** Asserted: DDC0/port 1035 (§3.1). Verify in the live
+- **G2E DDC/port assumption.** Asserted: DDC0/port 1035 (§3.1). Verify in the live
   test that packets actually arrive on 1035.
 - **ALEX RX relays** (`filter_board`/alex0). For the RMS probe, default relays
   suffice; if IQ RMS is implausibly low, set `filter_board` + `adc[0].antenna` to
-  the G1's real values.
+  the G2E's real values.
 - **Radio ownership.** The live test opens the P2 data path → **takes the radio
   from piHPSDR** (one owner). Everything through step 5 is offline (build, hexdump
   vs. capture). **Ask Richard to free the radio before the live test — do not kill

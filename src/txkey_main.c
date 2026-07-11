@@ -14,7 +14,7 @@
  *   SDRFL_FREQ        TX frequency, Hz (must be in band) (default 14100000)
  *   SDRFL_TX_PA       1 = enable the PA                 (default 0 = PA OFF)
  *   SDRFL_TX_WATTS    requested power, W (hard cap 10)  (default 1.0)
- *   SDRFL_TX_PA_CAL   PA calibration, dB (per band!)    (default 53.0 = G1 default)
+ *   SDRFL_TX_PA_CAL   PA calibration, dB (per band!)    (default 53.0 = G2E default)
  *   SDRFL_TX_SECS     key duration, s (hard cap 10)     (default 3)
  *   SDRFL_TX_SWR_ALARM SWR trip threshold               (default 3.0)
  *
@@ -39,7 +39,7 @@
 
 #define TXKEY_USB 1        /* WDSP mode for the TX channel (tone bypasses the modulator) */
 #define TXKEY_MAX_WATTS 10.0  /* HARD cap on the requested power for this bring-up probe */
-#define TXKEY_PA_CAL_DFLT 53.0 /* G1 default pa_calibration, dB (band.c:317; HIGH = safe/low drive) */
+#define TXKEY_PA_CAL_DFLT 53.0 /* G2E default pa_calibration, dB (band.c:317; HIGH = safe/low drive) */
 #define TXKEY_MAX_BYTE  50    /* HARD cap on a raw drive-byte override (~10-15 W est; << 100 W rated) */
 
 static volatile sig_atomic_t running = 1;

@@ -2,7 +2,7 @@
  * sdr-for-linux — TX forward/reverse power + SWR from the ALEX coupler words.
  * F3, docs/TX-DESIGN.md. Pure, read-only: it turns the raw sensor words the radio
  * reports (p2_telemetry.fwd_raw / rev_raw, np.c port-1025 status) into watts and a
- * (smoothed) SWR, using the G1 calibration from piHPSDR transmitter.c:645-758.
+ * (smoothed) SWR, using the G2E calibration from piHPSDR transmitter.c:645-758.
  *
  * ⛔ This computes only — it never keys or changes anything sent to the radio. The
  * SWR-driven drive/MOX cut-out is the F4 safety layer (this just provides the
@@ -10,7 +10,7 @@
  *
  * Absolute watts pass through an 11-point wattmeter correction curve (pa_trim,
  * F6b) applied to both fwd and rev, exactly like piHPSDR compute_power. The
- * DEFAULT curve is linear (identity), so out of the box watts = the base G1
+ * DEFAULT curve is linear (identity), so out of the box watts = the base G2E
  * computation (our live-validated constants); the operator can refine it against
  * an external wattmeter. SWR is a ratio and is essentially independent of it.
  */

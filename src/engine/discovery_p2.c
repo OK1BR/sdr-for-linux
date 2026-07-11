@@ -359,8 +359,11 @@ static gpointer p2_discover_receive_thread(gpointer data) {
               break;
 
             case NEW_DEVICE_G1:
+              /* Official Apache Labs name: ANAN G2E (device id 20). piHPSDR
+               * sources call this device "G1" (DEVICE_G1/NEW_DEVICE_G1) — when
+               * cross-checking upstream, grep for G1 there. NOT the Saturn/G2. */
               discovered[devices].device = NEW_DEVICE_G1;
-              snprintf(discovered[devices].name, sizeof(discovered[devices].name), "Anan G1");
+              snprintf(discovered[devices].name, sizeof(discovered[devices].name), "ANAN G2E");
               frequency_min = 0.0;
               frequency_max = 61440000.0;
               break;

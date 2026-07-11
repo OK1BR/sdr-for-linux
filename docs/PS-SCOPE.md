@@ -1,8 +1,8 @@
 # F7 — PureSignal: scope & plan
 
-Goal: TX linearization (adaptive predistortion) on the ANAN G1 over Protocol 2,
+Goal: TX linearization (adaptive predistortion) on the ANAN G2E over Protocol 2,
 using the WDSP PS engine, exactly the way piHPSDR does it. Study phase done
-2026-07-10 against piHPSDR @974acba (the G1 is known natively to that revision —
+2026-07-10 against piHPSDR @974acba (the G2E is known natively to that revision —
 `NEW_DEVICE_G1`, so nothing below is inferred from "similar" boards) and our
 vendored WDSP. File:line refs: `pihpsdr/` = `~/.local/opt/pihpsdr/src`,
 `wdsp/` = `vendor/wdsp`.
@@ -12,7 +12,7 @@ vendored WDSP. File:line refs: `pihpsdr/` = `~/.local/opt/pihpsdr/src`,
 - The whole PS engine is **already compiled into our libwdsp** (`calcc.c` +
   `iqc.c`, vendor/wdsp/meson.build:24,54). Nothing to vendor, nothing to patch.
   Every TXA channel already carries calcc's 4 worker threads today.
-- piHPSDR has **no device gate** for PS: the G1 is treated as a fully
+- piHPSDR has **no device gate** for PS: the G2E is treated as a fully
   PS-capable single-ADC radio of the Orion2/Saturn Alex family; internal
   feedback needs **no Alex routing bits** at all.
 - The one real safety decision: PS requires the **ADC0 step attenuator to run
@@ -57,7 +57,7 @@ Host API actually used by piHPSDR (all take the TXA channel id):
   = sanity bitmask, `info[14]` = correcting (bool), `info[15]` = state.
 - `SetPSHWPeak` ("SetPk") — expected full-scale TX envelope, hardware
   specific: P2 default **0.2899**, Saturn 0.6121 (pihpsdr/transmitter.c:
-  1203-1241; G1 is not special-cased → P2 default; verify with `GetPSMaxTX`
+  1203-1241; G2E is not special-cased → P2 default; verify with `GetPSMaxTX`
   ("GetPk") on the first live cal — too small a value causes "very strange
   things" per the piHPSDR comment).
 - `tx_ps_setparams` bundle (pihpsdr/transmitter.c:2564-2580) with defaults:
@@ -71,12 +71,12 @@ pihpsdr/transmitter.c:2477-2499); a reset while transmitting needs ~100 ms of
 continued TX. `SetPSIntsAndSpi` is a stop-the-world resize — only call outside
 TX. Use `pscc` (doubles), not `psccF` (2048-sample cap).
 
-## 2. The radio side (P2, G1)
+## 2. The radio side (P2, G2E)
 
 Feedback topology during PS TX (pihpsdr/new_protocol.c:1649-1668):
 
 - **DDC0 = RX feedback** ← ADC0 (the coupler / "internal" path).
-- **DDC1 = TX-DAC loopback** ← pseudo-ADC number `n_adc` (= **1** on the G1,
+- **DDC1 = TX-DAC loopback** ← pseudo-ADC number `n_adc` (= **1** on the G2E,
   single-ADC board).
 - Both **fixed 192 kHz / 24-bit**, independent of the RX DDC rate.
 - RX-specific packet: DDC0 slot `[17..22]`, DDC1 slot `[23..26]`, sync byte
@@ -86,7 +86,7 @@ Feedback topology during PS TX (pihpsdr/new_protocol.c:1649-1668):
   first sample of each pair = DDC0 = RX-fb, second = DDC1 = TX-fb; 119 pairs
   per 1444-B packet; 24-bit BE, scale 2⁻²³ (new_protocol.c:2525-2589).
 
-On the G1 (Hermes-class DDC layout) the PS pair *is* the normal RX DDC pair —
+On the G2E (Hermes-class DDC layout) the PS pair *is* the normal RX DDC pair —
 fine, because non-duplex TX disables the RX DDCs anyway; piHPSDR even ignores
 duplex on this family during PS TX (action table case 10110,
 new_protocol.c:441-445).
@@ -99,7 +99,7 @@ High-priority packet, PS-conditional content:
 - `ALEX_PS_BIT` (bit 18, alex.h:94) set in alex1 whenever PS is enabled, and
   in alex0 while PS-transmitting (new_protocol.c:1034-1038).
 - Feedback source select: phantom `adc[2].antenna` (0 = internal coupler,
-  7 = bypass; EXT1 doesn't exist on the G1 family). G1 decodes with the
+  7 = bypass; EXT1 doesn't exist on the G2E family). G2E decodes with the
   Orion2/Saturn offset (+100), and **case 100 "internal" sets no routing bits
   at all** (new_protocol.c:1288-1354) — the default just works.
 
@@ -176,7 +176,7 @@ Everything lands in already-mapped places; no architectural change:
   (timer re-sends RX-specific every 200 ms already). WDSP TXA channel is id 8.
 - **Feedback feed**: accumulate 1024 interleaved pairs (TX-fb / RX-fb split
   exactly like pihpsdr/new_protocol.c:2554-2571) → `pscc(8, 1024, txfb,
-  rxfb)`. G1 has no `do_scale` — no IQ rescaling of the DAC feedback.
+  rxfb)`. G2E has no `do_scale` — no IQ rescaling of the DAC feedback.
 - **GUI**: PS group in Preferences → Radio → Transmit (enable, feedback ant
   Internal/Bypass, SetPk, relax tolerance, oneshot, manual TX-att spin,
   auto-att toggle); a **two-tone toggle** near TUNE in the footer;
@@ -203,7 +203,7 @@ Everything lands in already-mapped places; no architectural change:
    before/after on the IC-705 as off-air monitor). MON display + oneshot +
    SaveCorr/RestoreCorr as follow-ups.
 
-## 6a. Live verification (2026-07-11, G1, 20/17/40 m — CLOSED, works)
+## 6a. Live verification (2026-07-11, G2E, 20/17/40 m — CLOSED, works)
 
 The Thetis-style implementation (a5ed663) was live-verified end-to-end:
 2T → voice → drive changes 10↔41 → band changes mid-QSO → TUNE. Objective
@@ -214,7 +214,7 @@ numbers from ~196 s of keyed PS TX across 32 overs (log analysis):
 - fdbk in-window **92 %** of keyed time, CORRECTING **88 %**; settled
   fdbk **154 ± 8** (ideal 152.3).
 - **getpk median 0.290** → the P2 default SetPk **0.2899 is confirmed**
-  for the G1; do not retune.
+  for the G2E; do not retune.
 - 26 auto-att steps, **0 stalls, 0 manual interventions**; big upward
   drive jumps go through the clip-slam (fdbk > 256 → 31 dB, 3×) and
   reconverge in 2–4 s; a band change mid-voice resolved in one step.

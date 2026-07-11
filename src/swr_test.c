@@ -1,7 +1,7 @@
 /*
  * sdrfl-swr-test — OFFLINE TX metering + SWR gate (F3, docs/TX-DESIGN.md).
  *
- * Feeds synthetic ALEX coupler words into tx_meter.c and checks the G1 watts +
+ * Feeds synthetic ALEX coupler words into tx_meter.c and checks the G2E watts +
  * SWR math against hand values from piHPSDR transmitter.c:645-758:
  *   - RX / matched load  → SWR settles to ~1.0
  *   - a ~2:1 mismatch    → SWR settles to ~2.0, forward watts plausible
@@ -72,7 +72,7 @@ int main(void) {
   ok("extreme SWR clamped finite (30-50)", swr_hi > 30.0 && swr_hi < 50.0, det);
 
   printf("\n=== %d checks, %d failures ===\n", g_checks, g_fail);
-  if (g_fail == 0) { printf("PASS — G1 watts + SWR match piHPSDR; RX settles to SWR 1.0.\n"); }
+  if (g_fail == 0) { printf("PASS — G2E watts + SWR match piHPSDR; RX settles to SWR 1.0.\n"); }
   else             { printf("FAIL — %d mismatch(es) above.\n", g_fail); }
   return g_fail ? 1 : 0;
 }

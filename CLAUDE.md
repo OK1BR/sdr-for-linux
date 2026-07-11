@@ -18,7 +18,7 @@ for piHPSDR); its pure-Cairo `panadapter`/`waterfall` renderer seeds this UI.
 over the piHPSDR **client/server network path** (`src/client.c`).
 
 **Milestones 1 & 2 done** — you can **see and hear** the radio, direct from
-the G1, in the GTK4 window. The headless GLib-only engine under `src/engine/`:
+the G2E, in the GTK4 window. The headless GLib-only engine under `src/engine/`:
 builds WDSP (vendored `vendor/wdsp` + rnnoise + libspecbleach), discovers the
 radio (`discovery_p2.c`), runs one RX DDC over Protocol 2 and streams IQ
 (`protocol2.c` → `on_rx_iq`), feeds the WDSP analyzer for the float panadapter
@@ -26,7 +26,7 @@ radio (`discovery_p2.c`), runs one RX DDC over Protocol 2 and streams IQ
 native PipeWire sink (`audio_pw.c`) at ~15 ms latency. The app (`sdr-for-linux`)
 defaults to direct radio; `--server` is the v0 network remote head. Gates:
 `sdrfl-wdsp-smoke`, `sdrfl-discover`, `sdrfl-rxprobe`, `sdrfl-panprobe`,
-`sdrfl-audioprobe` (all verified live on the ANAN G1 at 192.168.1.247). Scope
+`sdrfl-audioprobe` (all verified live on the ANAN G2E at 192.168.1.247). Scope
 docs: [`docs/ENGINE-IMPORT.md`](docs/ENGINE-IMPORT.md), `docs/P2-RX-SCOPE.md`,
 `docs/WDSP-ANALYZER-SCOPE.md`, `docs/AUDIO-SCOPE.md`.
 
@@ -58,12 +58,24 @@ multi-radio dedup, start-by-picked-IP, SWR stale-reading filter, guards).
 Contest-earned tripwires now in **TX-DESIGN §8** — read them before ANY
 TX-path edit. Latency instrumentation stays: `SDRFL_LAT_DEBUG=1`.
 
+**Contest note #7 — DONE 2026-07-11 (0f492f0), awaiting live keyed
+verification:** mode-aware TX HUD, design settled with Richard (layout A).
+CW: full-width sent-text strip (sent dim / sounding char inverted / queue
+bright, via `cw_gen_progress` + `tx_run_cw_progress`) + WPM + KEY/HANG +
+hang-drain bar; digi: TCI TX-audio level + 1 s CLIP latch (`ext_pk`/
+`ext_clip`); voice unchanged; footer Mic/PROC hidden outside voice modes.
+Display-only (no click target — Esc aborts); keying path untouched.
+
+**G1 → ANAN G2E rename — DONE 2026-07-11.** Official name everywhere in
+our strings/docs/comments. The C identifier `NEW_DEVICE_G1` (device id 20)
+stays: it lives in vendored piHPSDR `discovered.h` (unmodified per policy)
+and keeps the upstream audit mapping — piHPSDR sources call the G2E "G1";
+grep for G1 there. Do NOT confuse with the Saturn/G2.
+
 **★ Next session:** (1) refresh the `~/.local` install (still on the
-morning build); (2) contest note **#7 — CW TX HUD design** with Richard
-(concept: sent-text with progress + WPM + hang instead of mic meters;
-digi HUD open); (3) **rename G1 → ANAN G2E** everywhere (official name;
-device id 20 unchanged; don't confuse with Saturn/G2 — see memory);
-(4) then the next-release roadmap: **ANAN 10E bring-up** (P2 confirmed,
+2026-07-11 morning build — several fixes + the TX HUD landed after it);
+(2) live-verify the CW TX HUD + digi meter while keyed (with Richard);
+(3) then the next-release roadmap: **ANAN 10E bring-up** (P2 confirmed,
 fw 10.3; radio reports link-local 169.254.x.x — check its DHCP first),
 then Hermes Lite 2 (P1 = new milestone), then Square SDR.
 
@@ -163,7 +175,8 @@ build** + vendor **Protocol-2 discovery** (find the radio on the LAN). See
 
 ## Hardware & dev/test
 
-- **Radio:** Apache Labs **ANAN G1**, HPSDR **Protocol 2**, at **192.168.1.247**
+- **Radio:** Apache Labs **ANAN G2E** (piHPSDR device "G1", id 20 — not the
+  Saturn/G2), HPSDR **Protocol 2**, at **192.168.1.247**
   on the LAN. Richard's dev machine: 192.168.1.18.
 - **piHPSDR source** (the engine reference to import from):
   `/home/rfa/.local/opt/pihpsdr`, git **974acba** (github.com/dl1ycf/pihpsdr),

@@ -81,7 +81,7 @@ static void apply_params(void) {
 
 /* P2 feedback (listener thread): accumulate 1024 pairs, then hand to the
  * calibration engine — exactly piHPSDR tx_add_ps_iq_samples (transmitter.c:
- * 2068-2132; G1 has no do_scale, so no DAC-feedback rescaling). Dropped
+ * 2068-2132; G2E has no do_scale, so no DAC-feedback rescaling). Dropped
  * whenever not keyed-non-CW: stale/CW feedback must never reach a running
  * calibration. */
 static void feed_cb(const double *txfb, const double *rxfb, int n_pairs, void *user) {

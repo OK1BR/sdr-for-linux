@@ -3,7 +3,7 @@
  *
  * Mirrors piHPSDR transmitter.c @974acba: OpenChannel(type=1) at 48k in / 96k dsp
  * / 192k out (:1307), the fixed TXA config (:1323-1356), and the mic -> IQ block
- * via fexchange0 (:1665). The G1 sends the IQ un-scaled (do_scale=0), so we apply
+ * via fexchange0 (:1665). The G2E sends the IQ un-scaled (do_scale=0), so we apply
  * no gain here — the exciter level is the HP drive byte, set elsewhere. PURE DSP:
  * this file never keys the radio (no MOX, no PA).
  */
@@ -18,7 +18,7 @@
 #define TX_DSPSIZE   2048   /* WDSP internal DSP block                              */
 #define TX_IN_RATE   48000  /* mic input rate                                       */
 #define TX_DSP_RATE  96000  /* WDSP dsp rate (power-of-two multiple of both)        */
-#define TX_OUT_RATE  192000 /* DUC IQ output rate (P2 / G1)                         */
+#define TX_OUT_RATE  192000 /* DUC IQ output rate (P2 / G2E)                         */
 
 static int       t_id;
 static int       t_ready;

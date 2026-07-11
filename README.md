@@ -12,10 +12,10 @@ full-resolution floating-point panadapter. **No DSP is reimplemented**; WDSP
 does the heavy lifting.
 
 > **Status: alpha.** Everything below is implemented and verified live on an
-> Apache Labs **ANAN G1**. That is also the catch: the G1 is currently the
+> Apache Labs **ANAN G2E**. That is also the catch: the G2E is currently the
 > **only supported radio** — see [Supported hardware](#supported-hardware).
 
-![SDR for Linux — 20 m CW on the ANAN G1](docs/img/main-window.png)
+![SDR for Linux — 20 m CW on the ANAN G2E](docs/img/main-window.png)
 
 ## Features
 
@@ -60,13 +60,13 @@ radio picker rather than left to luck.
 
 | Radio | Protocol | Status |
 |---|---|---|
-| Apache Labs **ANAN G1** | HPSDR Protocol 2 | ✅ supported, developed & verified on this radio |
+| Apache Labs **ANAN G2E** | HPSDR Protocol 2 | ✅ supported, developed & verified on this radio |
 | Other ANAN / Hermes P2 boards | Protocol 2 | ⛔ blocked until tested — open an issue if you can lend hardware + a dummy load |
 | Hermes Lite 2, older P1 boards | Protocol 1 | ⛔ not implemented (P1 is a future milestone) |
 
 ## Requirements
 
-- An ANAN G1 on your LAN (see above)
+- An ANAN G2E on your LAN (see above)
 - Linux with **PipeWire** as the sound server (standard on 2024+ distros)
 - For the AppImage: glibc ≥ 2.39 (Ubuntu 24.04+, Fedora 40+, Mint 22,
   openSUSE, Arch, …)
@@ -124,7 +124,7 @@ Settings persist in `~/.config/sdr-for-linux/config.ini`.
 
 ## Known limitations (alpha)
 
-- **One radio: ANAN G1** (whitelist, see above); one RX (RX2 planned)
+- **One radio: ANAN G2E** (whitelist, see above); one RX (RX2 planned)
 - No FM (post-alpha), no built-in CAT (use tciadapter, see above)
 - Wattmeter uses a single per-band calibration factor — accurate on HF,
   over-reads ~25 % on 6 m (a guided nonlinear calibration is planned)
@@ -134,7 +134,7 @@ Settings persist in `~/.config/sdr-for-linux/config.ini`.
 ## Architecture
 
 ```
-  Radio (ANAN G1, HPSDR Protocol 2)
+  Radio (ANAN G2E, HPSDR Protocol 2)
         │  Ethernet (raw IQ)
         ▼
   sdr-for-linux  (single GTK4 process)

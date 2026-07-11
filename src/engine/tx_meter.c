@@ -1,7 +1,7 @@
 /*
  * sdr-for-linux — TX power + SWR metering. See tx_meter.h.
  *
- * Mirrors piHPSDR transmitter.c @974acba, the G1 branch (:645-758):
+ * Mirrors piHPSDR transmitter.c @974acba, the G2E branch (:645-758):
  *   v      = ((raw - cal_offset) / 4095) * constant1        [ADC volts]
  *   watts  = compute_power(v*v / constant2)
  *   gamma  = sqrt(rev_w / fwd_w)   (clamped 0.95)
@@ -14,9 +14,9 @@
 
 #include "tx_meter.h"
 
-/* G1 (ANAN-7000 PA board) — base constants from transmitter.c:645-662, EXCEPT C1.
- * C1 is the slow-ADC full-scale voltage; Thetis/piHPSDR assume 3.3 V for the G1,
- * but a live wattmeter check on this G1 (OK1BR, 20 m, byte 20 → 16 W measured vs
+/* G2E (ANAN-7000 PA board) — base constants from transmitter.c:645-662, EXCEPT C1.
+ * C1 is the slow-ADC full-scale voltage; Thetis/piHPSDR assume 3.3 V for the G2E,
+ * but a live wattmeter check on this G2E (OK1BR, 20 m, byte 20 → 16 W measured vs
  * 7 W computed) shows 5.0 V: (5.0/3.3)^2 = 2.29 ≈ the 2.26× under-read, and it
  * scales fwd+rev together so SWR is unchanged. TODO(F6): make this a per-radio
  * calibration setting rather than a compile-time constant. */
@@ -34,9 +34,9 @@ static double m_swr = 1.0;   /* smoothed VSWR */
 
 /* Wattmeter correction breakpoints: m_trim[i] is the raw-computed power that reads
  * when the true output is i*PATRIM_INTERVAL watts. Default = identity (linear).
- * The 10 W step is the G1 default: piHPSDR radio.c:1308 sets pa_power=PA_100W
- * (100 W rated), radio.c:1330 seeds pa_trim[i]=i*100*0.1. A non-G1 radio differs. */
-#define PATRIM_INTERVAL 10.0   /* G1 rated 100 W → 10 W per 10 % step */
+ * The 10 W step is the G2E default: piHPSDR radio.c:1308 sets pa_power=PA_100W
+ * (100 W rated), radio.c:1330 seeds pa_trim[i]=i*100*0.1. A non-G2E radio differs. */
+#define PATRIM_INTERVAL 10.0   /* G2E rated 100 W → 10 W per 10 % step */
 static double m_trim[11] = { 0.0, 10.0, 20.0, 30.0, 40.0, 50.0,
                              60.0, 70.0, 80.0, 90.0, 100.0 };
 

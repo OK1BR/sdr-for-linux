@@ -7,8 +7,10 @@ build, the safety model, and the phased plan that keeps RF impossible until the
 last gate.
 
 All references are to piHPSDR src at `~/.local/opt/pihpsdr/src` @ **974acba**
-(`np.c` = `new_protocol.c`, `tx.c` = `transmitter.c`). Target radio: **ANAN G1**
-(`NEW_DEVICE_G1`, HERMES-class, single ADC, Protocol 2). Verified 2026-07-08 by
+(`np.c` = `new_protocol.c`, `tx.c` = `transmitter.c`). Target radio: **ANAN G2E**
+(`NEW_DEVICE_G1`, device id 20 — piHPSDR sources call the G2E "G1"; grep for G1
+when cross-checking upstream, and do NOT confuse it with the Saturn/G2.
+HERMES-class, single ADC, Protocol 2). Verified 2026-07-08 by
 first-hand read of the four hazardous mechanisms plus a three-way cross-check of
 the full TX path.
 
@@ -36,7 +38,7 @@ cannot transmit, and all three hold today:
 | Mic→DUC IQ chain | mic 48k mono → `fexchange0` → 192k IQ (2048) → 24-bit BE | `tx.c:1572`, `np.c:2896` |
 | TX-IQ UDP tx | new outbound stream, **port 1029**, sender thread + FIFO pacing | `np.h:35`, `np.c:1987` |
 | TX bytes in packets | MOX, DUC phase, drive, Alex TX bits, attenuators | this doc §2 |
-| Metering + SWR | fwd/rev from status packet, G1 calibration | `tx.c:645`, `tx.c:725` |
+| Metering + SWR | fwd/rev from status packet, G2E calibration | `tx.c:645`, `tx.c:725` |
 | Safety layer | in-band, PA gate, drive-0, SWR shutdown, atten-31, T/R gate | this doc §4 |
 | Control + UI | MOX/TUNE/PTT, two drive sliders, antenna, CW keyer | this doc §5 |
 
@@ -54,7 +56,7 @@ words already arriving on 1025.
 
 ---
 
-## 2. TX wire format (G1, verified)
+## 2. TX wire format (G2E, verified)
 
 A keyed, in-band, PA-enabled, non-CW, non-PS transmit on the wire:
 
@@ -62,7 +64,7 @@ A keyed, in-band, PA-enabled, non-CW, non-PS transmit on the wire:
 | Byte | Value | Condition |
 |---|---|---|
 | 58 | `0x01` PA-enable | `pa_enabled && !txband->disablePA` (else 0); caches `local_pa_enable` |
-| 59 | `0x01` | Alex-0 enable (G1); `0x03` only for Orion2/Saturn |
+| 59 | `0x01` | Alex-0 enable (G2E); `0x03` only for Orion2/Saturn |
 
 `local_pa_enable` is the single gate re-derived identically in the HP packet and
 consumed by both HP and TX-specific attenuator logic — the packets agree by
@@ -119,7 +121,7 @@ No MOX and no drive live here — those are HP-only.
 - 6 bytes/sample (I hi/mid/lo, Q hi/mid/lo); **240 samples = 1440 B** payload +
   4-byte BE sequence = 1444 B/packet. Ideal cadence one packet / 1250 µs, paced by
   a software FIFO estimator to avoid overrunning the FPGA TX FIFO.
-- **G1: no IQ scaling** (`do_scale = 0`) — send `drive_level` in HP[345], leave IQ
+- **G2E: no IQ scaling** (`do_scale = 0`) — send `drive_level` in HP[345], leave IQ
   at unity gain (`radio.c:2914`).
 
 ---
@@ -139,7 +141,7 @@ Fixed post-open (`tx.c:1323-1336`): `SetTXABandpassWindow=1` (7-term BH) + run;
 Signal chain (voice): mic 48k mono (`I=sample, Q=0`) → DEXP (outside WDSP) →
 `fexchange0(id,…)` → inside TXA: PanelGain(mic) → EQ → Leveler → CFC/COMP →
 PHROT → modulator (`SetTXAMode`) → 7-term-BH bandpass → ALC → CFIR → 192k IQ (2048
-samples) → (G1: unity gain) → 24-bit-BE packetiser → port 1029.
+samples) → (G2E: unity gain) → 24-bit-BE packetiser → port 1029.
 
 **TUNE** injects a tone via the *post* generator instead of the mic:
 `SetTXAPostGenToneFreq(id,0)` (carrier at dial freq), `…ToneMag(id,0.99999)`
@@ -150,7 +152,7 @@ samples) → (G1: unity gain) → 24-bit-BE packetiser → port 1029.
 Drive → byte: `calcLevel(d)` (`radio.c:2879`):
 `target_dbm = 10·log10(d·1000) − band->pa_calibration;
 volts = min(sqrt(10^(dbm/10)·0.05)/0.8, 1); level = volts·(1/0.98)·255`.
-G1 uses `drive` for MOX/voice and **`tune_drive` (default 10)** for TUNE
+G2E uses `drive` for MOX/voice and **`tune_drive` (default 10)** for TUNE
 (`radio.c:2905`). `drive_digi_max` clamps DIGU/DIGL.
 
 ---
@@ -175,7 +177,7 @@ Verified guards to port, and where we deliberately diverge:
   auto-stops streaming *and* TX if the host dies. Do **not** adopt Thetis's
   watchdog-off model.
 - **SWR / fwd-rev** — from status packet: fwd `[14/15]`, rev `[22/23]`, exciter
-  `[6/7]`. G1 calibration: `C1=3.3, C2=0.12, rC2=0.15` (`0.7` on 6 m),
+  `[6/7]`. G2E calibration: `C1=3.3, C2=0.12, rC2=0.15` (`0.7` on 6 m),
   `fwd_off=48, rev_off=42` (`tx.c:645`). `gamma=sqrt(rev/fwd)` (clamp 0.95),
   `swr = 0.7·(1+γ)/(1−γ) + 0.3·swr`, alarm default **3.0**.
 
@@ -216,13 +218,13 @@ happens only at F5.
 | **F0** | This design doc + safety checklist mapping | ✅ done (a2d32df) |
 | **F1** | TX bytes in the builders, **MOX/PA/drive hard-0**; offline `sdrfl-txprobe` | ✅ done, 41/41 (2eff0e9) |
 | **F2** | WDSP TX channel + mic→DUC IQ chain + port-1029 framer (dormant); `sdrfl-txdsp-test` | ✅ done, 12/12 (2c36926) |
-| **F3** | fwd/rev/exciter parse (read-only) + G1 watts/SWR (`tx_meter`); `sdrfl-swr-test` | ✅ done, 8/8 (4f80abd) |
+| **F3** | fwd/rev/exciter parse (read-only) + G2E watts/SWR (`tx_meter`); `sdrfl-swr-test` | ✅ done, 8/8 (4f80abd) |
 | **F4** | Safety gate `tx_gate` (in-band, PA gate, SWR/open-ant shutdown, tune-exempt); `sdrfl-txgate-test` | ✅ done, 12/12 (f11a0c4) |
 | **F5** | **FIRST KEYING** via headless `sdrfl-txkey` — TUNE into a dummy load through `tx_gate` | ✅ **done, keyed live** (d3776e5) |
 | **F6** | TX into the GUI app: **a)** controls+meter · **b)** cal settings · **c)** mic/SSB · **d)** CW | 🟢 **F6a+F6b done + live-keyed; F6c-1/2 (mic capture + mode-gated wiring) done, MOX enable = F6c-3** |
 | **F7** | PureSignal (predistortion) — optional, later | — |
 
-**F6a — done, live-validated on the G1 (OK1BR, 2026-07-08/09).** The GUI app keys
+**F6a — done, live-validated on the G2E (OK1BR, 2026-07-08/09).** The GUI app keys
 RF through the safety gate into a matched load; verified across 20/40 m (~8 W for a
 10 W request — the known low-drive sensor under-read, F6b territory — rev 0, SWR 1.00,
 no trips). What landed:
@@ -251,12 +253,12 @@ no trips). What landed:
   `pa_calibration` fixed at the validated 53 dB (per-band table = F6b).
 - Also: unified the canvas font to **Adwaita Mono** (the generic Cairo "monospace"
   resolved to a serif Courier clone) to match the Adwaita Sans UI.
-- **F6b — done + live-keyed on the G1 (2026-07-09).** Both piHPSDR calibration
+- **F6b — done + live-keyed on the G2E (2026-07-09).** Both piHPSDR calibration
   knobs, taken in their common/default form (Richard's call: start from the proven
   version, refine later). HF calibration confirmed accurate live; 6 m over-reads
   ~25 % (safe direction) → per-band nonlinear calibration is the next milestone:
   - **Per-band `pa_calibration` table** — `App.band_pacal[NBANDS]`, default 53 dB
-    (piHPSDR's, live-validated on this G1), **clamped to the safe [38.8, 70.0]
+    (piHPSDR's, live-validated on this G2E), **clamped to the safe [38.8, 70.0]
     range** (the 38.8 dB floor is the safety limit — a lower value raises the
     drive byte for a given watts request, band.c:571-577). Flows through
     `tx_run_cfg.pa_calibration` for the **current** band and is **re-pushed on
@@ -270,15 +272,15 @@ no trips). What landed:
     regress the meter). Pushed through `tx_run_cfg.pa_trim`, installed in the TX
     worker thread each meter slot (no cross-thread torn reads). Editable + "reset
     to linear" in Preferences.
-  - **First-run defaults are the piHPSDR G1 values** (they are device-specific —
+  - **First-run defaults are the piHPSDR G2E values** (they are device-specific —
     piHPSDR switches them per radio in radio.c): `pa_calibration` 53 dB/band
     (band.c table; only HL2 overrides to 40.5), and `pa_trim` = identity for a
-    100 W rating (the G1 is `pa_power=PA_100W`, radio.c:1308/1330 → `i*10 W`). A
-    non-G1 port must switch these like piHPSDR does.
+    100 W rating (the G2E is `pa_power=PA_100W`, radio.c:1308/1330 → `i*10 W`). A
+    non-G2E port must switch these like piHPSDR does.
   - Both persist in `config.ini` (`[tx] pa_cal`, `[tx] pa_trim`). Offline gates
     `sdrfl-txgate-test` (15/15) and `sdrfl-swr-test` (8/8) pass; identity curve
     reproduces the pre-F6b watts (47.34 W @ raw 2000) exactly.
-  - **6m added across the app** (G1 does 6 m; we'd overlooked it) — `BANDS[]`
+  - **6m added across the app** (G2E does 6 m; we'd overlooked it) — `BANDS[]`
     50–54 MHz, footer band button, per-band dB window/stacking/pa_cal. The RF
     path was already 6 m-ready (RX BPF `alex0=0x08`+preamp, TX 6 m bypass LPF,
     `tx_meter` 6 m rconstant, band-plan 6 m).
@@ -290,7 +292,7 @@ no trips). What landed:
     during TUNE** (deliberate ATU-mismatch tuning) but now raises a warn-only flag
     (`tx_gate_result.high_swr` → amber "⚠ HIGH SWR" on the TX panadapter, in TUNE
     and MOX). New gate cases in `sdrfl-txgate-test`.
-  - **Live-validated on the G1 (OK1BR, 2026-07-09).** 20 m TUNE into a dummy load,
+  - **Live-validated on the G2E (OK1BR, 2026-07-09).** 20 m TUNE into a dummy load,
     swept to full power (drive 41 → app 108 W), SWR ~1.05, no false trips,
     open-antenna guard silent into the matched load. **The power + SWR readout
     matched Richard's tuner wattmeter on 20 m** — i.e. the default calibration
@@ -347,10 +349,10 @@ no trips). What landed:
     Richard's "level bars now, ALC later", both from `GetTXAMeter` (`TXA_MIC_PK`
     / `TXA_ALC_GAIN`) published into `tx_run_status.mic_pk/alc_gain` from the TX
     thread. Meaningful only while keyed. Builds; all TX gates pass.
-  - **F6c-3b — MOX enabled; first voice keyed — WORKS (ANAN G1, OK1BR,
+  - **F6c-3b — MOX enabled; first voice keyed — WORKS (ANAN G2E, OK1BR,
     2026-07-09).** MOX is enabled only in a voice mode (`tx_update_mic` greys it for
     CW/data alongside the mic) — same `tx_gate` path as TUNE, SWR protection ACTIVE
-    for MOX. Live checks on the G1: mic lifecycle RX-only (USB → `mic: capture open
+    for MOX. Live checks on the G2E: mic lifecycle RX-only (USB → `mic: capture open
     @ 48000 Hz … voice mode`; CWU → mic stays closed), then **first voice into a
     50 Ω dummy load on ANT1**: keyed clean (`KEY MOX PA=ON ANT1 drive=35/255`),
     SWR 1.00, and — after raising Mic gain — produced real SSB power that tracks the
@@ -419,7 +421,7 @@ no trips). What landed:
 
 ---
 
-## 7. F5 live-keying results + calibration (ANAN G1, OK1BR, 2026-07-08)
+## 7. F5 live-keying results + calibration (ANAN G2E, OK1BR, 2026-07-08)
 
 First keying done with `sdrfl-txkey` into a 50 Ω dummy load on ANT1 (20 m), piHPSDR
 disconnected, operator at the wattmeter. Staged, and each keying watched:
@@ -431,12 +433,12 @@ disconnected, operator at the wattmeter. Staged, and each keying watched:
 | Ramp | byte 20 | **wattmeter 16 W** |
 | Watts path | request 10 W (pa_cal 53 → byte 16) | **wattmeter 10 W**, SWR 1.00 |
 
-**Calibration findings (this G1):**
+**Calibration findings (this G2E):**
 - **`pa_calibration` = 53 dB (the piHPSDR default) is CORRECT here.** The watts path
   (`tx_calc_drive_byte` = calcLevel) is accurate: request 10 W → 10 W measured. The
   byte→watts curve is nonlinear at low drive (~byte³), so calcLevel is approximate.
 - **Forward-power sensor was 2.3× low** with the Thetis constant `C1 = 3.3`; the fix
-  is `C1 = 5.0` in `tx_meter.c` (this G1's slow-ADC ref is 5.0 V; `(5.0/3.3)² = 2.29
+  is `C1 = 5.0` in `tx_meter.c` (this G2E's slow-ADC ref is 5.0 V; `(5.0/3.3)² = 2.29
   ≈ 2.26` measured; scales fwd+rev together so **SWR is unchanged**). Still ~18 % low
   at 10 W → refine with a multi-point per-radio calibration in **F6b**.
 

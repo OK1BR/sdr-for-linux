@@ -124,7 +124,7 @@ static GMutex      kick_lock;
 static GCond       kick_cond;
 static int         kick_pending;
 static int       cfg_sample_rate;
-static int       cfg_ddc;        /* DDC index for this device (0 for G1) */
+static int       cfg_ddc;        /* DDC index for this device (0 for G2E) */
 static p2_iq_cb  cfg_cb;
 static void     *cfg_user;
 
@@ -132,8 +132,8 @@ static GThread *listener_tid;
 static GThread *timer_tid;
 
 /*
- * DDC index a receiver maps to. HERMES/HERMES2/G1 use DDC0/1; ANGELIA/ORION/
- * ORION2/SATURN use DDC2/3 (np.c:1627-1631, 835-836). The ANAN G1 is HERMES-
+ * DDC index a receiver maps to. HERMES/HERMES2/G2E use DDC0/1; ANGELIA/ORION/
+ * ORION2/SATURN use DDC2/3 (np.c:1627-1631, 835-836). The ANAN G2E is HERMES-
  * class → DDC0 → IQ arrives on port 1035.
  */
 static int ddc_for_device(int device) {
@@ -147,7 +147,7 @@ static int ddc_for_device(int device) {
 /* ---- outgoing packet builders (no socket; hexdump-testable) -------------- */
 
 /* General packet — np.c:662-716. Phase-word mode + HW timer + Alex-0 enable
- * ([59]=0x01 — G1 has one Alex; ORION2/SATURN would need 0x03). Byte [58] is the
+ * ([59]=0x01 — G2E has one Alex; ORION2/SATURN would need 0x03). Byte [58] is the
  * firmware PA-enable (np.c:679-685): piHPSDR sends 1 when its "PA enable" setting
  * is on AND the TX band's disablePA is clear. The LIVE engine hardcodes
  * pa_enabled=0 here (send_general) — one of the three no-TX guarantees
@@ -161,7 +161,7 @@ int p2_build_general(unsigned char *buf, int pa_enabled) {
   buf[37] = 0x08;  // phase word (not frequency)
   buf[38] = 0x01;  // enable hardware timer
   buf[58] = pa_enabled ? 0x01 : 0x00;  // PA enable (np.c:684). LIVE = 0 (no-TX guarantee)
-  buf[59] = 0x01;  // enable Alex 0 — the G1's filter board is ALEX (np.c:696);
+  buf[59] = 0x01;  // enable Alex 0 — the G2E's filter board is ALEX (np.c:696);
                    // without this the RX band-pass relays never engage → no signal
   return GENERAL_LEN;
 }
@@ -170,7 +170,7 @@ int p2_build_general(unsigned char *buf, int pa_enabled) {
  * off; enable one DDC; program its ADC(=0), sample-rate (kHz, BE) and 24 b/s.
  *
  * PureSignal (PS-1): with `ps->enabled && xmit`, the PS feedback pair replaces
- * the normal RX DDC config (np.c:1649-1668) — on the G1 the PS pair *is* the
+ * the normal RX DDC config (np.c:1649-1668) — on the G2E the PS pair *is* the
  * RX DDC pair (Hermes-class layout), which is fine: non-duplex TX doesn't need
  * the RX stream, and piHPSDR ignores duplex on this family during PS TX
  * (action-table case 10110, np.c:441-445). ps==NULL / enabled=0 / !xmit →
@@ -194,7 +194,7 @@ int p2_build_receive_specific(unsigned char *buf, int device, int sample_rate,
 
   if (ps && ps->enabled && xmit) {
     /* PS feedback pair (np.c:1649-1668): DDC0 ← ADC0 = analog (coupler) RX
-     * feedback; DDC1 ← "ADC number n_adc" = 1 on the G1 = the TX-DAC loopback
+     * feedback; DDC1 ← "ADC number n_adc" = 1 on the G2E = the TX-DAC loopback
      * pseudo-ADC. Both FIXED 192 kHz / 24-bit regardless of the RX rate.
      * [1363] = 0x02 = "DDC1 synchronized into DDC0" → one interleaved stream
      * on DDC0's port; enable bitmap is exactly DDC0 (piHPSDR sends 0x01 in
@@ -214,7 +214,7 @@ int p2_build_receive_specific(unsigned char *buf, int device, int sample_rate,
 /* High-Priority packet — np.c:718-1474. Byte[4] carries the run bit (0x01) and,
  * when transmitting, the MOX bit (0x02); bytes[9..12] carry the DDC0 NCO phase
  * (the radio's automatic band filter follows DDC0). alex0/alex1 (bytes 1432..1435
- * / 1428..1431) carry the G1's RX BPF + TX LPF + ANT relay + (TX) T/R relay bits.
+ * / 1428..1431) carry the G2E's RX BPF + TX LPF + ANT relay + (TX) T/R relay bits.
  *
  * `tx` is the transmit state (docs/TX-DESIGN.md §F1). The LIVE engine ALWAYS
  * passes tx=NULL → xmit/pa_on are 0, every TX-only byte below is 0, and the
@@ -285,7 +285,7 @@ int p2_build_high_priority(unsigned char *buf, int device, long long rx_freq_hz,
     if (drive > 255) { drive = 255; }
     buf[345] = (unsigned char)drive;
   }
-  /* G1 Alex words — np.c high_priority() for NEW_DEVICE_G1:
+  /* G2E Alex words — np.c high_priority() for NEW_DEVICE_G1:
    *  - RX BPF bit from the RX frequency (below);
    *  - TX LPF bit from the DUC (TX) frequency = tx_freq (= RX freq when not
    *    split), np.c:1244/1263;
@@ -334,9 +334,9 @@ int p2_build_high_priority(unsigned char *buf, int device, long long rx_freq_hz,
       alex1 |= 0x00040000u;                  // ALEX_PS_BIT whenever PS is enabled
       if (xmit) {
         alex0 |= 0x00040000u;                // ...and in alex0 while PS-transmitting
-        /* Feedback source (np.c:1288-1354, G1 = Orion2/Saturn decode +100):
+        /* Feedback source (np.c:1288-1354, G2E = Orion2/Saturn decode +100):
          * internal coupler (0/100) needs NO routing bits; BYPASS (7/107) routes
-         * the RX path around the BPFs. EXT1 does not exist on the G1 family. */
+         * the RX path around the BPFs. EXT1 does not exist on the G2E family. */
         if (ps->feedback_ant == 7) { alex0 |= 0x00000800u; }  // ALEX_RX_ANTENNA_BYPASS
       }
     }
@@ -795,7 +795,7 @@ static void parse_high_priority_status(const unsigned char *buf, int len) {
   if (buf[5] & 0x02) { g_atomic_int_or(&tlm_adc1_ovl, 1); }
 
   /* raw analog words (np.c:2661-2664), big-endian 16-bit. Uncalibrated: the
-   * raw->volts scale is model-specific and NOT known for the G1 (neither
+   * raw->volts scale is model-specific and NOT known for the G2E (neither
    * piHPSDR nor Thetis calibrate it) — surface raw, calibrate live later. */
   g_atomic_int_set(&tlm_raw_adc1, ((buf[55] & 0xFF) << 8) | (buf[56] & 0xFF));
   g_atomic_int_set(&tlm_raw_adc0, ((buf[57] & 0xFF) << 8) | (buf[58] & 0xFF));
