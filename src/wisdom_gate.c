@@ -12,13 +12,18 @@
  */
 #include <adwaita.h>
 #include <glib.h>
+#include <glib/gstdio.h>
 #include <math.h>
 #include <string.h>
+#include <fftw3.h>     /* fftw_version, fftw_import_wisdom_from_filename */
 
 #include "wisdom_gate.h"
 #include "wdsp.h"      /* WDSPwisdom(), wisdom_get_status() */
 
-/* Cache lives next to config.ini, in ~/.config/sdr-for-linux/. */
+/* Cache lives in ~/.config/sdr-for-linux/wisdom/<fftw-build>/ — wisdom is
+ * only readable by the exact FFTW build that wrote it, and e.g. an AppImage
+ * bundles a different FFTW than the distro; per-build dirs stop them from
+ * clobbering each other's cache (each build pays its one-time plan). */
 #define WISDOM_FILE "wdspWisdom00"
 
 typedef struct {
@@ -166,21 +171,51 @@ static void run_first_run_ui(const char *dir) {
 }
 
 void wisdom_ensure(void) {
-  /* SDRFL_WISDOM_DIR overrides the cache location (used by sdrfl-wisdom-test to
-   * exercise a fresh build in a throwaway dir). Default: next to config.ini. */
+  /* SDRFL_WISDOM_DIR overrides the cache location verbatim (used by
+   * sdrfl-wisdom-test to exercise a fresh build in a throwaway dir). */
   const char *env = g_getenv("SDRFL_WISDOM_DIR");
-  char *dir  = (env && *env) ? g_strdup(env)
-                             : g_build_filename(g_get_user_config_dir(), "sdr-for-linux", NULL);
+  char *dir;
+  if (env && *env) {
+    dir = g_strdup(env);
+  } else {
+    char *tag = g_strdup(fftw_version);   /* e.g. "fftw-3.3.11-sse2-avx2" */
+    g_strcanon(tag,
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-", '-');
+    dir = g_build_filename(g_get_user_config_dir(), "sdr-for-linux",
+                           "wisdom", tag, NULL);
+    g_free(tag);
+  }
   g_mkdir_with_parents(dir, 0755);
   char *file = g_build_filename(dir, WISDOM_FILE, NULL);
+
+  /* One-time migration: the pre-versioned cache lived next to config.ini.
+   * Copy it in optimistically — the import probe below decides if this FFTW
+   * can actually use it. The legacy file itself stays (older binaries). */
+  if (!(env && *env) && !g_file_test(file, G_FILE_TEST_EXISTS)) {
+    char *legacy = g_build_filename(g_get_user_config_dir(), "sdr-for-linux",
+                                    WISDOM_FILE, NULL);
+    char *content = NULL; gsize len = 0;
+    if (g_file_get_contents(legacy, &content, &len, NULL)) {
+      g_file_set_contents(file, content, len, NULL);
+      g_free(content);
+    }
+    g_free(legacy);
+  }
 
   /* WDSPwisdom() does strcat(dir, "wdspWisdom00") with no separator → the
    * directory string it gets must already end in one. */
   char *dir_sep = g_strconcat(dir, G_DIR_SEPARATOR_S, NULL);
 
-  if (g_file_test(file, G_FILE_TEST_EXISTS)) {
+  /* "Fast import, no window" is only honest if THIS FFTW build can read the
+   * cache — probe the import instead of trusting file existence. A foreign
+   * cache (other FFTW version/build) would send WDSPwisdom into a
+   * minutes-long replan with no window, silently spamming the terminal. */
+  gboolean usable = g_file_test(file, G_FILE_TEST_EXISTS)
+                    && fftw_import_wisdom_from_filename(file) != 0;
+  if (usable) {
     WDSPwisdom(dir_sep);                 /* fast import; no window */
   } else {
+    if (g_file_test(file, G_FILE_TEST_EXISTS)) { g_unlink(file); }  /* foreign */
     if (!gtk_is_initialized()) { gtk_init(); }   /* only GTK widgets used here */
     run_first_run_ui(dir_sep);
     if (!g_file_test(file, G_FILE_TEST_EXISTS)) {
