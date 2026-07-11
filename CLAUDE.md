@@ -47,10 +47,17 @@ on first run (`~/.config/sdr-for-linux/wdspWisdom00`, ~6 min, progress window)
 and imports it instantly ever after (verified: 2nd run 0.0 s). Gate:
 `sdrfl-wisdom-test` (offline, no radio). No `vendor/wdsp` edits.
 
-**★ Next session starts with:** Var1/Var2 filters (draggable passband edges),
-wire AGC/NR/NB/ANF (still placeholders), off-centre pan. See ENGINE-IMPORT.md
-"Milestone 3". Older follow-ups: AGC-target vs `SDRFL_GAIN`, audio clock-drift
-smoothing, absolute dBm cal.
+**Release polish started (2026-07-11)** — version 0.1.0-alpha, `--version`/
+`--help`, About dialog, `GSK_RENDERER=cairo` auto-set in main(), desktop
+file + SVG icon + AppStream metainfo + `meson install`, README rewritten
+for strangers, `packaging/PKGBUILD` (makepkg-verified), GitHub Actions
+CI (offline gates) + AppImage on ubuntu-24.04 (v* tag ⇒ attached to a
+pre-release). Pending: green CI, README screenshot, tag `v0.1.0-alpha`
++ Release (Richard's consent), AUR publish (Richard's consent).
+
+**Older follow-ups:** Var1/Var2 filters (draggable passband edges),
+off-centre pan, AGC-target vs `SDRFL_GAIN`, audio clock-drift smoothing,
+absolute dBm cal, nonlinear wattmeter cal, S-meter in GUI.
 
 ## Approach (decided with Richard)
 
