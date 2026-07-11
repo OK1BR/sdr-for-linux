@@ -52,6 +52,12 @@ typedef struct {
   double    swr;        /* smoothed SWR (tx_meter)        */
   double    fwd_w;      /* forward power, W (tx_meter)    */
   double    rev_w;      /* reverse power, W (tx_meter)    */
+  int       stale_reading; /* 1 = evaluation WITHOUT a fresh coupler poll (an
+                              edge-triggered gate run re-uses the last meter
+                              state): the SWR 2-consecutive-readings filter
+                              must ignore it — a duplicate of one bad sample
+                              must not count as the second reading. 0 (the
+                              default) = genuine fresh poll, filter advances. */
 } tx_gate_in;
 
 typedef struct {

@@ -216,7 +216,8 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   }
 
   tx_gate_in in = { .want_mox = want_mox, .want_tune = want_tune, .freq_hz = freq,
-                    .swr = tx_meter_swr(), .fwd_w = tx_meter_fwd_w(), .rev_w = tx_meter_rev_w() };
+                    .swr = tx_meter_swr(), .fwd_w = tx_meter_fwd_w(), .rev_w = tx_meter_rev_w(),
+                    .stale_reading = !fresh_meter };
   tx_gate_result r;
   tx_gate_evaluate(&gc, &in, &r);
   int keyed = r.keyed;

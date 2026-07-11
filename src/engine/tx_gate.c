@@ -66,12 +66,18 @@ void tx_gate_evaluate(const tx_gate_cfg *cfg, const tx_gate_in *in, tx_gate_resu
     int high_swr     = in->swr >= cfg->swr_alarm;
     int open_antenna = in->fwd_w > 10.0 && (in->fwd_w - in->rev_w) < 1.0;  /* Thetis */
     out->high_swr    = high_swr;                       /* indicator: TUNE + MOX */
-    int trip_now     = open_antenna || (high_swr && !in->want_tune);
-    if (trip_now) {
-      if (s_pre_high) { s_tripped = 1; }   /* second consecutive → trip + latch */
-      s_pre_high = 1;
-    } else {
-      s_pre_high = 0;
+    /* The 2-consecutive filter advances on GENUINE coupler readings only.
+     * Edge-triggered gate runs re-evaluate the last meter state; letting the
+     * duplicate count would trip off a single physical sample (piHPSDR
+     * requires two real polls, transmitter.c:775-789). */
+    if (!in->stale_reading) {
+      int trip_now = open_antenna || (high_swr && !in->want_tune);
+      if (trip_now) {
+        if (s_pre_high) { s_tripped = 1; }   /* second consecutive → trip + latch */
+        s_pre_high = 1;
+      } else {
+        s_pre_high = 0;
+      }
     }
   }
 

@@ -77,6 +77,22 @@ int main(void) {
     tx_gate_evaluate(&c, &i, &r); }
   ok("single high-SWR sample does not trip", !r.tripped && r.keyed, "");
 
+  /* 5b. edge-triggered gate run between two readings: a STALE re-evaluation
+   * (same coupler sample, stale_reading=1) must NOT count as the second
+   * consecutive reading — one physical spike + an intent edge must not trip. */
+  printf("\n[SWR spike + stale edge run] duplicate sample → still no trip:\n");
+  tx_gate_reset();
+  { tx_gate_cfg c = base_cfg(); tx_gate_in i = base_in(); i.swr = 5.0;
+    tx_gate_evaluate(&c, &i, &r);          /* 1st genuine reading (high)      */
+    i.stale_reading = 1;
+    tx_gate_evaluate(&c, &i, &r);          /* edge run, SAME sample → ignore  */
+    tx_gate_evaluate(&c, &i, &r); }        /* another edge run → still ignore */
+  ok("stale duplicates do not trip", !r.tripped && r.keyed, "");
+  /* ...but the NEXT genuine high reading (2nd real sample) must trip. */
+  { tx_gate_cfg c = base_cfg(); tx_gate_in i = base_in(); i.swr = 5.0;
+    tx_gate_evaluate(&c, &i, &r); }        /* 2nd genuine → trip              */
+  ok("second genuine reading after stale runs trips", r.tripped && !r.keyed, r.reason);
+
   /* 6. SWR trip (two readings) → drop MOX, latched */
   printf("\n[SWR trip] two high readings → drop MOX, latch:\n");
   tx_gate_reset();
