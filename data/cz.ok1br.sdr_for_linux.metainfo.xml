@@ -15,7 +15,7 @@
     </p>
     <p>
       Includes a TCI server (ExpertSDR3-compatible) for skimmers, loggers and
-      digimode software. Alpha software: the Apache Labs ANAN G1 is currently
+      digimode software. Alpha software: the Apache Labs ANAN G2E is currently
       the only radio verified on real hardware — other models are blocked by
       a safety whitelist until they are tested.
     </p>
@@ -37,7 +37,7 @@
     <release version="0.1.0-alpha" date="2026-07-11">
       <description>
         <p>
-          First alpha: Protocol 2 RX/TX for the ANAN G1 — panadapter,
+          First alpha: Protocol 2 RX/TX for the ANAN G2E — panadapter,
           waterfall, SSB/CW/AM/digi demodulation, SSB and CW transmit,
           PureSignal, TCI server, band plan overlay, DX spots.
         </p>
