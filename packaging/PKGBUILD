@@ -13,9 +13,7 @@ depends=('gtk4' 'libadwaita' 'fftw' 'opus' 'openssl' 'zlib' 'libpipewire'
          'libwebsockets')
 makedepends=('meson')
 source=("$pkgname-$_pkgtag.tar.gz::$url/archive/refs/tags/v$_pkgtag.tar.gz")
-# TODO: replace with the real sum once the v0.1.0-alpha tag exists:
-#   updpkgsums  (from pacman-contrib)
-sha256sums=('SKIP')
+sha256sums=('0c9a6157c7d997aae548a4e96f93cb0bfd8875d1cf7700b0145dcdb40c799115')
 
 build() {
   arch-meson "$pkgname-$_pkgtag" build
