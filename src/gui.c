@@ -393,6 +393,41 @@ static void feed_cb(const double *iq, int n_pairs, void *user) {
   /* Raw IQ → TCI skimmers (F6d-2d); no-op while nobody iq_start'ed. Fed the
    * real signal even during the post-TX silence window — a skimmer copes. */
   tci_server_iq_push(iq, n_pairs, s_engine_rate);
+  /* RX-on-TX mute follows the engine keyed flag HERE, on the listener thread
+   * (per IQ block, ~ms): key → fade RX out; unkey → brief input silence for
+   * the T/R tail, then unmute after the AGC-settle window. The old GUI-frame
+   * detour added ~110 ms to every unkey (contest note #5); the frame tick
+   * remains only as an idempotent backstop. */
+  {
+    static int    rx_prev_keyed;
+    static gint64 rx_unmute_at;
+    int keyed = tx_run_keyed();
+    if (keyed != rx_prev_keyed) {
+      rx_prev_keyed = keyed;
+      if (keyed) {
+        demod_set_mute(1);
+        rx_unmute_at = 0;
+      } else {
+        g_atomic_int_set(&g_rx_silence, s_engine_rate * RX_SILENCE_MS / 1000);
+        rx_unmute_at = g_get_monotonic_time() + (gint64)TX_SETTLE_MS * 1000;
+      }
+      const char *lat = g_getenv("SDRFL_LAT_DEBUG");
+      if (lat && lat[0] == '1') {
+        fprintf(stderr, "LAT %lld iq_%s\n", (long long)g_get_monotonic_time(),
+                keyed ? "mute" : "unkey_seen");
+        fflush(stderr);
+      }
+    }
+    if (rx_unmute_at && g_get_monotonic_time() >= rx_unmute_at) {
+      rx_unmute_at = 0;
+      demod_set_mute(0);
+      const char *lat = g_getenv("SDRFL_LAT_DEBUG");
+      if (lat && lat[0] == '1') {
+        fprintf(stderr, "LAT %lld iq_unmute\n", (long long)g_get_monotonic_time());
+        fflush(stderr);
+      }
+    }
+  }
   /* Anti-AGC-pump: after TX, feed the demod silence for RX_SILENCE_MS so the
    * relay-crosstalk tail can't kick the AGC (the analyzer still gets real IQ). */
   if (g_atomic_int_get(&g_rx_silence) > 0) {
@@ -1399,32 +1434,25 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
          * trace. Unkey: keep the audio muted through the AGC-recovery window
          * (TX_SETTLE_MS) and only then fade it back in — otherwise the wound-up
          * AGC pops; also silence the demod input briefly for the literal T/R tail. */
+        /* Mute/unmute proper is driven from the IQ router (on_rx_iq) off the
+         * engine keyed flag — this tick keeps only display state (fresh SWR
+         * hold, OVL-badge suppression window) + an idempotent unmute backstop
+         * for the no-RX-packets corner. It must NOT touch g_rx_silence: a
+         * second, late input-silence window would punch a hole into the
+         * already-recovering RX audio. */
         if (ts.keyed != app->tx_keyed_shown) {
-          const char *lat = g_getenv("SDRFL_LAT_DEBUG");   /* latency audit marks */
-          if (lat && lat[0] == '1') {
-            fprintf(stderr, "LAT %lld gui_%s\n", (long long)g_get_monotonic_time(),
-                    ts.keyed ? "mute" : "unkey_seen");
-            fflush(stderr);
-          }
           if (ts.keyed) {
-            if (app->audio_ok) { demod_set_mute(1); }
             app->tx_ema_w = 0;
             app->tx_settle_until = 0;
             app->tx_swr_disp = 0.0;                    /* fresh held SWR per over */
           } else {
-            if (app->audio_ok) { g_atomic_int_set(&g_rx_silence, app->rate * RX_SILENCE_MS / 1000); }
             app->tx_settle_until = now + (gint64)TX_SETTLE_MS * 1000;
           }
           app->tx_keyed_shown = ts.keyed;
         }
         if (app->tx_settle_until && now >= app->tx_settle_until) {
-          if (app->audio_ok) { demod_set_mute(0); }   /* AGC settled → fade back in */
+          if (app->audio_ok) { demod_set_mute(0); }   /* backstop; normally a no-op */
           app->tx_settle_until = 0;
-          const char *lat = g_getenv("SDRFL_LAT_DEBUG");
-          if (lat && lat[0] == '1') {
-            fprintf(stderr, "LAT %lld gui_unmute\n", (long long)g_get_monotonic_time());
-            fflush(stderr);
-          }
         }
         app->tx_display = ts.keyed;
         update_tx_label(app, &ts, now);

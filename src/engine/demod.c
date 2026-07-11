@@ -257,6 +257,39 @@ void demod_feed(const double *iq, int n_pairs) {
           a = sl < 0 ? -sl : sl;
           if (a > d_peak) { d_peak = a; }
         }
+        /* SDRFL_LAT_DEBUG: mute-gain edges + 1 s of post-unmute block peaks —
+         * the peak ramp IS the audible AGC recovery (latency audit #4/#5). */
+        {
+          static int lat_v = -1;
+          if (lat_v < 0) { const char *e = g_getenv("SDRFL_LAT_DEBUG"); lat_v = (e && e[0] == '1'); }
+          if (lat_v) {
+            static double lat_prev_mg = 1.0;
+            static gint64 lat_open_t, lat_last_log;
+            gint64 tnow = g_get_monotonic_time();
+            if (d_mute_gain <= 0.0 && lat_prev_mg > 0.0) {
+              fprintf(stderr, "LAT %lld rx_muted\n", (long long)tnow);
+            }
+            if (d_mute_gain >= 1.0 && lat_prev_mg < 1.0) {
+              fprintf(stderr, "LAT %lld rx_open\n", (long long)tnow);
+              lat_open_t = tnow; lat_last_log = 0;
+            }
+            lat_prev_mg = d_mute_gain;
+            if (lat_open_t) {
+              if (tnow - lat_open_t >= 1000000) { lat_open_t = 0; }
+              else if (tnow - lat_last_log > 100000) {
+                lat_last_log = tnow;
+                double pk = 0.0;
+                for (int k = 0; k < d_output; k++) {
+                  double v = d_audio[k * 2] * d_gain; if (v < 0) { v = -v; }
+                  if (v > pk) { pk = v; }
+                }
+                fprintf(stderr, "LAT %lld rx_pk %.1f dBFS\n", (long long)tnow,
+                        pk > 1e-9 ? 20.0 * log10(pk) : -180.0);
+              }
+              fflush(stderr);
+            }
+          }
+        }
         /* RX audio tap (TCI): volume-compensated mono (L, pre-mute/pre-monitor)
          * decimated to a fixed 48 kHz. Runs only while a tap is registered. */
         void (*tap)(const float *, int) =

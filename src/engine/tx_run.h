@@ -155,4 +155,7 @@ void tx_run_set_twotone(int on);
 /* Snapshot the current status for the meter/UI (thread-safe). */
 void tx_run_get_status(tx_run_status *out);
 
+/* Lock-free keyed flag for hot paths (per-IQ-block RX-audio routing). */
+int tx_run_keyed(void);
+
 #endif /* SDRFL_ENGINE_TX_RUN_H */

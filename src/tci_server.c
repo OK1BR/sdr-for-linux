@@ -508,6 +508,11 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
     tci_broadcastf("cw_macros_delay:%d;", s_cw_delay_ms);
   } else if (strcmp(name, "cw_macros") == 0) {
     if (ac > 1 && av[1][0]) {
+      const char *lat = g_getenv("SDRFL_LAT_DEBUG");   /* latency audit t0 */
+      if (lat && lat[0] == '1') {
+        fprintf(stderr, "LAT %lld cw_rx\n", (long long)g_get_monotonic_time());
+        fflush(stderr);
+      }
       char *txt = g_strdup(av[1]);
       cw_unescape(txt);
       s_ops.cw_send(txt);

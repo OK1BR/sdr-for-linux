@@ -28,6 +28,17 @@
 #include "ps.h"       /* PureSignal runtime — key hand-off + status (F7/PS-2)       */
 #include "demod.h"    /* DEMOD_* mode ids + demod_monitor_push (TX monitor)         */
 
+/* SDRFL_LAT_DEBUG=1 → one-line monotonic-µs event marks for the latency audit
+ * (contest notes #3/#4/#5). No behaviour change; zero cost when off. */
+static int lat_on(void) {
+  static int v = -1;
+  if (v < 0) { const char *e = g_getenv("SDRFL_LAT_DEBUG"); v = (e && e[0] == '1'); }
+  return v;
+}
+#define LAT(...) do { if (lat_on()) { \
+    fprintf(stderr, "LAT %lld ", (long long)g_get_monotonic_time()); \
+    fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); fflush(stderr); } } while (0)
+
 #define CW_SIDETONE_HZ  700     /* sidetone pitch default, Hz — tx_run_set_sidetone      */
 #define CW_SIDETONE_CDB (-2000) /* sidetone level default (dB × 100): −20 dBFS ≈ piHPSDR's
                                    default sidetone volume 50/127 (0.00196·vol·env peaks
@@ -133,10 +144,21 @@ static void publish(const tx_run_status *st) {
   g_mutex_unlock(&s_status_lock);
 }
 
-/* One meter+gate slot (~20 Hz). Returns the keyed decision and applies all wire
- * state (p2_set_tx_state) + DSP transitions (tone/run) on key/unkey edges. */
+/* Lock-free keyed flag for per-IQ-block consumers (the GUI's RX-audio router
+ * keys the RX-on-TX mute off this — polling the mutexed status from the GUI
+ * frame tick added ~110 ms to every unkey, contest note #5). */
+static volatile int s_keyed_pub;
+int tx_run_keyed(void) { return g_atomic_int_get(&s_keyed_pub); }
+
+/* One meter+gate slot (~20 Hz, plus an immediate run on any keying-intent
+ * edge). Returns the keyed decision and applies all wire state
+ * (p2_set_tx_state) + DSP transitions (tone/run) on key/unkey edges.
+ * fresh_meter: only the regular 50 ms slots read the coupler — an
+ * edge-triggered run must not feed a duplicate sample into the SWR
+ * 2-consecutive-readings filter (and p2_tx_fwd_max_take() is decay-on-read,
+ * single consumer). Edge runs evaluate the gate on the meter's last state. */
 static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
-                     int *keyed_mox, int *keyed_cw) {
+                     int *keyed_mox, int *keyed_cw, int fresh_meter) {
   g_mutex_lock(&s_cfg_lock);  tx_cfg_i cfg = s_cfg;  g_mutex_unlock(&s_cfg_lock);
 
   int is_cw     = TX_MODE_IS_CW(g_atomic_int_get(&s_mode));
@@ -179,9 +201,19 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   /* One real coupler reading per slot → tx_gate's 2-consecutive SWR filter sees
    * genuine consecutive samples (never a re-run on stale data). The wattmeter-trim
    * curve is (re)installed here so it stays owned by this worker thread. */
-  tx_meter_set_trim(cfg.pa_trim);
-  p2_telemetry t; p2_get_telemetry(&t);
-  tx_meter_update(t.fwd_raw, t.rev_raw, p2_tx_fwd_max_take(), is_6m);
+  p2_telemetry t; memset(&t, 0, sizeof t);
+  if (fresh_meter) {
+    tx_meter_set_trim(cfg.pa_trim);
+    p2_get_telemetry(&t);
+    tx_meter_update(t.fwd_raw, t.rev_raw, p2_tx_fwd_max_take(), is_6m);
+    if (lat_on()) {                   /* RF-on-the-coupler edges (radio side) */
+      static double lat_prev_fwd;
+      double fw = tx_meter_fwd_w();
+      if (fw >= 1.0 && lat_prev_fwd < 1.0) { LAT("fwd_rf %.1f W", fw); }
+      if (fw <  1.0 && lat_prev_fwd >= 1.0) { LAT("fwd_drop"); }
+      lat_prev_fwd = fw;
+    }
+  }
 
   tx_gate_in in = { .want_mox = want_mox, .want_tune = want_tune, .freq_hz = freq,
                     .swr = tx_meter_swr(), .fwd_w = tx_meter_fwd_w(), .rev_w = tx_meter_rev_w() };
@@ -223,6 +255,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     }
     tx_dsp_run(1);
     p2_set_tx_state(&r.state);
+    LAT("key_on %s", r.state.tune ? "TUNE" : (cw_key ? "CW" : "MOX"));
     fprintf(stderr, "tx: KEY %s  freq=%lld Hz  PA=%s  ANT%d  drive=%d/255\n",
             r.state.tune ? "TUNE" : (cw_key ? "CW" : "MOX"), freq,
             r.state.pa_enabled ? "ON" : "off", cfg.antenna + 1, r.state.drive);
@@ -231,6 +264,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     /* KEY OFF (operator release OR protection trip): drop MOX first, stop the
      * tone, flush a little audio, then stop the channel. */
     p2_set_tx_state(NULL);
+    LAT("key_off");
     tx_dsp_tune_tone(0, 0.0);
     if (tt_applied) { tx_dsp_two_tone(0, 0.0, 0.0); tt_applied = 0; }
     for (int i = 0; i < 4; i++) { tx_dsp_feed_mic(silence, FEED_BLOCK); }
@@ -245,7 +279,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
       tx_dsp_two_tone(tt_want_now, tt_sign * 700.0, tt_sign * 1900.0);
       tt_applied = tt_want_now;
     }
-    if (++s_log_ctr % 20 == 0) {   /* ~1 Hz while keyed */
+    if (fresh_meter && ++s_log_ctr % 20 == 0) {   /* ~1 Hz while keyed (regular slots) */
       ps_status pl; ps_get_status(&pl);
       if (pl.on) {
         fprintf(stderr, "tx: fwd=%.2f W  rev=%.2f W  SWR=%.2f  (fwd_raw=%d rev_raw=%d)"
@@ -292,6 +326,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   st.ps_fdbk       = pss.fdbk;
   st.ps_att        = pss.att;
   g_strlcpy(st.reason, r.reason ? r.reason : "", sizeof st.reason);
+  g_atomic_int_set(&s_keyed_pub, keyed);
   publish(&st);
 
   if (keyed_mox) { *keyed_mox = st.mox && !is_cw; }   /* voice mic path */
@@ -309,6 +344,7 @@ static gpointer tx_thread(gpointer u) {
   double cwiq[2 * TX_IQ_BLOCK];    /* CW IQ (I=amp·env, Q=0) */
   memset(silence, 0, sizeof silence);
   int prev_keyed = 0, prev_want = 0, keyed = 0, keyed_mox = 0, keyed_cw = 0;
+  int prev_intent = 0;             /* keying-intent fingerprint (edge-triggered gate) */
   gint64 last_gate = 0, next_feed = 0, cw_hang_deadline = 0, cw_key_on = 0;
 
   while (g_atomic_int_get(&s_running)) {
@@ -325,11 +361,28 @@ static gpointer tx_thread(gpointer u) {
       g_mutex_unlock(&s_cw_lock);
     }
     if (cw_content) { cw_hang_deadline = now + (gint64)g_atomic_int_get(&s_cw_hang_ms) * 1000; }
-    g_atomic_int_set(&s_want_cw, cw_mode && (now < cw_hang_deadline) ? 1 : 0);
+    int want_cw_now = cw_mode && (now < cw_hang_deadline) ? 1 : 0;
+    if (lat_on()) {
+      static int lat_prev_want_cw;
+      if (want_cw_now != lat_prev_want_cw) { LAT("want_cw %d", want_cw_now); }
+      lat_prev_want_cw = want_cw_now;
+    }
+    g_atomic_int_set(&s_want_cw, want_cw_now);
 
-    if (now - last_gate >= GATE_US) {
-      last_gate = now;
-      keyed = gate_slot(&prev_keyed, &prev_want, silence, &keyed_mox, &keyed_cw);
+    /* Edge-triggered gate (#5): any change in keying intent evaluates the gate
+     * NOW instead of waiting out the 50 ms slot (measured 0-41 ms of both the
+     * key-on and release budgets). Regular slots keep the meter/SWR cadence;
+     * edge runs pass fresh_meter=0 so the coupler is never read off-schedule. */
+    int intent = g_atomic_int_get(&s_want_mox)
+               | (g_atomic_int_get(&s_want_tune) << 1)
+               | (g_atomic_int_get(&s_want_tt)   << 2)
+               | (want_cw_now                    << 3)
+               | (p2_ptt_get()                   << 4);
+    int fresh = now - last_gate >= GATE_US;
+    if (fresh || intent != prev_intent) {
+      if (fresh) { last_gate = now; }
+      prev_intent = intent;
+      keyed = gate_slot(&prev_keyed, &prev_want, silence, &keyed_mox, &keyed_cw, fresh);
       if (keyed && next_feed == 0) { next_feed = g_get_monotonic_time(); }
       if (!keyed) { next_feed = 0; }
     }
@@ -357,6 +410,13 @@ static gpointer tx_thread(gpointer u) {
         if (s_cw && !rf_hold) { cw_gen_pull(s_cw, cwenv, TX_IQ_BLOCK); }
         else                  { memset(cwenv, 0, sizeof cwenv); }
         g_mutex_unlock(&s_cw_lock);
+        if (lat_on()) {                  /* first/last RF envelope of the over */
+          static int lat_rf_live;
+          int nz = 0;
+          for (int i = 0; i < TX_IQ_BLOCK; i++) { if (cwenv[i] != 0.0f) { nz = 1; break; } }
+          if (nz && !lat_rf_live)  { LAT("rf_first"); lat_rf_live = 1; }
+          if (!nz && lat_rf_live)  { LAT("rf_last");  lat_rf_live = 0; }
+        }
         for (int i = 0; i < TX_IQ_BLOCK; i++) {
           cwiq[2 * i]     = CW_IQ_AMP * (double)cwenv[i];
           cwiq[2 * i + 1] = 0.0;
@@ -478,6 +538,7 @@ void tx_run_stop(void) {
   g_atomic_int_set(&s_running, 0);
   g_thread_join(s_thread);
   s_thread = NULL;
+  g_atomic_int_set(&s_keyed_pub, 0);
   ps_stop();               /* unhook the feedback callback before the channel dies */
   p2_set_tx_state(NULL);   /* belt-and-braces: ensure the wire state is RX-only */
   tx_dsp_destroy();
