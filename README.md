@@ -1,83 +1,158 @@
 # SDR for Linux
 
-**A modern GTK4 software-defined-radio application for HPSDR / ANAN radios,
-built on the proven piHPSDR engine with a new, high-detail user interface.**
+**A modern GTK4 software-defined-radio application for HPSDR / ANAN
+transceivers, built on the proven piHPSDR engine with a new, high-detail
+user interface.**
 
 `sdr-for-linux` is a GPLv3 fork-in-spirit of
 [piHPSDR](https://github.com/dl1ycf/pihpsdr): it reuses piHPSDR's excellent
-*engine* — the HPSDR Protocol 1/2 radio link, WDSP DSP, audio, CAT and TCI — and
-replaces the front-end with a beautiful, GPU-friendly GTK4 panadapter, waterfall
-and control surface. **No DSP is reimplemented**; WDSP does the heavy lifting.
+*engine* — the HPSDR Protocol 2 radio link and the WDSP DSP library — and
+replaces the front-end with a native GTK4/libadwaita control surface and a
+full-resolution floating-point panadapter. **No DSP is reimplemented**; WDSP
+does the heavy lifting.
 
-> Status: **early.** The GTK4 front-end (panadapter + waterfall) already runs.
-> The direct-to-radio engine is being imported from piHPSDR milestone by
-> milestone, RX first.
+> **Status: alpha.** Everything below is implemented and verified live on an
+> Apache Labs **ANAN G1**. That is also the catch: the G1 is currently the
+> **only supported radio** — see [Supported hardware](#supported-hardware).
 
-## Why
+<!-- TODO: screenshot of the main window (docs/img/main-window.png) -->
 
-piHPSDR is a first-class radio engine, but its panadapter is drawn in Cairo on
-the CPU and its controls are functional rather than beautiful. Rather than a
-remote head over the network (which only ever receives *rendered* spectrum), this
-project runs the engine **in-process**, so it can render the WDSP analyzer's raw
-`float` spectrum at full resolution — no 1 dB quantisation, no fixed column cap —
-with a modern, elegant UI.
+## Features
 
-This grew out of [`pihpsdr-client`](https://github.com/OK1BR/pihpsdr-client), a
-GTK4 *remote* head for piHPSDR; its Cairo `panadapter`/`waterfall` renderer is
-the seed of this application's UI.
+**Receive**
+- Full-float panadapter + waterfall straight from the WDSP analyzer — no
+  quantisation, no column cap; 6 colour palettes, adjustable averaging & FPS
+- SSB / CW / AM / SAM / DIGU / DIGL demodulation with piHPSDR filter presets,
+  passband drawn on the spectrum
+- AGC, noise reduction (ANR), noise blanker (ANB), auto-notch (ANF),
+  binaural mode
+- Low-latency native **PipeWire** audio (~15 ms), 48/96/192 kHz
+- Scroll/drag/click-to-tune, octave-snap zoom, band buttons, band-plan
+  overlay (IARU R1/R2/R3 + country overrides), DX-spot overlay with
+  click-to-tune
+- CW BFO offset done right: the dial reads the carrier, spots sound at your
+  sidetone pitch
 
-## Architecture (target)
+**Transmit** (SSB voice, CW, digi via TCI)
+- MOX / TUNE with separate drive levels, per-band PA calibration,
+  true-PEP wattmeter, SWR metering with automatic drive-drop protection
+- Mic via PipeWire, speech processor (leveler + compressor), noise gate,
+  TX monitor, footswitch PTT
+- CW keying with clean first-dit, adjustable WPM / sidetone / break-in hang
+- **PureSignal** linearization with Thetis-style auto-attenuate — calibrates
+  continuously on voice, converges in seconds after drive/band changes
+- TX panadapter + waterfall of the transmitted spectrum
+
+**Integration**
+- **TCI server** (ExpertSDR3-compatible, port 40001): control, CW macros,
+  RX audio, TX audio (digimodes), wideband IQ, spots — verified live with
+  **SDC**, **CW Skimmer** and **Decodium** (complete FT8 QSOs on the air)
+- CAT/hamlib applications are covered through the third-party
+  [tciadapter](https://github.com/ftl/tciadapter) bridge (WSJT-X, fldigi,
+  CQRLOG verified by its author) — no serial-port emulation needed here
+
+## Supported hardware
+
+**Policy: a radio model is enabled only after it has been tested on real
+hardware.** A wrong relay or filter bit in the HPSDR control words can
+physically damage a PA, so untested models are refused by a whitelist in the
+radio picker rather than left to luck.
+
+| Radio | Protocol | Status |
+|---|---|---|
+| Apache Labs **ANAN G1** | HPSDR Protocol 2 | ✅ supported, developed & verified on this radio |
+| Other ANAN / Hermes P2 boards | Protocol 2 | ⛔ blocked until tested — open an issue if you can lend hardware + a dummy load |
+| Hermes Lite 2, older P1 boards | Protocol 1 | ⛔ not implemented (P1 is a future milestone) |
+
+## Requirements
+
+- An ANAN G1 on your LAN (see above)
+- Linux with **PipeWire** as the sound server (standard on 2024+ distros)
+- For the AppImage: glibc ≥ 2.39 (Ubuntu 24.04+, Fedora 40+, Mint 22,
+  openSUSE, Arch, …)
+
+## Install
+
+**AppImage** — grab the latest from
+[Releases](https://github.com/OK1BR/sdr-for-linux/releases), then:
+
+```sh
+chmod +x SDR_for_Linux-*.AppImage
+./SDR_for_Linux-*.AppImage
+```
+
+**Arch Linux (AUR)** — coming with the first tagged release.
+
+**Build from source** — the DSP engine (**WDSP**, plus **rnnoise** and
+**libspecbleach**) is vendored in `vendor/` and built from source; only
+ubiquitous platform libraries come from your distribution:
+
+| Need | Arch | Debian/Ubuntu | Fedora |
+|---|---|---|---|
+| GTK4 + libadwaita ≥ 1.5 | `gtk4 libadwaita` | `libgtk-4-dev libadwaita-1-dev` | `gtk4-devel libadwaita-devel` |
+| FFTW (single + double) | `fftw` | `libfftw3-dev` | `fftw-devel` |
+| PipeWire client | `libpipewire` | `libpipewire-0.3-dev` | `pipewire-devel` |
+| libwebsockets (TCI) | `libwebsockets` | `libwebsockets-dev` | `libwebsockets-devel` |
+| Opus, OpenSSL, zlib | `opus openssl zlib` | `libopus-dev libssl-dev zlib1g-dev` | `opus-devel openssl-devel zlib-devel` |
+| Build tools | `base-devel meson` | `build-essential meson` | `gcc meson` |
+
+```sh
+meson setup build
+meson compile -C build
+./build/sdr-for-linux            # run in place, or:
+sudo meson install -C build      # install binary + desktop integration
+```
+
+## First run
+
+1. **FFTW wisdom build (~6 minutes, once).** On first start the app plans
+   FFTW transforms for every panadapter FFT size (a progress window shows
+   the state) and caches them in `~/.config/sdr-for-linux/`. Every later
+   start imports the cache instantly. Without this, deep zoom would freeze
+   for up to half a minute at a time — same approach as piHPSDR and Thetis.
+2. **Radio picker.** The app broadcast-discovers HPSDR radios on the LAN;
+   pick yours (or add by IP for a different subnet). One client owns the
+   radio at a time — close piHPSDR/Thetis first.
+3. **Transmit is conservative by default:** PA drive starts at zero and TX
+   is gated (out-of-band, high SWR, or missing prerequisites refuse to key).
+   Check *Preferences → TX* before your first transmission.
+
+Settings persist in `~/.config/sdr-for-linux/config.ini`.
+
+## Known limitations (alpha)
+
+- **One radio: ANAN G1** (whitelist, see above); one RX (RX2 planned)
+- No FM (post-alpha), no built-in CAT (use tciadapter, see above)
+- Wattmeter uses a single per-band calibration factor — accurate on HF,
+  over-reads ~25 % on 6 m (a guided nonlinear calibration is planned)
+- On NVIDIA + Wayland the app defaults to GTK's Cairo renderer to avoid a
+  GTK4 GL crash (set `GSK_RENDERER` yourself to override)
+
+## Architecture
 
 ```
   Radio (ANAN G1, HPSDR Protocol 2)
         │  Ethernet (raw IQ)
         ▼
-  sdr-for-linux  (single GTK4 app)
-  ├─ HPSDR Protocol 1/2 link           ┐
-  ├─ WDSP DSP (demod, filters, AGC,    │ imported from piHPSDR
-  │   NR, S-meter, panadapter FFT)     │ (the "honest work")
-  ├─ audio I/O, TX processing, CAT/TCI ┘
-  └─ GTK4 UI: panadapter + waterfall + controls   (new)
+  sdr-for-linux  (single GTK4 process)
+  ├─ HPSDR Protocol 2 link              ┐
+  ├─ WDSP DSP (demod, filters, AGC,     │ engine (headless, GLib-only),
+  │   NR, TX chain, PureSignal, FFT)    │ adapted from piHPSDR
+  ├─ PipeWire audio I/O, TCI server     ┘
+  └─ GTK4/libadwaita UI: panadapter, waterfall, controls   (new)
 ```
 
-## Roadmap (RX first)
-
-1. **RX panadapter on real hardware:** GTK4 app → HPSDR discovery → receive RX
-   IQ → WDSP analyzer → render `rx->pixel_samples` (float) in the panadapter.
-2. Demodulation + audio out (WDSP).
-3. Control surface in GTK4: VFO, mode, filter, AGC, NR/NB/ANF, zoom/pan, band.
-4. RX2; S-meter / TX meters.
-5. **TX + PureSignal**, CAT/rigctl, TCI (last).
-
-## Requirements
-
-- An HPSDR radio (e.g. Apache Labs ANAN)
-- Linux, a C toolchain, and Meson
-
-The DSP engine (**WDSP**, plus **rnnoise** and **libspecbleach**) is vendored in
-`vendor/` and built from source — nothing to install. Only ubiquitous platform
-libraries come from the distribution:
-
-| Need | Arch package |
-|---|---|
-| GTK4 UI | `gtk4` |
-| Single-precision FFTW (WDSP, libspecbleach) | `fftw` |
-| Opus codec (network path) | `opus` |
-| OpenSSL (password KDF) | `openssl` |
-| zlib (network spectrum) | `zlib` |
-| Build tools | `base-devel meson` |
-
-```sh
-sudo pacman -S --needed base-devel meson gtk4 fftw opus openssl zlib
-meson setup build && meson compile -C build
-./build/sdrfl-wdsp-smoke      # WDSP build/link gate → "WDSP link OK …"
-```
+Design notes live in [`docs/`](docs/) — engine import scope, TX safety
+rules ([`docs/TX-SAFETY.md`](docs/TX-SAFETY.md)), PureSignal scope, TCI
+scope, band plans.
 
 ## Credits
 
 - **piHPSDR** — Christoph van Wüllen (DL1YCF) and John Melton (G0ORX) — the
   engine this project builds on.
 - **WDSP** — Warren Pratt (NR0V) — the DSP library.
+- **Thetis** — the PureSignal auto-attenuate behaviour follows its design.
+- Vendored: **rnnoise** (Xiph.Org/Mozilla), **libspecbleach** (Luciano Dato).
 
 ## License
 
