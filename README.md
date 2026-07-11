@@ -15,7 +15,7 @@ does the heavy lifting.
 > Apache Labs **ANAN G1**. That is also the catch: the G1 is currently the
 > **only supported radio** — see [Supported hardware](#supported-hardware).
 
-<!-- TODO: screenshot of the main window (docs/img/main-window.png) -->
+![SDR for Linux — 20 m CW on the ANAN G1](docs/img/main-window.png)
 
 ## Features
 
