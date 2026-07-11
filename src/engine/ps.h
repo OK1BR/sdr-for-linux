@@ -53,6 +53,20 @@ void ps_set(int enable, int att_db, double setpk);
  */
 void ps_key(int keyed);
 
+/*
+ * TUNE hand-off from the gate slot (edge-detected inside): while the TUNE
+ * carrier keys, PS is reset and parked (piHPSDR radio.c:2728-2749 — a steady
+ * carrier with the calibrator armed corrupts the calibration over long
+ * sessions), and resumed when TUNE ends. Call every slot with
+ * `keyed && tune`. */
+void ps_tune(int tune);
+
+/* STBL (SetPSStabilize) preference — blends successive calibrations into an
+ * EMA (alpha 0.9) instead of replacing. Both references ship 0 (default);
+ * kept as an escape hatch for the voice fit flip-flop (sln 0x40/0x4) seen
+ * 2026-07-11. Applies live. */
+void ps_set_stbl(int on);
+
 /* GetPSInfo subset for the UI/status (poll ~20 Hz; zeros when off). */
 typedef struct {
   int on;         /* PS enabled (operator setting)                        */
@@ -70,16 +84,18 @@ typedef struct {
 } ps_status;
 void ps_get_status(ps_status *out);
 
-/* "Auto attenuate" (piHPSDR PS-menu checkbox, transmitter->auto_on): when on,
- * the attenuator hunt below runs during the two-tone test. Persisted by the
- * GUI; default on. */
+/* "Auto attenuate" (Thetis Auto Attenuate checkbox; default on). Persisted
+ * by the GUI. */
 void ps_set_auto(int on);
 
-/* Auto-attenuate tick (piHPSDR ps_calibration_timer, ps_menu.c:169-281):
- * `keyed` = any keyed non-CW PS TX (drives the stuck-in-Reset watchdog),
- * `twotone` = the two-tone test keys right now (the attenuator stepping runs
- * ONLY here, exactly like piHPSDR, and only with the auto switch on). Call
- * every gate slot. */
+/* Auto-attenuate tick — Thetis semantics (PSForm.cs:728-784; the piHPSDR
+ * 2T-only variant lives at git tag `ps-auto-att-pihpsdr`): with the auto
+ * switch on, the attenuator steps on every NEW calibration during ANY keyed
+ * non-CW PS TX (voice included) whose feedback level leaves the (128, 181]
+ * window. `keyed` = any keyed non-CW PS TX; `twotone` additionally scopes
+ * the too-weak stall detector (4 s without a calibration → hunt restarts at
+ * 0 dB — 2T only; voice pauses must never zero the attenuator). Call every
+ * gate slot. */
 void ps_auto_tick(int keyed, int twotone);
 
 #endif /* SDRFL_ENGINE_PS_H */

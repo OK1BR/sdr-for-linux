@@ -214,7 +214,8 @@ typedef struct {
   int         ps_enable;     /* PureSignal on/off (persisted)                       */
   int         ps_att;        /* PS ADC0 feedback attenuator during TX, dB (persisted)*/
   double      ps_setpk;      /* PS SetPk — expected full-scale envelope (persisted) */
-  int         ps_auto;       /* PS Auto attenuate (piHPSDR auto_on; persisted)      */
+  int         ps_auto;       /* PS Auto attenuate (Thetis any-TX; persisted)        */
+  int         ps_stbl;       /* PS STBL calibration smoothing (persisted)           */
   char        picked_ip[64]; /* radio chosen in the startup picker ("" = none)      */
   int         tci_enable;    /* TCI server on/off (persisted, F6d-2a)               */
   int         tci_port;      /* TCI server port (persisted; ExpertSDR default 40001)*/
@@ -2915,6 +2916,12 @@ static void on_pref_ps_auto(AdwSwitchRow *r, GParamSpec *p, gpointer data) {
   ps_set_auto(app->ps_auto);
   schedule_save(app);
 }
+static void on_pref_ps_stbl(AdwSwitchRow *r, GParamSpec *p, gpointer data) {
+  (void)p; App *app = (App *)data;
+  app->ps_stbl = adw_switch_row_get_active(r) ? 1 : 0;
+  ps_set_stbl(app->ps_stbl);
+  schedule_save(app);
+}
 /* Mic noise gate (DEXP) — tames the PROC leveler pumping room noise up in the
  * gaps between words. Threshold is on the post-mic-gain signal. Applies live. */
 static void on_pref_tx_gate(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
@@ -3424,7 +3431,7 @@ static AdwDialog *build_prefs(App *app) {
   g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "PureSignal",
       "description", "TX predistortion parameters — the PS + 2T toggles sit on the header bar next to MOX.", NULL));
   adw_preferences_group_add(g, pref_spin("PS TX attenuator",
-      "dB · ADC0 feedback level during TX — aim for feedback 140-165 · live",
+      "dB · ADC0 feedback level during TX — good window 129-181, ideal 152 · live",
       0, 31, app->ps_att, G_CALLBACK(on_pref_ps_att), app));
   {
     GtkAdjustment *a = gtk_adjustment_new(app->ps_setpk, 0.01, 1.01, 0.005, 0.05, 0);
@@ -3435,8 +3442,11 @@ static AdwDialog *build_prefs(App *app) {
     adw_preferences_group_add(g, row);
   }
   adw_preferences_group_add(g, pref_switch("Auto attenuate",
-      "find the feedback level automatically during the two-tone test (piHPSDR) · live",
+      "track the feedback level on every calibration — voice too (Thetis) · live",
       app->ps_auto, G_CALLBACK(on_pref_ps_auto), app));
+  adw_preferences_group_add(g, pref_switch("Stabilize (STBL)",
+      "smooth successive calibrations — try if the correction flip-flops on voice · live",
+      app->ps_stbl, G_CALLBACK(on_pref_ps_stbl), app));
   adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);   /* Drive / Tune drive / Antenna live on the footer bar */
 
@@ -3786,10 +3796,11 @@ static void start_radio(App *app) {
                   .mic_gain = 0.0, .audio_rate = 48000,
                   .tx_gate_db = GATE_DB_DFLT, .tx_mon_db = MON_DB_DFLT,
                   .tx_flo = TXF_LO_DFLT, .tx_fhi = TXF_HI_DFLT,
-                  /* PS defaults = piHPSDR's verified setup: continuous automode
-                   * + Auto attenuate on (Richard's call 2026-07-11: no own
-                   * inventions — the piHPSDR recipe works on his G1). */
-                  .ps_setpk = 0.2899, .ps_auto = 1,
+                  /* PS defaults: continuous automode + Thetis-style Auto
+                   * attenuate on (Richard's call 2026-07-11 v2, after the
+                   * three-way audit; piHPSDR variant = tag ps-auto-att-pihpsdr).
+                   * STBL 0 = both references' shipped default. */
+                  .ps_setpk = 0.2899, .ps_auto = 1, .ps_stbl = 0,
                   .cw_wpm = CW_WPM_DFLT, .cw_pitch = CW_PITCH_DFLT,
                   .cw_st_db = CW_ST_DB_DFLT, .cw_hang = CW_HANG_DFLT,
                   .tci_enable = 0, .tci_port = 40001, .tci_iq_rate = 48000 };
@@ -3848,6 +3859,8 @@ static void start_radio(App *app) {
   app->ps_setpk  = (st.ps_setpk >= 0.01 && st.ps_setpk <= 1.01) ? st.ps_setpk : 0.2899;
   app->ps_auto = st.ps_auto ? 1 : 0;
   ps_set_auto(app->ps_auto);         /* atomic flag; safe pre-start */
+  app->ps_stbl = st.ps_stbl ? 1 : 0;
+  ps_set_stbl(app->ps_stbl);         /* cached; applied by ps_start's params */
   app->tx_mon        = st.tx_mon ? 1 : 0;
   app->tx_mon_db     = st.tx_mon_db < MON_DB_MIN ? MON_DB_MIN : (st.tx_mon_db > MON_DB_MAX ? MON_DB_MAX : st.tx_mon_db);
   app->tx_flo        = st.tx_flo < TXF_LO_MIN ? TXF_LO_MIN : (st.tx_flo > TXF_LO_MAX ? TXF_LO_MAX : st.tx_flo);

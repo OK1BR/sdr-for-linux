@@ -74,7 +74,8 @@ typedef struct {
   int       ps_enable;  /* PureSignal on/off (F7/PS-2)                            */
   int       ps_att;     /* PS ADC0 feedback attenuator during TX (dB, 0-31)       */
   double    ps_setpk;   /* PS SetPk (0.01-1.01; 0 = unset → default 0.2899)       */
-  int       ps_auto;    /* PS Auto attenuate (piHPSDR auto_on)                    */
+  int       ps_auto;    /* PS Auto attenuate (Thetis-style, any-TX stepping)      */
+  int       ps_stbl;    /* PS STBL (SetPSStabilize) — references default 0        */
   int       tx_mon;     /* TX monitor (self-listen: voice mic / CW sidetone)      */
   double    tx_mon_db;  /* monitor level (dB, -40..0)                             */
   double    tx_flo;     /* TX audio filter low edge (Hz; default 150)             */

@@ -263,9 +263,12 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
 
   /* PureSignal key hand-off: MOX/TUNE keyed but NOT the CW carrier (WDSP is
    * bypassed in CW → feedback is meaningless, piHPSDR transmitter.c:2114-2120).
-   * Every slot — ps_key edge-detects internally; SetPSMox is lock-free. */
+   * Every slot — ps_key/ps_tune edge-detect internally; SetPSMox is lock-free.
+   * TUNE parks PS (reset, resumed after — piHPSDR radio.c:2728). */
+  ps_tune(keyed && r.state.tune);
   ps_key(keyed && !cw_key);
-  ps_auto_tick(keyed && !cw_key, tt_applied);   /* att stepping: two-tone only */
+  ps_auto_tick(keyed && !cw_key, tt_applied);   /* Thetis: att steps on any TX;
+                                                   stall detector 2T-only */
 
   tx_run_status st;
   memset(&st, 0, sizeof st);

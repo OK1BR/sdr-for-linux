@@ -138,6 +138,16 @@ Sequencing (pihpsdr/radio.c:2046-2103, transmitter.c:2442-2528):
   jumps at the <25 / >275 extremes), clamp 0..31, then
   reset → write attenuation → send TX-specific → reset → resume. In normal
   QSO operation the value is static — auto-att is a calibration-time tool.
+  **DECISION 2026-07-11 (Richard, after the three-way audit vs Thetis
+  @852bf0e):** we implement the **Thetis** semantics instead — stepping on
+  every new calibration during *any* keyed non-CW PS TX (voice included),
+  accept window **(128, 181]**, one-shot step toward 152.293, `info[4]`>256
+  (ADC clip) → slam +31.1 dB (Thetis PSForm.cs:728-784, 1109-1112); the
+  too-weak stall detector (4 s without a calibration → hunt from 0 dB)
+  stays **two-tone-scoped** — voice pauses must never zero the attenuator.
+  The piHPSDR-faithful variant is preserved at git tag
+  `ps-auto-att-pihpsdr`. STBL ships 0 in *both* references (the "Thetis
+  recipe stbl=1" claim was wrong) → ours defaults 0, Preferences toggle.
 - **Two-tone test**: WDSP PostGen, 700+1900 Hz (negated for LSB-family
   modes), each tone at 0.49999 so the pair peaks at full scale
   (transmitter.c:2902-2956). It **keys MOX through the normal gates** and
