@@ -604,7 +604,14 @@ dry-key step of the live checklist. `pa_calibration` default stays 53.0 dB
 
 Offline gates: `sdrfl-txprobe` gained a HERMES2 section (keyed 40 m packet:
 TX bits byte-identical, Hermes HPF 0x20 vs G2E BPF 0x10), `sdrfl-txgate-test`
-the 10 W open-antenna scaling cases. Live checklist on the 10E into a dummy
-load = the acceptance run for `radio_tx_supported() += HERMES2`.
-PureSignal on the 10E: same P2 path + SetPk default (0.2899, tx.c:1204-1215)
-as the G2E — needs its own live check before use.
+the 10 W open-antenna scaling cases. **Live checklist PASSED 2026-07-12**
+(dry key → 1 W → per-band PA cal 40 m 33.6 / 20 m 32.8 dB against the
+external wattmeter, app meter agreeing → SWR 1.05 → CW break-in → TCI/SDC
+skimming with a 384 kHz IQ client).
+
+**⛔ PureSignal is LOCKED OUT on Hermes-class (`radio_ps_supported()`, G2E
+only).** Live, twice: keying the 10E with PS enabled kills the radio mid-TX
+("no packets from the radio for 3 s"), network stack gone (no ARP) until a
+power cycle. The PS wire config is piHPSDR's for every P2 device — Hermes
+fw 10.3 simply cannot execute the feedback-DDC reconfig. Firmware
+limitation; re-evaluate only on newer Hermes firmware, live, dummy-load.
