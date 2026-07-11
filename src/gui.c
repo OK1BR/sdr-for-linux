@@ -85,6 +85,7 @@ typedef struct {
   double      gain;         /* digital master gain                            */
   int         atten;        /* ADC0 step attenuator (dB, 0-31)                 */
   int         agc;          /* AGC mode 0=off,1=long,2=slow,3=med,4=fast       */
+  int         agc_by_group[4]; /* per-mode-group AGC memory (SSB/CW/AM/digi)   */
   double      agc_gain;     /* AGC-T threshold/gain (dB)                       */
   int         nr, nb, anf;  /* noise reduction / blanker / auto-notch on-off   */
   int         binaural;     /* binaural stereo audio output on-off             */
@@ -140,6 +141,7 @@ typedef struct {
   double      drag_base_pan; /* pan captured at drag-begin (for shift+drag)        */
   double      flo, fhi;      /* current passband (Hz, rel. centre) — for drawing */
   GtkWidget  *filter_dd;     /* filter dropdown (repopulated per mode)         */
+  GtkWidget  *agc_dd;        /* AGC dropdown (synced on per-mode-group restore) */
   gint64      ovl0_until;    /* ADC0-overload badge lit until (monotonic µs)   */
   gint64      ovl1_until;    /* ADC1-overload badge lit until (monotonic µs)   */
   int         tlm_valid;     /* HP-status telemetry seen at least once          */
@@ -574,12 +576,22 @@ static void draw_band_edges(cairo_t *cr, App *app, int w, int ph) {
   cairo_set_dash(cr, NULL, 0, 0);
 }
 
+/* Top-right meter geometry — shared by the RX S-meter and the TX power meter so
+ * the two read as one family. METER_BY aligns the bar with the frequency readout
+ * (its tick labels line up with the big number's top); METER_RM keeps it off the
+ * right edge. (Defined up here so draw_spots can steer labels around the meter.) */
+#define METER_BW 384.0
+#define METER_BH 24.0
+#define METER_BY 54.0
+#define METER_RM 28.0   /* right margin */
+
 /* DX-spot overlay (F6d-2e): callsign labels in up to three stacked rows under
  * the frequency ruler + a tick down toward the signal, coloured by the
  * client's ARGB. Spots expire after spot_ttl_min without a re-announce (SDC
  * re-announces live ones; contests want ~1 min, casual DX ~10); each drawn
  * label remembers its hit box for click-to-tune. Same freq→x frame as
- * draw_band_edges. */
+ * draw_band_edges. Labels that would land on the VFO readout (top-left) or
+ * the S-meter block (top-right) stack below those instead (contest note #2). */
 static int spot_cmp_hz(const void *a, const void *b) {
   long long d = ((const struct spot *)a)->hz - ((const struct spot *)b)->hz;
   return d < 0 ? -1 : (d > 0 ? 1 : 0);
@@ -606,6 +618,13 @@ static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
   double right_hz  = left_hz + span;
   double rowend[3] = { -1e9, -1e9, -1e9 };
   const double y0 = 32.0, rh = 17.0;           /* label rows under the ruler */
+  /* HUD exclusion zones: the VFO readout's measured extent (left) and the
+   * S-meter block incl. its dBm line (right). Labels overlapping either in x
+   * stack below the block instead of colliding with it. */
+  double ro_x1, ro_y1;
+  panadapter_readout_extent(&ro_x1, &ro_y1);
+  const double sm_x0 = (double)w - METER_RM - METER_BW - 40.0; /* tick overhang */
+  const double sm_y1 = METER_BY + METER_BH + 26.0;             /* dBm line bottom */
   cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
   cairo_set_font_size(cr, 13.0);
   cairo_set_line_width(cr, 1.0);
@@ -624,7 +643,14 @@ static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
     for (int k = 0; k < 3; k++) {
       if (x - 2.0 > rowend[k]) { row = k; break; }
     }
-    double ly = y0 + (row < 0 ? 0 : row) * rh;
+    double base = y0;
+    if (ro_y1 > 0.0 && x - 3.0 <= ro_x1 + 6.0 && x + te.width + 6.0 >= 38.0) {
+      base = ro_y1 + 13.0;                     /* under the VFO readout */
+    }
+    if (x + te.width + 6.0 >= sm_x0) {
+      base = fmax(base, sm_y1 + 13.0);         /* under the S-meter */
+    }
+    double ly = base + (row < 0 ? 0 : row) * rh;
     if (row >= 0) {                            /* label fits in a free row */
       rowend[row] = x + te.width + 8.0;
       cairo_set_source_rgba(cr, r, g, b, 0.95);
@@ -639,15 +665,6 @@ static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
     cairo_stroke(cr);
   }
 }
-
-/* Top-right meter geometry — shared by the RX S-meter and the TX power meter so
- * the two read as one family. METER_BY aligns the bar with the frequency readout
- * (its tick labels line up with the big number's top); METER_RM keeps it off the
- * right edge. */
-#define METER_BW 384.0
-#define METER_BH 24.0
-#define METER_BY 54.0
-#define METER_RM 28.0   /* right margin */
 
 /* Graphical S-meter, top-right of the panadapter. S1..S9 (6 dB/unit, S9 = -73
  * dBm on HF) then +dB over S9. dBm comes from the WDSP meter (radio) or the
@@ -1444,6 +1461,7 @@ static void app_to_settings(const App *app, Settings *s) {
   s->zoom    = app->zoom;
   s->atten   = app->atten;
   s->agc     = app->agc;
+  for (int i = 0; i < 4; i++) { s->agc_by_group[i] = app->agc_by_group[i]; }
   s->agc_gain = app->agc_gain;
   s->filter  = app->filter_idx;
   s->nr      = app->nr;
@@ -1954,6 +1972,11 @@ static void on_rdrag_update(GtkGestureDrag *g, double off_x, double off_y, gpoin
   (void)g;
   App *app = (App *)data;
   if (!app->radio_mode) { return; }
+  /* Dead zone: a real-mouse click nearly always slips a pixel or two between
+   * press and release; GtkGestureDrag has no threshold of its own, so that
+   * jitter counted as a zoom drag and silently swallowed the right-click
+   * select-mode toggle (contest note #1). Zoom starts past ~6 px of travel. */
+  if (!app->rdrag_zoomed && off_x * off_x + off_y * off_y < 36.0) { return; }
   app->rdrag_zoomed = 1;                    /* this is a drag, not a click */
   if (app->rdrag_gutter) {                  /* vertical drag → zoom the dB range */
     double ph = pan_height_px(app);
@@ -2086,13 +2109,53 @@ static void tx_apply_proc(App *app) {
   tx_run_set_gate(digi ? 0 : app->tx_gate, app->tx_gate_db);
 }
 
+/* Per-mode-group AGC memory (contest note #8: a slow AGC left over from SSB
+ * cost missed characters in CW — each group keeps its own AGC character).
+ * Groups: SSB {LSB,USB}, CW {CWL,CWU}, AM, digi {DIGU,DIGL}. */
+enum { AGCG_SSB = 0, AGCG_CW = 1, AGCG_AM = 2, AGCG_DIGI = 3 };
+static int agc_group_of(int mode) {
+  switch (mode) {
+    case DEMOD_CWL: case DEMOD_CWU:   return AGCG_CW;
+    case DEMOD_AM:                    return AGCG_AM;
+    case DEMOD_DIGU: case DEMOD_DIGL: return AGCG_DIGI;
+    default:                          return AGCG_SSB;   /* LSB/USB */
+  }
+}
+
+/* AGC dropdown index → mode; dropdown order is Med,Fast,Slow,Long,Off. */
+static const int AGC_MODE_OF_IDX[] = { 3, 4, 2, 1, 0 };
+
+static void on_agc_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data);
+
+/* Reflect app->agc in the dropdown without re-firing the handler. */
+static void agc_dd_sync(App *app) {
+  if (!app->agc_dd) { return; }
+  guint idx = 0;
+  for (guint i = 0; i < G_N_ELEMENTS(AGC_MODE_OF_IDX); i++) {
+    if (AGC_MODE_OF_IDX[i] == app->agc) { idx = i; break; }
+  }
+  g_signal_handlers_block_by_func(app->agc_dd, (gpointer)on_agc_changed, app);
+  gtk_drop_down_set_selected(GTK_DROP_DOWN(app->agc_dd), idx);
+  g_signal_handlers_unblock_by_func(app->agc_dd, (gpointer)on_agc_changed, app);
+}
+
 static void on_mode_toggled(GtkToggleButton *b, gpointer data) {
   if (!gtk_toggle_button_get_active(b)) { return; }  /* ignore the deselect half */
   App *app = (App *)data;
   int mode = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "mode"));
   int nf, dfl;
   mode_filters(mode, &nf, &dfl);
+  int old_g = agc_group_of(app->mode), new_g = agc_group_of(mode);
   app->mode = mode;
+  if (old_g != new_g) {                    /* AGC follows the mode group */
+    app->agc_by_group[old_g] = app->agc;
+    int a = app->agc_by_group[new_g];
+    if (a >= 0 && a <= 4 && a != app->agc) {
+      app->agc = a;
+      demod_set_agc(a);
+      agc_dd_sync(app);
+    }
+  }
   if (app->cur_band >= 0) { app->band_mode[app->cur_band] = mode; }   /* band stacking */
   /* restore this mode's last-used filter (fall back to its default) */
   int fidx = app->filter_by_mode[mode];
@@ -2127,15 +2190,13 @@ static void on_atten_changed(GtkRange *r, gpointer data) {
   schedule_save(app);
 }
 
-/* AGC dropdown index → mode; dropdown order is Med,Fast,Slow,Long,Off. */
-static const int AGC_MODE_OF_IDX[] = { 3, 4, 2, 1, 0 };
-
 static void on_agc_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data) {
   (void)ps;
   App *app = (App *)data;
   guint i = gtk_drop_down_get_selected(dd);
   if (i >= G_N_ELEMENTS(AGC_MODE_OF_IDX)) { return; }
   app->agc = AGC_MODE_OF_IDX[i];
+  app->agc_by_group[agc_group_of(app->mode)] = app->agc;   /* remember per group */
   demod_set_agc(app->agc);
   schedule_save(app);
 }
@@ -2290,6 +2351,7 @@ static GtkWidget *build_controls(App *app) {
   }
   gtk_drop_down_set_selected(GTK_DROP_DOWN(agc_dd), aidx);   /* before wiring: no re-fire */
   g_signal_connect(agc_dd, "notify::selected", G_CALLBACK(on_agc_changed), app);
+  app->agc_dd = agc_dd;                    /* per-mode-group restore syncs it */
   gtk_box_append(GTK_BOX(bar), labeled("AGC", agc_dd));
 
   GtkWidget *nrbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
@@ -3822,6 +3884,7 @@ static void start_radio(App *app) {
                   .volume = -10.0, .gain = 1.0, .fps = 25, .latency = 10,
                   .step = TUNE_STEP_DEFAULT, .zoom = 1.0, .atten = 0,
                   .agc = 3, .agc_gain = 80.0, .filter = -1,
+                  .agc_by_group = { -1, -1, -1, -1 },   /* unset → seeded below */
                   .pan_high = PAN_HIGH_DEFAULT, .pan_low = PAN_LOW_DEFAULT,
                   .db_grid = 1, .db_scale = 1, .freq_grid = 1, .freq_scale = 1,
                   .filter_wf = 1, .filter_op = 60, .avg_spec = -1, .avg_wf = -1,
@@ -3869,6 +3932,19 @@ static void start_radio(App *app) {
   app->gain   = st.gain;
   app->atten  = st.atten < 0 ? 0 : (st.atten > 31 ? 31 : st.atten);
   app->agc    = st.agc < 0 ? 0 : (st.agc > 4 ? 4 : st.agc);
+  /* Per-mode-group AGC memory. Unset slots (fresh/upgraded config) seed with
+   * character defaults — CW/digi Fast, SSB/AM Slow — except the group we are
+   * starting in, which keeps the operator's last global AGC. The startup
+   * group's remembered value (if set) wins over the plain agc key. */
+  {
+    static const int agc_dflt[4] = { 2, 4, 2, 4 };   /* SSB, CW, AM, digi */
+    int sg = agc_group_of(mode);
+    for (int i = 0; i < 4; i++) {
+      int v = st.agc_by_group[i];
+      app->agc_by_group[i] = (v >= 0 && v <= 4) ? v : (i == sg ? app->agc : agc_dflt[i]);
+    }
+    app->agc = app->agc_by_group[sg];
+  }
   app->agc_gain = st.agc_gain < -20.0 ? -20.0 : (st.agc_gain > 120.0 ? 120.0 : st.agc_gain);
   app->nr     = st.nr < 0 ? 0 : (st.nr > 4 ? 4 : st.nr);   /* 0 off /1 NR /2 NR2 /3 NR3 /4 NR4 */
   app->nb     = st.nb < 0 ? 0 : (st.nb > 2 ? 2 : st.nb);   /* 0 off / 1 NB / 2 NB2 */

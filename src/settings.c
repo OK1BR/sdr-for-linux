@@ -100,6 +100,13 @@ int settings_load(Settings *s) {
       s->atten = g_key_file_get_integer(kf, GROUP_RX, "atten", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "agc", NULL))
       s->agc = g_key_file_get_integer(kf, GROUP_RX, "agc", NULL);
+    {   /* per-mode-group AGC memory; missing key = -1 (unset, seeded by the GUI) */
+      static const char *agck[4] = { "agc_ssb", "agc_cw", "agc_am", "agc_digi" };
+      for (int i = 0; i < 4; i++) {
+        if (g_key_file_has_key(kf, GROUP_RX, agck[i], NULL))
+          s->agc_by_group[i] = g_key_file_get_integer(kf, GROUP_RX, agck[i], NULL);
+      }
+    }
     if (g_key_file_has_key(kf, GROUP_RX, "agc_gain", NULL))
       s->agc_gain = g_key_file_get_double(kf, GROUP_RX, "agc_gain", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "filter", NULL))
@@ -228,6 +235,12 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_RX,    "atten",   s->atten);
   g_key_file_set_integer(kf, GROUP_RX,    "agc",     s->agc);
   g_key_file_set_double (kf, GROUP_RX,    "agc_gain", s->agc_gain);
+  {
+    static const char *agck[4] = { "agc_ssb", "agc_cw", "agc_am", "agc_digi" };
+    for (int i = 0; i < 4; i++) {
+      g_key_file_set_integer(kf, GROUP_RX, agck[i], s->agc_by_group[i]);
+    }
+  }
   g_key_file_set_integer(kf, GROUP_RX,    "filter",  s->filter);
   g_key_file_set_integer(kf, GROUP_RX,    "nr",      s->nr);
   g_key_file_set_integer(kf, GROUP_RX,    "nb",      s->nb);

@@ -67,6 +67,11 @@ void panadapter_set_grid(int show_grid, int show_labels);
  */
 void panadapter_set_readout(int on);
 
+/* Measured extent (right edge x1, bottom y1) of the last-drawn VFO readout
+ * block — overlays (DX-spot labels) use it to steer clear. Zero before the
+ * first draw or while the readout is suppressed. */
+void panadapter_readout_extent(double *x1, double *y1);
+
 /* Width (px) of the left dB-scale gutter — the grab zone for vertical
  * pan/zoom. The GUI hit-tests against this so the affordance matches the draw. */
 #define PANADAPTER_GUTTER_W 46

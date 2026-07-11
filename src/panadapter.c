@@ -200,8 +200,18 @@ static int p_show_readout = 1;   /* GUI suppresses this to draw a custom TX read
 
 void panadapter_set_readout(int on) { p_show_readout = on; }
 
+/* Measured extent of the last-drawn VFO readout block (right edge, bottom),
+ * so overlays (DX-spot labels) can steer clear of it. Width varies with the
+ * digit count and band info, hence measured, not assumed. */
+static double p_readout_x1 = 0.0, p_readout_y1 = 0.0;
+void panadapter_readout_extent(double *x1, double *y1) {
+  *x1 = p_readout_x1;
+  *y1 = p_readout_y1;
+}
+
 static void draw_readouts(cairo_t *cr, const ClientFrame *f, int w, const char *band) {
   char buf[64];
+  cairo_text_extents_t eb, es;
 
   /* VFO frequency (big), top-left, clear of the top freq ruler. Prefer CTUN if it
    * differs from the dial. */
@@ -210,6 +220,7 @@ static void draw_readouts(cairo_t *cr, const ClientFrame *f, int w, const char *
   long long freq = (f->vfo_a_ctun_freq && f->vfo_a_ctun_freq != f->vfo_a_freq)
                      ? f->vfo_a_ctun_freq : f->vfo_a_freq;
   format_hz(freq, buf, sizeof(buf));
+  cairo_text_extents(cr, buf, &eb);
   cairo_set_source_rgba(cr, 0.93, 0.96, 1.0, 0.96);
   cairo_move_to(cr, 44, 60);
   cairo_show_text(cr, buf);
@@ -221,8 +232,12 @@ static void draw_readouts(cairo_t *cr, const ClientFrame *f, int w, const char *
   else               { snprintf(sub, sizeof sub, "Hz  ·  VFO A"); }
   cairo_set_font_size(cr, 15.0);
   cairo_set_source_rgba(cr, 0.62, 0.72, 0.85, 0.9);
+  cairo_text_extents(cr, sub, &es);
   cairo_move_to(cr, 44, 82);
   cairo_show_text(cr, sub);
+
+  p_readout_x1 = 44.0 + (eb.width > es.width ? eb.width : es.width);
+  p_readout_y1 = 82.0 + 4.0;   /* sub-line baseline + descender room */
   /* S-meter is drawn by the GUI overlay (graphical bar), not here. */
   (void)w;
 }

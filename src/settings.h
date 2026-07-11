@@ -51,6 +51,7 @@ typedef struct {
   char      band_levels[512]; /* per-band dB window, "key=hi/lo;..." */
   int       atten;     /* ADC0 step attenuator (dB, 0-31)            */
   int       agc;       /* AGC mode 0=off,1=long,2=slow,3=med,4=fast  */
+  int       agc_by_group[4]; /* per-mode-group AGC (SSB/CW/AM/digi); -1 = unset */
   double    agc_gain;  /* AGC-T threshold/gain (dB)                  */
   int       filter;    /* filter-preset index in the mode's table (-1 = default) */
   int       nr, nb, anf; /* noise reduction / blanker / auto-notch on-off        */
