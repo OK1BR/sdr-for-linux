@@ -1,0 +1,27 @@
+# Maintainer: Richard Fakenberg (OK1BR) <rifak@protonmail.com>
+# AUR package for the tagged release. pkgver has no hyphen (pacman forbids it);
+# vercmp orders 0.1.0alpha < 0.1.0, so the final release upgrades cleanly.
+pkgname=sdr-for-linux
+_pkgtag=0.1.0-alpha
+pkgver=0.1.0alpha
+pkgrel=1
+pkgdesc="Modern GTK4 SDR application for HPSDR / ANAN transceivers (piHPSDR engine, WDSP)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/OK1BR/sdr-for-linux"
+license=('GPL-3.0-or-later')
+depends=('gtk4' 'libadwaita' 'fftw' 'opus' 'openssl' 'zlib' 'libpipewire'
+         'libwebsockets')
+makedepends=('meson')
+source=("$pkgname-$_pkgtag.tar.gz::$url/archive/refs/tags/v$_pkgtag.tar.gz")
+# TODO: replace with the real sum once the v0.1.0-alpha tag exists:
+#   updpkgsums  (from pacman-contrib)
+sha256sums=('SKIP')
+
+build() {
+  arch-meson "$pkgname-$_pkgtag" build
+  meson compile -C build
+}
+
+package() {
+  meson install -C build --destdir "$pkgdir"
+}
