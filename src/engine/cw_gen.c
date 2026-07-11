@@ -124,8 +124,17 @@ static void push_seg(cw_gen *g, int down, int len) {
 void cw_gen_send_text(cw_gen *g, const char *text) {
   if (!g || !text) { return; }
   int pending = 0;   /* gap units to insert before the next mark */
+  /* A send starting from IDLE skips leading whitespace: the word gap it would
+   * key has already elapsed as real silence. Without this, SDC macros (which
+   * arrive with a leading space) keyed 7 dots of dead air — 280 ms @ 30 WPM —
+   * at the START of every over (measured, contest note #3). When the queue is
+   * still busy the leading space is a genuine word gap and is kept. */
+  int at_start = cw_gen_idle(g);
   for (const char *p = text; *p; p++) {
-    if (*p == ' ' || *p == '\t' || *p == '\n') { if (pending < 7) { pending = 7; } continue; }
+    if (*p == ' ' || *p == '\t' || *p == '\n') {
+      if (!at_start && pending < 7) { pending = 7; }
+      continue;
+    }
     const char *m = morse_of(*p);
     if (!m) { continue; }
     for (int i = 0; m[i]; i++) {
@@ -135,6 +144,7 @@ void cw_gen_send_text(cw_gen *g, const char *text) {
       pending = 0;
     }
     pending = 3;   /* default inter-character gap after a completed char */
+    at_start = 0;
   }
 }
 
