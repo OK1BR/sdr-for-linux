@@ -74,12 +74,23 @@ stays: it lives in vendored piHPSDR `discovered.h` (unmodified per policy)
 and keeps the upstream audit mapping — piHPSDR sources call the G2E "G1";
 grep for G1 there. Do NOT confuse with the Saturn/G2.
 
-**★ Next session:** next-release roadmap — **ANAN 10E bring-up** (P2
-confirmed, fw 10.3; radio reports link-local 169.254.x.x — check its
-DHCP first: power-cycle with cable / router lease, MAC 40:84:32:B1:46:4E),
-then Hermes Lite 2 (P1 = new milestone), then Square SDR. Small leftover:
-live-check the digi TX meter (TCI level + CLIP) during digi operation.
-(`~/.local` install refreshed 2026-07-11 evening via
+**★ ANAN 10E COMPLETE (RX+TX live-verified 2026-07-12, ada5662..aab8d2d):**
+RX 2026-07-11; TX the next day through the full dummy-load checklist (dry
+key → 1 W → PA cal → SWR → CW). Everything device-specific lives in
+`radio_tx_profile()` (radio_support.h): PA rating 10 W, Hermes wattmeter
+constants (live-confirmed against the external meter), per-radio
+`pa_calibration` clamp floor (G2E 38.8 dB; Hermes 25 — the 10E makes
+rated power only near DAC full scale, live per-band cal ≈ 33 dB), and a
+⛔ **per-radio TX-cal config group** (`[tx-hermes2]` vs legacy `[tx]` =
+G2E) so calibrations never leak between models. TCI runs on the 10E
+normally (no RX-only exception). Details: TX-DESIGN §9. AppImage CI now
+builds only on v* tags (d1fb028).
+
+**★ Next session:** **Hermes Lite 2** (Protocol 1 = new milestone), then
+Square SDR. 10E leftovers: pa_cal for the remaining bands (only 40/20 m
+calibrated; rest default 53 → way under-drives), PureSignal live check on
+the 10E, SDC skimming live check, digi TX meter (TCI level + CLIP) during
+digi operation. (`~/.local` install refreshed 2026-07-12 via
 `meson install -C build-release` — that build dir has prefix ~/.local.)
 
 **Older follow-ups:** off-centre pan, AGC-target vs `SDRFL_GAIN`, audio
