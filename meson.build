@@ -44,6 +44,7 @@ engine_sources = [
   'src/engine/engine_state.c',
   'src/engine/discovery_p1.c',
   'src/engine/discovery_p2.c',
+  'src/engine/protocol1.c',
   'src/engine/protocol2.c',
 ]
 engine_deps = [glib_dep]
@@ -134,6 +135,15 @@ executable('sdrfl-discover',
 # SDRFL_DRYRUN=1 builds+hexdumps the packets offline (no socket, no radio).
 executable('sdrfl-rxprobe',
   ['src/rxprobe_main.c'] + engine_sources,
+  include_directories : [vendor_inc, engine_inc],
+  dependencies : engine_deps + [m_dep],
+  install : false,
+)
+
+# Headless Protocol-1 RX + IQ probe (R1 gate, docs/P1-SCOPE.md). Starts one
+# receiver on the HL2 and sanity-checks the IQ stream. TAKES THE RADIO.
+executable('sdrfl-p1probe',
+  ['src/p1probe_main.c'] + engine_sources,
   include_directories : [vendor_inc, engine_inc],
   dependencies : engine_deps + [m_dep],
   install : false,
