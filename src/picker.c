@@ -104,14 +104,17 @@ static gboolean fill_list(gpointer data) {
     /* ⛔ Whitelist: untested models are shown but cannot be started — their
      * Alex/PA bytes are unverified and could damage hardware (radio_support.h). */
     int ok = radio_supported(d);
+    int rxonly = ok && !radio_tx_supported(d);   /* connectable, TX not brought up */
     GtkWidget *r = g_object_new(ADW_TYPE_ACTION_ROW, "title", name[0] ? name : "HPSDR radio",
                                 "subtitle", sub, "activatable", ok ? TRUE : FALSE, NULL);
     GtkWidget *st = gtk_label_new(!ok ? "Not supported yet"
-                                : d->status == STATE_AVAILABLE ? "Available"
-                                : d->status == STATE_SENDING   ? "In use" : "Incompatible");
+                                : d->status == STATE_SENDING   ? "In use"
+                                : d->status != STATE_AVAILABLE ? "Incompatible"
+                                : rxonly                       ? "RX only" : "Available");
     gtk_widget_add_css_class(st, !ok ? "error"
-                               : d->status == STATE_AVAILABLE ? "success"
-                               : d->status == STATE_SENDING   ? "warning" : "error");
+                               : d->status == STATE_SENDING   ? "warning"
+                               : d->status != STATE_AVAILABLE ? "error"
+                               : rxonly                       ? "accent" : "success");
     adw_action_row_add_suffix(ADW_ACTION_ROW(r), st);
     if (ok) { g_object_set_data_full(G_OBJECT(r), "ip", g_strdup(ip), g_free); }
     else    { gtk_widget_set_sensitive(r, FALSE); }   /* no "ip" data → pick_row no-op */

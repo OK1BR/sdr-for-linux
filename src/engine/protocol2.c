@@ -285,8 +285,9 @@ int p2_build_high_priority(unsigned char *buf, int device, long long rx_freq_hz,
     if (drive > 255) { drive = 255; }
     buf[345] = (unsigned char)drive;
   }
-  /* G2E Alex words — np.c high_priority() for NEW_DEVICE_G1:
-   *  - RX BPF bit from the RX frequency (below);
+  /* Alex words — np.c high_priority(); G2E branch verified live, Hermes-class
+   * (ANAN 10E) added 2026-07-11 from the np.c default branch:
+   *  - RX BPF/HPF bit from the RX frequency (below, per device class);
    *  - TX LPF bit from the DUC (TX) frequency = tx_freq (= RX freq when not
    *    split), np.c:1244/1263;
    *  - ALEX_TX_ANTENNA_n (0x01/02/04 000000): the antenna connector relay. Set
@@ -308,13 +309,33 @@ int p2_build_high_priority(unsigned char *buf, int device, long long rx_freq_hz,
    * words, so p2app's write-if-changed cache never swallows this zero.) */
   uint32_t alex0 = 0, alex1 = 0;
   if (run) {
-    if      (rx_freq <  1500000LL) { alex0 = 0x00001000; }  // BYPASS_BPF
-    else if (rx_freq <  2100000LL) { alex0 = 0x00000040; }  // 160 m
-    else if (rx_freq <  5500000LL) { alex0 = 0x00000020; }  // 80/60 m
-    else if (rx_freq < 11000000LL) { alex0 = 0x00000010; }  // 40/30 m
-    else if (rx_freq < 22000000LL) { alex0 = 0x00000002; }  // 20/15 m
-    else if (rx_freq < 35000000LL) { alex0 = 0x00000004; }  // 12/10 m
-    else                           { alex0 = 0x00000008; }  // 6 m + preamp
+    /* RX filter select. Same bit VALUES on both device classes (the
+     * ANAN-7000/G2 BPF decoder reuses the classic Alex bit positions), but
+     * different FREQUENCY knees:
+     *  - G2E-class (G1/ORION2/SATURN): band-pass banks, thresholds are band
+     *    edges (np.c:1044-1069, ALEX_ANAN7000_RX_*_BPF);
+     *  - Hermes-class (default branch): classic Alex high-pass corners
+     *    (np.c:1169-1211, ALEX_*_HPF) — picking a knee above the RX frequency
+     *    puts the passband edge on top of the signal (the 80/40 m trap). */
+    int g2class = (device == NEW_DEVICE_G1 || device == NEW_DEVICE_ORION2 ||
+                   device == NEW_DEVICE_SATURN);
+    if (g2class) {
+      if      (rx_freq <  1500000LL) { alex0 = 0x00001000; }  // BYPASS_BPF
+      else if (rx_freq <  2100000LL) { alex0 = 0x00000040; }  // 160 m
+      else if (rx_freq <  5500000LL) { alex0 = 0x00000020; }  // 80/60 m
+      else if (rx_freq < 11000000LL) { alex0 = 0x00000010; }  // 40/30 m
+      else if (rx_freq < 22000000LL) { alex0 = 0x00000002; }  // 20/15 m
+      else if (rx_freq < 35000000LL) { alex0 = 0x00000004; }  // 12/10 m
+      else                           { alex0 = 0x00000008; }  // 6 m + preamp
+    } else {
+      if      (rx_freq <  1800000LL) { alex0 = 0x00001000; }  // BYPASS_HPF
+      else if (rx_freq <  6500000LL) { alex0 = 0x00000040; }  // 1.5 MHz HPF
+      else if (rx_freq <  9500000LL) { alex0 = 0x00000020; }  // 6.5 MHz HPF
+      else if (rx_freq < 13000000LL) { alex0 = 0x00000010; }  // 9.5 MHz HPF
+      else if (rx_freq < 20000000LL) { alex0 = 0x00000002; }  // 13 MHz HPF
+      else if (rx_freq < 50000000LL) { alex0 = 0x00000004; }  // 20 MHz HPF
+      else                           { alex0 = 0x00000008; }  // 6 m preamp
+    }
     uint32_t lpf;                      /* TX LPF bank bit from tx_freq (np.c:1244) */
     if      (tx_freq > 35600000LL) { lpf = 0x20000000; }    // 6 m bypass LPF
     else if (tx_freq > 24000000LL) { lpf = 0x40000000; }    // 12/10 m

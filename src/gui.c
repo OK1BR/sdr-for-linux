@@ -4438,8 +4438,22 @@ static void start_radio(App *app) {
   /* TX runtime (F6a): open the WDSP TX channel and spawn the idle worker thread
    * BEFORE RX starts flowing, so OpenChannel doesn't race the live RX channel.
    * The GUI only ever requests TUNE; all keying goes through tx_gate. Starts with
-   * a safe config (PA off, drive 0); tx_push_cfg applies the operator's settings. */
-  if (tx_run_start(app->freq, app->pixels, app->fps) == 0) {
+   * a safe config (PA off, drive 0); tx_push_cfg applies the operator's settings.
+   *
+   * ⛔ radio_tx_supported gate: on an RX-only model the runtime is never
+   * started — tx_ready stays 0, which is the already-hardened "RX only" state
+   * (TX controls insensitive, keying handlers early-return, the engine never
+   * sees a tx state so the no-TX guarantees hold unconditionally). */
+  if (!radio_tx_supported(dev)) {
+    fprintf(stderr, "TX locked for '%s' (device %d): model not TX-brought-up yet — RX only\n",
+            dev->name, dev->device - 1000);
+    if (app->toast_overlay) {
+      AdwToast *t = adw_toast_new_format("%s: zatím jen příjem — TX na tomto modelu "
+                                         "ještě neprošel bring-upem", dev->name);
+      adw_toast_set_timeout(t, 8);
+      adw_toast_overlay_add_toast(ADW_TOAST_OVERLAY(app->toast_overlay), t);
+    }
+  } else if (tx_run_start(app->freq, app->pixels, app->fps) == 0) {
     app->tx_ready = 1;
     tx_push_cfg(app);
     tx_run_set_mic_gain(app->tx_mic_gain);   /* persisted SSB mic gain into the TX panel */
