@@ -264,11 +264,21 @@ Pořadí prací (dávky podle závislostí a rizika):
   A2 = #2 spoty × HUD — „krásně obtékají jak smetr tak i frekvenci";
   A3 = #8 per-mode AGC (defaulty CW/digi=Fast, SSB/AM=Slow; [rx]
   agc_ssb/cw/am/digi) — „taky dobře".
-- **Dávka B — měření latencí (potřebuje rádio + dummy load):**
-  B1 = instrumentace timestampů (#3 náběh + #4 odpadnutí, obě strany);
-  B2 = A/B s AGC Fast/Slow (oddělit příspěvek AGC od latence);
-  B3 = totéž změřit na piHPSDR (reference) → latenční rozpočet + cíle
-  (#5) → teprve pak opravy (TX path = TX-SAFETY re-verifikace).
+- **Dávka B — ✅ ZMĚŘENO + OPRAVENO + ŽIVĚ OVĚŘENO (574e28b, tentýž
+  den):** instrumentace SDRFL_LAT_DEBUG (zůstává v kódu) + 3 opravy:
+  (1) cw_gen úvodní mezera z idle = −280 ms KAŽDÉHO overu (SDC makra
+  nesou leading space → 7 ditů mrtvého ticha); (2) edge-triggered gate
+  (−0..50 ms na obou koncích; SWR/metr kadence 50 ms zachována přes
+  fresh_meter); (3) mute řízený enginem z IQ routeru (−110 ms na
+  odpadnutí; GUI tick jen backstop, NESMÍ znovu nastavovat g_rx_silence).
+  **Naměřeno (35 overů): náběh TCI→RF 320-360 → 32-42 ms** (z toho
+  32 = PTT delay, záměr); **release 445 → 407 ms** (hang 96 + ~106
+  detekce + settle 200,0 + fade 5). IC-705: první/poslední znak čistý;
+  SSB klíčování OK. **Otevřeno pro příště:** ~106 ms mezi key_off a
+  první RX aktivitou vypadá na turnaround rádia (DDC restart po T/R) →
+  potvrdit a případně settle okno spustit od key_off (−100 ms);
+  settle 200 přehodnotit s CW=Fast (→ ~100?); B3 (piHPSDR reference)
+  neměřeno — už není třeba pro rozhodnutí, jen pro srovnání.
 - **Dávka C — design k diskusi:** #7 CW TX HUD (návrh: sent-text
   s progresem + WPM + hang stav; digi HUD otázka otevřená).
 - **Pojistky:** #6 (IQ při CW TX nese signál) + #9 (spot_delete case
