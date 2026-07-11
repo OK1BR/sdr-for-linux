@@ -209,6 +209,24 @@ proto to Richard odjinud nezná.
 sdrfl-tci-test pokrývá spot_delete (pokud ne, přidat case). Spolu s #6
 tvoří kategorii „emergentní/spec chování ověřené závodem = smluvní".
 
+### 10. ✅ OPRAVENO: picker s dvěma rádii ukázal jen jedno (G1 „zmizela")
+**Hlášení:** „výběr rádia nefunguje — zapnul jsem druhé rádio (ANAN 10E),
+to správně je unsupported, ale G1 z výpisu úplně zmizela."
+
+**Příčina (potvrzená z logu + kódu):** dedup ve fill_list používal
+`dev_ip()` = `inet_ntoa()` = JEDEN statický buffer. `strcmp(ip,
+dev_ip(&discovered[j]))` porovnával buffer sám se sebou → vždy shoda →
+každé rádio kromě prvního (10E odpověděla dřív) spadlo jako „duplikát".
+S jedním rádiem neviditelné — projeví se až druhým kusem v LAN.
+**Fix:** kopie IP do lokálního bufferu před smyčkou (picker.c).
+Discovery samotné bylo v pořádku (broadcast oba kusy přijal a uložil).
+
+**Bonus zjištění:** 10E hlásí link-local IP **169.254.70.78** — nemá
+DHCP lease (pro budoucí bring-up: buď DHCP na radio-LAN, nebo počítat
+s link-local; náš host ji přes enp134s0f1 vidí). Firmware 10E: P2
+(device=2 Hermes class, fw 10.3, protokol P2 v3.1) — potvrzuje
+Richardovo „10E má P2" pro roadmapu.
+
 ## Po závodě — triage
 
 **Výsledek testu: ~130 CW QSO, aplikace „vcelku použitelná" (Richard).**

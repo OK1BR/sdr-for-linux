@@ -81,7 +81,12 @@ static gboolean fill_list(gpointer data) {
   GtkListBoxRow *preselect = NULL;
   for (int i = 0; i < devices; i++) {
     const DISCOVERED *d = &discovered[i];
-    const char *ip = dev_ip(d);
+    char ip[64];                       /* COPY: dev_ip() = inet_ntoa = ONE static
+                                          buffer — comparing its pointer against a
+                                          later call compares it with itself, which
+                                          marked every radio after the first as a
+                                          duplicate (contest note #10) */
+    g_strlcpy(ip, dev_ip(d), sizeof ip);
     int dup = 0;                       /* directed probes can re-find a radio */
     for (int j = 0; j < i && !dup; j++) { dup = strcmp(ip, dev_ip(&discovered[j])) == 0; }
     if (dup) { continue; }
