@@ -19,4 +19,9 @@ extern char ipaddr_radio[128];
 /* Run Protocol-2 discovery; fills discovered[]/devices. Blocking (~2 s/probe). */
 void p2_discovery(void);
 
+/* Run Protocol-1 (METIS) discovery; same contract as p2_discovery. Answers
+ * are deduplicated by MAC against everything already in discovered[], so
+ * calling both back-to-back is safe. Blocking (~2 s/probe). */
+void p1_discovery(void);
+
 #endif /* SDRFL_ENGINE_DISCOVERY_H */

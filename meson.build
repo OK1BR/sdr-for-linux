@@ -42,6 +42,7 @@ engine_inc = include_directories('src/engine')
 # Grows milestone by milestone. First piece: Protocol-2 discovery.
 engine_sources = [
   'src/engine/engine_state.c',
+  'src/engine/discovery_p1.c',
   'src/engine/discovery_p2.c',
   'src/engine/protocol2.c',
 ]

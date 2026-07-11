@@ -145,6 +145,7 @@ static gboolean fill_list(gpointer data) {
 static gpointer discover_thread(gpointer data) {
   Picker *p = (Picker *)data;
   p2_discovery();                    /* blocking ~2 s; fills discovered[]     */
+  p1_discovery();                    /* METIS round (HL2 & co.); MAC-deduped  */
   g_idle_add(fill_list, p);
   return NULL;
 }

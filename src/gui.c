@@ -4381,6 +4381,23 @@ static void start_radio(App *app) {
 
   printf("Discovering radio at %s ...\n", ipaddr_radio);
   p2_discovery();
+  /* P1 (METIS) round only when still needed: pinned IP not answered by P2,
+   * or nothing found at all — a plain P2 start must not pay the extra ~2 s.
+   * (P1 radios then hit the whitelist with a proper name instead of a bare
+   * "did not answer".) */
+  {
+    int need_p1 = (devices <= 0);
+    if (ipaddr_radio[0]) {
+      need_p1 = 1;
+      for (int i = 0; i < devices; i++) {
+        if (strcmp(inet_ntoa(discovered[i].network.address.sin_addr), ipaddr_radio) == 0) {
+          need_p1 = 0;
+          break;
+        }
+      }
+    }
+    if (need_p1) { p1_discovery(); }
+  }
   if (devices <= 0) { fprintf(stderr, "no radio found\n"); return; }
   /* Select the radio the operator actually chose. discovered[] can hold
    * SEVERAL radios (broadcast rounds from the picker accumulate, plus the
