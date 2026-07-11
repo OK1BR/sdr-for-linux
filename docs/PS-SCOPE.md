@@ -203,6 +203,38 @@ Everything lands in already-mapped places; no architectural change:
    before/after on the IC-705 as off-air monitor). MON display + oneshot +
    SaveCorr/RestoreCorr as follow-ups.
 
+## 6a. Live verification (2026-07-11, G1, 20/17/40 m — CLOSED, works)
+
+The Thetis-style implementation (a5ed663) was live-verified end-to-end:
+2T → voice → drive changes 10↔41 → band changes mid-QSO → TUNE. Objective
+numbers from ~196 s of keyed PS TX across 32 overs (log analysis):
+
+- **659 calibrations ≈ 3.4/s** — voice calibrates *continuously* once
+  auto-att holds the level; two-tone is only the initial bootstrap.
+- fdbk in-window **92 %** of keyed time, CORRECTING **88 %**; settled
+  fdbk **154 ± 8** (ideal 152.3).
+- **getpk median 0.290** → the P2 default SetPk **0.2899 is confirmed**
+  for the G1; do not retune.
+- 26 auto-att steps, **0 stalls, 0 manual interventions**; big upward
+  drive jumps go through the clip-slam (fdbk > 256 → 31 dB, 3×) and
+  reconverge in 2–4 s; a band change mid-voice resolved in one step.
+- `sln ≠ 0` on 5 % of samples only (level transients; every bad fit
+  rejected, correction never permanently dropped). The overnight voice
+  flip-flop did **not** return with STBL = 0 — it was a level problem,
+  not missing stabilization.
+- TUNE park verified 3×: state 0 throughout, cals frozen, instant resume.
+
+Known cosmetic wart (deliberately NOT fixed): ~5/26 steps were chases of
+fits completed in quiet passages (fdbk 78–118 at ~0 W fwd) — a down-step
+immediately undone. Real Thetis dodges these by accident (its timer sees
+only cals landing in the last 10 ms poll ≈ 1 in 10). If it ever annoys:
+require 2 consecutive out-of-window cals before stepping. At steady drive
+it does not occur.
+
+Remaining PS-4 nice-to-haves (not alpha-blocking): TX-pan tap before
+xiqc (toggle), MON feedback display, SaveCorr/RestoreCorr per band,
+per-band ps_att memory (Thetis TxAttenData).
+
 ## 6. ⛔ TX-safety deltas (require explicit sign-off, then TX-SAFETY.md update)
 
 1. **ADC0 attenuator during PS TX** = `ps_attenuation` (0–31 dB) instead of
