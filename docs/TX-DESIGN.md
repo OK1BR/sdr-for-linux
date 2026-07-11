@@ -525,6 +525,24 @@ What landed (⚠ = regression tripwire — do not undo casually):
   bounded manual carrier). Prefs → TX "Digi max drive", persisted
   `[tx] drive_digi_max`, default 100 = uncapped.
 
+**Contest-earned tripwires (2026-07-11, first contest deployment — ~130 CW
+QSOs; details in CONTEST-NOTES-2026-07-11.md):**
+- ⚠ **The TCI IQ stream keeps carrying the real signal during CW TX** (the
+  tap in `on_rx_iq` sits BEFORE the mute/silence branch). CW Skimmer decoding
+  the operator's own outgoing Morse is contractual behaviour (note #6) —
+  never zero-feed or pause the IQ tap while keyed.
+- ⚠ `spot_delete`/`spot_clear` handling is contractual (note #9) — deleting a
+  call in SDC's spot list removes it from our spectrum; covered by
+  `sdrfl-tci-test`.
+- ⚠ The SWR 2-consecutive filter advances on GENUINE coupler readings only
+  (`tx_gate_in.stale_reading`); edge-triggered gate runs re-use the last
+  sample and must not count (covered by `sdrfl-txgate-test`).
+- ⚠ The RX-on-TX mute is keyed off `tx_run_keyed()` in the IQ router; the GUI
+  frame tick must NOT re-arm `g_rx_silence` (a late second silence window
+  punches a hole into recovering RX audio) — backstop unmute only.
+- ⚠ `cw_gen_send_text()` skips LEADING whitespace only when the generator is
+  idle; mid-queue leading spaces are genuine word gaps between queued macros.
+
 **Live-verified operator config (OK1BR, USB, dummy load, 2026-07-10):**
 `mic_gain=11 dB, gate=1 @ −29.5 dBFS, comp(PROC)=off, filt 40-4000 Hz,
 drive_w=63` — voice peaks 1-24 W on the averaged wattmeter with SWR 1.00,

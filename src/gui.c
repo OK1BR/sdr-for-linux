@@ -398,7 +398,10 @@ static void feed_cb(const double *iq, int n_pairs, void *user) {
   (void)user;
   analyzer_feed(iq, n_pairs);   /* panadapter — always live */
   /* Raw IQ → TCI skimmers (F6d-2d); no-op while nobody iq_start'ed. Fed the
-   * real signal even during the post-TX silence window — a skimmer copes. */
+   * real signal even during the post-TX silence window — a skimmer copes.
+   * ⚠ CONTRACT (contest note #6): this tap stays BEFORE the mute/silence
+   * branch and keeps flowing while keyed — CW Skimmer decoding the operator's
+   * own outgoing Morse is a feature. Never zero-feed or pause it during TX. */
   tci_server_iq_push(iq, n_pairs, s_engine_rate);
   /* RX-on-TX mute follows the engine keyed flag HERE, on the listener thread
    * (per IQ block, ~ms): key → fade RX out; unkey → brief input silence for
