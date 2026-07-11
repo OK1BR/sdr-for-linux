@@ -47,17 +47,30 @@ on first run (`~/.config/sdr-for-linux/wdspWisdom00`, ~6 min, progress window)
 and imports it instantly ever after (verified: 2nd run 0.0 s). Gate:
 `sdrfl-wisdom-test` (offline, no radio). No `vendor/wdsp` edits.
 
-**Release polish started (2026-07-11)** — version 0.1.0-alpha, `--version`/
-`--help`, About dialog, `GSK_RENDERER=cairo` auto-set in main(), desktop
-file + SVG icon + AppStream metainfo + `meson install`, README rewritten
-for strangers, `packaging/PKGBUILD` (makepkg-verified), GitHub Actions
-CI (offline gates) + AppImage on ubuntu-24.04 (v* tag ⇒ attached to a
-pre-release). Pending: green CI, README screenshot, tag `v0.1.0-alpha`
-+ Release (Richard's consent), AUR publish (Richard's consent).
+**★ RELEASED 2026-07-11: v0.1.0-alpha** — GitHub pre-release with AppImage
+(CI builds it on every v* tag), README + screenshot, PKGBUILD ready (AUR
+blocked upstream: registrations frozen since the June 2026 malware wave —
+recheck periodically). Same day: **first contest deployment (~130 CW QSOs)**
+→ 10 findings in `docs/CONTEST-NOTES-2026-07-11.md`, 9 closed + live-verified
+the same day (right-click threshold, spot/HUD collisions, per-mode AGC,
+**latency batch: CW TCI→RF 320→32-42 ms, turnaround 445→201 ms**, picker
+multi-radio dedup, start-by-picked-IP, SWR stale-reading filter, guards).
+Contest-earned tripwires now in **TX-DESIGN §8** — read them before ANY
+TX-path edit. Latency instrumentation stays: `SDRFL_LAT_DEBUG=1`.
 
-**Older follow-ups:** Var1/Var2 filters (draggable passband edges),
-off-centre pan, AGC-target vs `SDRFL_GAIN`, audio clock-drift smoothing,
-absolute dBm cal, nonlinear wattmeter cal, S-meter in GUI.
+**★ Next session:** (1) refresh the `~/.local` install (still on the
+morning build); (2) contest note **#7 — CW TX HUD design** with Richard
+(concept: sent-text with progress + WPM + hang instead of mic meters;
+digi HUD open); (3) **rename G1 → ANAN G2E** everywhere (official name;
+device id 20 unchanged; don't confuse with Saturn/G2 — see memory);
+(4) then the next-release roadmap: **ANAN 10E bring-up** (P2 confirmed,
+fw 10.3; radio reports link-local 169.254.x.x — check its DHCP first),
+then Hermes Lite 2 (P1 = new milestone), then Square SDR.
+
+**Older follow-ups:** off-centre pan, AGC-target vs `SDRFL_GAIN`, audio
+clock-drift smoothing, absolute dBm cal, nonlinear wattmeter cal
+(guided workflow), mic-ring drift, PS-4 nice-to-haves (pre-xiqc TX pan
+tap, SaveCorr per band, per-band ps_att), TX display averaging design.
 
 ## Approach (decided with Richard)
 
