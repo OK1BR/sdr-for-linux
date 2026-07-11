@@ -48,8 +48,8 @@ without starting the stream (documented only in gateware + hermeslite.py).
 
 | Step | Content | Gate |
 |---|---|---|
-| R1 | P1 link core: socket, start/stop, EP2 sender thread (1032 B / 2.625 ms pacing, zeroed audio+IQ payload), C&C round-robin builder, EP6 parser (sync hunt, seq check, 63×24-bit IQ → float) | `sdrfl-p1probe` (headless IQ counter, like sdrfl-rxprobe) |
-| R2 | Feed the existing WDSP analyzer + demod/audio path (they are protocol-agnostic — same `on_rx_iq` contract as P2) | `sdrfl-panprobe`/`audioprobe` on the HL2 |
+| R1 ✅ | P1 link core: socket, start/stop, EP2 sender thread (1032 B / 2.625 ms pacing, zeroed audio+IQ payload), C&C round-robin builder, EP6 parser (sync hunt, seq check, 63×24-bit IQ → float) | `sdrfl-p1probe` (headless IQ counter, like sdrfl-rxprobe) — PASS live 2026-07-12 |
+| R2 ✅ | Feed the existing WDSP analyzer + demod/audio path (they are protocol-agnostic — same `on_rx_iq` contract as P2). Both gates grew the start_radio discovery policy (P2 first, P1 round only when the pinned IP didn't answer), select the radio BY IP (not `discovered[0]` — the broadcast fallback also collects the P2 radios), and branch p1/p2_rx_start on `dev->protocol`; audioprobe caps a >384k rate to P1's maximum | PASS live 2026-07-12: panprobe @192k (40 m band picture, floor −115 dB), audioprobe @384k-capped (CW audio, 0 ferr, queue ≤3 ms) |
 | R3 | GUI integration: whitelist `radio_supported()` += HERMES_LITE2 (RX-only), rate limits per protocol (48/96/192/384 k only), HL2 gain control (see §3), band plan cap 0–38.4 MHz | live: panadapter + audio on the HL2 |
 | R4 | Polish: LNA gain slider semantics, ADC-overload badge from status addr 0, HL2 temperature telemetry (exciter-power slot: `0.0795898*raw − 50` °C), TX-FIFO/PTT status ignored on RX | live |
 
@@ -106,4 +106,6 @@ and small GUI conditionals (rates, gain, no atten).
   MAC, P2 (vendored logic, unmodified) does not — the picker dedups rows,
   `sdrfl-discover` output may show a P2 radio twice. Cosmetic.
 
-*Written 2026-07-12 after the discovery step went live. Next: R1.*
+*Written 2026-07-12 after the discovery step went live; R1+R2 landed and
+live-verified the same day. Next: R3 (GUI whitelist RX-only, P1 rate limits,
+LNA gain control, 38.4 MHz cap).*

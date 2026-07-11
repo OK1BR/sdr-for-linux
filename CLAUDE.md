@@ -96,21 +96,26 @@ fw 10.3 switch sync mode mid-TX and hang (power-cycle recovery). Lifting it
 = Thetis ordering in tx_run/protocol2, or P1 PS after the HL2 milestone.
 Details: TX-DESIGN §9.
 
-**★ HL2 / Protocol 1 milestone STARTED (2026-07-12, ada5662..563b5c7):**
-P1 (METIS) **discovery + R1 link core done and live-verified** — first IQ
-from the Hermes Lite 2 (192.168.1.21, gw 73.2): `discovery_p1.c` (MAC
-dedup, HL1/HL2 version split), `protocol1.[ch]` (EP2 sender = keepalive +
-C&C round-robin, EP6 parser, p2-identical IQ callback contract, ⛔ no-TX:
-MOX never / drive 0 / T/R relay locked RX), gate `sdrfl-p1probe` (960k
-pairs/5 s @192k, 0 errors). Scope + wire reference: `docs/P1-SCOPE.md`.
+**★ HL2 / Protocol 1 milestone — R1+R2 DONE (2026-07-12):**
+P1 (METIS) **discovery + R1 link core + R2 analyzer/demod feed, all
+live-verified** on the Hermes Lite 2 (192.168.1.21, gw 73.2):
+`discovery_p1.c` (MAC dedup, HL1/HL2 version split), `protocol1.[ch]`
+(EP2 sender = keepalive + C&C round-robin, EP6 parser, p2-identical IQ
+callback contract, ⛔ no-TX: MOX never / drive 0 / T/R relay locked RX),
+gate `sdrfl-p1probe` (960k pairs/5 s @192k, 0 errors). **R2**: the
+`sdrfl-panprobe`/`sdrfl-audioprobe` gates are protocol-agnostic —
+start_radio's discovery policy (P2 first, P1 round only if the pinned IP
+didn't answer), radio selected BY IP, p1/p2_rx_start branched on
+`dev->protocol`, audioprobe caps >384k rates to P1's max. Live w/ antenna:
+40 m panadapter @192k (floor −115 dB, CW/digi visible) + CW audio
+@384k-capped (0 ferr, queue ≤3 ms). Scope + wire ref: `docs/P1-SCOPE.md`.
 
-**★ Next session: HL2 R2** — feed the P1 link into the WDSP analyzer +
-demod/audio (callback contract matches), then R3 GUI (whitelist RX-only,
-rates 48-384k, LNA gain −12..+48 dB instead of atten, 38.4 MHz cap), R4
-polish (overload badge, temperature). Connect the HL2 antenna for live
-tests. 10E leftovers: pa_cal for the remaining bands (~32-34 expected),
-digi TX meter live check. (`~/.local` install refreshed 2026-07-12 end of
-session via `meson install -C build-release`.)
+**★ Next session: HL2 R3 GUI** — whitelist HL2 RX-only
+(`radio_supported()`), per-protocol rates (48-384k), LNA gain −12..+48 dB
+instead of the atten slider, 38.4 MHz band cap; then R4 polish (overload
+badge, temperature from EP6 addr-1). 10E leftovers: pa_cal for the
+remaining bands (~32-34 expected), digi TX meter live check. (`~/.local`
+install refreshed 2026-07-12 via `meson install -C build-release`.)
 
 **Older follow-ups:** off-centre pan, AGC-target vs `SDRFL_GAIN`, audio
 clock-drift smoothing, absolute dBm cal, nonlinear wattmeter cal

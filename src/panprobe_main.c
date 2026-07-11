@@ -1,11 +1,13 @@
 /*
- * sdrfl-panprobe — headless Protocol-2 RX → WDSP analyzer → panadapter PNG.
- * Milestone-1 step-4 gate.
+ * sdrfl-panprobe — headless RX → WDSP analyzer → panadapter PNG.
+ * Milestone-1 step-4 gate; protocol-agnostic since HL2 R2 (docs/P1-SCOPE.md).
  *
- * Discovers the radio, starts one DDC over P2, feeds the live IQ to the WDSP
- * analyzer, averages a few pixel frames, auto-levels them into the panadapter's
- * dB window, and renders panadapter + waterfall to a PNG with our existing
- * pure-Cairo renderer. Proves IQ → analyzer → our-renderer end-to-end.
+ * Discovers the radio (P2 first, P1/METIS round only when the pinned IP did
+ * not answer P2 — same policy as start_radio), starts one receiver over the
+ * radio's protocol, feeds the live IQ to the WDSP analyzer, averages a few
+ * pixel frames, auto-levels them into the panadapter's dB window, and renders
+ * panadapter + waterfall to a PNG with our existing pure-Cairo renderer.
+ * Proves IQ → analyzer → our-renderer end-to-end.
  *
  *   TAKES THE RADIO — piHPSDR must be disconnected.
  *
@@ -30,6 +32,7 @@
 
 #include "discovered.h"
 #include "discovery.h"
+#include "protocol1.h"
 #include "protocol2.h"
 #include "analyzer.h"
 #include "client.h"       /* ClientFrame */
@@ -122,21 +125,45 @@ int main(void) {
     snprintf(ipaddr_radio, sizeof(ipaddr_radio), "%s", (ip && *ip) ? ip : "192.168.1.247");
     printf("sdrfl-panprobe: discovering %s ...\n", ipaddr_radio);
     p2_discovery();
+    /* P1 (METIS) round only when the pinned IP wasn't answered by P2 — same
+     * policy as start_radio (a P2 gate run pays no extra probe time). */
+    {
+      int need_p1 = 1;
+      for (int i = 0; i < devices; i++) {
+        if (strcmp(inet_ntoa(discovered[i].network.address.sin_addr), ipaddr_radio) == 0) {
+          need_p1 = 0;
+          break;
+        }
+      }
+      if (need_p1) { p1_discovery(); }
+    }
     if (devices <= 0) { fprintf(stderr, "no radio found\n"); return 1; }
-    const DISCOVERED *dev = &discovered[selected_device];
-    printf("using [%d] %s at %s\n", selected_device, dev->name,
-           inet_ntoa(dev->network.address.sin_addr));
+    const DISCOVERED *dev = NULL;
+    for (int i = 0; i < devices && !dev; i++) {
+      if (strcmp(inet_ntoa(discovered[i].network.address.sin_addr), ipaddr_radio) == 0) {
+        dev = &discovered[i];
+      }
+    }
+    if (!dev) { dev = &discovered[0]; }
+    int p1 = (dev->protocol == ORIGINAL_PROTOCOL);
+    printf("using %s at %s (protocol %d)\n", dev->name,
+           inet_ntoa(dev->network.address.sin_addr), p1 ? 1 : 2);
+    if (dev->status == 3) {
+      fprintf(stderr, "radio is IN USE by another program — close it first\n");
+      return 1;
+    }
 
     if (analyzer_create(0, PIXELS, rate, FPS) != 0) { fprintf(stderr, "analyzer_create failed\n"); return 2; }
     printf("analyzer up (%d px, %d Hz, %d fps); RX %lld Hz, collecting %d s ...\n",
            PIXELS, rate, FPS, freq, secs);
-    if (p2_rx_start(dev, freq, rate, feed_cb, NULL) != 0) {
-      fprintf(stderr, "p2_rx_start failed\n");
+    if ((p1 ? p1_rx_start(dev, freq, rate, feed_cb, NULL)
+            : p2_rx_start(dev, freq, rate, feed_cb, NULL)) != 0) {
+      fprintf(stderr, "%s failed\n", p1 ? "p1_rx_start" : "p2_rx_start");
       analyzer_destroy();
       return 3;
     }
     for (int i = 0; i < secs * FPS; i++) { poll_frame(); usleep(1000000 / FPS); }
-    p2_rx_stop();
+    if (p1) { p1_rx_stop(); } else { p2_rx_stop(); }
     analyzer_destroy();
   }
 

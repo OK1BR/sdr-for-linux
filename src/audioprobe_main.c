@@ -1,10 +1,12 @@
 /*
- * sdrfl-audioprobe — headless Protocol-2 RX → WDSP demod → PipeWire audio.
- * Milestone-2 gate.
+ * sdrfl-audioprobe — headless RX → WDSP demod → PipeWire audio.
+ * Milestone-2 gate; protocol-agnostic since HL2 R2 (docs/P1-SCOPE.md).
  *
- * Discovers the radio, starts one DDC over P2, demodulates it, and plays the
- * audio through the native PipeWire sink. Proves IQ → demod → sound end-to-end
- * at low latency.
+ * Discovers the radio (P2 first, P1/METIS round only when the pinned IP did
+ * not answer P2 — same policy as start_radio), starts one receiver over the
+ * radio's protocol, demodulates it, and plays the audio through the native
+ * PipeWire sink. Proves IQ → demod → sound end-to-end at low latency. On a
+ * P1 radio the default 768 kHz rate is capped to P1's 384 kHz maximum.
  *
  *   TAKES THE RADIO — piHPSDR must be disconnected.
  *
@@ -25,6 +27,7 @@
 
 #include "discovered.h"
 #include "discovery.h"
+#include "protocol1.h"
 #include "protocol2.h"
 #include "demod.h"
 #include "audio.h"
@@ -98,16 +101,45 @@ int main(void) {
 
   printf("sdrfl-audioprobe: discovering %s ...\n", ipaddr_radio);
   p2_discovery();
+  /* P1 (METIS) round only when the pinned IP wasn't answered by P2 — same
+   * policy as start_radio (a P2 gate run pays no extra probe time). */
+  {
+    int need_p1 = 1;
+    for (int i = 0; i < devices; i++) {
+      if (strcmp(inet_ntoa(discovered[i].network.address.sin_addr), ipaddr_radio) == 0) {
+        need_p1 = 0;
+        break;
+      }
+    }
+    if (need_p1) { p1_discovery(); }
+  }
   if (devices <= 0) { fprintf(stderr, "no radio found\n"); return 1; }
-  const DISCOVERED *dev = &discovered[selected_device];
-  printf("using %s at %s\n", dev->name, inet_ntoa(dev->network.address.sin_addr));
+  const DISCOVERED *dev = NULL;
+  for (int i = 0; i < devices && !dev; i++) {
+    if (strcmp(inet_ntoa(discovered[i].network.address.sin_addr), ipaddr_radio) == 0) {
+      dev = &discovered[i];
+    }
+  }
+  if (!dev) { dev = &discovered[0]; }
+  int p1 = (dev->protocol == ORIGINAL_PROTOCOL);
+  printf("using %s at %s (protocol %d)\n", dev->name,
+         inet_ntoa(dev->network.address.sin_addr), p1 ? 1 : 2);
+  if (dev->status == 3) {
+    fprintf(stderr, "radio is IN USE by another program — close it first\n");
+    return 1;
+  }
+  if (p1 && rate != 48000 && rate != 96000 && rate != 192000 && rate != 384000) {
+    rate = 384000;   /* P1 tops out at 384 k (C&C 0x00-C1 bits1:0) */
+    printf("P1 radio: sample rate capped to %d Hz\n", rate);
+  }
   printf("RX %lld Hz @ %d Hz, mode %s (%.0f..%.0f Hz), vol %.0f dB, audio lat %d ms\n",
          freq, rate, mname, flo, fhi, vol, lat);
 
   if (audio_start(AUDIO_RATE, 2, lat, NULL) != 0) { fprintf(stderr, "audio_start failed\n"); return 2; }  /* stereo: demod feeds L/R */
   if (demod_create(0, rate, mode, flo, fhi, vol) != 0) { fprintf(stderr, "demod_create failed\n"); audio_stop(); return 3; }
-  if (p2_rx_start(dev, freq, rate, feed_cb, NULL) != 0) {
-    fprintf(stderr, "p2_rx_start failed\n");
+  if ((p1 ? p1_rx_start(dev, freq, rate, feed_cb, NULL)
+          : p2_rx_start(dev, freq, rate, feed_cb, NULL)) != 0) {
+    fprintf(stderr, "%s failed\n", p1 ? "p1_rx_start" : "p2_rx_start");
     demod_destroy(); audio_stop();
     return 4;
   }
@@ -120,7 +152,7 @@ int main(void) {
             1000.0 * audio_queued() / AUDIO_RATE, demod_last_error());
   }
 
-  p2_rx_stop();
+  if (p1) { p1_rx_stop(); } else { p2_rx_stop(); }
   demod_destroy();
   audio_stop();
   return 0;
