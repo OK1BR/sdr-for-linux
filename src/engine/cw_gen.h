@@ -44,6 +44,16 @@ void    cw_gen_send_text(cw_gen *g, const char *text);
 void    cw_gen_flush(cw_gen *g);
 
 /*
+ * HUD progress snapshot (display-only bookkeeping — the envelope schedule is
+ * untouched). Copies the queued text — a few already-sent characters of history
+ * plus everything still to sound — into buf (NUL-terminated) and sets *cur to
+ * the index of the first character that has NOT finished sounding yet (== the
+ * returned length once everything queued has been sent). Returns the number of
+ * characters written. Thread-note: call from the same side as pull().
+ */
+int     cw_gen_progress(cw_gen *g, char *buf, int buflen, int *cur);
+
+/*
  * Pull the next `n` envelope samples [0,1] into out[]. Advances the sample clock by
  * exactly `n`. When the schedule is empty it emits silence (0). Returns the number
  * of samples in this block for which the key was DOWN (envelope target 1) — a cheap

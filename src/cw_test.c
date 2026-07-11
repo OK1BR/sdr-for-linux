@@ -7,6 +7,8 @@
  *      exactly 50 dot-units (the classic WPM definition) at every speed — this
  *      exercises intra-char / inter-char / inter-word gaps end to end.
  *   3. the envelope stays in [0,1] and settles to idle.
+ *   4. progress bookkeeping (CW TX HUD, contest note #7): the playhead index
+ *      tracks the sample clock through the queued text; flush clears it.
  * NO radio, NO socket, NO WDSP. Exit 0 = pass.
  */
 #include <math.h>
@@ -72,6 +74,46 @@ int main(void) {
       chk(lbl, on[14] - on[0], 50 * dot, 2);   /* ±2 samples rounding */
     }
     if (!cw_gen_idle(g)) { printf("  not idle after drain @ %d WPM  FAIL\n", wpm); fails++; }
+    cw_gen_free(g);
+  }
+
+  /* Progress bookkeeping (#7 CW HUD). " AB C" from idle: the leading space is
+   * skipped (sounds nothing, is not recorded), so the queue reads "AB C".
+   * Schedule @20 WPM in dots: A(.-)=1+1+3 ends at 5; gap 3; B(-...)=3+1+1+1+1+
+   * 1+1 ends at 17 (the recorded ' ' shares that end); word gap 7; C(-.-.)=
+   * 3+1+1+1+3+1+1 ends at 35. */
+  {
+    cw_gen *g = cw_gen_new(SR, 20, 50.0, 9.0);
+    if (!g) { printf("cw_gen_new failed\n"); return 2; }
+    long dot = cw_gen_dot_samples(g);
+    float tmp[4096];
+    char buf[64]; int cur = -1;
+    cw_gen_send_text(g, " AB C");
+    long n = cw_gen_progress(g, buf, sizeof buf, &cur);
+    chk("progress: queued chars (\"AB C\")", n, 4, 0);
+    chk("progress: playhead at 0", cur, 0, 0);
+    long pulled = 0;
+    #define PULL_TO(target) while (pulled < (target)) { \
+        long c = (target) - pulled; if (c > 4096) { c = 4096; } \
+        cw_gen_pull(g, tmp, (int)c); pulled += c; }
+    PULL_TO(4 * dot);                          /* inside A (ends at 5 dots) */
+    cw_gen_progress(g, buf, sizeof buf, &cur);
+    chk("progress: still inside 'A'", cur, 0, 0);
+    PULL_TO(5 * dot + dot / 2);                /* past A's last mark */
+    cw_gen_progress(g, buf, sizeof buf, &cur);
+    chk("progress: 'A' done", cur, 1, 0);
+    PULL_TO(18 * dot);                         /* past B (17) — ' ' flips with it */
+    cw_gen_progress(g, buf, sizeof buf, &cur);
+    chk("progress: 'B' + ' ' done", cur, 3, 0);
+    PULL_TO(40 * dot);                         /* drain everything (C ends at 35) */
+    cw_gen_progress(g, buf, sizeof buf, &cur);
+    chk("progress: all sent", cur, n, 0);
+    if (!cw_gen_idle(g)) { printf("  progress: not idle after drain  FAIL\n"); fails++; }
+    cw_gen_send_text(g, "TEST");
+    cw_gen_flush(g);
+    n = cw_gen_progress(g, buf, sizeof buf, &cur);
+    chk("progress: flush clears the text", n, 0, 0);
+    #undef PULL_TO
     cw_gen_free(g);
   }
 

@@ -68,8 +68,24 @@ typedef struct {
   int    ps_state;      /* calcc state machine (GetPSInfo[15], 0=Reset..9)      */
   int    ps_fdbk;       /* feedback level (GetPSInfo[4]) — ideal ~152, 140-165  */
   int    ps_att;        /* current PS ADC0 attenuator (auto-att may move it)    */
+  /* Digi (DIGU/DIGL) TX-audio meter — what the TCI client is feeding us: */
+  double ext_pk;    /* external TX-audio peak since the last meter slot, dBFS
+                       (−99 floor); meter only, the audio itself is untouched */
+  int    ext_clip;  /* external TX audio hit full scale since the last slot   */
   char   reason[64];/* "" or why refused/tripped (for the UI/log)          */
 } tx_run_status;
+
+/* CW TX HUD snapshot (display-only, contest note #7): the queued Morse text
+ * around the playhead. `text` holds a few already-sent chars of history plus
+ * everything still to sound; `cur` indexes the first unsent char; `active` =
+ * Morse is still sounding; `hang_frac` = fraction of the break-in hang left
+ * (meaningful only when !active). Thread-safe; zeros when TX isn't up. */
+typedef struct {
+  char   text[160];
+  int    cur;
+  int    active;
+  double hang_frac;
+} tx_cw_view;
 
 /*
  * Create the WDSP TX channel + TX panadapter analyzer + IQ framer and spawn the
@@ -123,6 +139,7 @@ void tx_run_set_span(double span_hz);
  */
 void tx_run_cw_send(const char *text);
 void tx_run_cw_abort(void);
+void tx_run_cw_progress(tx_cw_view *out);   /* HUD snapshot — see tx_cw_view */
 void tx_run_set_cw(int wpm, double weight, double ramp_ms, int hang_ms);
 void tx_run_set_sidetone(int pitch_hz, double level_db);
 

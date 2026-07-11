@@ -286,8 +286,19 @@ Pořadí prací (dávky podle závislostí a rizika):
   B3 (piHPSDR reference) neměřeno — není už k rozhodnutí potřeba.
   Bokem opraveno: SWR 2-consecutive filtr počítá jen čerstvá čtení
   (b1fef7d, +2 testy, Richardův bezpečnostní audit).
-- **Dávka C — design k diskusi:** #7 CW TX HUD (návrh: sent-text
-  s progresem + WPM + hang stav; digi HUD otázka otevřená).
+- **Dávka C — ✅ NAVRŽENO S RICHARDEM + IMPLEMENTOVÁNO (2026-07-11,
+  čeká na živé ověření):** #7 mode-aware TX HUD. Rozhodnutí (Richard):
+  layout A = sent-text pruh přes šířku TX panadapteru + WPM/KEY/HANG
+  kompaktně vpravo; digi HUD hned (TCI TX-audio level + 1s CLIP latch);
+  čistě zobrazovací (abort zůstává na Esc — žádný klikací cíl, nepere
+  se s mouse gesty). Implementace: cw_gen znaková fronta s progress
+  API (`cw_gen_progress`, kryto sdrfl-cw-test), `tx_run_cw_progress`
+  snapshot (text/playhead/hang), `ext_pk`+`ext_clip` v tx_run_status;
+  gui.c `draw_tx_cw_hud` (sent šedě / právě klíčovaný znak inverzně /
+  fronta jasně, hang-drain bar) + `draw_tx_digi_meter`; footer Mic/PROC
+  skupiny skryté mimo voice módy. Keying cesta nedotčena (jen účetní
+  clock v cw_gen + čtení pod stávajícím zámkem); sidetone pitch v HUD
+  záměrně není (statická informace, clutter).
 - **Pojistky: ✅ (4ed6d3e)** — #9 spot_delete už kryje sdrfl-tci-test
   (ověřeno, case existuje); #6 + invarianty dávky B zapsány jako
   tripwires do TX-DESIGN §8 + kontraktový komentář u IQ tapu

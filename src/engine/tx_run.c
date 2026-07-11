@@ -113,10 +113,20 @@ static float            ext_ring[EXT_FRAMES];
 static _Atomic unsigned ext_head, ext_tail;
 static volatile int     s_ext_src;              /* g_atomic: TCI feeds TX audio  */
 static void (*_Atomic   s_ext_cb)(int nsamples); /* chrono clock (feed thread)   */
+/* Digi TX-audio meter (display only, contest note #7): peak + clip count since
+ * the last meter slot. Producer = the TCI service thread (tx_run_ext_push),
+ * consumer = gate_slot (exchange-to-zero). The audio itself is untouched —
+ * ⛔ the digi clean-chain rule holds. */
+static _Atomic unsigned s_ext_pk_u;     /* peak |sample| × 1e6 */
+static _Atomic int      s_ext_clip_n;   /* samples at/above full scale */
 
 static cw_gen           *s_cw;             /* CW envelope generator (192k), under s_cw_lock */
 static GMutex            s_cw_lock;
 static volatile int      s_cw_hang_ms = 250;   /* g_atomic: break-in hang time (ms)         */
+static gint64            s_cw_hang_deadline;   /* break-in hang end (monotonic µs); written
+                                                  by the feed thread under s_cw_lock, read
+                                                  by tx_run_cw_progress under the same lock
+                                                  (the feed thread reads its own writes)    */
 static volatile int      s_st_hz  = CW_SIDETONE_HZ;  /* g_atomic: sidetone pitch (Hz)       */
 static volatile int      s_st_cdb = CW_SIDETONE_CDB; /* g_atomic: sidetone level (dB × 100) */
 
@@ -324,6 +334,12 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   st.swr       = tx_meter_swr();
   if (keyed) { tx_dsp_get_meters(&st.mic_pk, &st.alc_gain, &st.lvlr_gain); }  /* live WDSP TX level */
   else       { st.mic_pk = -99.0; st.alc_gain = 0.0; st.lvlr_gain = 0.0; }
+  /* Digi (TCI) TX-audio level: peak over the samples pushed since the last
+   * slot (meter only — the audio is untouched, ⛔ digi clean-chain rule). */
+  unsigned epk = atomic_exchange_explicit(&s_ext_pk_u, 0u, memory_order_relaxed);
+  int      ecl = atomic_exchange_explicit(&s_ext_clip_n, 0, memory_order_relaxed);
+  st.ext_pk   = epk > 0u ? 20.0 * log10((double)epk / 1000000.0) : -99.0;
+  st.ext_clip = ecl > 0;
   ps_status pss; ps_get_status(&pss);          /* zeros when PS is off */
   st.ps_on         = pss.on;
   st.ps_correcting = pss.correcting;
@@ -351,7 +367,7 @@ static gpointer tx_thread(gpointer u) {
   memset(silence, 0, sizeof silence);
   int prev_keyed = 0, prev_want = 0, keyed = 0, keyed_mox = 0, keyed_cw = 0;
   int prev_intent = 0;             /* keying-intent fingerprint (edge-triggered gate) */
-  gint64 last_gate = 0, next_feed = 0, cw_hang_deadline = 0, cw_key_on = 0;
+  gint64 last_gate = 0, next_feed = 0, cw_key_on = 0;
 
   while (g_atomic_int_get(&s_running)) {
     gint64 now = g_get_monotonic_time();
@@ -364,10 +380,12 @@ static gpointer tx_thread(gpointer u) {
     if (cw_mode) {
       g_mutex_lock(&s_cw_lock);
       cw_content = s_cw && !cw_gen_idle(s_cw);
+      if (cw_content) {   /* deadline write under the lock (tx_run_cw_progress reads it) */
+        s_cw_hang_deadline = now + (gint64)g_atomic_int_get(&s_cw_hang_ms) * 1000;
+      }
       g_mutex_unlock(&s_cw_lock);
     }
-    if (cw_content) { cw_hang_deadline = now + (gint64)g_atomic_int_get(&s_cw_hang_ms) * 1000; }
-    int want_cw_now = cw_mode && (now < cw_hang_deadline) ? 1 : 0;
+    int want_cw_now = cw_mode && (now < s_cw_hang_deadline) ? 1 : 0;
     if (lat_on()) {
       static int lat_prev_want_cw;
       if (want_cw_now != lat_prev_want_cw) { LAT("want_cw %d", want_cw_now); }
@@ -513,6 +531,7 @@ int tx_run_start(long long tx_freq_hz, int pan_pixels, int fps) {
   g_mutex_lock(&s_cw_lock);
   if (!s_cw) { s_cw = cw_gen_new(TX_IQ_RATE, 20, 50.0, 9.0); }
   else       { cw_gen_flush(s_cw); }
+  s_cw_hang_deadline = 0;   /* no hang held over from a previous runtime */
   g_mutex_unlock(&s_cw_lock);
 
   tx_run_status st; memset(&st, 0, sizeof st); st.running = 1; st.allowed = 1;
@@ -596,6 +615,26 @@ void tx_run_cw_abort(void) {
   g_mutex_unlock(&s_cw_lock);
 }
 
+void tx_run_cw_progress(tx_cw_view *out) {
+  if (!out) { return; }
+  memset(out, 0, sizeof *out);
+  gint64 now = g_get_monotonic_time();
+  g_mutex_lock(&s_cw_lock);
+  if (s_cw) {
+    cw_gen_progress(s_cw, out->text, sizeof out->text, &out->cur);
+    out->active = !cw_gen_idle(s_cw);
+    if (!out->active) {
+      int    hang = g_atomic_int_get(&s_cw_hang_ms);
+      gint64 rem  = s_cw_hang_deadline - now;
+      if (hang > 0 && rem > 0) {
+        out->hang_frac = (double)rem / ((double)hang * 1000.0);
+        if (out->hang_frac > 1.0) { out->hang_frac = 1.0; }
+      }
+    }
+  }
+  g_mutex_unlock(&s_cw_lock);
+}
+
 void tx_run_set_cw(int wpm, double weight, double ramp_ms, int hang_ms) {
   g_mutex_lock(&s_cw_lock);
   if (s_cw) { cw_gen_set_speed(s_cw, wpm, weight); cw_gen_set_ramp(s_cw, ramp_ms); }
@@ -619,6 +658,20 @@ void tx_run_set_ext_source(int on) {
 
 void tx_run_ext_push(const float *mono48k, int n) {
   if (!g_atomic_int_get(&s_ext_src)) { return; }
+  /* Digi TX-audio meter: peak + clip over the incoming block (before any ring
+   * overflow drop — the meter shows what the client SENDS). Single producer,
+   * so a plain compare-and-store max is enough; gate_slot exchanges to zero. */
+  float pk = 0.0f; int nclip = 0;
+  for (int i = 0; i < n; i++) {
+    float a = fabsf(mono48k[i]);
+    if (a > pk) { pk = a; }
+    if (a >= 0.999f) { nclip++; }
+  }
+  unsigned v = (unsigned)(pk * 1000000.0f);
+  if (v > atomic_load_explicit(&s_ext_pk_u, memory_order_relaxed)) {
+    atomic_store_explicit(&s_ext_pk_u, v, memory_order_relaxed);
+  }
+  if (nclip) { atomic_fetch_add_explicit(&s_ext_clip_n, nclip, memory_order_relaxed); }
   unsigned h = atomic_load_explicit(&ext_head, memory_order_relaxed);
   unsigned t = atomic_load_explicit(&ext_tail, memory_order_acquire);
   for (int i = 0; i < n; i++) {

@@ -190,6 +190,8 @@ typedef struct {
   double      tx_digi_max_w; /* ⛔ drive cap in DIGU/DIGL, W (piHPSDR
                                 drive_digi_max; persisted, 100 = uncapped)     */
   GtkWidget  *drive_scale;   /* footer Drive slider (digi clamp syncs it)      */
+  GtkWidget  *mic_group;     /* footer Mic-gain group — voice modes only (#7)  */
+  GtkWidget  *proc_group;    /* footer PROC group — voice modes only (#7)      */
   GtkWidget  *win;           /* top-level window (for size persistence)           */
   GtkWidget  *toast_overlay; /* AdwToastOverlay wrapping the content (restart hint) */
   int         restart_pending;     /* a restart-to-apply setting changed this session */
@@ -248,6 +250,7 @@ typedef struct {
   gint64      tx_reason_until;/* monotonic µs until which to show tx_reason         */
   int         tx_keyed_shown;/* last keyed state pushed to the label (repaint gate) */
   double      tx_swr_disp;   /* displayed SWR: held while no power flows            */
+  gint64      tx_clip_until; /* digi TX-audio CLIP latch (monotonic µs, ~1 s)       */
   int         mic_open;      /* PipeWire mic capture running (voice modes only, F6c) */
   /* TX panadapter: while keyed we show the transmitted spectrum (24 kHz span,
    * full area, no waterfall) in place of the RX view — like piHPSDR non-duplex. */
@@ -888,6 +891,130 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
   cairo_move_to(cr, bx + bw - ex.width, ay + h_alc + 20); cairo_show_text(cr, lbl);
 }
 
+/* CW TX HUD (contest note #7) — in CW modes the Mic/Lev/ALC meter reads
+ * nothing, so replace it. Right block (the meter's footprint): WPM + key state
+ * — KEY while Morse is sounding, HANG while break-in holds MOX — with a
+ * hang-drain bar. Across the top runs the queued Morse text with the playhead:
+ * sent chars dim, the char sounding now inverted, the rest of the queue bright
+ * — the operator sees what is still going out (and what an abort would cut).
+ * Display only: everything comes from tx_run_cw_progress(), the keying path is
+ * untouched; Esc still aborts (no click target, by decision — the panadapter's
+ * mouse gestures stay unchallenged). */
+static void draw_tx_cw_hud(cairo_t *cr, App *app, int w, const tx_run_status *ts) {
+  tx_cw_view v;
+  tx_run_cw_progress(&v);
+  int cw_keyed = ts->mox && !ts->tune;   /* TUNE inside a CW mode is a plain carrier */
+
+  double bw = METER_BW, bx = w - bw - METER_RM, by = METER_BY;
+  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+  cairo_set_font_size(cr, 19.0);
+  char lbl[48];
+  snprintf(lbl, sizeof lbl, "%d WPM%s", app->cw_wpm,
+           !cw_keyed ? "" : (v.active ? " · KEY" : " · HANG"));
+  cairo_text_extents_t ex; cairo_text_extents(cr, lbl, &ex);
+  if      (cw_keyed && v.active) { cairo_set_source_rgba(cr, 1.0, 0.34, 0.28, 0.98); } /* KEY: TX red */
+  else if (cw_keyed)             { cairo_set_source_rgba(cr, 1.0, 0.72, 0.0, 0.95);  } /* HANG: amber */
+  else                           { cairo_set_source_rgba(cr, 0.72, 0.80, 0.92, 0.8); }
+  cairo_move_to(cr, bx + bw - ex.width, by + 16.0);
+  cairo_show_text(cr, lbl);
+
+  /* Hang-drain bar: full (red) while keying, drains (amber) through the
+   * break-in hang — the "when do we drop back to RX" cue. */
+  double frac = v.active ? 1.0 : v.hang_frac;
+  cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.5);
+  cairo_rectangle(cr, bx, by + 24.0, bw, 5.0); cairo_fill(cr);
+  if (cw_keyed && frac > 0.0) {
+    if (v.active) { cairo_set_source_rgba(cr, 1.0, 0.34, 0.28, 0.9); }
+    else          { cairo_set_source_rgba(cr, 1.0, 0.72, 0.0, 0.9);  }
+    cairo_rectangle(cr, bx, by + 24.0, bw * frac, 5.0); cairo_fill(cr);
+  }
+
+  /* Sent-text strip, full width, below the power/SWR + status lines (fixed
+   * y — it must not jump when HIGH SWR / PS badges appear above it). */
+  int len = (int)strlen(v.text);
+  if (len <= 0) { return; }
+  const double x0 = 44.0, ty = 136.0, fs = 26.0;
+  cairo_set_font_size(cr, fs);
+  cairo_font_extents_t fe; cairo_font_extents(cr, &fe);
+  cairo_text_extents_t ce; cairo_text_extents(cr, "0", &ce);
+  double cell = ce.x_advance;
+  int avail = cell > 0.0 ? (int)(((double)w - x0 - 16.0) / cell) : 0;
+  if (avail < 8) { return; }
+  int off = 0;
+  if (len > avail) {                    /* slide so the playhead sits ~1/3 in */
+    off = v.cur - avail / 3;
+    if (off > len - avail) { off = len - avail; }
+    if (off < 0) { off = 0; }
+  }
+  for (int i = off; i < len && i - off < avail; i++) {
+    double cx = x0 + (i - off) * cell;
+    char s[2] = { v.text[i], 0 };
+    if (i == v.cur && v.active) {       /* the char sounding right now: inverted */
+      cairo_set_source_rgba(cr, 0.95, 0.95, 0.95, 0.95);
+      cairo_rectangle(cr, cx - 1.0, ty - fe.ascent, cell + 2.0, fe.ascent + fe.descent);
+      cairo_fill(cr);
+      cairo_set_source_rgba(cr, 0.05, 0.05, 0.05, 1.0);
+    } else if (i < v.cur) {             /* already sent */
+      cairo_set_source_rgba(cr, 0.55, 0.60, 0.68, 0.7);
+    } else {                            /* still queued */
+      cairo_set_source_rgba(cr, 0.95, 0.95, 0.95, 0.95);
+    }
+    cairo_move_to(cr, cx, ty);
+    cairo_show_text(cr, s);
+  }
+}
+
+/* Digi (DIGU/DIGL) TX meter — the mic chain is forced OFF in digi modes (the
+ * ⛔ clean-chain rule), so Mic/Lev/ALC would read nothing. Show what actually
+ * drives the exciter instead: the TCI client's TX-audio peak (dBFS) in the
+ * same bar geometry, plus a 1 s CLIP latch that names overdrive at the source
+ * (e.g. Decodium's output level) before it shows up as splatter. */
+static void draw_tx_digi_meter(cairo_t *cr, App *app, int w, const tx_run_status *ts) {
+  const double PK_MIN = -40.0, PK_MAX = 0.0, h_bar = 14.0;
+  double bw = METER_BW, bx = w - bw - METER_RM, by = METER_BY;
+  double pk = ts->ext_pk;
+  if (pk < PK_MIN) { pk = PK_MIN; } else if (pk > PK_MAX) { pk = PK_MAX; }
+  cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.5);
+  cairo_rectangle(cr, bx, by, bw, h_bar); cairo_fill(cr);
+  const char *pname = waterfall_palette_name(app->palette);   /* lift the near-black Mono low end */
+  double kk = (pname && g_str_has_prefix(pname, "Mono")) ? 0.20 : 0.0;
+  cairo_pattern_t *grad = cairo_pattern_create_linear(bx, 0, bx + bw, 0);
+  for (int s = 0; s <= 12; s++) {
+    double t = s / 12.0, r, g, b;
+    waterfall_palette_rgb(t, &r, &g, &b);
+    r += (1.0 - r) * kk; g += (1.0 - g) * kk; b += (1.0 - b) * kk;
+    cairo_pattern_add_color_stop_rgba(grad, t, r, g, b, 0.92);
+  }
+  cairo_save(cr);
+  cairo_rectangle(cr, bx, by, (pk - PK_MIN) / (PK_MAX - PK_MIN) * bw, h_bar); cairo_clip(cr);
+  cairo_set_source(cr, grad);
+  cairo_rectangle(cr, bx, by, bw, h_bar); cairo_fill(cr);
+  cairo_restore(cr);
+  cairo_pattern_destroy(grad);
+
+  /* CLIP: latch 1 s so a single clipped block is visible at any frame rate. */
+  if (ts->ext_clip) { app->tx_clip_until = g_get_monotonic_time() + 1000000; }
+  int clip = g_get_monotonic_time() < app->tx_clip_until;
+
+  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_set_source_rgba(cr, 0.72, 0.80, 0.92, 0.8);
+  cairo_set_font_size(cr, 11.0);
+  cairo_move_to(cr, bx - 32, by + h_bar - 3); cairo_show_text(cr, "TCI");
+  char lbl[48];
+  if (ts->ext_pk <= PK_MIN) { snprintf(lbl, sizeof lbl, "TX audio  --"); }
+  else                      { snprintf(lbl, sizeof lbl, "TX audio %+.0f dBFS", ts->ext_pk); }
+  cairo_set_font_size(cr, 15.0);
+  cairo_text_extents_t ex; cairo_text_extents(cr, lbl, &ex);
+  cairo_set_source_rgba(cr, 0.95, 0.86, 0.62, 0.92);
+  cairo_move_to(cr, bx + bw - ex.width, by + h_bar + 20); cairo_show_text(cr, lbl);
+  if (clip) {
+    cairo_text_extents_t cx; cairo_text_extents(cr, "CLIP · ", &cx);
+    cairo_set_source_rgba(cr, 1.0, 0.25, 0.2, 0.98);
+    cairo_move_to(cr, bx + bw - ex.width - cx.x_advance, by + h_bar + 20);
+    cairo_show_text(cr, "CLIP · ");
+  }
+}
+
 /* TX panadapter (F6a): the transmitted spectrum, panadapter (top) + waterfall
  * (bottom), like the RX view — with big red power/SWR numbers and a level meter.
  * The frequency axis MATCHES the RX one (span = rate/zoom), capped at the TX DUC
@@ -1045,8 +1172,15 @@ static void draw_tx(cairo_t *cr, int w, int h, App *app) {
     cairo_show_text(cr, psb);
   }
 
-  /* Level meter top-right, where the RX S-meter sits — mic peak + ALC. */
-  draw_tx_level_meter(cr, app, w, &ts);
+  /* Top-right block is mode-aware (contest note #7): voice keeps the mic/ALC
+   * meter; CW gets the sent-text HUD; digi shows the TCI TX-audio level. */
+  if (app->mode == DEMOD_CWL || app->mode == DEMOD_CWU) {
+    draw_tx_cw_hud(cr, app, w, &ts);
+  } else if (app->mode == DEMOD_DIGU || app->mode == DEMOD_DIGL) {
+    draw_tx_digi_meter(cr, app, w, &ts);
+  } else {
+    draw_tx_level_meter(cr, app, w, &ts);
+  }
 }
 
 static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer data) {
@@ -1685,6 +1819,12 @@ static void tx_update_mic(App *app) {
   /* MOX/voice is only meaningful with the mic open (a voice mode); grey it out for
    * CW/data, exactly like the mic itself. Button may not exist yet during startup. */
   if (app->mox_btn) { gtk_widget_set_sensitive(app->mox_btn, want); }
+  /* Footer Mic-gain + PROC are phone utilities — hide them entirely outside
+   * voice modes (contest note #7: in CW/digi they do nothing and just clutter;
+   * in digi the clean-chain rule forces them off anyway). */
+  int voice = mode_is_voice(app->mode);
+  if (app->mic_group)  { gtk_widget_set_visible(app->mic_group,  voice); }
+  if (app->proc_group) { gtk_widget_set_visible(app->proc_group, voice); }
   /* Two-tone works in any non-CW mode (the WDSP chain runs; in CW the feed
    * loop emits the carrier instead). */
   if (app->tt_btn) {
@@ -2720,7 +2860,8 @@ static GtkWidget *build_bottom_controls(App *app) {
   gtk_scale_set_value_pos(GTK_SCALE(micg), GTK_POS_RIGHT);
   gtk_scale_set_format_value_func(GTK_SCALE(micg), fmt_db, NULL, NULL);
   g_signal_connect(micg, "value-changed", G_CALLBACK(on_mic_gain_changed), app);
-  gtk_box_append(GTK_BOX(bar), labeled("Mic", micg));
+  app->mic_group = labeled("Mic", micg);   /* hidden outside voice modes (#7) */
+  gtk_box_append(GTK_BOX(bar), app->mic_group);
 
   /* Speech processor (PROC): toggle + compression level. Off = the chain has NO
    * makeup gain (voice PEP = mic peaks × mic gain, the ALC only limits); on = the
@@ -2742,7 +2883,8 @@ static GtkWidget *build_bottom_controls(App *app) {
   gtk_scale_set_format_value_func(GTK_SCALE(procl), fmt_db, NULL, NULL);
   g_signal_connect(procl, "value-changed", G_CALLBACK(on_comp_level_changed), app);
   gtk_box_append(GTK_BOX(procbox), procl);
-  gtk_box_append(GTK_BOX(bar), labeled("Proc", procbox));
+  app->proc_group = labeled("Proc", procbox);   /* hidden outside voice modes (#7) */
+  gtk_box_append(GTK_BOX(bar), app->proc_group);
 
   GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_set_hexpand(spacer, TRUE);

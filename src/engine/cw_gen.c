@@ -23,6 +23,9 @@
 #endif
 
 typedef struct { int down; int len; } seg;
+typedef struct { char ch; long long end; } cwch;   /* queued char + schedule end pos */
+
+#define CW_HIST 12   /* already-sent chars kept in the progress snapshot (HUD) */
 
 struct cw_gen {
   int    sr;
@@ -38,6 +41,16 @@ struct cw_gen {
   int    cur_down, cur_rem; /* segment currently being emitted */
   int    have_cur;
   double ramp_pos;   /* 0..ramp_n */
+
+  /* Progress bookkeeping for the CW TX HUD (contest note #7): the sample clock
+   * advanced by pull(), the schedule end position advanced by push_seg, and a
+   * ring of queued characters annotated with where in the schedule each one
+   * finishes sounding. Chars with end <= clock have been sent. Display only —
+   * nothing here feeds back into the envelope. */
+  long long clock;      /* samples emitted since creation                     */
+  long long sched_end;  /* clock position where the queued schedule ends      */
+  cwch  *cq;            /* queued-text ring */
+  int    ccap, chead, ctail;
 };
 
 /* ASCII -> Morse (dots/dashes). Index 32..90 (space..Z); lowercase folded up. */
@@ -87,6 +100,9 @@ cw_gen *cw_gen_new(int sample_rate, int wpm, double weight, double ramp_ms) {
   g->cap = 256;
   g->q = malloc((size_t)g->cap * sizeof(seg));
   if (!g->q) { free(g); return NULL; }
+  g->ccap = 256;
+  g->cq = malloc((size_t)g->ccap * sizeof(cwch));
+  if (!g->cq) { free(g->q); free(g); return NULL; }
   set_timing(g, wpm, weight);
   return g;
 }
@@ -101,7 +117,7 @@ void cw_gen_set_ramp(cw_gen *g, double ramp_ms) {
 }
 int cw_gen_dot_samples(const cw_gen *g) { return g ? g->dot : 0; }
 
-void cw_gen_free(cw_gen *g) { if (g) { free(g->q); free(g); } }
+void cw_gen_free(cw_gen *g) { if (g) { free(g->q); free(g->cq); free(g); } }
 
 static void push_seg(cw_gen *g, int down, int len) {
   if (len <= 0) { return; }
@@ -119,6 +135,17 @@ static void push_seg(cw_gen *g, int down, int len) {
   g->q[g->tail].down = down;
   g->q[g->tail].len  = len;
   g->tail = next;
+  g->sched_end += len;
+}
+
+/* Record a queued char at the current schedule end. Ring full → drop the oldest
+ * entry (it is almost certainly sent history; the schedule is NOT affected). */
+static void push_char(cw_gen *g, char ch) {
+  int next = (g->ctail + 1) % g->ccap;
+  if (next == g->chead) { g->chead = (g->chead + 1) % g->ccap; }
+  g->cq[g->ctail].ch  = ch;
+  g->cq[g->ctail].end = g->sched_end;
+  g->ctail = next;
 }
 
 void cw_gen_send_text(cw_gen *g, const char *text) {
@@ -130,9 +157,12 @@ void cw_gen_send_text(cw_gen *g, const char *text) {
    * at the START of every over (measured, contest note #3). When the queue is
    * still busy the leading space is a genuine word gap and is kept. */
   int at_start = cw_gen_idle(g);
+  /* Progress clock: a schedule queued onto an emptied generator starts sounding
+   * at the CURRENT sample position, not where the last schedule ended. */
+  if (g->sched_end < g->clock) { g->sched_end = g->clock; }
   for (const char *p = text; *p; p++) {
     if (*p == ' ' || *p == '\t' || *p == '\n') {
-      if (!at_start && pending < 7) { pending = 7; }
+      if (!at_start && pending < 7) { pending = 7; push_char(g, ' '); }
       continue;
     }
     const char *m = morse_of(*p);
@@ -143,12 +173,17 @@ void cw_gen_send_text(cw_gen *g, const char *text) {
       push_seg(g, 1, m[i] == '-' ? g->dash : g->dot);   /* the mark */
       pending = 0;
     }
+    push_char(g, (char)toupper((unsigned char)*p));     /* ends at its last mark */
     pending = 3;   /* default inter-character gap after a completed char */
     at_start = 0;
   }
 }
 
-void cw_gen_flush(cw_gen *g) { if (g) { g->head = g->tail = 0; g->have_cur = 0; g->cur_rem = 0; } }
+void cw_gen_flush(cw_gen *g) {
+  if (!g) { return; }
+  g->head = g->tail = 0; g->have_cur = 0; g->cur_rem = 0;
+  g->chead = g->ctail = 0; g->sched_end = g->clock;
+}
 
 int cw_gen_pull(cw_gen *g, float *out, int n) {
   if (!g || !out || n <= 0) { return 0; }
@@ -178,7 +213,29 @@ int cw_gen_pull(cw_gen *g, float *out, int n) {
     if (target) { keydown++; }
     if (g->have_cur && --g->cur_rem <= 0) { g->have_cur = 0; }
   }
+  g->clock += n;
   return keydown;
+}
+
+int cw_gen_progress(cw_gen *g, char *buf, int buflen, int *cur) {
+  if (cur) { *cur = 0; }
+  if (buf && buflen > 0) { buf[0] = '\0'; }
+  if (!g || !buf || buflen < 2) { return 0; }
+  int sent = 0;                          /* chars fully sounded (end <= clock) */
+  for (int i = g->chead; i != g->ctail; i = (i + 1) % g->ccap) {
+    if (g->cq[i].end <= g->clock) { sent++; } else { break; }
+  }
+  while (sent > CW_HIST) {               /* keep the history window bounded */
+    g->chead = (g->chead + 1) % g->ccap;
+    sent--;
+  }
+  int n = 0;
+  for (int i = g->chead; i != g->ctail && n < buflen - 1; i = (i + 1) % g->ccap) {
+    buf[n++] = g->cq[i].ch;
+  }
+  buf[n] = '\0';
+  if (cur) { *cur = sent < n ? sent : n; }
+  return n;
 }
 
 int cw_gen_idle(const cw_gen *g) {
