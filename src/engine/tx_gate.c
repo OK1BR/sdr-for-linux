@@ -64,7 +64,13 @@ void tx_gate_evaluate(const tx_gate_cfg *cfg, const tx_gate_in *in, tx_gate_resu
    *    the operator sees it. */
   if (cfg->swr_protect) {
     int high_swr     = in->swr >= cfg->swr_alarm;
-    int open_antenna = in->fwd_w > 10.0 && (in->fwd_w - in->rev_w) < 1.0;  /* Thetis */
+    /* Thetis open-antenna test, scaled to the PA rating: the original 10 W /
+     * 1 W constants are for a 100 W PA (console.cs:25968) — on a 10 W ANAN
+     * 10E they would never arm at legal power. 10 % / 1 % of the rating keeps
+     * the G2E behaviour bit-identical (10.0 / 1.0). */
+    double rating    = cfg->pa_watts > 0.0 ? cfg->pa_watts : 100.0;
+    int open_antenna = in->fwd_w > 0.10 * rating &&
+                       (in->fwd_w - in->rev_w) < 0.01 * rating;
     out->high_swr    = high_swr;                       /* indicator: TUNE + MOX */
     /* The 2-consecutive filter advances on GENUINE coupler readings only.
      * Edge-triggered gate runs re-evaluate the last meter state; letting the

@@ -218,12 +218,45 @@ int settings_load(Settings *s) {
   return ok;
 }
 
+int settings_load_txdev(Settings *s, const char *group) {
+  GKeyFile *kf = g_key_file_new();
+  int ok = 0;
+  if (g_key_file_load_from_file(kf, settings_path(), G_KEY_FILE_NONE, NULL)) {
+    ok = 1;
+    if (g_key_file_has_key(kf, group, "pa_enable", NULL))
+      s->tx_pa = g_key_file_get_integer(kf, group, "pa_enable", NULL);
+    if (g_key_file_has_key(kf, group, "antenna", NULL))
+      s->tx_ant = g_key_file_get_integer(kf, group, "antenna", NULL);
+    if (g_key_file_has_key(kf, group, "drive_w", NULL))
+      s->tx_drive = g_key_file_get_double(kf, group, "drive_w", NULL);
+    if (g_key_file_has_key(kf, group, "drive_digi_max", NULL))
+      s->tx_digi_max = g_key_file_get_double(kf, group, "drive_digi_max", NULL);
+    if (g_key_file_has_key(kf, group, "tune_w", NULL))
+      s->tx_tune = g_key_file_get_double(kf, group, "tune_w", NULL);
+    if (g_key_file_has_key(kf, group, "pa_cal", NULL)) {
+      char *pc = g_key_file_get_string(kf, group, "pa_cal", NULL);
+      if (pc) { g_strlcpy(s->pa_cal, pc, sizeof(s->pa_cal)); g_free(pc); }
+    }
+    if (g_key_file_has_key(kf, group, "pa_trim", NULL)) {
+      char *pt = g_key_file_get_string(kf, group, "pa_trim", NULL);
+      if (pt) { g_strlcpy(s->pa_trim, pt, sizeof(s->pa_trim)); g_free(pt); }
+    }
+  }
+  g_key_file_free(kf);
+  return ok;
+}
+
 int settings_save(const Settings *s) {
   char *dir = g_path_get_dirname(settings_path());
   g_mkdir_with_parents(dir, 0755);
   g_free(dir);
 
+  /* Per-radio TX-cal keys land in the connected radio's group. Pre-load the
+   * existing file so OTHER radios' groups (and the legacy [tx] TX-cal keys,
+   * when a non-G2E radio is connected) survive a full rewrite untouched. */
+  const char *txdev = s->tx_group[0] ? s->tx_group : GROUP_TX;
   GKeyFile *kf = g_key_file_new();
+  g_key_file_load_from_file(kf, settings_path(), G_KEY_FILE_KEEP_COMMENTS, NULL);
   g_key_file_set_string (kf, GROUP_RADIO, "ip",     s->ip);
   g_key_file_set_int64  (kf, GROUP_RADIO, "freq",   s->freq);
   g_key_file_set_integer(kf, GROUP_RADIO, "rate",   s->rate);
@@ -268,11 +301,11 @@ int settings_save(const Settings *s) {
   g_key_file_set_string (kf, GROUP_RX,      "region",     s->region);
   g_key_file_set_string (kf, GROUP_RX,      "country",    s->country);
   g_key_file_set_string (kf, GROUP_DISPLAY, "band_levels", s->band_levels);
-  g_key_file_set_integer(kf, GROUP_TX,     "pa_enable", s->tx_pa);
-  g_key_file_set_integer(kf, GROUP_TX,     "antenna",   s->tx_ant);
-  g_key_file_set_double (kf, GROUP_TX,     "drive_w",   s->tx_drive);
-  g_key_file_set_double (kf, GROUP_TX,     "drive_digi_max", s->tx_digi_max);
-  g_key_file_set_double (kf, GROUP_TX,     "tune_w",    s->tx_tune);
+  g_key_file_set_integer(kf, txdev,        "pa_enable", s->tx_pa);
+  g_key_file_set_integer(kf, txdev,        "antenna",   s->tx_ant);
+  g_key_file_set_double (kf, txdev,        "drive_w",   s->tx_drive);
+  g_key_file_set_double (kf, txdev,        "drive_digi_max", s->tx_digi_max);
+  g_key_file_set_double (kf, txdev,        "tune_w",    s->tx_tune);
   g_key_file_set_double (kf, GROUP_TX,     "swr_alarm", s->tx_swr);
   g_key_file_set_double (kf, GROUP_TX,     "mic_gain",  s->mic_gain);
   g_key_file_set_integer(kf, GROUP_TX,     "comp",      s->tx_comp);
@@ -299,8 +332,8 @@ int settings_save(const Settings *s) {
   g_key_file_set_double (kf, GROUP_TX,     "filt_hi",   s->tx_fhi);
   g_key_file_set_double (kf, GROUP_TX,     "pan_high",  s->tx_pan_high);
   g_key_file_set_double (kf, GROUP_TX,     "pan_low",   s->tx_pan_low);
-  g_key_file_set_string (kf, GROUP_TX,     "pa_cal",    s->pa_cal);
-  g_key_file_set_string (kf, GROUP_TX,     "pa_trim",   s->pa_trim);
+  g_key_file_set_string (kf, txdev,        "pa_cal",    s->pa_cal);
+  g_key_file_set_string (kf, txdev,        "pa_trim",   s->pa_trim);
   g_key_file_set_integer(kf, GROUP_RX,     "audio_rate",   s->audio_rate);
   g_key_file_set_string (kf, GROUP_RX,     "audio_device", s->audio_device);
   g_key_file_set_string (kf, GROUP_TX,     "mic_device",   s->mic_device);

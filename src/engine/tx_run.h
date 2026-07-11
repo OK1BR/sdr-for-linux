@@ -36,6 +36,8 @@ typedef struct {
   double      pa_calibration;  /* PA calibration for the CURRENT band, dB (F6b)     */
   int         swr_protect;     /* 1 = SWR/open-antenna protection on               */
   double      swr_alarm;       /* SWR trip threshold                               */
+  double      pa_watts;        /* PA rating, W (radio_tx_profile) — scales the
+                                  open-antenna trip; 0 = 100 W legacy default      */
   int         allow_oob;       /* allow out-of-band TX                             */
   int         region;          /* band-plan region index (bp_region_t)             */
   const char *country_key;     /* "" / "CZ" / "US" (copied internally)             */

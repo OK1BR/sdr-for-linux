@@ -559,3 +559,52 @@ PROC on at 7 dB: `comp=1, comp_db=7`.
 *Written F0, updated through F6c-4, 2026-07-10. Byte offsets cross-verified
 against piHPSDR @974acba by first-hand read (MOX/`TX_RELAY`/atten/SWR) +
 three-way audit, then validated by live keying into a dummy load (§7, §8).*
+
+---
+
+## 9. Per-radio TX profile — ANAN 10E (HERMES2) bring-up (2026-07-12)
+
+Second TX-capable model. Two independent first-hand audits of piHPSDR
+@974acba (device config + Alex/SWR paths) established that **the entire TX
+wire path is device-independent between the G2E and the 10E** — MOX bit,
+drive byte 345, DUC-frequency LPF knees (np.c:1244-1277, no device
+conditional), ANT1/2/3 bits, `TX_RELAY` gating, atten-31-on-TX (HP 1442/1443
++ TXspec 58/59), the whole TX-specific/CW packet, General[59]=0x01, DDC0/1
+topology, and the P2 PureSignal feedback mapping (DDC0 + DDC1←ADC n_adc,
+np.c:1649-1667 — the `anan10E` flag is **Protocol-1 only**, it never appears
+in new_protocol.c). The differences are a small per-radio profile,
+`radio_tx_profile()` in `radio_support.h`:
+
+| Item | G2E | ANAN 10E (HERMES2) | piHPSDR anchor |
+|---|---|---|---|
+| PA rating | 100 W | **10 W** | radio.c:1292-1296 `PA_10W` |
+| Wattmeter c1/c2 | 5.0*/0.12 | 3.3/0.095 | tx.c:622-634 vs :645-662 |
+| rev c2 HF / 6 m | 0.15/0.70 | 0.095/0.5 | ditto |
+| fwd/rev ADC offsets | 48/42 | 6/3 | ditto |
+| RX filter on TX | ANAN7000 BPF | classic HPF knees (unchanged while keyed) | np.c:1043-1210 |
+| config group | `[tx]` (legacy) | `[tx-hermes2]` | — |
+
+*\* our live-calibrated value (§7); piHPSDR says 3.3 for both.*
+
+What the rating drives: Drive/Tune slider max, digi cap bounds, the
+wattmeter-trim grid (`pa_trim[i] = i·rating/10`, meter full scale), and the
+**open-antenna guard**, which is now scaled — fwd > 10 % of rating with
+(fwd−rev) < 1 % of rating (the Thetis 10 W/1 W constants assumed a 100 W PA
+and would never arm on a 10 W radio; G2E behaviour is bit-identical).
+
+**⛔ TX calibration is per radio** (`Settings.tx_group`): `pa_enable`,
+`antenna`, `drive_w`, `drive_digi_max`, `tune_w`, `pa_cal`, `pa_trim` live in
+the connected radio's config group and never leak between models — a 10 W
+calibration applied to a 100 W PA (or vice versa) yields a wildly wrong drive
+byte. `settings_save` pre-loads the existing file so the other radios' groups
+survive every save. A first-ever connect of a non-G2E radio starts from that
+radio's SAFE defaults: **PA off, ANT1, 1 W drive/tune** — i.e. exactly the
+dry-key step of the live checklist. `pa_calibration` default stays 53.0 dB
+(piHPSDR's generic band table; only the P1 HL2 overrides it).
+
+Offline gates: `sdrfl-txprobe` gained a HERMES2 section (keyed 40 m packet:
+TX bits byte-identical, Hermes HPF 0x20 vs G2E BPF 0x10), `sdrfl-txgate-test`
+the 10 W open-antenna scaling cases. Live checklist on the 10E into a dummy
+load = the acceptance run for `radio_tx_supported() += HERMES2`.
+PureSignal on the 10E: same P2 path + SetPk default (0.2899, tx.c:1204-1215)
+as the G2E — needs its own live check before use.

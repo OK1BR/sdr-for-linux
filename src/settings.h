@@ -94,6 +94,14 @@ typedef struct {
   int       audio_rate;   /* shared audio sample rate (RX out + TX mic), Hz        */
   char      audio_device[128]; /* RX playback: PW node.name ("" = default)         */
   char      mic_device[128];   /* TX mic capture: PW node.name ("" = default)      */
+  /* ⛔ Per-radio TX calibration group. The keys pa_enable/antenna/drive_w/
+   * drive_digi_max/tune_w/pa_cal/pa_trim describe ONE radio's PA and must never
+   * leak between models (a 10 W calibration applied to a 100 W PA — or the
+   * reverse — yields a wildly wrong drive byte). "tx" = the legacy group (G2E);
+   * other radios use radio_tx_profile()->cfg_group (e.g. "tx-hermes2"). Set by
+   * gui.c once the radio is known; settings_save writes those keys there and
+   * preserves every other radio's group untouched. */
+  char      tx_group[24];
 } Settings;
 
 /*
@@ -105,6 +113,15 @@ int settings_load(Settings *s);
 
 /* Write *s to the config file, creating the directory if needed. Returns 0 on ok. */
 int settings_save(const Settings *s);
+
+/*
+ * Overlay ONE radio's TX-calibration keys (pa_enable, antenna, drive_w,
+ * drive_digi_max, tune_w, pa_cal, pa_trim) from [group] onto *s — only keys
+ * present in the file override, so pre-set *s with that radio's safe defaults
+ * first. Call after the connected radio is known (settings_load reads the
+ * legacy [tx] group, which belongs to the G2E). Returns 1 if the file parsed.
+ */
+int settings_load_txdev(Settings *s, const char *group);
 
 /* Absolute path of the config file (static buffer; valid for the process). */
 const char *settings_path(void);

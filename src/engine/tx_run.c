@@ -86,6 +86,7 @@ typedef struct {
   double drive_w, tune_w, pa_calibration;
   int    swr_protect;
   double swr_alarm;
+  double pa_watts;         /* PA rating (open-antenna scaling; 0 = 100 W) */
   int    allow_oob, region, mode;
   int    ptt_enabled;      /* footswitch (radio PTT input) may raise MOX intent */
   char   country_key[8];
@@ -204,6 +205,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   gc.tune_byte       = tx_calc_drive_byte(cfg.tune_w,  cfg.pa_calibration);
   gc.swr_protect     = cfg.swr_protect;
   gc.swr_alarm       = cfg.swr_alarm;
+  gc.pa_watts        = cfg.pa_watts;
   gc.allow_oob       = cfg.allow_oob;
   gc.region          = (bp_region_t)cfg.region;
   gc.country_key     = cfg.country_key;
@@ -509,9 +511,10 @@ int tx_run_start(long long tx_freq_hz, int pan_pixels, int fps) {
   g_mutex_lock(&s_cfg_lock);
   memset(&s_cfg, 0, sizeof s_cfg);
   s_cfg.pa_enabled     = 0;      /* RF impossible until the operator enables the PA */
-  s_cfg.pa_calibration = 53.0;   /* G2E default (validated); per-band pushed by GUI */
+  s_cfg.pa_calibration = 53.0;   /* piHPSDR default (G2E-validated); per-band pushed by GUI */
   s_cfg.swr_protect    = 1;
   s_cfg.swr_alarm      = 3.0;
+  s_cfg.pa_watts       = 100.0;  /* PA rating; per-device value pushed by the GUI */
   s_cfg.mode           = TX_MODE_DFLT;
   s_cfg.tx_flo         = TX_FLO;
   s_cfg.tx_fhi         = TX_FHI;
@@ -589,6 +592,7 @@ void tx_run_set_cfg(const tx_run_cfg *cfg) {
   s_cfg.pa_calibration = cfg->pa_calibration;
   s_cfg.swr_protect    = cfg->swr_protect;
   s_cfg.swr_alarm      = cfg->swr_alarm;
+  s_cfg.pa_watts       = cfg->pa_watts;
   s_cfg.allow_oob      = cfg->allow_oob;
   s_cfg.region         = cfg->region;
   s_cfg.mode           = cfg->mode;

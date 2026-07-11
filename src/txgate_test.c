@@ -150,6 +150,24 @@ int main(void) {
   ok("full-power tune into matched load keys, no trip", r.keyed &&
      r.state.drive == 200 && !r.tripped && !r.high_swr, det);
 
+  /* 8d. open-antenna scales with the PA rating (ANAN 10E = 10 W): the Thetis
+   * 10 W / 1 W constants become 10 % / 1 % of pa_watts — on a 10 W PA the same
+   * open feedline shows fwd≈1.5 W, which the 100 W thresholds would never see. */
+  printf("\n[open antenna · 10 W PA] pa_watts=10, fwd=1.5 rev=1.45 → trip:\n");
+  tx_gate_reset();
+  { tx_gate_cfg c = base_cfg(); c.pa_watts = 10.0; tx_gate_in i = base_in();
+    i.swr = 1.2; i.fwd_w = 1.5; i.rev_w = 1.45;
+    tx_gate_evaluate(&c, &i, &r);
+    tx_gate_evaluate(&c, &i, &r); }
+  ok("open-antenna trips at 10 W scale", r.tripped && !r.keyed, "");
+  printf("\n[open antenna · 100 W PA] same 1.5 W reading → NO trip (below arm):\n");
+  tx_gate_reset();
+  { tx_gate_cfg c = base_cfg(); c.pa_watts = 100.0; tx_gate_in i = base_in();
+    i.swr = 1.2; i.fwd_w = 1.5; i.rev_w = 1.45;
+    tx_gate_evaluate(&c, &i, &r);
+    tx_gate_evaluate(&c, &i, &r); }
+  ok("1.5 W stays below the 100 W-scale arm", r.keyed && !r.tripped, "");
+
   /* 9. release resets the latch, then re-key recovers */
   printf("\n[release] release clears latch, re-key recovers:\n");
   tx_gate_reset();

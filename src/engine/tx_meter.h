@@ -17,6 +17,23 @@
 #ifndef SDRFL_ENGINE_TX_METER_H
 #define SDRFL_ENGINE_TX_METER_H
 
+/*
+ * Per-device bridge calibration (radio_tx_profile in radio_support.h carries
+ * the same numbers; this module stays DISCOVERED-free). Defaults to the
+ * live-calibrated G2E values, so existing tools/gates are unchanged. Call
+ * BEFORE the TX worker thread starts (gui.c does, right before tx_run_start);
+ * also resets the trim curve to identity on the new full-scale grid
+ * (0..pa_watts), matching piHPSDR's pa_trim reseed on a rating change.
+ */
+typedef struct {
+  double c1;             /* slow-ADC full-scale volts                 */
+  double c2;             /* forward coupler constant                  */
+  double rc2_hf, rc2_6m; /* reverse coupler constant HF / 6 m         */
+  int    fwd_off, rev_off;  /* ADC pedestal offsets                   */
+  double pa_watts;       /* PA rating: trim grid = i * pa_watts/10 W  */
+} tx_meter_cal;
+void tx_meter_set_cal(const tx_meter_cal *cal);
+
 /* Reset the running SWR/power state (call at TX channel create / RX->TX). Does
  * NOT touch the wattmeter-trim curve (that is config, set via tx_meter_set_trim). */
 void tx_meter_reset(void);

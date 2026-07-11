@@ -14,31 +14,39 @@
 
 #include "tx_meter.h"
 
-/* G2E (ANAN-7000 PA board) — base constants from transmitter.c:645-662, EXCEPT C1.
- * C1 is the slow-ADC full-scale voltage; Thetis/piHPSDR assume 3.3 V for the G2E,
- * but a live wattmeter check on this G2E (OK1BR, 20 m, byte 20 → 16 W measured vs
- * 7 W computed) shows 5.0 V: (5.0/3.3)^2 = 2.29 ≈ the 2.26× under-read, and it
- * scales fwd+rev together so SWR is unchanged. TODO(F6): make this a per-radio
- * calibration setting rather than a compile-time constant. */
-#define G1_C1        5.0     /* constant1: ADC full-scale volts (calibrated, was 3.3) */
-#define G1_C2        0.12    /* constant2: forward coupler        */
-#define G1_RC2_HF    0.15    /* rconstant2 on HF                  */
-#define G1_RC2_6M    0.70    /* rconstant2 on 6 m                 */
-#define G1_FWD_OFF   48      /* fwd_cal_offset                    */
-#define G1_REV_OFF   42      /* rev_cal_offset                    */
+/* Per-device bridge calibration (tx_meter_set_cal). DEFAULT = the G2E
+ * (ANAN-7000 PA board), base constants from transmitter.c:645-662 EXCEPT C1:
+ * C1 is the slow-ADC full-scale voltage; Thetis/piHPSDR assume 3.3 V for the
+ * G2E, but a live wattmeter check on this G2E (OK1BR, 20 m, byte 20 → 16 W
+ * measured vs 7 W computed) shows 5.0 V: (5.0/3.3)^2 = 2.29 ≈ the 2.26×
+ * under-read, and it scales fwd+rev together so SWR is unchanged.
+ * The Hermes-class (ANAN 10E) values come from the METIS/HERMES/ANGELIA
+ * branch (transmitter.c:622-634) via radio_tx_profile → gui.c. */
+static tx_meter_cal m_cal = {
+  .c1 = 5.0,                       /* ADC full-scale volts (G2E calibrated, was 3.3) */
+  .c2 = 0.12,                      /* forward coupler                   */
+  .rc2_hf = 0.15, .rc2_6m = 0.70,  /* reverse coupler HF / 6 m          */
+  .fwd_off = 48, .rev_off = 42,    /* ADC pedestal offsets              */
+  .pa_watts = 100.0,               /* rating → trim grid 0,10,..,100 W  */
+};
 
 static double m_fwd = 0.0;   /* forward watts (EMA words)      */
 static double m_pep = 0.0;   /* forward PEP watts (raw maximum) */
 static double m_rev = 0.0;   /* reverse watts */
 static double m_swr = 1.0;   /* smoothed VSWR */
 
-/* Wattmeter correction breakpoints: m_trim[i] is the raw-computed power that reads
- * when the true output is i*PATRIM_INTERVAL watts. Default = identity (linear).
- * The 10 W step is the G2E default: piHPSDR radio.c:1308 sets pa_power=PA_100W
- * (100 W rated), radio.c:1330 seeds pa_trim[i]=i*100*0.1. A non-G2E radio differs. */
-#define PATRIM_INTERVAL 10.0   /* G2E rated 100 W → 10 W per 10 % step */
+/* Wattmeter correction breakpoints: m_trim[i] is the raw-computed power that
+ * reads when the true output is i*(pa_watts/10) watts. Default = identity
+ * (linear) on the rating grid — piHPSDR radio.c:1330 pa_trim[i] = i*rating*0.1,
+ * reseeded when the rating changes (radio_menu.c:439-442); set_cal mirrors that. */
 static double m_trim[11] = { 0.0, 10.0, 20.0, 30.0, 40.0, 50.0,
                              60.0, 70.0, 80.0, 90.0, 100.0 };
+
+void tx_meter_set_cal(const tx_meter_cal *cal) {
+  m_cal = *cal;
+  if (m_cal.pa_watts <= 0.0) { m_cal.pa_watts = 100.0; }
+  for (int i = 0; i < 11; i++) { m_trim[i] = i * m_cal.pa_watts * 0.1; }
+}
 
 void tx_meter_reset(void) {
   m_fwd = 0.0;
@@ -54,7 +62,7 @@ void tx_meter_set_trim(const double trim[11]) {
 
 /* Piecewise-linear wattmeter correction (piHPSDR transmitter.c compute_power):
  * interpolate the raw-computed power p through the operator's measured breakpoints
- * onto the true-watts grid (0,10,..,100 W). Identity with the default curve. */
+ * onto the true-watts grid (0..pa_watts in 10 steps). Identity with the default. */
 static double compute_power(double p) {
   int i = 0;
   if (p > m_trim[10]) {
@@ -65,21 +73,21 @@ static double compute_power(double p) {
   }
   if (m_trim[i + 1] - m_trim[i] < 0.001) { return m_trim[i + 1]; }  /* guard /0 */
   double frac = (p - m_trim[i]) / (m_trim[i + 1] - m_trim[i]);
-  return PATRIM_INTERVAL * ((1.0 - frac) * (double)i + frac * (double)(i + 1));
+  return m_cal.pa_watts * 0.1 * ((1.0 - frac) * (double)i + frac * (double)(i + 1));
 }
 
 /* raw coupler word -> watts, through the wattmeter correction curve. */
 static double raw_to_watts(int raw, int cal_offset, double rconstant) {
   int p = raw - cal_offset;
   if (p < 0) { p = 0; }
-  double v = ((double)p / 4095.0) * G1_C1;
+  double v = ((double)p / 4095.0) * m_cal.c1;
   return compute_power((v * v) / rconstant);
 }
 
 void tx_meter_update(int fwd_raw, int rev_raw, int fwd_max_raw, int is_6m) {
-  m_fwd = raw_to_watts(fwd_raw, G1_FWD_OFF, G1_C2);
-  m_pep = raw_to_watts(fwd_max_raw, G1_FWD_OFF, G1_C2);
-  m_rev = raw_to_watts(rev_raw, G1_REV_OFF, is_6m ? G1_RC2_6M : G1_RC2_HF);
+  m_fwd = raw_to_watts(fwd_raw, m_cal.fwd_off, m_cal.c2);
+  m_pep = raw_to_watts(fwd_max_raw, m_cal.fwd_off, m_cal.c2);
+  m_rev = raw_to_watts(rev_raw, m_cal.rev_off, is_6m ? m_cal.rc2_6m : m_cal.rc2_hf);
 
   if (m_fwd > 0.25) {
     double gamma = sqrt(m_rev / m_fwd);

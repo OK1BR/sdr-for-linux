@@ -106,6 +106,28 @@ int main(void) {
   chk("hp[1442] atten1 = 0 (PA off)",  buf[1442], 0);
   chk("hp[1443] atten0 = 0 (PA off)",  buf[1443], 0);
 
+  /* ---- HP HERMES2 (ANAN 10E): same TX bits, Hermes HPF on the RX side --
+   * piHPSDR audit 2026-07-11: the TX case (MOX, drive, DUC-LPF, ANT, TX_RELAY,
+   * atten 31/31) is device-independent (np.c:1026-1032, 1244-1277, 1425-1449);
+   * only the RX filter select differs — Hermes-class picks classic HPF knees
+   * (np.c:1169-1210). 40 m makes the classes distinct: G2E BPF 0x10 vs Hermes
+   * 6.5 MHz HPF 0x20. */
+  printf("\n[HP HERMES2] ANAN 10E, 40 m keyed: TX bits identical, HPF 0x20:\n");
+  {
+    const long long f40 = 7100000LL;
+    p2_tx_state txh = tx; txh.tx_freq = f40;
+    p2_build_high_priority(buf, NEW_DEVICE_HERMES2, f40, 1, NULL, NULL);
+    chk("hp alex0 RX = HPF|LPF|ANT1",    be32(buf + 1432), 0x01200020u);
+    chk("hp alex1 RX = LPF|ANT1",        be32(buf + 1428), 0x01200000u);
+    p2_build_high_priority(buf, NEW_DEVICE_HERMES2, f40, 1, &txh, NULL);
+    chk("hp[4] run+MOX (0x03)",          buf[4], 0x03);
+    chk("hp[345] drive = 200",           buf[345], 200);
+    chk("hp alex0 TX (+TX_RELAY)",       be32(buf + 1432), 0x09200020u);
+    chk("hp alex1 TX (+TX_RELAY)",       be32(buf + 1428), 0x09200000u);
+    chk("hp[1442] atten1 = 31 (TX+PA)",  buf[1442], 31);
+    chk("hp[1443] atten0 = 31 (TX+PA)",  buf[1443], 31);
+  }
+
   /* ---- TX-specific OFF (cw=NULL): all-zero, keyer disabled ----------- */
   printf("\n[TXspec OFF] cw=NULL — all-zero (byte5=0 → FPGA CW keyer disabled):\n");
   p2_build_transmit_specific(buf, NULL, NULL);

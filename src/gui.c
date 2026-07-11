@@ -47,6 +47,7 @@
 #include "radio_support.h"
 #include "tci_server.h"
 #include "tx_run.h"
+#include "tx_meter.h"   /* tx_meter_set_cal — per-radio wattmeter bridge constants */
 #include "tx.h"   /* tx_dsp_in_rate() — mic capture rate must match the WDSP TX input */
 #include "ps.h"   /* PureSignal runtime — enable/att/SetPk from Preferences (F7/PS-2) */
 
@@ -188,7 +189,7 @@ typedef struct {
   int         spot_ttl_min;  /* minutes before an unrefreshed spot expires
                                 (persisted; 10 = casual DX, 1 = contests)      */
   double      tx_digi_max_w; /* ⛔ drive cap in DIGU/DIGL, W (piHPSDR
-                                drive_digi_max; persisted, 100 = uncapped)     */
+                                drive_digi_max; persisted, = pa_watts → off)   */
   GtkWidget  *drive_scale;   /* footer Drive slider (digi clamp syncs it)      */
   GtkWidget  *mic_group;     /* footer Mic-gain group — voice modes only (#7)  */
   GtkWidget  *proc_group;    /* footer PROC group — voice modes only (#7)      */
@@ -206,6 +207,11 @@ typedef struct {
   /* TX (F6a) — the runtime lives in engine/tx_run; the GUI only expresses intent
    * (TUNE) and reflects status. MOX waits for the mic path (F6c). */
   int         tx_ready;      /* tx_run started (WDSP TX channel + worker thread up) */
+  double      pa_watts;      /* connected radio's PA rating, W (radio_tx_profile):
+                                drive/tune/digi slider max + open-ant scaling      */
+  double      patrim_step;   /* wattmeter-trim grid step = pa_watts/10             */
+  char        tx_group[24];  /* ⛔ per-radio TX-cal config group (settings.h)      */
+  char        radio_name[64];/* connected radio's discovery name (header status)   */
   int         tx_pa_enabled; /* PA enable — RF impossible when 0 (persisted)        */
   int         tx_antenna;    /* TX/RX antenna 0/1/2 → ANT1/2/3 (persisted)          */
   double      tx_drive_w;    /* MOX/voice power request, W (persisted)              */
@@ -311,7 +317,8 @@ static int band_for_freq(long long f) {
 #define PACAL_MIN     38.8
 #define PACAL_MAX     70.0
 #define PACAL_DEFAULT 53.0     /* G2E: piHPSDR band.c table (not HL2's 40.5)        */
-#define PATRIM_STEP   10.0     /* G2E: PA_100W → 10 W per 10 % step (radio.c:1330)  */
+/* Wattmeter-trim grid step is PER RADIO: app->patrim_step = pa_watts/10
+ * (piHPSDR radio.c:1330 — G2E PA_100W → 10 W, ANAN 10E PA_10W → 1 W). */
 static inline double pacal_clamp(double v) {
   return v < PACAL_MIN ? PACAL_MIN : (v > PACAL_MAX ? PACAL_MAX : v);
 }
@@ -1648,6 +1655,8 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
 
 static void app_to_settings(const App *app, Settings *s) {
   g_strlcpy(s->ip, app->radio_ip, sizeof(s->ip));
+  /* ⛔ route the per-radio TX-cal keys to the connected radio's group */
+  g_strlcpy(s->tx_group, app->tx_group, sizeof(s->tx_group));
   s->freq   = app->freq;
   s->rate   = app->rate;
   s->mode   = app->mode;
@@ -1872,6 +1881,7 @@ static void tx_push_cfg(App *app) {
   c.pa_calibration = (b >= 0) ? pacal_clamp(app->band_pacal[b]) : PACAL_DEFAULT;
   c.swr_protect    = 1;
   c.swr_alarm      = app->tx_swr_alarm;
+  c.pa_watts       = app->pa_watts;
   c.allow_oob      = 0;
   c.region         = app->bp_region;
   c.country_key    = bp_country_key(app->bp_country);
@@ -2825,8 +2835,9 @@ static GtkWidget *build_bottom_controls(App *app) {
   g_signal_connect(agct, "value-changed", G_CALLBACK(on_agct_changed), app);
   gtk_box_append(GTK_BOX(bar), labeled("AGC-T", agct));
 
-  /* TX drive (MOX/voice, W) + tune drive (W) + antenna — operational TX controls. */
-  GtkWidget *drv = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 100, 1);
+  /* TX drive (MOX/voice, W) + tune drive (W) + antenna — operational TX controls.
+   * Slider max = the connected radio's PA rating (100 W G2E, 10 W ANAN 10E). */
+  GtkWidget *drv = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, app->pa_watts, 1);
   gtk_range_set_value(GTK_RANGE(drv), app->tx_drive_w);        /* before wiring: no send */
   gtk_widget_set_size_request(drv, 130, -1);
   gtk_scale_set_draw_value(GTK_SCALE(drv), TRUE);
@@ -2836,7 +2847,7 @@ static GtkWidget *build_bottom_controls(App *app) {
   gtk_box_append(GTK_BOX(bar), labeled("Drive", drv));
   app->drive_scale = drv;               /* digi cap syncs the slider (⛔) */
 
-  GtkWidget *tdrv = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 100, 1);
+  GtkWidget *tdrv = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, app->pa_watts, 1);
   gtk_range_set_value(GTK_RANGE(tdrv), app->tx_tune_w);
   gtk_widget_set_size_request(tdrv, 120, -1);
   gtk_scale_set_draw_value(GTK_SCALE(tdrv), TRUE);
@@ -3293,6 +3304,8 @@ static void tci_set_filter(int lo, int hi) {
 }
 static double tci_get_drive(void) { return tci_app->tx_drive_w; }
 static void tci_set_drive(double v) {
+  if (v < 0.0) { v = 0.0; }
+  if (v > tci_app->pa_watts) { v = tci_app->pa_watts; }   /* per-radio rating */
   tci_app->tx_drive_w = v;
   digi_drive_clamp(tci_app);           /* cap in DIGU/DIGL, slider synced   */
   tx_push_cfg(tci_app);
@@ -3300,6 +3313,8 @@ static void tci_set_drive(double v) {
 }
 static double tci_get_tune_drive(void) { return tci_app->tx_tune_w; }
 static void tci_set_tune_drive(double v) {
+  if (v < 0.0) { v = 0.0; }
+  if (v > tci_app->pa_watts) { v = tci_app->pa_watts; }
   tci_app->tx_tune_w = v;
   tx_push_cfg(tci_app);
   schedule_save(tci_app);
@@ -3528,7 +3543,7 @@ static void on_pref_patrim(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
 static void on_pref_patrim_reset(GtkButton *b, gpointer data) {
   (void)b; App *app = (App *)data;
   for (int i = 0; i < 11; i++) {
-    app->pa_trim[i] = i * PATRIM_STEP;                       /* identity curve */
+    app->pa_trim[i] = i * app->patrim_step;                  /* identity curve */
     if (i >= 1 && app->patrim_spin[i]) {
       adw_spin_row_set_value(ADW_SPIN_ROW(app->patrim_spin[i]), app->pa_trim[i]);
     }
@@ -3603,9 +3618,11 @@ static GtkWidget *pacal_row(App *app, int band) {
 /* One wattmeter-trim spin row: title = true watts (fixed grid), value = the raw
  * meter reading at that power (the adjustable breakpoint). Point index 1..10. */
 static GtkWidget *patrim_row(App *app, int i) {
-  GtkAdjustment *a = gtk_adjustment_new(app->pa_trim[i], 0.0, 300.0, 0.5, 5.0, 0);
+  GtkAdjustment *a = gtk_adjustment_new(app->pa_trim[i], 0.0,
+                                        3.0 * app->pa_watts,   /* ×3 headroom */
+                                        0.5, 5.0, 0);
   char title[16];
-  snprintf(title, sizeof title, "%d W", (int)(i * PATRIM_STEP));
+  snprintf(title, sizeof title, "%g W", i * app->patrim_step);
   GtkWidget *row = g_object_new(ADW_TYPE_SPIN_ROW, "title", title,
                                 "subtitle", "meter reading at this true power",
                                 "adjustment", a, "digits", 1, NULL);
@@ -3668,8 +3685,8 @@ static AdwDialog *build_prefs(App *app) {
       "Hz · voice audio high edge (2850 default; 3500-6000 = eSSB — mind the band plan) · live",
       TXF_HI_MIN, TXF_HI_MAX, app->tx_fhi, G_CALLBACK(on_pref_tx_fhi), app));
   adw_preferences_group_add(g, pref_spin("Digi max drive",
-      "W cap in DIGU/DIGL — FT8 & co. run 100% duty, protect the PA (100 = off) · live",
-      1, 100, app->tx_digi_max_w, G_CALLBACK(on_pref_digi_max), app));
+      "W cap in DIGU/DIGL — FT8 & co. run 100% duty, protect the PA (max = off) · live",
+      1, app->pa_watts, app->tx_digi_max_w, G_CALLBACK(on_pref_digi_max), app));
   /* F6b — per-band PA calibration table (like piHPSDR's PA-calibration menu). The
    * 38.8 dB floor is the safety limit; 53 dB is the validated G2E default. */
   GtkWidget *pacal_exp = g_object_new(ADW_TYPE_EXPANDER_ROW, "title", "PA calibration (per band)",
@@ -3995,7 +4012,10 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
   g_signal_connect(win, "notify::maximized",      G_CALLBACK(on_win_size), app);
 
   GtkWidget *header = adw_header_bar_new();
-  GtkWidget *status = gtk_label_new(app->radio_mode ? "●  ANAN G2E" : "●  server");
+  char stbuf[80];   /* the connected radio's discovery name (start_radio ran first) */
+  snprintf(stbuf, sizeof stbuf, "●  %s",
+           app->radio_name[0] ? app->radio_name : "radio");
+  GtkWidget *status = gtk_label_new(app->radio_mode ? stbuf : "●  server");
   gtk_widget_add_css_class(status, "dim");
   adw_header_bar_pack_start(ADW_HEADER_BAR(header), status);
   {
@@ -4086,6 +4106,48 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
   gtk_window_present(GTK_WINDOW(win));
 }
 
+/* ⛔ Copy the per-radio TX-calibration fields (the settings.h tx_group block)
+ * from *st into the App, clamped to the connected radio's PA rating
+ * (app->pa_watts/patrim_step must be set first). Runs once with the legacy
+ * [tx] values before discovery (failure paths keep sane values) and AGAIN
+ * with the radio's own group + defaults once the model is known — a 10 W
+ * radio must never inherit a 100 W radio's drive/calibration or vice versa. */
+static void tx_cal_from_settings(App *app, const Settings *st) {
+  double w = app->pa_watts > 0.0 ? app->pa_watts : 100.0;
+  app->tx_pa_enabled = st->tx_pa ? 1 : 0;
+  app->tx_antenna    = st->tx_ant < 0 ? 0 : (st->tx_ant > 2 ? 2 : st->tx_ant);
+  app->tx_drive_w    = st->tx_drive < 0.0 ? 0.0 : (st->tx_drive > w ? w : st->tx_drive);
+  app->tx_digi_max_w = (st->tx_digi_max >= 1.0 && st->tx_digi_max <= w) ? st->tx_digi_max : w;
+  app->tx_tune_w     = st->tx_tune  < 0.0 ? 0.0 : (st->tx_tune  > w ? w : st->tx_tune);
+  /* Per-band PA calibration (F6b): default every band to 53 dB, then apply saved
+   * "key=dB;..." overrides (clamped to the safe [38.8,70.0] range). */
+  for (int i = 0; i < NBANDS; i++) { app->band_pacal[i] = PACAL_DEFAULT; }
+  char pcbuf[256];
+  g_strlcpy(pcbuf, st->pa_cal, sizeof pcbuf);
+  char *pcsv = NULL;
+  for (char *tok = strtok_r(pcbuf, ";", &pcsv); tok; tok = strtok_r(NULL, ";", &pcsv)) {
+    char *eq = strchr(tok, '=');
+    if (!eq) { continue; }
+    *eq = '\0';
+    double db = pacal_clamp(g_ascii_strtod(eq + 1, NULL));
+    for (int i = 0; i < NBANDS; i++) {
+      if (strcmp(tok, BANDS[i].key) == 0) { app->band_pacal[i] = db; break; }
+    }
+  }
+  /* Wattmeter-trim curve (F6b): identity on this radio's grid, then the saved
+   * 11 points (stored in watts on the same grid). */
+  for (int i = 0; i < 11; i++) { app->pa_trim[i] = i * app->patrim_step; }
+  char ptbuf[256];
+  g_strlcpy(ptbuf, st->pa_trim, sizeof ptbuf);
+  char *ptsv = NULL; int pti = 0;
+  for (char *tok = strtok_r(ptbuf, ";", &ptsv); tok && pti < 11; tok = strtok_r(NULL, ";", &ptsv)) {
+    double v = g_ascii_strtod(tok, NULL);
+    if (v < 0.0) { v = 0.0; }
+    app->pa_trim[pti++] = v;
+  }
+  app->pa_trim[0] = 0.0;   /* the origin is fixed */
+}
+
 /* Bring up the direct-radio engine: discover → analyzer → P2 RX.
  * State precedence: env var > saved config > built-in default. */
 static void start_radio(App *app) {
@@ -4159,12 +4221,13 @@ static void start_radio(App *app) {
   app->nb     = st.nb < 0 ? 0 : (st.nb > 2 ? 2 : st.nb);   /* 0 off / 1 NB / 2 NB2 */
   app->anf    = st.anf ? 1 : 0;
   app->binaural = st.binaural ? 1 : 0;
-  /* TX (F6a): PA-enable persists (mirrors piHPSDR). Clamp the rest to safe ranges. */
-  app->tx_pa_enabled = st.tx_pa ? 1 : 0;
-  app->tx_antenna    = st.tx_ant < 0 ? 0 : (st.tx_ant > 2 ? 2 : st.tx_ant);
-  app->tx_drive_w    = st.tx_drive < 0.0 ? 0.0 : (st.tx_drive > 100.0 ? 100.0 : st.tx_drive);
-  app->tx_digi_max_w = (st.tx_digi_max >= 1.0 && st.tx_digi_max <= 100.0) ? st.tx_digi_max : 100.0;
-  app->tx_tune_w     = st.tx_tune  < 0.0 ? 0.0 : (st.tx_tune  > 100.0 ? 100.0 : st.tx_tune);
+  /* TX (F6a): PA-enable persists (mirrors piHPSDR). Clamp the rest to safe
+   * ranges. G2E-profile defaults here; once discovery identifies the radio the
+   * per-radio profile + TX-cal group are applied below (tx_cal_from_settings). */
+  app->pa_watts    = 100.0;
+  app->patrim_step = 10.0;
+  g_strlcpy(app->tx_group, "tx", sizeof app->tx_group);
+  tx_cal_from_settings(app, &st);
   app->tx_swr_alarm  = st.tx_swr   < 2.0 ? 2.0 : (st.tx_swr   > 5.0   ? 5.0   : st.tx_swr);
   app->tx_mic_gain   = st.mic_gain < MIC_GAIN_MIN ? MIC_GAIN_MIN : (st.mic_gain > MIC_GAIN_MAX ? MIC_GAIN_MAX : st.mic_gain);
   app->tx_comp       = st.tx_comp ? 1 : 0;
@@ -4267,33 +4330,6 @@ static void start_radio(App *app) {
       }
     }
   }
-  /* Per-band PA calibration (F6b): default every band to 53 dB, then apply saved
-   * "key=dB;..." overrides (clamped to the safe [38.8,70.0] range). */
-  for (int i = 0; i < NBANDS; i++) { app->band_pacal[i] = PACAL_DEFAULT; }
-  char pcbuf[256];
-  g_strlcpy(pcbuf, st.pa_cal, sizeof pcbuf);
-  char *pcsv = NULL;
-  for (char *tok = strtok_r(pcbuf, ";", &pcsv); tok; tok = strtok_r(NULL, ";", &pcsv)) {
-    char *eq = strchr(tok, '=');
-    if (!eq) { continue; }
-    *eq = '\0';
-    double db = pacal_clamp(g_ascii_strtod(eq + 1, NULL));
-    for (int i = 0; i < NBANDS; i++) {
-      if (strcmp(tok, BANDS[i].key) == 0) { app->band_pacal[i] = db; break; }
-    }
-  }
-  /* Wattmeter-trim curve (F6b): default identity, then apply the saved 11 points. */
-  for (int i = 0; i < 11; i++) { app->pa_trim[i] = i * PATRIM_STEP; }
-  char ptbuf[256];
-  g_strlcpy(ptbuf, st.pa_trim, sizeof ptbuf);
-  char *ptsv = NULL; int pti = 0;
-  for (char *tok = strtok_r(ptbuf, ";", &ptsv); tok && pti < 11; tok = strtok_r(NULL, ";", &ptsv)) {
-    double v = g_ascii_strtod(tok, NULL);
-    if (v < 0.0) { v = 0.0; }
-    app->pa_trim[pti++] = v;
-  }
-  app->pa_trim[0] = 0.0;   /* the origin is fixed */
-
   app->cur_band = band_for_freq(app->freq);
   if (app->cur_band >= 0) {
     app->pan_high = app->band_high[app->cur_band];
@@ -4371,6 +4407,30 @@ static void start_radio(App *app) {
   }
   printf("Using %s at %s — RX %lld Hz @ %d Hz\n", dev->name,
          inet_ntoa(dev->network.address.sin_addr), app->freq, rate);
+  g_strlcpy(app->radio_name, dev->name, sizeof app->radio_name);
+
+  /* ⛔ Per-radio TX profile (radio_support.h; piHPSDR audit 2026-07-11). PA
+   * rating + wattmeter bridge constants + the radio's own TX-cal config group.
+   * A non-legacy radio re-loads its TX calibration from [cfg_group] over its
+   * SAFE defaults — PA off, ANT1, 1 W drive/tune — so a first-ever connect
+   * starts at the dry-key step of the live checklist, never with another
+   * radio's drive/pa_cal. */
+  {
+    const radio_tx_profile_t *prof = radio_tx_profile(dev);
+    app->pa_watts    = prof->pa_watts;
+    app->patrim_step = prof->pa_watts / 10.0;
+    g_strlcpy(app->tx_group, prof->cfg_group, sizeof app->tx_group);
+    if (strcmp(prof->cfg_group, "tx") != 0) {
+      st.tx_pa = 0; st.tx_ant = 0;
+      st.tx_drive = 1.0; st.tx_tune = 1.0; st.tx_digi_max = prof->pa_watts;
+      st.pa_cal[0] = '\0'; st.pa_trim[0] = '\0';
+      settings_load_txdev(&st, prof->cfg_group);
+    }
+    tx_cal_from_settings(app, &st);   /* re-clamp to this radio's rating */
+    tx_meter_cal mc = { prof->m_c1, prof->m_c2, prof->m_rc2_hf, prof->m_rc2_6m,
+                        prof->m_fwd_off, prof->m_rev_off, prof->pa_watts };
+    tx_meter_set_cal(&mc);   /* before tx_run_start — the TX worker owns it after */
+  }
 
   if (analyzer_create(0, app->pixels, rate, app->fps) != 0) {
     fprintf(stderr, "analyzer_create failed\n");

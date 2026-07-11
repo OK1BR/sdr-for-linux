@@ -10,9 +10,10 @@
  *   - SWR shutdown — SWR >= alarm on TWO consecutive polls → drop MOX + drive 0,
  *     latched until release. Trips under MOX; during TUNE high SWR does NOT trip
  *     (deliberate ATU mismatch tuning) but IS still flagged (out->high_swr);
- *   - open-antenna detection (Thetis) — fwd > 10 W && fwd-rev < 1 W → same trip,
- *     ALWAYS active, incl. TUNE (you never legitimately key into an open antenna,
- *     and TUNE can now run to full power);
+ *   - open-antenna detection (Thetis) — fwd > 10 % of the PA rating with
+ *     (fwd − rev) < 1 % of it → same trip, ALWAYS active, incl. TUNE (you never
+ *     legitimately key into an open antenna, and TUNE can now run to full
+ *     power). 100 W PA = Thetis's original 10 W / 1 W constants;
  *   - separate MOX vs TUNE drive.
  *
  * ⛔ F4: this only DECIDES — it does not send. Nothing wires tx_gate_evaluate()'s
@@ -39,6 +40,8 @@ typedef struct {
   int         tune_byte;       /* separate TUNE exciter drive, 0-255 (low default) */
   int         swr_protect;     /* SWR/open-ant protection enabled (our default: 1) */
   double      swr_alarm;       /* SWR trip threshold (default 3.0)                */
+  double      pa_watts;        /* PA rating, W — scales the open-antenna test
+                                  (10 %/1 % of rating); 0 = 100 W (legacy)       */
   int         allow_oob;       /* allow out-of-band TX (default 0)                */
   bp_region_t region;          /* band-plan region for the in-band check          */
   const char *country_key;     /* "" / "CZ" / "US" national overrides             */
