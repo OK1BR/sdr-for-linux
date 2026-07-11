@@ -286,8 +286,13 @@ Pořadí prací (dávky podle závislostí a rizika):
   B3 (piHPSDR reference) neměřeno — není už k rozhodnutí potřeba.
   Bokem opraveno: SWR 2-consecutive filtr počítá jen čerstvá čtení
   (b1fef7d, +2 testy, Richardův bezpečnostní audit).
-- **Dávka C — ✅ NAVRŽENO S RICHARDEM + IMPLEMENTOVÁNO (2026-07-11,
-  čeká na živé ověření):** #7 mode-aware TX HUD. Rozhodnutí (Richard):
+- **Dávka C — ✅ HOTOVO + CW ČÁST ŽIVĚ OVĚŘENA (2026-07-11 večer,
+  0f492f0 + c4930d4):** #7 mode-aware TX HUD. Živý test na G2E: Richard
+  „dobrý, takhle by ten HUD prozatím mohl být"; jediná připomínka —
+  pruh si pamatoval předchozí klíčování → opraveno (nový over od idle
+  začíná čistý, mid-over sendy se appendují; kryto sdrfl-cw-test).
+  Digi metr (TCI level + CLIP) zatím živě neověřen — až při příštím
+  digi provozu. Rozhodnutí (Richard):
   layout A = sent-text pruh přes šířku TX panadapteru + WPM/KEY/HANG
   kompaktně vpravo; digi HUD hned (TCI TX-audio level + 1s CLIP latch);
   čistě zobrazovací (abort zůstává na Esc — žádný klikací cíl, nepere

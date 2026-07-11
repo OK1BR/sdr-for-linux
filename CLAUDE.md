@@ -58,8 +58,10 @@ multi-radio dedup, start-by-picked-IP, SWR stale-reading filter, guards).
 Contest-earned tripwires now in **TX-DESIGN §8** — read them before ANY
 TX-path edit. Latency instrumentation stays: `SDRFL_LAT_DEBUG=1`.
 
-**Contest note #7 — DONE 2026-07-11 (0f492f0), awaiting live keyed
-verification:** mode-aware TX HUD, design settled with Richard (layout A).
+**Contest note #7 — DONE + CW part LIVE-VERIFIED 2026-07-11 (0f492f0 +
+c4930d4):** mode-aware TX HUD, design settled with Richard (layout A).
+Live fix from the test: the strip shows only the CURRENT over (a send
+from idle clears the previous record). Digi meter not yet live-tested.
 CW: full-width sent-text strip (sent dim / sounding char inverted / queue
 bright, via `cw_gen_progress` + `tx_run_cw_progress`) + WPM + KEY/HANG +
 hang-drain bar; digi: TCI TX-audio level + 1 s CLIP latch (`ext_pk`/
@@ -72,12 +74,13 @@ stays: it lives in vendored piHPSDR `discovered.h` (unmodified per policy)
 and keeps the upstream audit mapping — piHPSDR sources call the G2E "G1";
 grep for G1 there. Do NOT confuse with the Saturn/G2.
 
-**★ Next session:** (1) refresh the `~/.local` install (still on the
-2026-07-11 morning build — several fixes + the TX HUD landed after it);
-(2) live-verify the CW TX HUD + digi meter while keyed (with Richard);
-(3) then the next-release roadmap: **ANAN 10E bring-up** (P2 confirmed,
-fw 10.3; radio reports link-local 169.254.x.x — check its DHCP first),
-then Hermes Lite 2 (P1 = new milestone), then Square SDR.
+**★ Next session:** next-release roadmap — **ANAN 10E bring-up** (P2
+confirmed, fw 10.3; radio reports link-local 169.254.x.x — check its
+DHCP first: power-cycle with cable / router lease, MAC 40:84:32:B1:46:4E),
+then Hermes Lite 2 (P1 = new milestone), then Square SDR. Small leftover:
+live-check the digi TX meter (TCI level + CLIP) during digi operation.
+(`~/.local` install refreshed 2026-07-11 evening via
+`meson install -C build-release` — that build dir has prefix ~/.local.)
 
 **Older follow-ups:** off-centre pan, AGC-target vs `SDRFL_GAIN`, audio
 clock-drift smoothing, absolute dBm cal, nonlinear wattmeter cal
