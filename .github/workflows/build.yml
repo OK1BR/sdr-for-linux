@@ -73,9 +73,19 @@ jobs:
           else
             export VERSION="git$(git rev-parse --short HEAD)"
           fi
+          # Phase 1: deploy libs + GTK plugin (hooks, schemas, pixbuf loaders)
           ./linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
             --appdir AppDir \
-            --plugin gtk \
+            --plugin gtk
+          # The gstreamer media module would dlopen the HOST gstreamer (symbol
+          # skew vs the bundled glib) and we play no media — drop it. And a
+          # libadwaita app must NOT run with GTK_THEME set (the plugin's
+          # GTK3-era default): it would suppress libadwaita's own stylesheet.
+          rm -f AppDir/usr/lib/gtk-4.0/*/media/libmedia-gstreamer.so
+          sed -i '/^export GTK_THEME=/d' AppDir/apprun-hooks/linuxdeploy-plugin-gtk.sh
+          # Phase 2: pack the AppImage
+          ./linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
+            --appdir AppDir \
             --output appimage
           ls -la *.AppImage
       - name: Upload artifact
