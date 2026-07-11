@@ -606,8 +606,10 @@ Offline gates: `sdrfl-txprobe` gained a HERMES2 section (keyed 40 m packet:
 TX bits byte-identical, Hermes HPF 0x20 vs G2E BPF 0x10), `sdrfl-txgate-test`
 the 10 W open-antenna scaling cases. **Live checklist PASSED 2026-07-12**
 (dry key → 1 W → per-band PA cal 40 m 33.6 / 20 m 32.8 dB against the
-external wattmeter, app meter agreeing → SWR 1.05 → CW break-in → TCI/SDC
-skimming with a 384 kHz IQ client).
+external wattmeter, app meter agreeing → SWR 1.05 → CW break-in → voice
+MOX → TCI/SDC skimming with a 384 kHz IQ client). Remaining bands keep the
+53 dB default → they heavily under-drive until walked down (~32-34 dB
+expected) against a wattmeter.
 
 **⛔ PureSignal is LOCKED OUT on Hermes-class (`radio_ps_supported()`, G2E
 only).** Live, twice: keying the 10E with PS enabled kills the radio mid-TX

@@ -12,8 +12,8 @@ full-resolution floating-point panadapter. **No DSP is reimplemented**; WDSP
 does the heavy lifting.
 
 > **Status: alpha.** Everything below is implemented and verified live on an
-> Apache Labs **ANAN G2E**. That is also the catch: the G2E is currently the
-> **only supported radio** — see [Supported hardware](#supported-hardware).
+> Apache Labs **ANAN G2E** and (since 2026-07-12) an **ANAN 10E** — currently
+> the two supported radios; see [Supported hardware](#supported-hardware).
 
 ![SDR for Linux — 20 m CW on the ANAN G2E](docs/img/main-window.png)
 
@@ -41,6 +41,7 @@ does the heavy lifting.
 - CW keying with clean first-dit, adjustable WPM / sidetone / break-in hang
 - **PureSignal** linearization with Thetis-style auto-attenuate — calibrates
   continuously on voice, converges in seconds after drive/band changes
+  (G2E; not available on old Hermes-class firmware — see the hardware table)
 - TX panadapter + waterfall of the transmitted spectrum
 
 **Integration**
@@ -61,12 +62,18 @@ radio picker rather than left to luck.
 | Radio | Protocol | Status |
 |---|---|---|
 | Apache Labs **ANAN G2E** | HPSDR Protocol 2 | ✅ supported, developed & verified on this radio |
+| Apache Labs **ANAN 10E / 100B** (Hermes) | HPSDR Protocol 2 | ✅ supported — RX + TX live-verified (fw 10.3); per-radio PA calibration & 10 W scale. **PureSignal disabled**: the old Hermes firmware locks up on the P2 feedback-DDC switch mid-TX (power-cycle recovery); details in `docs/TX-DESIGN.md` §9 |
 | Other ANAN / Hermes P2 boards | Protocol 2 | ⛔ blocked until tested — open an issue if you can lend hardware + a dummy load |
-| Hermes Lite 2, older P1 boards | Protocol 1 | ⛔ not implemented (P1 is a future milestone) |
+| Hermes Lite 2, older P1 boards | Protocol 1 | ⛔ not implemented (P1 is the milestone in progress) |
+
+Each radio keeps its **own TX calibration** (PA calibration per band, wattmeter
+trim, drive/antenna/PA-enable) in its own config section — calibrating one
+model never touches another. A newly connected TX-capable model starts safe:
+PA off, ANT1, 1 W.
 
 ## Requirements
 
-- An ANAN G2E on your LAN (see above)
+- A supported ANAN radio on your LAN (see above)
 - Linux with **PipeWire** as the sound server (standard on 2024+ distros)
 - For the AppImage: glibc ≥ 2.39 (Ubuntu 24.04+, Fedora 40+, Mint 22,
   openSUSE, Arch, …)
@@ -124,7 +131,8 @@ Settings persist in `~/.config/sdr-for-linux/config.ini`.
 
 ## Known limitations (alpha)
 
-- **One radio: ANAN G2E** (whitelist, see above); one RX (RX2 planned)
+- **Two radios: ANAN G2E + ANAN 10E/100B** (whitelist, see above); one RX
+  (RX2 planned)
 - No FM (post-alpha), no built-in CAT (use tciadapter, see above)
 - Wattmeter uses a single per-band calibration factor — accurate on HF,
   over-reads ~25 % on 6 m (a guided nonlinear calibration is planned)
@@ -134,7 +142,7 @@ Settings persist in `~/.config/sdr-for-linux/config.ini`.
 ## Architecture
 
 ```
-  Radio (ANAN G2E, HPSDR Protocol 2)
+  Radio (ANAN G2E / 10E, HPSDR Protocol 2)
         │  Ethernet (raw IQ)
         ▼
   sdr-for-linux  (single GTK4 process)

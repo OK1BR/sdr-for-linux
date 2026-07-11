@@ -86,12 +86,21 @@ G2E) so calibrations never leak between models. TCI runs on the 10E
 normally (no RX-only exception). Details: TX-DESIGN §9. AppImage CI now
 builds only on v* tags (d1fb028).
 
+**10E addendum (same day):** voice MOX + SDC skimming live-verified; the
+full checklist is done. **PureSignal on the 10E wedges the radio → locked
+out** (`radio_ps_supported()`, G2E only). Root cause audited (piHPSDR +
+Thetis): a *sequencing* difference, not a fw limit — Thetis supports P2 PS
+on the 10E (fw ≥ 10.3) by reconfiguring the feedback DDCs BEFORE raising
+PTT and restoring them BEFORE dropping it; our/piHPSDR loose ordering makes
+fw 10.3 switch sync mode mid-TX and hang (power-cycle recovery). Lifting it
+= Thetis ordering in tx_run/protocol2, or P1 PS after the HL2 milestone.
+Details: TX-DESIGN §9.
+
 **★ Next session:** **Hermes Lite 2** (Protocol 1 = new milestone), then
 Square SDR. 10E leftovers: pa_cal for the remaining bands (only 40/20 m
-calibrated; rest default 53 → way under-drives), PureSignal live check on
-the 10E, SDC skimming live check, digi TX meter (TCI level + CLIP) during
-digi operation. (`~/.local` install refreshed 2026-07-12 via
-`meson install -C build-release` — that build dir has prefix ~/.local.)
+calibrated; rest default 53 → way under-drives, expect ~32-34), digi TX
+meter (TCI level + CLIP) during digi operation. (`~/.local` install
+refreshed 2026-07-12 via `meson install -C build-release`.)
 
 **Older follow-ups:** off-centre pan, AGC-target vs `SDRFL_GAIN`, audio
 clock-drift smoothing, absolute dBm cal, nonlinear wattmeter cal
