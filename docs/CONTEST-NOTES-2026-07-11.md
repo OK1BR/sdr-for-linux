@@ -222,10 +222,37 @@ S jedním rádiem neviditelné — projeví se až druhým kusem v LAN.
 Discovery samotné bylo v pořádku (broadcast oba kusy přijal a uložil).
 
 **Bonus zjištění:** 10E hlásí link-local IP **169.254.70.78** — nemá
-DHCP lease (pro budoucí bring-up: buď DHCP na radio-LAN, nebo počítat
-s link-local; náš host ji přes enp134s0f1 vidí). Firmware 10E: P2
-(device=2 Hermes class, fw 10.3, protokol P2 v3.1) — potvrzuje
-Richardovo „10E má P2" pro roadmapu.
+DHCP lease. Firmware 10E: P2 (device=2 Hermes class, fw 10.3, protokol
+P2 v3.1) — potvrzuje Richardovo „10E má P2" pro roadmapu.
+
+### 10b. PROVĚŘIT: 10E má mít IP z routeru, ale hlásí 169.254.x.x
+**Hlášení:** „u anan 10e se ukazuje špatná ip adresa… ip adresu by
+mělo mít přidělenou z routeru… je to divné."
+
+**Vyhodnocení (k prověření při bring-upu 10E):** 169.254.70.78 je
+skutečná zdrojová adresa UDP odpovědi (recvfrom), ne chyba zobrazení —
+rádio opravdu vysílá z APIPA adresy. Typická příčina u HPSDR boardů:
+**DHCP timeout při bootu** (rádio zapnuto dřív, než naběhl link/DHCP —
+Hermes firmware zkouší DHCP jen krátce po startu, pak spadne na
+link-local a už se neptá znovu). Ověřit: (1) power-cycle 10E se
+zapojeným kabelem a chvíli počkat → nové discovery; (2) DHCP lease
+tabulka na routeru (MAC 40:84:32:B1:46:4E); (3) případně statická
+rezervace. Náš kód IP jen zobrazuje — oprava pravděpodobně není u nás,
+ale zaslouží ověření při bring-upu.
+
+### 10c. ✅ OPRAVENO (kritické): engine startoval discovered[0], ne vybrané rádio
+**Hlášení:** „nepřipojí se — radio not found on lan" (po výběru G1
+v pickeru, s běžící 10E v LAN).
+
+**Příčina (log potvrdil):** `start_radio` bral slepě
+`discovered[selected_device]` (=0, piHPSDR-ism) — s víc rádii v poli
+(broadcast kola pickeru se kumulují) to byl kus, který odpověděl
+PRVNÍ = 10E. Whitelist ho odmítl → banner „No radio found on the LAN".
+⚠ Kdyby druhé rádio bylo podporované, engine by se TIŠE připojil
+k jinému kusu, než operátor vybral (a klíčoval by ho!) — whitelist
+zafungoval jako druhá obranná linie přesně dle návrhu.
+**Fix:** výběr podle zvolené IP (ipaddr_radio match přes discovered[]),
+bez pinu první podporované rádio; „pin neodpověděl" = vlastní hláška.
 
 ## Po závodě — triage
 

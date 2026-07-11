@@ -1400,6 +1400,12 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
          * (TX_SETTLE_MS) and only then fade it back in — otherwise the wound-up
          * AGC pops; also silence the demod input briefly for the literal T/R tail. */
         if (ts.keyed != app->tx_keyed_shown) {
+          const char *lat = g_getenv("SDRFL_LAT_DEBUG");   /* latency audit marks */
+          if (lat && lat[0] == '1') {
+            fprintf(stderr, "LAT %lld gui_%s\n", (long long)g_get_monotonic_time(),
+                    ts.keyed ? "mute" : "unkey_seen");
+            fflush(stderr);
+          }
           if (ts.keyed) {
             if (app->audio_ok) { demod_set_mute(1); }
             app->tx_ema_w = 0;
@@ -1414,6 +1420,11 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
         if (app->tx_settle_until && now >= app->tx_settle_until) {
           if (app->audio_ok) { demod_set_mute(0); }   /* AGC settled → fade back in */
           app->tx_settle_until = 0;
+          const char *lat = g_getenv("SDRFL_LAT_DEBUG");
+          if (lat && lat[0] == '1') {
+            fprintf(stderr, "LAT %lld gui_unmute\n", (long long)g_get_monotonic_time());
+            fflush(stderr);
+          }
         }
         app->tx_display = ts.keyed;
         update_tx_label(app, &ts, now);
@@ -4123,7 +4134,29 @@ static void start_radio(App *app) {
   printf("Discovering radio at %s ...\n", ipaddr_radio);
   p2_discovery();
   if (devices <= 0) { fprintf(stderr, "no radio found\n"); return; }
-  const DISCOVERED *dev = &discovered[selected_device];
+  /* Select the radio the operator actually chose. discovered[] can hold
+   * SEVERAL radios (broadcast rounds from the picker accumulate, plus the
+   * directed round above) — blindly taking index 0 started whichever radio
+   * answered first (contest note #10c: picked the G1, engine tried the 10E;
+   * only the whitelist stopped a wrong-radio start). */
+  const DISCOVERED *dev = NULL;
+  if (ipaddr_radio[0]) {
+    for (int i = 0; i < devices && !dev; i++) {
+      if (strcmp(inet_ntoa(discovered[i].network.address.sin_addr), ipaddr_radio) == 0) {
+        dev = &discovered[i];
+      }
+    }
+    if (!dev) {
+      fprintf(stderr, "radio at %s did not answer discovery\n", ipaddr_radio);
+      return;
+    }
+  }
+  if (!dev) {                     /* no pinned IP: first SUPPORTED radio */
+    for (int i = 0; i < devices && !dev; i++) {
+      if (radio_supported(&discovered[i])) { dev = &discovered[i]; }
+    }
+    if (!dev) { dev = &discovered[0]; }   /* let the whitelist print why */
+  }
   /* ⛔ Whitelist gate (radio_support.h): also covers SDRFL_RADIO_IP and the
    * picker's "Add by IP" — an untested model must never take this path, its
    * Alex/PA bytes are unverified and could damage the hardware. */
