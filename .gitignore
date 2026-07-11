@@ -16,3 +16,4 @@ pihpsdr-client
 .idea/
 compile_commands.json
 .cache/
+build-*/
