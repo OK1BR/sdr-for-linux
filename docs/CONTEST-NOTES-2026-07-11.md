@@ -214,10 +214,11 @@ tvoří kategorii „emergentní/spec chování ověřené závodem = smluvní".
 **Výsledek testu: ~130 CW QSO, aplikace „vcelku použitelná" (Richard).**
 
 Pořadí prací (dávky podle závislostí a rizika):
-- **Dávka A — rychlé UI opravy (RX-only, bez TX rizika):**
-  A1 = #1 pravý klik (práh ~6 px, jednořádkovka, příčina ověřena);
-  A2 = #2 spoty × HUD (row-bump kolize s VFO/S-metr rects);
-  A3 = #8 per-mode AGC paměť (settings + hook přepnutí módu).
+- **Dávka A — ✅ HOTOVO + ŽIVĚ OVĚŘENO (579a776, tentýž den):**
+  A1 = #1 pravý klik (práh ~6 px) — „funguje mnohem lépe";
+  A2 = #2 spoty × HUD — „krásně obtékají jak smetr tak i frekvenci";
+  A3 = #8 per-mode AGC (defaulty CW/digi=Fast, SSB/AM=Slow; [rx]
+  agc_ssb/cw/am/digi) — „taky dobře".
 - **Dávka B — měření latencí (potřebuje rádio + dummy load):**
   B1 = instrumentace timestampů (#3 náběh + #4 odpadnutí, obě strany);
   B2 = A/B s AGC Fast/Slow (oddělit příspěvek AGC od latence);
