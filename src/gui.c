@@ -209,6 +209,7 @@ typedef struct {
   int         tx_ready;      /* tx_run started (WDSP TX channel + worker thread up) */
   double      pa_watts;      /* connected radio's PA rating, W (radio_tx_profile):
                                 drive/tune/digi slider max + open-ant scaling      */
+  double      pacal_min;     /* per-radio pa_calibration clamp floor, dB           */
   double      patrim_step;   /* wattmeter-trim grid step = pa_watts/10             */
   char        tx_group[24];  /* ⛔ per-radio TX-cal config group (settings.h)      */
   char        radio_name[64];/* connected radio's discovery name (header status)   */
@@ -310,17 +311,20 @@ static int band_for_freq(long long f) {
  *
  *   pa_calibration: piHPSDR band.c table = 53.0 dB for every band (the only
  *     device override is HermesLite2 → 40.5; the G2E keeps 53.0). Live-validated
- *     on this G2E (docs/TX-DESIGN.md §5). The 38.8 dB FLOOR (band.c:571-577) is the
- *     safety limit — a lower value raises the drive byte for a given watts request.
+ *     on this G2E (docs/TX-DESIGN.md §5). The FLOOR is the safety limit — a lower
+ *     value raises the drive byte for a given watts request — and is PER RADIO
+ *     (app->pacal_min from radio_tx_profile): piHPSDR's 38.8 (band.c:571-577)
+ *     fits the 100 W-class G2E, but a 10E reaches rated power only near DAC
+ *     full scale (true cal ≈ 29-33 dB), so its floor is 25.
  *   pa_trim step: piHPSDR radio.c:1308 sets the G2E to pa_power=PA_100W (100 W
  *     rated), so radio.c:1330 seeds pa_trim[i] = i * 100 * 0.1 = i * 10 W. */
-#define PACAL_MIN     38.8
 #define PACAL_MAX     70.0
 #define PACAL_DEFAULT 53.0     /* G2E: piHPSDR band.c table (not HL2's 40.5)        */
 /* Wattmeter-trim grid step is PER RADIO: app->patrim_step = pa_watts/10
  * (piHPSDR radio.c:1330 — G2E PA_100W → 10 W, ANAN 10E PA_10W → 1 W). */
-static inline double pacal_clamp(double v) {
-  return v < PACAL_MIN ? PACAL_MIN : (v > PACAL_MAX ? PACAL_MAX : v);
+static inline double pacal_clamp(const App *app, double v) {
+  double lo = app->pacal_min > 0.0 ? app->pacal_min : 38.8;
+  return v < lo ? lo : (v > PACAL_MAX ? PACAL_MAX : v);
 }
 
 /* Keep the current band's remembered levels in step with the live window. */
@@ -1878,7 +1882,7 @@ static void tx_push_cfg(App *app) {
     c.drive_w = app->tx_digi_max_w;
   }
   c.tune_w         = app->tx_tune_w;
-  c.pa_calibration = (b >= 0) ? pacal_clamp(app->band_pacal[b]) : PACAL_DEFAULT;
+  c.pa_calibration = (b >= 0) ? pacal_clamp(app, app->band_pacal[b]) : PACAL_DEFAULT;
   c.swr_protect    = 1;
   c.swr_alarm      = app->tx_swr_alarm;
   c.pa_watts       = app->pa_watts;
@@ -3528,7 +3532,7 @@ static void on_pref_pacal(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   (void)ps; App *app = (App *)data;
   int i = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(r), "band"));
   if (i < 0 || i >= NBANDS) { return; }
-  app->band_pacal[i] = pacal_clamp(adw_spin_row_get_value(r));
+  app->band_pacal[i] = pacal_clamp(app, adw_spin_row_get_value(r));
   tx_push_cfg(app); schedule_save(app);
 }
 /* Wattmeter-trim point (F6b): point index 1..10 carried on the row (0 is fixed). */
@@ -3602,8 +3606,8 @@ static GtkWidget *pref_slider(const char *title, const char *subtitle,
 
 /* One per-band PA-calibration spin row (dB), band index stored for the callback. */
 static GtkWidget *pacal_row(App *app, int band) {
-  GtkAdjustment *a = gtk_adjustment_new(pacal_clamp(app->band_pacal[band]),
-                                        PACAL_MIN, PACAL_MAX, 0.1, 1.0, 0);
+  GtkAdjustment *a = gtk_adjustment_new(pacal_clamp(app, app->band_pacal[band]),
+                                        app->pacal_min, PACAL_MAX, 0.1, 1.0, 0);
   char sub[48];
   snprintf(sub, sizeof sub, "%lld–%lld MHz",
            BANDS[band].lo / 1000000, BANDS[band].hi / 1000000);
@@ -3685,7 +3689,7 @@ static AdwDialog *build_prefs(App *app) {
       "Hz · voice audio high edge (2850 default; 3500-6000 = eSSB — mind the band plan) · live",
       TXF_HI_MIN, TXF_HI_MAX, app->tx_fhi, G_CALLBACK(on_pref_tx_fhi), app));
   adw_preferences_group_add(g, pref_spin("Digi max drive",
-      "W cap in DIGU/DIGL — FT8 & co. run 100% duty, protect the PA (max = off) · live",
+      "W cap in DIGU/DIGL — FT8 &amp; co. run 100% duty, protect the PA (max = off) · live",
       1, app->pa_watts, app->tx_digi_max_w, G_CALLBACK(on_pref_digi_max), app));
   /* F6b — per-band PA calibration table (like piHPSDR's PA-calibration menu). The
    * 38.8 dB floor is the safety limit; 53 dB is the validated G2E default. */
@@ -4129,7 +4133,7 @@ static void tx_cal_from_settings(App *app, const Settings *st) {
     char *eq = strchr(tok, '=');
     if (!eq) { continue; }
     *eq = '\0';
-    double db = pacal_clamp(g_ascii_strtod(eq + 1, NULL));
+    double db = pacal_clamp(app, g_ascii_strtod(eq + 1, NULL));
     for (int i = 0; i < NBANDS; i++) {
       if (strcmp(tok, BANDS[i].key) == 0) { app->band_pacal[i] = db; break; }
     }
@@ -4225,6 +4229,7 @@ static void start_radio(App *app) {
    * ranges. G2E-profile defaults here; once discovery identifies the radio the
    * per-radio profile + TX-cal group are applied below (tx_cal_from_settings). */
   app->pa_watts    = 100.0;
+  app->pacal_min   = 38.8;
   app->patrim_step = 10.0;
   g_strlcpy(app->tx_group, "tx", sizeof app->tx_group);
   tx_cal_from_settings(app, &st);
@@ -4418,6 +4423,7 @@ static void start_radio(App *app) {
   {
     const radio_tx_profile_t *prof = radio_tx_profile(dev);
     app->pa_watts    = prof->pa_watts;
+    app->pacal_min   = prof->pacal_min;
     app->patrim_step = prof->pa_watts / 10.0;
     g_strlcpy(app->tx_group, prof->cfg_group, sizeof app->tx_group);
     if (strcmp(prof->cfg_group, "tx") != 0) {

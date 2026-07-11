@@ -65,6 +65,14 @@ static inline int radio_tx_supported(const DISCOVERED *d) {
  */
 typedef struct {
   double      pa_watts;              /* rated PA power (slider max, trim grid) */
+  double      pacal_min;             /* pa_calibration clamp floor, dB — the
+                                        max drive byte a watts request can
+                                        reach. piHPSDR's 38.8 (band.c:571-577)
+                                        assumes a 100 W-class chain; the 10E
+                                        makes rated power only near DAC full
+                                        scale (live 2026-07-12: byte 83 →
+                                        ~1.5 W), i.e. true cal ≈ 29-33 dB —
+                                        the floor must sit below that.        */
   double      m_c1, m_c2;            /* wattmeter: ADC volts, fwd coupler      */
   double      m_rc2_hf, m_rc2_6m;    /* wattmeter: reverse coupler HF / 6 m    */
   int         m_fwd_off, m_rev_off;  /* wattmeter: ADC pedestal offsets        */
@@ -73,10 +81,10 @@ typedef struct {
 
 static inline const radio_tx_profile_t *radio_tx_profile(const DISCOVERED *d) {
   static const radio_tx_profile_t g2e = {   /* live-calibrated (TX-DESIGN §7) */
-    100.0, 5.0, 0.12, 0.15, 0.70, 48, 42, "tx"
+    100.0, 38.8, 5.0, 0.12, 0.15, 0.70, 48, 42, "tx"
   };
   static const radio_tx_profile_t hermes2 = {  /* ANAN 10E — piHPSDR defaults */
-    10.0, 3.3, 0.095, 0.095, 0.5, 6, 3, "tx-hermes2"
+    10.0, 25.0, 3.3, 0.095, 0.095, 0.5, 6, 3, "tx-hermes2"
   };
   if (d != NULL && d->device == NEW_DEVICE_HERMES2) { return &hermes2; }
   return &g2e;
