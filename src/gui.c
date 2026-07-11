@@ -210,6 +210,8 @@ typedef struct {
   double      pa_watts;      /* connected radio's PA rating, W (radio_tx_profile):
                                 drive/tune/digi slider max + open-ant scaling      */
   double      pacal_min;     /* per-radio pa_calibration clamp floor, dB           */
+  int         ps_allowed;    /* ⛔ radio_ps_supported: PS locked out on old Hermes
+                                fw (keying with PS wedges the 10E — see ps_apply)  */
   double      patrim_step;   /* wattmeter-trim grid step = pa_watts/10             */
   char        tx_group[24];  /* ⛔ per-radio TX-cal config group (settings.h)      */
   char        radio_name[64];/* connected radio's discovery name (header status)   */
@@ -2621,10 +2623,13 @@ static GtkWidget *build_controls(App *app) {
    * never keys, it only arms calibration for the next keyed over. Att + SetPk
    * stay in Preferences → PureSignal. */
   app->ps_btn = gtk_toggle_button_new_with_label("PS");
-  gtk_widget_set_tooltip_text(app->ps_btn,
-      "PureSignal: TX predistortion — calibrates from the feedback while transmitting");
-  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->ps_btn), app->ps_enable != 0);
-  gtk_widget_set_sensitive(app->ps_btn, app->tx_ready);
+  gtk_widget_set_tooltip_text(app->ps_btn, app->ps_allowed
+      ? "PureSignal: TX predistortion — calibrates from the feedback while transmitting"
+      : "PureSignal is not available on this radio (old Hermes firmware locks up "
+        "with the PS feedback config — power-cycle-only recovery)");
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->ps_btn),
+                               app->ps_enable != 0 && app->ps_allowed);
+  gtk_widget_set_sensitive(app->ps_btn, app->tx_ready && app->ps_allowed);
   g_signal_connect(app->ps_btn, "toggled", G_CALLBACK(on_ps_toggled), app);
   gtk_box_append(GTK_BOX(txbox), app->ps_btn);
   /* 2T — two-tone test. IS a key source (⛔ delta #2) → .txkey, red while on.
@@ -3184,7 +3189,11 @@ static void on_pref_tx_ptt_tip(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
 /* PureSignal (F7/PS-2) — enable/att/SetPk into the PS runtime, live. The wire
  * side only ever changes while keyed through tx_gate (approved delta #1). */
 static void ps_apply(App *app) {
-  if (app->tx_ready) { ps_set(app->ps_enable, app->ps_att, app->ps_setpk); }
+  /* ⛔ radio_ps_supported gate (app->ps_allowed): keying with PS enabled
+   * WEDGES the ANAN 10E outright (fw 10.3 can't run the P2 feedback-DDC
+   * config; live-proven twice 2026-07-12) — the engine must never see
+   * PS on for such a radio, whatever the persisted setting says. */
+  if (app->tx_ready) { ps_set(app->ps_enable && app->ps_allowed, app->ps_att, app->ps_setpk); }
 }
 static void on_pref_ps_att(AdwSpinRow *r, GParamSpec *p, gpointer data) {
   (void)p; App *app = (App *)data;
@@ -4425,6 +4434,7 @@ static void start_radio(App *app) {
     app->pa_watts    = prof->pa_watts;
     app->pacal_min   = prof->pacal_min;
     app->patrim_step = prof->pa_watts / 10.0;
+    app->ps_allowed  = radio_ps_supported(dev);
     g_strlcpy(app->tx_group, prof->cfg_group, sizeof app->tx_group);
     if (strcmp(prof->cfg_group, "tx") != 0) {
       st.tx_pa = 0; st.tx_ant = 0;

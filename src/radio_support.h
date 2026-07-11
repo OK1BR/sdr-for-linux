@@ -47,6 +47,18 @@ static inline int radio_tx_supported(const DISCOVERED *d) {
          (d->device == NEW_DEVICE_G1 || d->device == NEW_DEVICE_HERMES2);
 }
 
+/* ⛔ PureSignal whitelist — G2E only. LIVE EVIDENCE (2026-07-12, twice on the
+ * ANAN 10E, Hermes fw 10.3): keying with PS enabled kills the radio outright —
+ * mid-TX "no packets from the radio for 3 s", then the network stack is gone
+ * (no ARP) until a power cycle. The PS wire config (RX-specific feedback pair
+ * DDC0+DDC1, sync bitmap [1363]=0x02, pseudo-ADC n_adc) is exactly piHPSDR's
+ * for every P2 device — the old Hermes firmware just cannot execute it. So
+ * this is a firmware limitation, not an app-side setting to fix: PS stays
+ * locked out on Hermes-class until proven live on newer firmware. */
+static inline int radio_ps_supported(const DISCOVERED *d) {
+  return d != NULL && d->protocol == NEW_PROTOCOL && d->device == NEW_DEVICE_G1;
+}
+
 /*
  * Per-model TX profile — everything the TX path must switch per device.
  * Values audited first-hand against piHPSDR @974acba (2026-07-11):
