@@ -16,6 +16,7 @@
  */
 #include <glib.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -529,6 +530,45 @@ int p1_ep6_parse_samples(const unsigned char *f, int nrx,
   return spf;
 }
 
+/* SDRFL_P1_DUMPHOT=N: hexdump up to N frames containing a sample > 0.1 full
+ * scale on any parsed channel (wire-layout debugging). */
+static int s_dumphot = -1;
+
+static void dumphot_check(const unsigned char *f, const double *rx1,
+                          const double *txfb, const double *rxfb, int spf) {
+  if (s_dumphot < 0) {
+    const char *e = getenv("SDRFL_P1_DUMPHOT");
+    s_dumphot = e ? atoi(e) : 0;
+  }
+
+  if (s_dumphot <= 0) { return; }
+
+  int hot = -1;
+  const char *which = "";
+
+  for (int i = 0; i < 2 * spf && hot < 0; i++) {
+    if (rx1  && (rx1[i]  > 0.1 || rx1[i]  < -0.1)) { hot = i; which = "rx1";  }
+    if (txfb && (txfb[i] > 0.1 || txfb[i] < -0.1)) { hot = i; which = "txfb"; }
+    if (rxfb && (rxfb[i] > 0.1 || rxfb[i] < -0.1)) { hot = i; which = "rxfb"; }
+  }
+
+  if (hot < 0) { return; }
+
+  const double *src = (which[0] == 'r' && which[2] == '1') ? rx1
+                      : (which[0] == 't') ? txfb : rxfb;
+  s_dumphot--;
+  fprintf(stderr, "p1 HOT frame (%s[%d]=%.4f, sample %d, nrx=%d):\n",
+          which, hot, src ? src[hot] : 0.0, hot / 2, s_nrx);
+
+  for (int r = 0; r < FRAME_LEN; r += 16) {
+    fprintf(stderr, "  %3d:", r);
+    for (int k = 0; k < 16; k++) { fprintf(stderr, " %02X", f[r + k]); }
+    fprintf(stderr, "\n");
+  }
+
+  fflush(stderr);
+}
+
 /* Parse one 512-byte EP6 frame: sync, 5 status bytes, per-RX IQ+mic groups.
  * Returns pairs written per stream (2 doubles per pair) or -1 on bad sync. */
 static int parse_frame(const unsigned char *f, double *rx1,
@@ -598,7 +638,11 @@ static int parse_frame(const unsigned char *f, double *rx1,
     g_mutex_unlock(&s_tel_lock);
   }
 
-  return p1_ep6_parse_samples(f, s_nrx, rx1, txfb, rxfb);
+  int spf = p1_ep6_parse_samples(f, s_nrx, rx1, txfb, rxfb);
+
+  if (spf > 0) { dumphot_check(f, rx1, txfb, rxfb, spf); }
+
+  return spf;
 }
 
 static gpointer listener_thread(gpointer data) {
@@ -609,10 +653,18 @@ static gpointer listener_thread(gpointer data) {
   double rx1 [2 * SAMPLES_PER_FRAME * 2];
   double txfb[2 * SAMPLES_PER_FRAME * 2];
   double rxfb[2 * SAMPLES_PER_FRAME * 2];
+  gint64 settle_until = 0;      /* armed by the first EP6 packet */
   guint32 expect_seq = 0;
   int have_seq = 0;
   struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
   setsockopt(s_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+  /* SDRFL_P1_DUMP=N: hexdump the first N EP6 frames (wire-layout debugging). */
+  int dump = 0;
+  {
+    const char *e = getenv("SDRFL_P1_DUMP");
+    if (e) { dump = atoi(e); }
+  }
 
   while (g_atomic_int_get(&s_running)) {
     int n = recv(s_sock, pkt, sizeof(pkt), 0);
@@ -625,6 +677,18 @@ static gpointer listener_thread(gpointer data) {
       continue;                           /* old_protocol.c metis_read :837    */
     }
 
+    if (dump > 0) {
+      for (int fo = 8; fo <= 520 && dump > 0; fo += 512, dump--) {
+        fprintf(stderr, "p1 dump: frame @%d (nrx=%d):\n", fo, s_nrx);
+        for (int r = 0; r < 128; r += 16) {
+          fprintf(stderr, "  %3d:", r);
+          for (int k = 0; k < 16; k++) { fprintf(stderr, " %02X", pkt[fo + r + k]); }
+          fprintf(stderr, "\n");
+        }
+      }
+      fflush(stderr);
+    }
+
     guint32 seq = ((guint32)pkt[4] << 24) | (pkt[5] << 16) | (pkt[6] << 8) | pkt[7];
 
     if (have_seq && seq != expect_seq && seq != 0) {   /* seq 0 = radio restart */
@@ -635,6 +699,14 @@ static gpointer listener_thread(gpointer data) {
 
     expect_seq = seq + 1;
     have_seq = 1;
+
+    /* Config-settle guard: the HL2 gateware (73.2, measured) applies the
+     * primed RX count only ~8 ms INTO the stream — the first frames after a
+     * start can still carry the previous session's nrx layout, which parses
+     * structurally fine but yields full-scale garbage samples. Parse (status
+     * side stays valid) but do not dispatch samples for the first 25 ms. */
+    if (settle_until == 0) { settle_until = g_get_monotonic_time() + 25000; }
+
     int pairs = 0;
 
     for (int fo = 8; fo <= 520; fo += 512) {
@@ -650,6 +722,8 @@ static gpointer listener_thread(gpointer data) {
 
       pairs += r;
     }
+
+    if (g_get_monotonic_time() < settle_until) { continue; }
 
     if (pairs > 0 && s_cb) { s_cb(rx1, pairs, s_user); }
 

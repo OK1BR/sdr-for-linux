@@ -45,6 +45,22 @@ static void on_iq(const double *iq, int n_pairs, void *user) {
   g_pairs += n_pairs;
 }
 
+/* SDRFL_P1_PS=1: count the nrx=4 feedback pair too (RX-only — nothing keys;
+ * the RX3/RX4 streams just carry whatever the idle DUC-frequency DDCs see). */
+static volatile gint64 g_fb_pairs;
+static double g_fb_rms_tx, g_fb_rms_rx;      /* listener thread only */
+
+static void on_fb(const double *txfb, const double *rxfb, int n_pairs, void *user) {
+  (void)user;
+
+  for (int i = 0; i < n_pairs; i++) {
+    g_fb_rms_tx += txfb[2 * i] * txfb[2 * i] + txfb[2 * i + 1] * txfb[2 * i + 1];
+    g_fb_rms_rx += rxfb[2 * i] * rxfb[2 * i] + rxfb[2 * i + 1] * rxfb[2 * i + 1];
+  }
+
+  g_fb_pairs += n_pairs;
+}
+
 int main(void) {
   const char *ip = getenv("SDRFL_RADIO_IP");
   long long freq = 7100000;
@@ -78,6 +94,20 @@ int main(void) {
     return 1;
   }
 
+  int ps_mode = (e = getenv("SDRFL_P1_PS")) && atoi(e);
+
+  if (ps_mode) {
+    /* nrx=4 RX-only: arm the PS wire state before start (latches nrx) and
+     * count the RX3/RX4 feedback stream. Nothing keys — MOX stays 0 on every
+     * frame, drive 0, T/R relay locked RX. PS on P1 is capped at 192 k. */
+    if (rate > 192000) { rate = 192000; }
+
+    p1_ps_state ps = { .enabled = 1, .attenuation = 0 };
+    p1_set_ps(&ps);
+    p1_set_ps_iq_cb(on_fb, NULL);
+    printf("PS mode: nrx=4 (RX3/RX4 feedback counted; RX-only, nothing keys)\n");
+  }
+
   if (p1_rx_start(dev, freq, rate, on_iq, NULL) != 0) {
     fprintf(stderr, "FAIL: p1_rx_start\n");
     return 1;
@@ -106,6 +136,18 @@ int main(void) {
          rms, g_peak, dc_i, dc_q);
 
   int ok = ratio > 0.98 && ratio < 1.02 && rms > 0.0 && g_peak < 1.0;
+
+  if (ps_mode) {
+    /* Every EP6 sample carries all 4 channels → fb pairs must match RX1. */
+    long long fb = g_fb_pairs;
+    double fb_ratio = fb / expect;
+    printf("feedback pairs: %lld (ratio %.4f)  RMS tx(DAC)=%.6f rx(coupler)=%.6f\n",
+           fb, fb_ratio,
+           fb ? sqrt(g_fb_rms_tx / (2.0 * fb)) : 0.0,
+           fb ? sqrt(g_fb_rms_rx / (2.0 * fb)) : 0.0);
+    ok = ok && fb_ratio > 0.98 && fb_ratio < 1.02;
+  }
+
   printf(ok ? "PASS — P1 IQ flows at the expected rate, stream clean.\n"
             : "FAIL — rate off or stream broken (see numbers above).\n");
   return ok ? 0 : 1;
