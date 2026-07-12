@@ -45,10 +45,18 @@ static inline int radio_supported(const DISCOVERED *d) {
  *    identical to the verified G2E wire path except the per-device profile
  *    below (10 W PA scale + Hermes wattmeter constants); enabled for the
  *    live dummy-load checklist with Richard (per-radio config starts with
- *    PA off + 1 W, so first keying is the dry-key step). */
+ *    PA off + 1 W, so first keying is the dry-key step).
+ *  - HERMES_LITE2 (P1): T1-T3 of docs/P1-TX-SCOPE.md passed offline
+ *    2026-07-12 (byte gate vs piHPSDR, 48 k CFIR-off chain, thermal trip +
+ *    FIFO health); enabled 2026-07-12 with Richard's consent for the T4
+ *    dummy-load checklist — same safe-start rule ([tx-hl2] begins PA off +
+ *    1 W, first keying is the dry-key step; PA off keeps the T/R relay in
+ *    RX by wire, 0x12-C2=0x04). */
 static inline int radio_tx_supported(const DISCOVERED *d) {
-  return d != NULL && d->protocol == NEW_PROTOCOL &&
-         (d->device == NEW_DEVICE_G1 || d->device == NEW_DEVICE_HERMES2);
+  if (d == NULL) { return 0; }
+  if (d->protocol == NEW_PROTOCOL &&
+      (d->device == NEW_DEVICE_G1 || d->device == NEW_DEVICE_HERMES2)) { return 1; }
+  return d->protocol == ORIGINAL_PROTOCOL && d->device == DEVICE_HERMES_LITE2;
 }
 
 /* ⛔ PureSignal whitelist — G2E only. LIVE EVIDENCE (2026-07-12, twice on the

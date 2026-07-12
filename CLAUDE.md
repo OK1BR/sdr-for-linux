@@ -119,11 +119,25 @@ slot, green <45 / red >55 °C) from `p1_get_telemetry` in the GUI tick;
 (TX ops already refuse on `!tx_ready`), so the HL2 can feed SDC/skimmer.
 README hardware table updated.
 
-**★ Next candidates (Richard picks):** new alpha release (supported HW
-grew G2E → +10E +HL2 since v0.1.0); 10E leftovers (pa_cal remaining
-bands ~32-34, digi TX meter live check); Square SDR bring-up (he has
-one); 10E PureSignal unlock via the Thetis key-down/up sequencing
-(TX-DESIGN §9, risky — power cycle per failed try); AUR recheck.
+**★ HL2 TX milestone — COMPLETE, LIVE (2026-07-12 evening, same day as
+RX!):** T1 byte audit + offline gate `sdrfl-p1txprobe`; T2 live TX
+plumbing (EP2 TX-IQ ring, production-paced keyed sender, 48 k WDSP chain
+with ⛔ CFIR OFF — proven by the 0.896 magnitude ratio in the txdsp gate
+— drive = piHPSDR's 16-step HW-attenuator + IQ-scale split, CW amp 1.0);
+T3 protections (fwd/rev EMA + PEP, thermal trip 60 °C, TX FIFO health,
+5 W profile c2=1.5 `[tx-hl2]`); T4 live dummy-load checklist with
+Richard: 20 m pa_cal **28.4 dB**, SWR 1.2, CW via SDC/TCI (clean
+envelope), voice ~4 W peaks. Reference: `docs/P1-TX-SCOPE.md` (§5 = open
+items: FIFO-bit semantics on gw 73.2, other bands' pa_cal, digi live
+check, P1 PureSignal as its own milestone → also the alternative PS
+route for the 10E). ⛔ Release condition (full HL2 TX) is now MET.
+
+**★ Next candidates (Richard picks):** the release (his condition met —
+release notes need his approval); P1 PureSignal milestone (multi-RX P1
+link, RX3/RX4 feedback); 10E leftovers (pa_cal remaining bands ~32-34,
+digi TX meter live check); Square SDR bring-up; 10E PS via Thetis
+sequencing (TX-DESIGN §9, risky); AUR recheck. CI runs only on v* tags
+now (Richard 2026-07-12).
 
 **Older follow-ups:** off-centre pan, AGC-target vs `SDRFL_GAIN`, audio
 clock-drift smoothing, absolute dBm cal, nonlinear wattmeter cal

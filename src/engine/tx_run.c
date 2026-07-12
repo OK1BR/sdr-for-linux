@@ -270,10 +270,14 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
       if (rev > fwd) { int tmp = fwd; fwd = rev; rev = tmp; }
       tx_meter_update(fwd, rev, p1_tx_fwd_max_take(), is_6m);
       t.fwd_raw = fwd; t.rev_raw = rev;  /* keyed-log lines below reuse t */
-      /* TX FIFO health: underruns tear the RF envelope, overruns creep the
-       * latency — log every change while keyed (P1-TX-SCOPE §1). */
+      /* TX FIFO health counters. ⚠ OPEN QUESTION (first live TX 2026-07-12):
+       * they climb ~30/s on BOTH sides while the RF is demonstrably clean
+       * (steady carrier, clean CW envelope) — on gw 73.2 the C3 top bits look
+       * like fill-level watermark indicators rather than latched events.
+       * Verify against the HL2 gateware source before trusting them; until
+       * then they are SDRFL_LAT_DEBUG diagnostics only. */
       static int pu, po;
-      if (*prev_keyed && (fu != pu || fo != po)) {
+      if (lat_on() && *prev_keyed && (fu != pu || fo != po)) {
         fprintf(stderr, "tx: HL2 TX-FIFO under=%d over=%d\n", fu, fo); fflush(stderr);
       }
       pu = fu; po = fo;
