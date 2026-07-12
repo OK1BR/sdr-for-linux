@@ -7,8 +7,7 @@
  * a PA (on RX alone the missing ANT-relay bit once cost −45 dB, c4b9243 —
  * on TX the same class of mistake burns hardware). Blocked ≠ forgotten:
  * each new radio gets its own bring-up + live test in a later version
- * (next candidates: ANAN 10E, Hermes Lite 2 — the HL2 speaks Protocol 1
- * only, which we do not implement yet at all).
+ * (next candidate: Square SDR).
  *
  * Both gates use this predicate: the startup picker (row greyed out) and
  * the connect path in gui.c (covers SDRFL_RADIO_IP and "Add by IP").
@@ -24,10 +23,15 @@
  *    discovered.h calls device id 20 "G1" — kept unmodified per policy).
  *  - NEW_DEVICE_HERMES2 = ANAN 10E/100B. RX gates (rxprobe/panprobe/
  *    audioprobe) passed live 2026-07-11; Hermes-class HPF knees verified
- *    against piHPSDR np.c default branch. */
+ *    against piHPSDR np.c default branch.
+ *  - DEVICE_HERMES_LITE2 = Hermes Lite 2, Protocol 1, ⛔ RX ONLY (R1+R2
+ *    gates passed live 2026-07-12, docs/P1-SCOPE.md; the P1 link module
+ *    contains no TX code at all and locks the T/R relay to RX). */
 static inline int radio_supported(const DISCOVERED *d) {
-  return d != NULL && d->protocol == NEW_PROTOCOL &&
-         (d->device == NEW_DEVICE_G1 || d->device == NEW_DEVICE_HERMES2);
+  if (d == NULL) { return 0; }
+  if (d->protocol == NEW_PROTOCOL &&
+      (d->device == NEW_DEVICE_G1 || d->device == NEW_DEVICE_HERMES2)) { return 1; }
+  return d->protocol == ORIGINAL_PROTOCOL && d->device == DEVICE_HERMES_LITE2;
 }
 
 /* ⛔ TX whitelist — strictly narrower than the connect whitelist (Richard,

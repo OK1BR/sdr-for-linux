@@ -50,7 +50,7 @@ without starting the stream (documented only in gateware + hermeslite.py).
 |---|---|---|
 | R1 ✅ | P1 link core: socket, start/stop, EP2 sender thread (1032 B / 2.625 ms pacing, zeroed audio+IQ payload), C&C round-robin builder, EP6 parser (sync hunt, seq check, 63×24-bit IQ → float) | `sdrfl-p1probe` (headless IQ counter, like sdrfl-rxprobe) — PASS live 2026-07-12 |
 | R2 ✅ | Feed the existing WDSP analyzer + demod/audio path (they are protocol-agnostic — same `on_rx_iq` contract as P2). Both gates grew the start_radio discovery policy (P2 first, P1 round only when the pinned IP didn't answer), select the radio BY IP (not `discovered[0]` — the broadcast fallback also collects the P2 radios), and branch p1/p2_rx_start on `dev->protocol`; audioprobe caps a >384k rate to P1's maximum | PASS live 2026-07-12: panprobe @192k (40 m band picture, floor −115 dB), audioprobe @384k-capped (CW audio, 0 ferr, queue ≤3 ms) |
-| R3 | GUI integration: whitelist `radio_supported()` += HERMES_LITE2 (RX-only), rate limits per protocol (48/96/192/384 k only), HL2 gain control (see §3), band plan cap 0–38.4 MHz | live: panadapter + audio on the HL2 |
+| R3 ✅ | GUI integration: whitelist `radio_supported()` += HERMES_LITE2 (RX-only; TX/PS whitelists exclude P1 structurally), one `engine_set_frequency()` dispatch for all 7 tuning paths, footer LNA slider (−12..+48 dB, persisted `[rx] lna`) replacing Att on P1, prefs rate list 48-384 k, 6 m band button greyed (38.4 MHz cap) | PASS live 2026-07-12: tuning/controls + filter-board relays confirmed by Richard. Landed two WIRE FIXES (see §4): the R1 C0 double-shift and the N2ADR OC bits |
 | R4 | Polish: LNA gain slider semantics, ADC-overload badge from status addr 0, HL2 temperature telemetry (exciter-power slot: `0.0795898*raw − 50` °C), TX-FIFO/PTT status ignored on RX | live |
 
 Reuse from the P2 engine: analyzer, demod, audio_pw, panadapter/waterfall,
@@ -88,6 +88,26 @@ and small GUI conditionals (rates, gain, no atten).
 
 ## 4. Gotchas collected up-front
 
+Two wire lessons earned during R3 (both live-diagnosed on the HL2 with the
+N2ADR filter board, 2026-07-12):
+
+- **⛔ C0 values are FINAL bytes, not addresses.** piHPSDR's 0x02/0x04/0x12/
+  0x14/… constants already carry the register address in bits [7:1] (bit 0 =
+  MOX). R1 shipped them shifted once more — RX *appeared* fine only because
+  the mislabeled "TX frequency" frame (0x02<<1 = 0x04) landed on RX1's NCO;
+  in reality the TX NCO, LNA gain, T/R-relay lock and PWM config never
+  reached the radio. Symptoms that unmasked it: filter-board relays silent,
+  LNA slider inert. When touching cc_round_robin, re-verify the C0 bytes
+  against old_protocol.c line by line, never against our own comments.
+- **The N2ADR filter board is host-driven, not gateware-automatic.** The
+  HL2's J16 open-collector outputs drive the LPF relays and the HOST must
+  select them per band via the OC bits in the C0=0x00 frame (`OCrx << 1`
+  into C2, old_protocol.c:1916). piHPSDR defaults HL-class radios to
+  filter_board=N2ADR with per-band values 160m=1, 80m=66, 60/40m=68,
+  30/20m=72, 17/15m=80, 12/10m=96 (radio.c:2443-2471). Our
+  `n2adr_oc_bits()` maps the RX frequency to those values with next-higher-
+  LPF thresholds between ham bands. No board fitted → pins drive nothing.
+
 - The same UDP socket carries everything; the radio sends EP6 to whatever
   host port sent the start command — bind once, keep it.
 - EP6 sequence number check: tolerate seq 0 (radio restart), else log gaps.
@@ -106,6 +126,7 @@ and small GUI conditionals (rates, gain, no atten).
   MAC, P2 (vendored logic, unmodified) does not — the picker dedups rows,
   `sdrfl-discover` output may show a P2 radio twice. Cosmetic.
 
-*Written 2026-07-12 after the discovery step went live; R1+R2 landed and
-live-verified the same day. Next: R3 (GUI whitelist RX-only, P1 rate limits,
-LNA gain control, 38.4 MHz cap).*
+*Written 2026-07-12 after the discovery step went live; R1+R2+R3 landed and
+live-verified the same day. Next: R4 polish — ADC-overload badge + HL2
+temperature into the GUI tick (p1_get_telemetry already decodes them), and
+consider decoupling TCI from the TX runtime so RX-only radios can feed SDC.*

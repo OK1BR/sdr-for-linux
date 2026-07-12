@@ -35,6 +35,7 @@
 
 #include "discovered.h"
 #include "discovery.h"
+#include "protocol1.h"
 #include "protocol2.h"
 #include "analyzer.h"
 #include "demod.h"
@@ -88,6 +89,8 @@ typedef struct {
   double      volume;       /* AF gain (dB)                                    */
   double      gain;         /* digital master gain                            */
   int         atten;        /* ADC0 step attenuator (dB, 0-31)                 */
+  int         lna_gain;     /* P1/HL2: AD9866 LNA gain (dB, −12..+48)          */
+  int         proto_p1;     /* connected radio speaks Protocol 1 (HL2)         */
   int         agc;          /* AGC mode 0=off,1=long,2=slow,3=med,4=fast       */
   int         agc_by_group[4]; /* per-mode-group AGC memory (SSB/CW/AM/digi)   */
   double      agc_gain;     /* AGC-T threshold/gain (dB)                       */
@@ -1676,6 +1679,7 @@ static void app_to_settings(const App *app, Settings *s) {
   s->step    = (int)app->tune_step;
   s->zoom    = app->zoom;
   s->atten   = app->atten;
+  s->lna     = app->lna_gain;
   s->agc     = app->agc;
   for (int i = 0; i < 4; i++) { s->agc_by_group[i] = app->agc_by_group[i]; }
   s->agc_gain = app->agc_gain;
@@ -1984,6 +1988,13 @@ static void tx_pan_autofit(App *app) {
  * moves, passband stays centred) by the selected step. Zoom lives on the right
  * mouse button (drag) now, not the wheel. Each tune notch snaps to a clean grid
  * multiple in the scroll direction. */
+
+/* Re-tune the running link — the one per-protocol dispatch every tuning path
+ * shares (both setters are thread-safe atomics picked up by the sender). */
+static void engine_set_frequency(const App *app, long long f) {
+  if (app->proto_p1) { p1_set_frequency(f); } else { p2_set_frequency(f); }
+}
+
 static gboolean on_scroll(GtkEventControllerScroll *ctl, double dx, double dy, gpointer data) {
   (void)dx; (void)ctl;
   App *app = (App *)data;
@@ -2000,7 +2011,7 @@ static gboolean on_scroll(GtkEventControllerScroll *ctl, double dx, double dy, g
   long long nf = base + (long long)dir * step;
   if (nf < 1) { nf = 1; }
   app->freq = nf;              /* readout follows on the next tick */
-  p2_set_frequency(nf);
+  engine_set_frequency(app, nf);
   schedule_save(app);
   return TRUE;
 }
@@ -2102,7 +2113,7 @@ static void on_drag_update(GtkGestureDrag *g, double off_x, double off_y, gpoint
   long long nf = app->drag_base_freq - (long long)llround(off_x * hz_per_px);
   if (nf < 1) { nf = 1; }
   app->freq = nf;             /* readout follows on the next tick */
-  p2_set_frequency(nf);
+  engine_set_frequency(app, nf);
   schedule_save(app);
 }
 
@@ -2134,7 +2145,7 @@ static void click_tune(App *app, double x) {
   if (nf < 1) { nf = 1; }
   app->freq = nf;
   if (app->pan != 0.0) { app->pan = 0.0; analyzer_set_pan(0.0); }   /* recentre on the signal */
-  p2_set_frequency(nf);
+  engine_set_frequency(app, nf);
   schedule_save(app);
 }
 
@@ -2160,7 +2171,7 @@ static void on_pressed(GtkGestureClick *g, int n_press, double x, double y, gpoi
       if (s->hx1 > s->hx0 && x >= s->hx0 && x <= s->hx1 && y >= s->hy0 && y <= s->hy1) {
         app->freq = s->hz;                     /* like click_tune, exact Hz */
         if (app->pan != 0.0) { app->pan = 0.0; analyzer_set_pan(0.0); }
-        p2_set_frequency(s->hz);
+        engine_set_frequency(app, s->hz);
         schedule_save(app);
         tci_server_spot_clicked(s->call, s->hz);
         gtk_widget_queue_draw(app->area);
@@ -2413,6 +2424,16 @@ static void on_atten_changed(GtkRange *r, gpointer data) {
   schedule_save(app);
 }
 
+/* P1/HL2 front-end: AD9866 LNA gain (−12..+48 dB, default +14 — piHPSDR's
+ * calibration point; "essential to have some gain set", P1-SCOPE §3). */
+static void on_lna_changed(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  int db = (int)gtk_range_get_value(r);
+  p1_set_gain(db);
+  app->lna_gain = db;
+  schedule_save(app);
+}
+
 static void on_agc_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data) {
   (void)ps;
   App *app = (App *)data;
@@ -2501,7 +2522,7 @@ static void on_band_clicked(GtkButton *b, gpointer data) {
   if (bi >= 0 && app->band_freq[bi] > 0) { f = app->band_freq[bi]; }  /* last freq on this band */
   app->freq = f;
   if (app->pan != 0.0) { app->pan = 0.0; analyzer_set_pan(0.0); }   /* new band → recentre */
-  p2_set_frequency(f);
+  engine_set_frequency(app, f);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(b), TRUE);  /* stay lit (band_apply fixes others) */
   schedule_save(app);
 }
@@ -2678,6 +2699,10 @@ static GtkWidget *build_controls(App *app) {
     int bi = band_for_freq(bands[i].f);
     if (bi >= 0) { app->band_btns[bi] = b; }
     g_signal_connect(b, "clicked", G_CALLBACK(on_band_clicked), app);
+    if (app->proto_p1 && bands[i].f >= 38400000) {   /* HL2: 12-bit ADC @76.8 MHz */
+      gtk_widget_set_sensitive(b, FALSE);
+      gtk_widget_set_tooltip_text(b, "Over this radio's 38.4 MHz range");
+    }
     gtk_box_append(GTK_BOX(bandbox), b);
   }
   update_band_highlight(app);   /* reflect the startup band */
@@ -2734,7 +2759,7 @@ static void on_step_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data) {
   if (snapped < 1) { snapped = step; }
   if (snapped != f) {
     app->freq = snapped;                 /* readout follows on the next tick */
-    if (app->engine_ok) { p2_set_frequency(snapped); }
+    if (app->engine_ok) { engine_set_frequency(app, snapped); }
   }
   schedule_save(app);
 }
@@ -2828,13 +2853,25 @@ static GtkWidget *build_bottom_controls(App *app) {
   g_signal_connect(vol, "value-changed", G_CALLBACK(on_volume_changed), app);
   gtk_box_append(GTK_BOX(bar), labeled("AF", vol));
 
-  GtkWidget *att = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 31, 1);
-  gtk_range_set_value(GTK_RANGE(att), app->atten);       /* before wiring: no send */
-  gtk_widget_set_size_request(att, 100, -1);
-  gtk_scale_set_draw_value(GTK_SCALE(att), TRUE);
-  gtk_scale_set_value_pos(GTK_SCALE(att), GTK_POS_RIGHT);
-  g_signal_connect(att, "value-changed", G_CALLBACK(on_atten_changed), app);
-  gtk_box_append(GTK_BOX(bar), labeled("Att", att));
+  /* Front-end gain: P2 radios expose a step attenuator (0-31 dB), the P1 HL2
+   * an LNA gain (−12..+48 dB) — one slider slot, per-protocol semantics. */
+  if (app->proto_p1) {
+    GtkWidget *lna = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, -12, 48, 1);
+    gtk_range_set_value(GTK_RANGE(lna), app->lna_gain);  /* before wiring: no send */
+    gtk_widget_set_size_request(lna, 120, -1);
+    gtk_scale_set_draw_value(GTK_SCALE(lna), TRUE);
+    gtk_scale_set_value_pos(GTK_SCALE(lna), GTK_POS_RIGHT);
+    g_signal_connect(lna, "value-changed", G_CALLBACK(on_lna_changed), app);
+    gtk_box_append(GTK_BOX(bar), labeled("LNA", lna));
+  } else {
+    GtkWidget *att = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 31, 1);
+    gtk_range_set_value(GTK_RANGE(att), app->atten);     /* before wiring: no send */
+    gtk_widget_set_size_request(att, 100, -1);
+    gtk_scale_set_draw_value(GTK_SCALE(att), TRUE);
+    gtk_scale_set_value_pos(GTK_SCALE(att), GTK_POS_RIGHT);
+    g_signal_connect(att, "value-changed", G_CALLBACK(on_atten_changed), app);
+    gtk_box_append(GTK_BOX(bar), labeled("Att", att));
+  }
 
   GtkWidget *agct = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, -20, 120, 1);
   gtk_range_set_value(GTK_RANGE(agct), app->agc_gain);   /* before wiring: no send */
@@ -3277,7 +3314,7 @@ static long long tci_get_freq(void) { return tci_app->freq; }
 static void tci_set_freq(long long f) {
   if (f < 1) { return; }
   tci_app->freq = f;                 /* same as the tuning wheel */
-  p2_set_frequency(f);
+  engine_set_frequency(tci_app, f);
   schedule_save(tci_app);
 }
 static const char *tci_get_mode(void) {
@@ -3658,9 +3695,14 @@ static AdwDialog *build_prefs(App *app) {
   gtk_editable_set_text(GTK_EDITABLE(ip), app->radio_ip);
   g_signal_connect(ip, "changed", G_CALLBACK(on_pref_ip), app);
   adw_preferences_group_add(g, ip);
-  GtkStringList *rm = gtk_string_list_new((const char *[]){"48 kHz","96 kHz","192 kHz","384 kHz","768 kHz","1536 kHz", NULL});
+  /* P1 (HL2) tops out at 384 kHz — offer only its four rates (the indexes
+   * still line up with PREF_RATES, so on_pref_rate needs no branch). */
+  static const char *RATE_STR_P2[] = {"48 kHz","96 kHz","192 kHz","384 kHz","768 kHz","1536 kHz", NULL};
+  static const char *RATE_STR_P1[] = {"48 kHz","96 kHz","192 kHz","384 kHz", NULL};
+  GtkStringList *rm = gtk_string_list_new(app->proto_p1 ? RATE_STR_P1 : RATE_STR_P2);
+  guint nrates = app->proto_p1 ? 4 : G_N_ELEMENTS(PREF_RATES);
   guint ri = 2;
-  for (guint i = 0; i < G_N_ELEMENTS(PREF_RATES); i++) { if (PREF_RATES[i] == app->rate) { ri = i; } }
+  for (guint i = 0; i < nrates; i++) { if (PREF_RATES[i] == app->rate) { ri = i; } }
   GtkWidget *rate = g_object_new(ADW_TYPE_COMBO_ROW, "title", "Sample rate",
       "subtitle", "IQ span · restart to apply", "model", rm, "selected", ri, NULL);
   g_signal_connect(rate, "notify::selected", G_CALLBACK(on_pref_rate), app);
@@ -4166,7 +4208,7 @@ static void tx_cal_from_settings(App *app, const Settings *st) {
 static void start_radio(App *app) {
   Settings st = { .freq = 14100000, .rate = 192000, .mode = -1,
                   .volume = -10.0, .gain = 1.0, .fps = 25, .latency = 10,
-                  .step = TUNE_STEP_DEFAULT, .zoom = 1.0, .atten = 0,
+                  .step = TUNE_STEP_DEFAULT, .zoom = 1.0, .atten = 0, .lna = 14,
                   .agc = 3, .agc_gain = 80.0, .filter = -1,
                   .agc_by_group = { -1, -1, -1, -1 },   /* unset → seeded below */
                   .pan_high = PAN_HIGH_DEFAULT, .pan_low = PAN_LOW_DEFAULT,
@@ -4215,6 +4257,7 @@ static void start_radio(App *app) {
   app->volume = st.volume;
   app->gain   = st.gain;
   app->atten  = st.atten < 0 ? 0 : (st.atten > 31 ? 31 : st.atten);
+  app->lna_gain = st.lna < -12 ? -12 : (st.lna > 48 ? 48 : st.lna);
   app->agc    = st.agc < 0 ? 0 : (st.agc > 4 ? 4 : st.agc);
   /* Per-mode-group AGC memory. Unset slots (fresh/upgraded config) seed with
    * character defaults — CW/digi Fast, SSB/AM Slow — except the group we are
@@ -4427,17 +4470,26 @@ static void start_radio(App *app) {
    * Alex/PA bytes are unverified and could damage the hardware. */
   if (!radio_supported(dev)) {
     fprintf(stderr, "radio '%s' at %s (device %d) is NOT SUPPORTED YET — every model "
-            "must be brought up and live-tested first; this build supports the ANAN G2E only\n",
+            "must be brought up and live-tested first; this build supports the "
+            "ANAN G2E, ANAN 10E/100B and Hermes Lite 2 (RX)\n",
             dev->name, inet_ntoa(dev->network.address.sin_addr), dev->device);
     return;
   }
-  if (dev->status == 3) {   /* P2 discovery reply byte[4]: 2 = idle, 3 = streaming */
+  if (dev->status == 3) {   /* discovery reply status: 2 = idle, 3 = streaming (P1+P2) */
     fprintf(stderr, "radio at %s is IN USE by another program (piHPSDR?) — close it first\n",
             inet_ntoa(dev->network.address.sin_addr));
     return;
   }
-  printf("Using %s at %s — RX %lld Hz @ %d Hz\n", dev->name,
-         inet_ntoa(dev->network.address.sin_addr), app->freq, rate);
+  app->proto_p1 = (dev->protocol == ORIGINAL_PROTOCOL);
+  if (app->proto_p1 && rate != 48000 && rate != 96000 && rate != 192000 && rate != 384000) {
+    /* P1 rates are 48/96/192/384 k only (C&C 0x00-C1); a saved P2 rate (768k+)
+     * from another radio must not brick the start. */
+    rate = 384000;
+    app->rate = rate;
+    printf("P1 radio: sample rate capped to %d Hz\n", rate);
+  }
+  printf("Using %s at %s — RX %lld Hz @ %d Hz (protocol %d)\n", dev->name,
+         inet_ntoa(dev->network.address.sin_addr), app->freq, rate, app->proto_p1 ? 1 : 2);
   g_strlcpy(app->radio_name, dev->name, sizeof app->radio_name);
 
   /* ⛔ Per-radio TX profile (radio_support.h; piHPSDR audit 2026-07-11). PA
@@ -4539,7 +4591,7 @@ static void start_radio(App *app) {
    * sees a tx state so the no-TX guarantees hold unconditionally). */
   if (!radio_tx_supported(dev)) {
     fprintf(stderr, "TX locked for '%s' (device %d): model not TX-brought-up yet — RX only\n",
-            dev->name, dev->device - 1000);
+            dev->name, dev->device);
     if (app->toast_overlay) {
       AdwToast *t = adw_toast_new_format("%s: zatím jen příjem — TX na tomto modelu "
                                          "ještě neprošel bring-upem", dev->name);
@@ -4562,10 +4614,14 @@ static void start_radio(App *app) {
     fprintf(stderr, "TX runtime init failed — RX only\n");
   }
 
-  p2_set_attenuation(app->atten);   /* front-end gain: goes out in the first HP packet */
+  /* Front-end gain: out with the first C&C/HP round. P1 = HL2 LNA gain, P2 =
+   * step attenuator (both land in atomics, safe before the link starts). */
+  if (app->proto_p1) { p1_set_gain(app->lna_gain); }
+  else               { p2_set_attenuation(app->atten); }
   s_engine_rate = rate;
-  if (p2_rx_start(dev, app->freq, rate, feed_cb, NULL) != 0) {
-    fprintf(stderr, "p2_rx_start failed\n");
+  if ((app->proto_p1 ? p1_rx_start(dev, app->freq, rate, feed_cb, NULL)
+                     : p2_rx_start(dev, app->freq, rate, feed_cb, NULL)) != 0) {
+    fprintf(stderr, "%s failed\n", app->proto_p1 ? "p1_rx_start" : "p2_rx_start");
     if (app->tx_ready) { tx_run_stop(); app->tx_ready = 0; }
     if (app->mic_open) { mic_stop(); app->mic_open = 0; }
     if (app->audio_ok) { demod_destroy(); audio_stop(); }
@@ -4667,7 +4723,7 @@ int main(int argc, char **argv) {
     tci_server_stop();                     /* drop TCI clients before the engine goes away */
     if (app.tx_ready) { tx_run_stop(); }   /* unkey + stop TX thread before the socket closes */
     if (app.mic_open) { mic_stop(); app.mic_open = 0; }
-    if (app.engine_ok) { p2_rx_stop(); }
+    if (app.engine_ok) { if (app.proto_p1) { p1_rx_stop(); } else { p2_rx_stop(); } }
     if (app.audio_ok)  { demod_destroy(); audio_stop(); }
     if (app.engine_ok) { analyzer_destroy(); }
   } else {

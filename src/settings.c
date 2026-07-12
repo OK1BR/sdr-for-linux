@@ -98,6 +98,8 @@ int settings_load(Settings *s) {
     }
     if (g_key_file_has_key(kf, GROUP_RX, "atten", NULL))
       s->atten = g_key_file_get_integer(kf, GROUP_RX, "atten", NULL);
+    if (g_key_file_has_key(kf, GROUP_RX, "lna", NULL))
+      s->lna = g_key_file_get_integer(kf, GROUP_RX, "lna", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "agc", NULL))
       s->agc = g_key_file_get_integer(kf, GROUP_RX, "agc", NULL);
     {   /* per-mode-group AGC memory; missing key = -1 (unset, seeded by the GUI) */
@@ -266,6 +268,7 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_RX,    "latency", s->latency);
   g_key_file_set_integer(kf, GROUP_RX,    "step",    s->step);
   g_key_file_set_integer(kf, GROUP_RX,    "atten",   s->atten);
+  g_key_file_set_integer(kf, GROUP_RX,    "lna",     s->lna);
   g_key_file_set_integer(kf, GROUP_RX,    "agc",     s->agc);
   g_key_file_set_double (kf, GROUP_RX,    "agc_gain", s->agc_gain);
   {

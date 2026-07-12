@@ -96,26 +96,30 @@ fw 10.3 switch sync mode mid-TX and hang (power-cycle recovery). Lifting it
 = Thetis ordering in tx_run/protocol2, or P1 PS after the HL2 milestone.
 Details: TX-DESIGN §9.
 
-**★ HL2 / Protocol 1 milestone — R1+R2 DONE (2026-07-12):**
-P1 (METIS) **discovery + R1 link core + R2 analyzer/demod feed, all
-live-verified** on the Hermes Lite 2 (192.168.1.21, gw 73.2):
-`discovery_p1.c` (MAC dedup, HL1/HL2 version split), `protocol1.[ch]`
-(EP2 sender = keepalive + C&C round-robin, EP6 parser, p2-identical IQ
-callback contract, ⛔ no-TX: MOX never / drive 0 / T/R relay locked RX),
-gate `sdrfl-p1probe` (960k pairs/5 s @192k, 0 errors). **R2**: the
-`sdrfl-panprobe`/`sdrfl-audioprobe` gates are protocol-agnostic —
-start_radio's discovery policy (P2 first, P1 round only if the pinned IP
-didn't answer), radio selected BY IP, p1/p2_rx_start branched on
-`dev->protocol`, audioprobe caps >384k rates to P1's max. Live w/ antenna:
-40 m panadapter @192k (floor −115 dB, CW/digi visible) + CW audio
-@384k-capped (0 ferr, queue ≤3 ms). Scope + wire ref: `docs/P1-SCOPE.md`.
+**★ HL2 / Protocol 1 milestone — R1+R2+R3 DONE, ALL LIVE (2026-07-12):**
+Hermes Lite 2 (192.168.1.21, gw 73.2) is a supported RX-only radio in the
+GUI. `discovery_p1.c` (MAC dedup, HL1/HL2 split), `protocol1.[ch]` (EP2
+sender = keepalive + C&C round-robin, EP6 parser, p2-identical IQ callback
+contract, ⛔ no-TX: MOX never / drive 0 / T/R relay locked RX), gates
+`sdrfl-p1probe` + protocol-agnostic `sdrfl-panprobe`/`audioprobe` (select
+radio BY IP, branch on `dev->protocol`, cap P1 rates at 384k). **R3 GUI**:
+whitelist += HL2 (RX-only; TX/PS excluded structurally), one
+`engine_set_frequency()` dispatch for all tuning paths, footer LNA slider
+(−12..+48 dB, persisted) replacing Att on P1, prefs rates 48-384k, 6 m
+button greyed. ⛔ **Two R3 wire lessons (P1-SCOPE §4)**: (1) piHPSDR C0
+constants are FINAL bytes — R1 double-shifted them and RX worked only by
+luck (TX NCO/LNA/T-R lock never landed); (2) the **N2ADR filter board is
+host-driven** via OC bits in the C0=0x00 frame (per-band table from
+piHPSDR radio.c:2443), no gateware automatism — relays confirmed clicking
+live. Scope + wire ref: `docs/P1-SCOPE.md`.
 
-**★ Next session: HL2 R3 GUI** — whitelist HL2 RX-only
-(`radio_supported()`), per-protocol rates (48-384k), LNA gain −12..+48 dB
-instead of the atten slider, 38.4 MHz band cap; then R4 polish (overload
-badge, temperature from EP6 addr-1). 10E leftovers: pa_cal for the
-remaining bands (~32-34 expected), digi TX meter live check. (`~/.local`
-install refreshed 2026-07-12 via `meson install -C build-release`.)
+**★ Next session: HL2 R4 polish** — ADC-overload badge + HL2 temperature
+(EP6 addr-1) into the GUI tick via `p1_get_telemetry` (data already
+decoded), consider decoupling TCI from the TX runtime (RX-only radios
+can't feed SDC today). 10E leftovers: pa_cal for the remaining bands
+(~32-34 expected), digi TX meter live check. (`~/.local` install refreshed
+2026-07-12 via `meson install -C build-release` — pre-R3; refresh again
+after R4.)
 
 **Older follow-ups:** off-centre pan, AGC-target vs `SDRFL_GAIN`, audio
 clock-drift smoothing, absolute dBm cal, nonlinear wattmeter cal
