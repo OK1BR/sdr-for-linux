@@ -80,6 +80,7 @@ typedef struct {
   int       ps_stbl;    /* PS STBL (SetPSStabilize) — references default 0        */
   int       tx_mon;     /* TX monitor (self-listen: voice mic / CW sidetone)      */
   double    tx_mon_db;  /* monitor level (dB, -40..0)                             */
+  int       tx_mon_raw; /* monitor source: 0 = processed TX audio, 1 = raw mic    */
   double    tx_flo;     /* TX audio filter low edge (Hz; default 150)             */
   double    tx_fhi;     /* TX audio filter high edge (Hz; default 2850, eSSB up)  */
   int       cw_wpm;     /* CW keyer speed (WPM, F6d-1c)                           */

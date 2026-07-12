@@ -169,6 +169,8 @@ int settings_load(Settings *s) {
       s->tx_mon = g_key_file_get_integer(kf, GROUP_TX, "monitor", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "monitor_db", NULL))
       s->tx_mon_db = g_key_file_get_double(kf, GROUP_TX, "monitor_db", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "monitor_raw", NULL))
+      s->tx_mon_raw = g_key_file_get_integer(kf, GROUP_TX, "monitor_raw", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "cw_wpm", NULL))
       s->cw_wpm = g_key_file_get_integer(kf, GROUP_TX, "cw_wpm", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "cw_pitch", NULL))
@@ -330,6 +332,7 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_TX,     "ps_stbl",   s->ps_stbl);
   g_key_file_set_integer(kf, GROUP_TX,     "monitor",   s->tx_mon);
   g_key_file_set_double (kf, GROUP_TX,     "monitor_db", s->tx_mon_db);
+  g_key_file_set_integer(kf, GROUP_TX,     "monitor_raw", s->tx_mon_raw);
   g_key_file_set_integer(kf, GROUP_TX,     "cw_wpm",    s->cw_wpm);
   g_key_file_set_integer(kf, GROUP_TX,     "cw_pitch",  s->cw_pitch);
   g_key_file_set_double (kf, GROUP_TX,     "cw_sidetone_db", s->cw_st_db);

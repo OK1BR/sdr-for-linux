@@ -30,6 +30,7 @@ static GMutex    t_lock;          /* fences feed vs create/destroy/setters      
 static int       t_err;           /* last non-zero fexchange0 error                  */
 static long      t_ferr;          /* count of fexchange0 calls with error            */
 static long      t_blocks;        /* fexchange0 calls                                */
+static int       t_dexp_up;       /* create_dexp ran (WDSP dexp id 0 is per-process) */
 
 int tx_dsp_create(int mode, double flo, double fhi, int p1, tx_iq_cb cb, void *user) {
   /* Rate chains verbatim piHPSDR transmitter.c:987-1010:
@@ -59,7 +60,7 @@ int tx_dsp_create(int mode, double flo, double fhi, int p1, tx_iq_cb cb, void *u
   SetTXABandpassFreqs(t_id, flo, fhi);
   SetTXACFIRRun(t_id, p1 ? 0 : 1);      /* ⛔ P2 firmware requires it, P1 must
                                            NOT run it (transmitter.c:1325)   */
-  SetTXAAMSQRun(t_id, 0);               /* mic noise gate off */
+  SetTXAAMSQRun(t_id, 0);               /* TXA squelch unused — the gate is DEXP */
   SetTXAALCAttack(t_id, 1);
   SetTXAALCDecay(t_id, 10);
   SetTXAALCSt(t_id, 1);                 /* ALC always on (piHPSDR: never switch off) */
@@ -69,6 +70,35 @@ int tx_dsp_create(int mode, double flo, double fhi, int p1, tx_iq_cb cb, void *u
   SetTXAPanelSelect(t_id, 2);           /* use the Mic-I sample */
   SetTXAPanelGain1(t_id, 1.0);          /* mic gain 0 dB */
   SetTXAMode(t_id, mode);
+  /* Mic noise gate = WDSP DEXP, OUTSIDE the TXA chain, in-place on t_mic just
+   * before fexchange0 — piHPSDR parity (transmitter.c:1272 args, :1664 call
+   * site). A true downward expander (attack 25 ms / release 100 ms / HOLD
+   * 800 ms, hysteresis 0.75 ≈ 2.5 dB): unlike the TXA AMSQ squelch it used to
+   * be (25 ms max tail, 0.9 dB hysteresis) it cannot chatter room noise onto
+   * the air. It runs before the TXA panel, so the trigger threshold is dBFS
+   * at the MIC INPUT (pre mic-gain). Buffers are interleaved complex (Q=0). */
+  if (!t_dexp_up) {
+    create_dexp(0,                /* dexp id 0 (piHPSDR uses the same)          */
+                0,                /* off until tx_dsp_set_gate                  */
+                t_in_size,        /* complex block == one fexchange0 input      */
+                t_mic, t_mic,     /* in-place                                   */
+                TX_IN_RATE,
+                0.01,             /* detector tau                               */
+                0.025, 0.100,     /* attack, release                            */
+                0.800,            /* hold                                       */
+                10.0,             /* expansion ratio = 20 dB                    */
+                0.75,             /* hysteresis ratio                           */
+                0.05,             /* trigger ≈ −26 dB; set_gate overrides       */
+                t_in_size, 0, 1000.0, 2000.0, 0,  /* side-channel filter (off)  */
+                0, 0, 0.050, NULL,                /* VOX + audio delay (off)    */
+                0, 1, 1, 1.0, 1.0);               /* antivox (off)              */
+    t_dexp_up = 1;
+  } else {                        /* re-create: re-point at the fresh buffers   */
+    SetDEXPRun(0, 0);
+    SetDEXPSize(0, t_in_size);
+    SetDEXPIOBuffers(0, t_mic, t_mic);
+    SetDEXPRate(0, TX_IN_RATE);
+  }
   t_ready = 1;
   g_mutex_unlock(&t_lock);
   return 0;
@@ -90,6 +120,7 @@ void tx_dsp_feed_mic(const float *mic, int n) {
       t_fill++;
       if (t_fill >= t_in_size) {
         int err = 0;
+        xdexp(0);                               /* mic gate (piHPSDR :1664)  */
         fexchange0(t_id, t_mic, t_iq, &err);    /* mic block -> IQ block */
         t_blocks++;
         if (err != 0) { t_err = err; t_ferr++; }
@@ -139,14 +170,12 @@ void tx_dsp_set_mic_gain(double db) {
 void tx_dsp_set_gate(int on, double thresh_db) {
   g_mutex_lock(&t_lock);
   if (t_ready) {
-    /* WDSP TXA AMSQ = downward expander, sits after the panel (mic gain) and
-     * BEFORE the leveler/COMP — so in speech gaps there is nothing for PROC to
-     * pump up. Depth -20 dB mirrors piHPSDR's DEXP expansion default
-     * (transmitter.c:1141 dexp_exp=20); threshold is on the post-mic-gain
-     * signal. Not a hard mute: gaps drop 20 dB, keying stays natural. */
-    SetTXAAMSQMutedGain(t_id, -20.0);
-    SetTXAAMSQThreshold(t_id, thresh_db);
-    SetTXAAMSQRun(t_id, on ? 1 : 0);
+    /* DEXP trigger: linear amplitude at the mic input (PRE mic-gain — the
+     * expander runs before the TXA panel). Depth stays the fixed 20 dB
+     * expansion ratio from create (piHPSDR default dexp_exp=20); gaps drop
+     * 20 dB after the 800 ms hold, speech opens in 25 ms. */
+    SetDEXPAttackThreshold(0, pow(10.0, 0.05 * thresh_db));
+    SetDEXPRun(0, on ? 1 : 0);
   }
   g_mutex_unlock(&t_lock);
 }

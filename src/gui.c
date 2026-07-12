@@ -196,8 +196,6 @@ typedef struct {
   double      tx_digi_max_w; /* ⛔ drive cap in DIGU/DIGL, W (piHPSDR
                                 drive_digi_max; persisted, = pa_watts → off)   */
   GtkWidget  *drive_scale;   /* footer Drive slider (digi clamp syncs it)      */
-  GtkWidget  *mic_group;     /* footer Mic-gain group — voice modes only (#7)  */
-  GtkWidget  *proc_group;    /* footer PROC group — voice modes only (#7)      */
   GtkWidget  *win;           /* top-level window (for size persistence)           */
   GtkWidget  *toast_overlay; /* AdwToastOverlay wrapping the content (restart hint) */
   int         restart_pending;     /* a restart-to-apply setting changed this session */
@@ -225,11 +223,6 @@ typedef struct {
   double      tx_drive_w;    /* MOX/voice power request, W (persisted)              */
   double      tx_tune_w;     /* TUNE power request, W (persisted)                   */
   double      tx_swr_alarm;  /* SWR trip threshold (persisted)                      */
-  double      tx_mic_gain;   /* TX mic gain, dB — SSB voice (persisted)             */
-  int         tx_comp;       /* speech processor (PROC) on/off (persisted)          */
-  double      tx_comp_db;    /* PROC compression dB, 0-20 (persisted)               */
-  int         tx_gate;       /* mic noise gate (DEXP) on/off (persisted)            */
-  double      tx_gate_db;    /* gate threshold dBFS post-mic-gain (persisted)       */
   int         tx_ptt_enabled;/* footswitch: radio PTT input = MOX (persisted)       */
   int         tx_ptt_tip;    /* PTT contact on mic-jack tip vs ring (persisted)     */
   int         ps_enable;     /* PureSignal on/off (persisted)                       */
@@ -858,22 +851,6 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
   cairo_set_source_rgba(cr, 0.55, 0.95, 0.55, 0.75);          /* target-zone edge (-6 dB) */
   cairo_rectangle(cr, zx, by, 1.0, h_mic); cairo_fill(cr);
 
-  /* Noise-gate overlay on the Mic bar: a blue threshold tick, and when the gate
-   * is CLOSED (mic below threshold → mic dropped 20 dB) a blue shade over the
-   * sub-threshold region — the operator sees exactly when/where the gate bites. */
-  int gate_closed = 0;
-  if (app->tx_gate) {
-    double gx = bx + (app->tx_gate_db - MIC_MIN) / (MIC_MAX - MIC_MIN) * bw;
-    if (gx < bx) { gx = bx; } else if (gx > bx + bw) { gx = bx + bw; }
-    gate_closed = ts->mic_pk < app->tx_gate_db;
-    if (gate_closed) {
-      cairo_set_source_rgba(cr, 0.30, 0.55, 1.0, 0.30);
-      cairo_rectangle(cr, bx, by, gx - bx, h_mic); cairo_fill(cr);
-    }
-    cairo_set_source_rgba(cr, 0.35, 0.65, 1.0, 0.95);   /* gate threshold tick */
-    cairo_rectangle(cr, gx, by, 1.5, h_mic); cairo_fill(cr);
-  }
-
   /* Leveler makeup gain (dB, green) — what PROC is ADDING right now (0..+8).
    * Riding high in speech gaps = the noise pump the gate is there to stop. */
   double ly = by + h_mic + gap;
@@ -902,11 +879,11 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
   cairo_move_to(cr, bx - 32, ay + h_alc);     cairo_show_text(cr, "ALC");
   char lbl[64];
   if (ts->mic_pk <= MIC_MIN) {
-    snprintf(lbl, sizeof lbl, "Mic  --   Lev +%.0f   ALC %.0f dB%s",
-             ts->lvlr_gain, ts->alc_gain, gate_closed ? "  · GATE" : "");
+    snprintf(lbl, sizeof lbl, "Mic  --   Lev +%.0f   ALC %.0f dB",
+             ts->lvlr_gain, ts->alc_gain);
   } else {
-    snprintf(lbl, sizeof lbl, "Mic %+.0f   Lev +%.0f   ALC %.0f dB%s",
-             ts->mic_pk, ts->lvlr_gain, ts->alc_gain, gate_closed ? "  · GATE" : "");
+    snprintf(lbl, sizeof lbl, "Mic %+.0f   Lev +%.0f   ALC %.0f dB",
+             ts->mic_pk, ts->lvlr_gain, ts->alc_gain);
   }
   cairo_set_font_size(cr, 15.0);
   cairo_text_extents_t ex; cairo_text_extents(cr, lbl, &ex);
@@ -1043,13 +1020,6 @@ static void draw_tx_digi_meter(cairo_t *cr, App *app, int w, const tx_run_status
  * The frequency axis MATCHES the RX one (span = rate/zoom), capped at the TX DUC
  * IQ bandwidth (192 kHz) since that's all the TX stream carries. */
 #define TX_IQ_BW 192000.0      /* TX DUC IQ bandwidth = widest possible TX span (Hz) */
-#define MIC_GAIN_MIN (-12.0)   /* TX mic-gain slider range, dB — piHPSDR sliders.c:643 */
-#define MIC_GAIN_MAX  50.0
-#define COMP_DB_MIN   0.0      /* PROC compression range, dB (0 = auto-leveler only) */
-#define COMP_DB_MAX   20.0
-#define GATE_DB_MIN  (-60.0)   /* mic noise-gate threshold range, dBFS (post-gain) */
-#define GATE_DB_MAX  (-10.0)
-#define GATE_DB_DFLT (-35.0)
 #define MON_DB_MIN   (-40.0)   /* TX monitor level range, dB */
 #define MON_DB_MAX     0.0
 #define MON_DB_DFLT  (-15.0)
@@ -1723,11 +1693,6 @@ static void app_to_settings(const App *app, Settings *s) {
   s->tx_digi_max = app->tx_digi_max_w;
   s->tx_tune  = app->tx_tune_w;
   s->tx_swr   = app->tx_swr_alarm;
-  s->mic_gain = app->tx_mic_gain;
-  s->tx_comp    = app->tx_comp;
-  s->tx_comp_db = app->tx_comp_db;
-  s->tx_gate    = app->tx_gate;
-  s->tx_gate_db = app->tx_gate_db;
   s->tx_mon     = app->tx_mon;
   s->tx_mon_db  = app->tx_mon_db;
   s->tx_flo     = app->tx_flo;
@@ -1861,12 +1826,6 @@ static void tx_update_mic(App *app) {
   /* MOX/voice is only meaningful with the mic open (a voice mode); grey it out for
    * CW/data, exactly like the mic itself. Button may not exist yet during startup. */
   if (app->mox_btn) { gtk_widget_set_sensitive(app->mox_btn, want); }
-  /* Footer Mic-gain + PROC are phone utilities — hide them entirely outside
-   * voice modes (contest note #7: in CW/digi they do nothing and just clutter;
-   * in digi the clean-chain rule forces them off anyway). */
-  int voice = mode_is_voice(app->mode);
-  if (app->mic_group)  { gtk_widget_set_visible(app->mic_group,  voice); }
-  if (app->proc_group) { gtk_widget_set_visible(app->proc_group, voice); }
   /* Two-tone works in any non-CW mode (the WDSP chain runs; in CW the feed
    * loop emits the carrier instead). */
   if (app->tt_btn) {
@@ -2357,14 +2316,11 @@ static void populate_filter_dd(App *app) {
   g_object_unref(m);
 }
 
-/* Push PROC + mic gate to the TX runtime with the digi override: in DIGU/DIGL
- * the chain must be COMPLETELY clean (Richard's rule — no compressor, leveler,
- * gate or EQ may touch data audio), regardless of the stored voice settings. */
-static void tx_apply_proc(App *app) {
-  int digi = (app->mode == DEMOD_DIGU || app->mode == DEMOD_DIGL);
-  tx_run_set_comp(digi ? 0 : app->tx_comp, app->tx_comp_db);
-  tx_run_set_gate(digi ? 0 : app->tx_gate, app->tx_gate_db);
-}
+/* The TX voice chain is FIXED in code (Richard, 2026-07-12): mic → TX filter →
+ * ALC → air. No mic gain, no compressor/leveler, no noise gate — nothing the
+ * operator (or we) can mis-set. The WDSP channel already comes up that way
+ * (tx.c: panel gain 1.0, COMP/leveler/DEXP off); digi is clean by the same
+ * token. The engine setters still exist but have no GUI. */
 
 /* Per-mode-group AGC memory (contest note #8: a slow AGC left over from SSB
  * cost missed characters in CW — each group keeps its own AGC character).
@@ -2425,7 +2381,6 @@ static void on_mode_toggled(GtkToggleButton *b, gpointer data) {
   populate_filter_dd(app);               /* refill dropdown for the new mode */
   tx_push_cfg(app);                      /* TX runtime learns the mode (CW break-in gates on it) */
   tx_update_mic(app);                    /* voice mode → mic ready; CW/data → mic closed */
-  tx_apply_proc(app);                    /* digi = clean chain (PROC/gate forced off) */
   digi_drive_clamp(app);                 /* ⛔ entering DIGU/DIGL caps the drive */
   schedule_save(app);
 }
@@ -2809,11 +2764,6 @@ static char *fmt_watts(GtkScale *s, double v, gpointer u) {
   (void)s; (void)u;
   return g_strdup_printf("%.0f W", v);
 }
-static char *fmt_db(GtkScale *s, double v, gpointer u) {
-  (void)s; (void)u;
-  return g_strdup_printf("%+.0f dB", v);
-}
-
 /* TX drive / tune-drive / antenna — operational, so they live on the footer bar
  * (not buried in Preferences). All live into the runtime + persisted. */
 static void on_drive_changed(GtkRange *r, gpointer data) {
@@ -2836,25 +2786,6 @@ static void on_antenna_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data) {
   app->tx_antenna = (int)gtk_drop_down_get_selected(dd);
   tx_push_cfg(app); schedule_save(app);
 }
-static void on_mic_gain_changed(GtkRange *r, gpointer data) {
-  App *app = (App *)data;
-  app->tx_mic_gain = gtk_range_get_value(r);
-  tx_run_set_mic_gain(app->tx_mic_gain);   /* live into the WDSP TX panel (SSB voice) */
-  schedule_save(app);
-}
-static void on_comp_toggled(GtkToggleButton *b, gpointer data) {
-  App *app = (App *)data;
-  app->tx_comp = gtk_toggle_button_get_active(b) ? 1 : 0;
-  tx_apply_proc(app);                   /* live (WDSP setters lock); digi = off */
-  schedule_save(app);
-}
-static void on_comp_level_changed(GtkRange *r, gpointer data) {
-  App *app = (App *)data;
-  app->tx_comp_db = gtk_range_get_value(r);
-  tx_apply_proc(app);
-  schedule_save(app);
-}
-
 static GtkWidget *build_bottom_controls(App *app) {
   GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
   gtk_widget_add_css_class(bar, "controlbar");
@@ -2947,41 +2878,6 @@ static GtkWidget *build_bottom_controls(App *app) {
       (app->tx_antenna >= 0 && app->tx_antenna < 3) ? (guint)app->tx_antenna : 0);
   g_signal_connect(antdd, "notify::selected", G_CALLBACK(on_antenna_changed), app);
   gtk_box_append(GTK_BOX(bar), labeled("Ant", antdd));
-
-  /* Mic gain (SSB voice) — operational, so it lives on the footer next to Drive.
-   * Live into the WDSP TX panel + persisted; only bites while MOX-keyed (F6c-3). */
-  GtkWidget *micg = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, MIC_GAIN_MIN, MIC_GAIN_MAX, 1);
-  gtk_range_set_value(GTK_RANGE(micg), app->tx_mic_gain);      /* before wiring: no send */
-  gtk_widget_set_size_request(micg, 120, -1);
-  gtk_scale_set_draw_value(GTK_SCALE(micg), TRUE);
-  gtk_scale_set_value_pos(GTK_SCALE(micg), GTK_POS_RIGHT);
-  gtk_scale_set_format_value_func(GTK_SCALE(micg), fmt_db, NULL, NULL);
-  g_signal_connect(micg, "value-changed", G_CALLBACK(on_mic_gain_changed), app);
-  app->mic_group = labeled("Mic", micg);   /* hidden outside voice modes (#7) */
-  gtk_box_append(GTK_BOX(bar), app->mic_group);
-
-  /* Speech processor (PROC): toggle + compression level. Off = the chain has NO
-   * makeup gain (voice PEP = mic peaks × mic gain, the ALC only limits); on = the
-   * WDSP auto-leveler (+8 dB) + COMP at this level (piHPSDR tx_set_compressor).
-   * 0 dB is meaningful — leveler only. */
-  GtkWidget *procbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
-  GtkWidget *proct = gtk_toggle_button_new_with_label("PROC");
-  gtk_widget_add_css_class(proct, "mode");
-  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(proct), app->tx_comp != 0);
-  gtk_widget_set_tooltip_text(proct,
-      "Speech processor: auto-leveler (+8 dB) + compression (SSB voice)");
-  g_signal_connect(proct, "toggled", G_CALLBACK(on_comp_toggled), app);
-  gtk_box_append(GTK_BOX(procbox), proct);
-  GtkWidget *procl = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, COMP_DB_MIN, COMP_DB_MAX, 1);
-  gtk_range_set_value(GTK_RANGE(procl), app->tx_comp_db);      /* before wiring: no send */
-  gtk_widget_set_size_request(procl, 100, -1);
-  gtk_scale_set_draw_value(GTK_SCALE(procl), TRUE);
-  gtk_scale_set_value_pos(GTK_SCALE(procl), GTK_POS_RIGHT);
-  gtk_scale_set_format_value_func(GTK_SCALE(procl), fmt_db, NULL, NULL);
-  g_signal_connect(procl, "value-changed", G_CALLBACK(on_comp_level_changed), app);
-  gtk_box_append(GTK_BOX(procbox), procl);
-  app->proc_group = labeled("Proc", procbox);   /* hidden outside voice modes (#7) */
-  gtk_box_append(GTK_BOX(bar), app->proc_group);
 
   GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_set_hexpand(spacer, TRUE);
@@ -3333,20 +3229,6 @@ static void on_pref_ps_stbl(AdwSwitchRow *r, GParamSpec *p, gpointer data) {
   (void)p; App *app = (App *)data;
   app->ps_stbl = adw_switch_row_get_active(r) ? 1 : 0;
   ps_set_stbl(app->ps_stbl);
-  schedule_save(app);
-}
-/* Mic noise gate (DEXP) — tames the PROC leveler pumping room noise up in the
- * gaps between words. Threshold is on the post-mic-gain signal. Applies live. */
-static void on_pref_tx_gate(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
-  (void)ps; App *app = (App *)data;
-  app->tx_gate = adw_switch_row_get_active(r) ? 1 : 0;
-  tx_apply_proc(app);                   /* digi = gate stays off */
-  schedule_save(app);
-}
-static void on_pref_tx_gate_db(GtkRange *r, gpointer data) {
-  App *app = (App *)data;
-  app->tx_gate_db = gtk_range_get_value(r);
-  tx_apply_proc(app);
   schedule_save(app);
 }
 static void on_pref_tx_mon_db(GtkRange *r, gpointer data) {
@@ -3805,12 +3687,8 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, pref_switch("PTT on mic tip",
       "PTT contact on the mic-jack tip (off = ring, the Apache default) · live",
       app->tx_ptt_tip, G_CALLBACK(on_pref_tx_ptt_tip), app));
-  adw_preferences_group_add(g, pref_switch("Mic noise gate",
-      "Mutes room noise between words (−20 dB) — pair with PROC · live",
-      app->tx_gate, G_CALLBACK(on_pref_tx_gate), app));
-  adw_preferences_group_add(g, pref_slider("Gate threshold",
-      "dBFS after Mic gain; open above, −20 dB below · live",
-      GATE_DB_MIN, GATE_DB_MAX, app->tx_gate_db, "%.0f dB", G_CALLBACK(on_pref_tx_gate_db), app));
+  /* NO mic-chain knobs (Richard, 2026-07-12): the voice chain is fixed in code
+   * — mic → TX filter → ALC. Nothing here to mis-set. */
   adw_preferences_group_add(g, pref_slider("Monitor level",
       "dB into the RX audio output · live",
       MON_DB_MIN, MON_DB_MAX, app->tx_mon_db, "%.0f dB", G_CALLBACK(on_pref_tx_mon_db), app));
@@ -4298,8 +4176,7 @@ static void start_radio(App *app) {
                   .palette = 0, .band_edges = 1, .show_spots = 1, .spot_ttl = 10,
                   .tx_pa = 0, .tx_ant = 0, .tx_drive = 25.0, .tx_digi_max = 100.0,
                   .tx_tune = 10.0, .tx_swr = 3.0,
-                  .mic_gain = 0.0, .audio_rate = 48000,
-                  .tx_gate_db = GATE_DB_DFLT, .tx_mon_db = MON_DB_DFLT,
+                  .audio_rate = 48000, .tx_mon_db = MON_DB_DFLT,
                   .tx_flo = TXF_LO_DFLT, .tx_fhi = TXF_HI_DFLT,
                   /* PS defaults: continuous automode + Thetis-style Auto
                    * attenuate on (Richard's call 2026-07-11 v2, after the
@@ -4367,11 +4244,6 @@ static void start_radio(App *app) {
   g_strlcpy(app->tx_group, "tx", sizeof app->tx_group);
   tx_cal_from_settings(app, &st);
   app->tx_swr_alarm  = st.tx_swr   < 2.0 ? 2.0 : (st.tx_swr   > 5.0   ? 5.0   : st.tx_swr);
-  app->tx_mic_gain   = st.mic_gain < MIC_GAIN_MIN ? MIC_GAIN_MIN : (st.mic_gain > MIC_GAIN_MAX ? MIC_GAIN_MAX : st.mic_gain);
-  app->tx_comp       = st.tx_comp ? 1 : 0;
-  app->tx_comp_db    = st.tx_comp_db < COMP_DB_MIN ? COMP_DB_MIN : (st.tx_comp_db > COMP_DB_MAX ? COMP_DB_MAX : st.tx_comp_db);
-  app->tx_gate       = st.tx_gate ? 1 : 0;
-  app->tx_gate_db    = st.tx_gate_db < GATE_DB_MIN ? GATE_DB_MIN : (st.tx_gate_db > GATE_DB_MAX ? GATE_DB_MAX : st.tx_gate_db);
   app->tx_ptt_enabled = st.tx_ptt ? 1 : 0;
   app->tx_ptt_tip     = st.tx_ptt_tip ? 1 : 0;
   p2_set_ptt_input(app->tx_ptt_enabled, app->tx_ptt_tip);  /* atomics; safe pre-connect */
@@ -4693,8 +4565,6 @@ static void start_radio(App *app) {
   } else if (tx_run_start(app->freq, app->pixels, app->fps, app->proto_p1) == 0) {
     app->tx_ready = 1;
     tx_push_cfg(app);
-    tx_run_set_mic_gain(app->tx_mic_gain);   /* persisted SSB mic gain into the TX panel */
-    tx_apply_proc(app);   /* persisted PROC + mic gate (forced OFF in digi modes) */
     tx_run_set_monitor(app->tx_mon);                  /* persisted TX monitor (self-listen) */
     demod_set_monitor_gain(app->tx_mon_db);
     tx_run_set_span(tx_span_hz(app));  /* TX span ← saved zoom, matching the RX axis */
