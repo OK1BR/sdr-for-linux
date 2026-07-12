@@ -33,6 +33,8 @@
 #define SAMPLES_PER_FRAME 63          /* 1 RX: (512-8)/(6+2) (old_protocol.c:1416) */
 #define PACKET_US         2625        /* 126 audio samples @48 k per EP2 packet    */
 #define IQ_SCALE          1.1920928955078125E-7   /* 2^-23 (old_protocol.c:1433)   */
+#define PS_NRX            4           /* PS: feedback hard-wired to RX3/RX4 on the
+                                         HL2 → 4 receivers (old_protocol.c:1090)   */
 
 static int              s_sock = -1;
 static struct sockaddr_in s_radio;
@@ -47,6 +49,15 @@ static volatile int     s_gain_db = 14; /* HL2 LNA, −12..+48 (piHPSDR default 
 static p1_iq_cb         s_cb;
 static void            *s_user;
 static guint32          s_tx_seq;       /* EP2 sequence */
+
+/* PureSignal (P1-TX-SCOPE §6). s_ps under s_tx_lock (snapshotted per build
+ * round together with the TX state); s_nrx/s_spf are LATCHED at p1_rx_start
+ * — nrx never changes on a running link (piHPSDR restarts the protocol). */
+static p1_ps_state      s_ps;           /* under s_tx_lock                    */
+static int              s_ps_on;        /* under s_tx_lock                    */
+static int              s_nrx = 1;      /* latched receiver count             */
+static p1_ps_iq_cb      s_ps_cb;        /* set before start (single writer)   */
+static void            *s_ps_user;
 
 /* telemetry (listener writes, GUI reads) */
 static GMutex           s_tel_lock;
@@ -116,7 +127,7 @@ static unsigned char n2adr_oc_bits(long long f) {
 /* C0=0x00 frame: rate + OC/filter board + duplex (old_protocol.c:1810-2096).
  * Pure builder — tx=NULL is the RX-only regression state (sdrfl-p1txprobe). */
 void p1_build_cc_general(unsigned char c[5], int device, int rate_bits,
-                         long long freq_hz, const p1_tx_state *tx) {
+                         long long freq_hz, const p1_tx_state *tx, int nrx) {
   c[0] = 0x00;
   c[1] = (unsigned char)rate_bits;   /* C1 bits1:0 sample rate                */
   c[2] = 0x00;
@@ -125,8 +136,8 @@ void p1_build_cc_general(unsigned char c[5], int device, int rate_bits,
                                         (N2ADR OCtx == OCrx, radio.c:2443)    */
   }
   c[3] = 0x00;                       /* no atten/dither/random/preamp         */
-  c[4] = 0x04;                       /* duplex ALWAYS (old_protocol.c:2022) |
-                                        (nrx-1)<<3 = 0 for one receiver      */
+  c[4] = (unsigned char)(0x04 |      /* duplex ALWAYS (old_protocol.c:2022)   */
+         (((nrx - 1) & 0x07) << 3)); /* 0..7 → 1..8 receivers (o_p.c:2036)    */
   if (tx && tx->mox) { c[0] |= 0x01; }  /* ⛔ MOX rides EVERY frame
                                            (old_protocol.c:2769-2789)         */
 }
@@ -140,13 +151,22 @@ static const p1_tx_state *tx_snapshot(p1_tx_state *buf) {
   return tx;
 }
 
+/* Ditto for the PS wire state. */
+static const p1_ps_state *ps_snapshot(p1_ps_state *buf) {
+  const p1_ps_state *ps = NULL;
+  g_mutex_lock(&s_tx_lock);
+  if (s_ps_on) { *buf = s_ps; ps = buf; }
+  g_mutex_unlock(&s_tx_lock);
+  return ps;
+}
+
 static void cc_general(unsigned char *c) {
   long long f;
   p1_tx_state txb;
   g_mutex_lock(&s_freq_lock); f = s_freq_hz; g_mutex_unlock(&s_freq_lock);
   /* ⛔ tx is non-NULL only after p1_set_tx_state — never in the RX-only build
    * (radio_tx_supported excludes P1 until the T4 live checklist). */
-  p1_build_cc_general(c, s_device, s_rate_bits, f, tx_snapshot(&txb));
+  p1_build_cc_general(c, s_device, s_rate_bits, f, tx_snapshot(&txb), s_nrx);
 }
 
 /* The round-robin C&C registers (old_protocol.c p1_command_loop :2106-2765),
@@ -159,83 +179,124 @@ static void cc_general(unsigned char *c) {
  * happened to land on RX1's NCO, but the TX NCO (filter-board tracking),
  * the LNA gain and the T/R-relay lock never reached the radio. Verified
  * byte-for-byte against old_protocol.c a second time on the fix. */
+/* HL2 "rxgain while transmitting" (old_protocol.c 0x14 :2288-2308 and 0x1C
+ * :2372-2390): with PS the AD9866 LNA is the feedback attenuator —
+ * 31 − attenuation on a 0..60 scale. Only ever called with ps->enabled;
+ * the PS-off builds never reach it (byte-identical regression). */
+static int hl2_ps_rxgain(int lna_gain_db, int transmitting,
+                         const p1_ps_state *ps) {
+  int g;
+  if (transmitting) {
+    g = 31 - ps->attenuation;         /* the PS branch always wins over the
+                                         PA-enable "rxgain = 0" branch        */
+  } else {
+    g = lna_gain_db + 12;             /* −12..+48 → 0..60 (RX as today)       */
+  }
+  if (g < 0)  { g = 0; }
+  if (g > 60) { g = 60; }
+  return g;
+}
+
 int p1_build_cc_round_robin(unsigned char c[5], int device, long long freq_hz,
-                            int lna_gain_db, int step, const p1_tx_state *tx) {
+                            int lna_gain_db, int step, const p1_tx_state *tx,
+                            const p1_ps_state *ps, int nrx) {
   int hl = (device == DEVICE_HERMES_LITE || device == DEVICE_HERMES_LITE2);
+  int ps_on = (ps && ps->enabled);
   memset(c, 0, 5);
 
-  switch (step) {
-  case 0:                             /* 0x02: TX (DUC) frequency — kept on   */
+  /* Layout: step 0 = TX NCO, steps 1..nrx = per-RX NCO, then the fixed
+   * registers. nrx = 1 reproduces the T4-verified 11-step cycle exactly. */
+  int reg = (step <= nrx) ? -1 : step - nrx - 1;
+
+  if (step == 0) {                    /* 0x02: TX (DUC) frequency — kept on   */
     c[0] = 0x02;                      /* the RX frequency like piHPSDR on RX  */
     be32(c + 1, (guint32)freq_hz);    /* (old_protocol.c:2108; HL2 gateware
                                          tracks nothing from it, but the DUC
                                          must sit on the VFO before any TX)   */
-    break;
+  } else if (step <= nrx) {           /* 0x04+2·chan: DDC frequencies         */
+    c[0] = (unsigned char)(0x04 + 2 * (step - 1));  /* (old_protocol.c:2120)  */
+    be32(c + 1, (guint32)freq_hz);    /* chan ≥ 2 (RX3/RX4 feedback) wants the
+                                         DUC frequency (channel_freq :1015-30)
+                                         — same value here: dial == DUC       */
+  } else {
+    switch (reg) {
+    case 0:                           /* 0x12: drive + HL2 relay/PA           */
+      c[0] = 0x12;                    /* (old_protocol.c:2163)                */
+      /* Drive byte = the HL2 16-step hardware TX attenuator (radio.c:2934-96);
+       * 0 with no TX state, and forced 0 out of band (old_protocol.c:2159). */
+      c[1] = (unsigned char)((tx && tx->in_band) ? (tx->drive_att & 0xF0) : 0);
+      if (hl) {
+        if (tx && tx->pa_enabled) {
+          c[2] = 0x08;                /* ⛔ PA enable (ADDR-9 bit 19,          */
+        } else {                      /*    old_protocol.c:2238-2242)         */
+          c[2] = 0x04;                /* ⛔ T/R relay locked to RX — the       */
+        }                             /*    PA-off/dry-key state (:2243-2248) */
+      }
+      break;
 
-  case 1:                             /* 0x04: RX1 DDC frequency              */
-    c[0] = 0x04;                      /* (old_protocol.c:2120)                */
-    be32(c + 1, (guint32)freq_hz);
-    break;
+    case 1:                           /* 0x14: HL2 LNA gain (extended mode)   */
+      c[0] = 0x14;                    /* (old_protocol.c:2258)                */
+      if (hl) {
+        if (ps_on) {
+          c[2] = 0x40;                /* PS enable bit (old_protocol.c:2284)  */
+          c[4] = (unsigned char)(0x40 |
+                 hl2_ps_rxgain(lna_gain_db, tx && tx->mox, ps));
+        } else {
+          int g = lna_gain_db;        /* PS off: byte-identical to the        */
+          if (g < -12) { g = -12; }   /* T4-verified build                    */
+          if (g >  48) { g =  48; }
+          c[4] = (unsigned char)(0x40 | (g + 12)); /* old_protocol.c:2292-2308 */
+        }
+      } else {
+        c[4] = 0x20;                  /* classic: atten enable bit, 0 dB      */
+      }
+      break;
 
-  case 2:                             /* 0x12: drive + HL2 relay/PA           */
-    c[0] = 0x12;                      /* (old_protocol.c:2163)                */
-    /* Drive byte = the HL2 16-step hardware TX attenuator (radio.c:2934-96);
-     * 0 with no TX state, and forced 0 out of band (old_protocol.c:2159). */
-    c[1] = (unsigned char)((tx && tx->in_band) ? (tx->drive_att & 0xF0) : 0);
-    if (hl) {
-      if (tx && tx->pa_enabled) {
-        c[2] = 0x08;                  /* ⛔ PA enable (ADDR-9 bit 19,          */
-      } else {                        /*    old_protocol.c:2238-2242)         */
-        c[2] = 0x04;                  /* ⛔ T/R relay locked to RX — the       */
-      }                               /*    PA-off/dry-key state (:2243-2248) */
+    case 2: c[0] = 0x16; break;       /* ADC1 att / CW reversed — zeros       */
+
+    case 3:                           /* 0x1C: RX ADC select + TX att         */
+      c[0] = 0x1C;
+      if (hl && ps_on) {
+        /* "ADC0 attenuator while transmitting": bit7 = enable TX att, bit6 =
+         * 6-bit range. Static config (not mox-conditional in piHPSDR,
+         * old_protocol.c:2372-2390) — with PS on the TX gain IS 31−att. */
+        c[3] = (unsigned char)(0xC0 | hl2_ps_rxgain(lna_gain_db, 1, ps));
+      }                               /* PS off: zeros, as verified in T4     */
+      break;
+
+    case 4: c[0] = 0x1E; break;       /* internal CW keyer DISABLED (bit0=0)  */
+    case 5: c[0] = 0x20; break;       /* CW hang/sidetone — zeros             */
+
+    case 6:                           /* 0x22: PWM min/max "harmless" values  */
+      c[0] = 0x22;                    /* (old_protocol.c:2442-2450)           */
+      c[1] = 25; c[2] = 0; c[3] = 100; c[4] = 0;
+      break;
+
+    case 7:                           /* 0x2E: HL2 PTT hang + TX FIFO latency */
+      c[0] = 0x2E;                    /* (old_protocol.c:2536-2549)           */
+      if (hl) {
+        c[3] = 20;                    /* PTT hang 20 ms (bits 4:0)            */
+        c[4] = 40;                    /* TX latency 40 ms (bits 6:0) — the    */
+      }                               /* FPGA buffers this much TX IQ         */
+      break;
+
+    default: c[0] = 0x24; break;      /* Orion-II Alex2 — zeros, end of cycle */
     }
-    break;
-
-  case 3:                             /* 0x14: HL2 LNA gain (extended mode)   */
-    c[0] = 0x14;                      /* (old_protocol.c:2258)                */
-    if (hl) {
-      int g = lna_gain_db;
-      if (g < -12) { g = -12; }
-      if (g >  48) { g =  48; }
-      c[4] = (unsigned char)(0x40 | (g + 12));   /* old_protocol.c:2292-2308  */
-    } else {
-      c[4] = 0x20;                    /* classic: atten enable bit, 0 dB      */
-    }
-    break;
-
-  case 4: c[0] = 0x16; break;         /* ADC1 att / CW reversed — zeros       */
-  case 5: c[0] = 0x1C; break;         /* RX1←ADC0, TX att — zeros             */
-  case 6: c[0] = 0x1E; break;         /* internal CW keyer DISABLED (bit0=0)  */
-  case 7: c[0] = 0x20; break;         /* CW hang/sidetone — zeros             */
-
-  case 8:                             /* 0x22: PWM min/max "harmless" values  */
-    c[0] = 0x22;                      /* (old_protocol.c:2442-2450)           */
-    c[1] = 25; c[2] = 0; c[3] = 100; c[4] = 0;
-    break;
-
-  case 9:                             /* 0x2E: HL2 PTT hang + TX FIFO latency */
-    c[0] = 0x2E;                      /* (old_protocol.c:2536-2549)           */
-    if (hl) {
-      c[3] = 20;                      /* PTT hang 20 ms (bits 4:0)            */
-      c[4] = 40;                      /* TX latency 40 ms (bits 6:0) — the    */
-    }                                 /* FPGA buffers this much TX IQ         */
-    break;
-
-  default: c[0] = 0x24; break;        /* Orion-II Alex2 — zeros, end of cycle */
   }
 
   if (tx && tx->mox) { c[0] |= 0x01; }  /* ⛔ MOX rides EVERY frame            */
-  return (step + 1) % 11;
+  return (step + 1) % (nrx + 10);
 }
 
 static int cc_round_robin(unsigned char *c, int step) {
   long long freq;
   p1_tx_state txb;
+  p1_ps_state psb;
   g_mutex_lock(&s_freq_lock); freq = s_freq_hz; g_mutex_unlock(&s_freq_lock);
   /* ⛔ tx handling identical to cc_general(). */
   return p1_build_cc_round_robin(c, s_device, freq,
                                  g_atomic_int_get(&s_gain_db), step,
-                                 tx_snapshot(&txb));
+                                 tx_snapshot(&txb), ps_snapshot(&psb), s_nrx);
 }
 
 /* TX IQ → EP2 payload (pure; contract in protocol1.h — audio slots zero,
@@ -431,9 +492,47 @@ static gpointer sender_thread(gpointer data) {
 
 /* ---- listener thread: EP6 parse ------------------------------------------- */
 
-/* Parse one 512-byte EP6 frame: sync, 5 status bytes, 63 IQ+mic groups.
- * Returns pairs written to iq (2 doubles per pair) or -1 on bad sync. */
-static int parse_frame(const unsigned char *f, double *iq) {
+/* Sample payload of one EP6 frame (pure — contract in protocol1.h): per
+ * sample nrx×(24-bit BE I + Q) then 16-bit mic (skipped); chan 0 → rx1 and,
+ * at nrx == 4, chan 2 → rxfb (coupler) / chan 3 → txfb (TX-DAC loopback) —
+ * the PS demux of old_protocol.c process_ozy_byte:1449-1471. */
+int p1_ep6_parse_samples(const unsigned char *f, int nrx,
+                         double *rx1, double *txfb, double *rxfb) {
+  if (f[0] != 0x7F || f[1] != 0x7F || f[2] != 0x7F) { return -1; }
+
+  if (nrx < 1) { nrx = 1; }
+
+  int spf = (FRAME_LEN - 8) / (6 * nrx + 2);   /* old_protocol.c:1416 */
+  const unsigned char *p = f + 8;
+
+  for (int i = 0; i < spf; i++) {
+    for (int ch = 0; ch < nrx; ch++) {
+      double *dst = NULL;
+
+      if (ch == 0)                                  { dst = rx1  + 2 * i; }
+      else if (nrx == PS_NRX && ch == 2 && rxfb)    { dst = rxfb + 2 * i; }
+      else if (nrx == PS_NRX && ch == 3 && txfb)    { dst = txfb + 2 * i; }
+
+      if (dst) {
+        gint32 iv = (gint32)(((guint32)p[0] << 24) | ((guint32)p[1] << 16) | ((guint32)p[2] << 8)) >> 8;
+        gint32 qv = (gint32)(((guint32)p[3] << 24) | ((guint32)p[4] << 16) | ((guint32)p[5] << 8)) >> 8;
+        dst[0] = (double)iv * IQ_SCALE;
+        dst[1] = (double)qv * IQ_SCALE;
+      }
+
+      p += 6;
+    }
+
+    p += 2;                                     /* mic sample (unused)  */
+  }
+
+  return spf;
+}
+
+/* Parse one 512-byte EP6 frame: sync, 5 status bytes, per-RX IQ+mic groups.
+ * Returns pairs written per stream (2 doubles per pair) or -1 on bad sync. */
+static int parse_frame(const unsigned char *f, double *rx1,
+                       double *txfb, double *rxfb) {
   if (f[0] != 0x7F || f[1] != 0x7F || f[2] != 0x7F) { return -1; }
 
   const unsigned char c0 = f[3];
@@ -499,25 +598,17 @@ static int parse_frame(const unsigned char *f, double *iq) {
     g_mutex_unlock(&s_tel_lock);
   }
 
-  /* 63 groups: 3 B I + 3 B Q (24-bit signed BE) + 2 B mic (skipped) —
-   * old_protocol.c:1416-1433. */
-  const unsigned char *p = f + 8;
-
-  for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
-    gint32 iv = (gint32)(((guint32)p[0] << 24) | ((guint32)p[1] << 16) | ((guint32)p[2] << 8)) >> 8;
-    gint32 qv = (gint32)(((guint32)p[3] << 24) | ((guint32)p[4] << 16) | ((guint32)p[5] << 8)) >> 8;
-    iq[2 * i]     = (double)iv * IQ_SCALE;
-    iq[2 * i + 1] = (double)qv * IQ_SCALE;
-    p += 8;
-  }
-
-  return SAMPLES_PER_FRAME;
+  return p1_ep6_parse_samples(f, s_nrx, rx1, txfb, rxfb);
 }
 
 static gpointer listener_thread(gpointer data) {
   (void)data;
   unsigned char pkt[2048];
-  double iq[2 * SAMPLES_PER_FRAME * 2];   /* both frames of a packet */
+  /* Both frames of a packet; sized for the nrx=1 maximum (63 — larger nrx
+   * yields fewer samples/frame, never more). */
+  double rx1 [2 * SAMPLES_PER_FRAME * 2];
+  double txfb[2 * SAMPLES_PER_FRAME * 2];
+  double rxfb[2 * SAMPLES_PER_FRAME * 2];
   guint32 expect_seq = 0;
   int have_seq = 0;
   struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
@@ -547,7 +638,8 @@ static gpointer listener_thread(gpointer data) {
     int pairs = 0;
 
     for (int fo = 8; fo <= 520; fo += 512) {
-      int r = parse_frame(pkt + fo, iq + 2 * pairs);
+      int r = parse_frame(pkt + fo, rx1 + 2 * pairs,
+                          txfb + 2 * pairs, rxfb + 2 * pairs);
 
       if (r < 0) {
         g_mutex_lock(&s_tel_lock);
@@ -559,7 +651,13 @@ static gpointer listener_thread(gpointer data) {
       pairs += r;
     }
 
-    if (pairs > 0 && s_cb) { s_cb(iq, pairs, s_user); }
+    if (pairs > 0 && s_cb) { s_cb(rx1, pairs, s_user); }
+
+    /* PS feedback pair → ps.c (which gates on keyed-non-CW itself, exactly
+     * like the P2 path). Only ever non-NULL samples at nrx == 4. */
+    if (pairs > 0 && s_nrx == PS_NRX && s_ps_cb) {
+      s_ps_cb(txfb, rxfb, pairs, s_ps_user);
+    }
   }
 
   return NULL;
@@ -585,6 +683,21 @@ int p1_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
   s_cb      = cb;
   s_user    = user;
   s_tx_seq  = 0;
+
+  /* PureSignal: latch the receiver count for this link's lifetime (piHPSDR
+   * tx_ps_onoff restarts the whole protocol to change it — the GUI mirrors
+   * that by restarting us on the PS-enable edge). */
+  g_mutex_lock(&s_tx_lock);
+  s_nrx = s_ps_on ? PS_NRX : 1;
+  g_mutex_unlock(&s_tx_lock);
+
+  if (s_nrx > 1 && sample_rate > 192000) {
+    /* ⛔ 4×RX EP6 @384k ≈ 83 Mbit/s — saturates the HL2's 100BASE-T
+     * (P1-TX-SCOPE §6). The GUI refuses this combination too. */
+    t_print("p1: PS needs 4 receivers — capped at 192 kHz (got %d)\n",
+            sample_rate);
+    return -1;
+  }
   g_mutex_lock(&s_tx_lock);                /* fresh link: TX state off, ring   */
   s_tx_on = 0; s_tx_scale = 0.0;           /* empty (⛔ RX-only until keyed    */
   s_txr_in = s_txr_out = 0;                /* through tx_run's gate)           */
@@ -723,4 +836,34 @@ int p1_ptt_get(void) {
   int v = s_tel.ptt;
   g_mutex_unlock(&s_tel_lock);
   return v;
+}
+
+/* ---- PureSignal wire state (P1-TX-SCOPE §6) -------------------------------- */
+
+void p1_set_ps(const p1_ps_state *ps) {
+  g_mutex_lock(&s_tx_lock);
+
+  if (ps) {
+    s_ps = *ps;
+
+    if (s_ps.attenuation < 0)  { s_ps.attenuation = 0; }
+
+    if (s_ps.attenuation > 31) { s_ps.attenuation = 31; }
+
+    s_ps_on = 1;
+  } else {
+    memset(&s_ps, 0, sizeof(s_ps));
+    s_ps_on = 0;
+  }
+
+  g_mutex_unlock(&s_tx_lock);
+}
+
+void p1_set_ps_iq_cb(p1_ps_iq_cb cb, void *user) {
+  s_ps_user = user;
+  s_ps_cb   = cb;
+}
+
+int p1_running_nrx(void) {
+  return (s_sock >= 0) ? s_nrx : 1;
 }

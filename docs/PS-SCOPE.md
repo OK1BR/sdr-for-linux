@@ -235,6 +235,17 @@ Remaining PS-4 nice-to-haves (not alpha-blocking): TX-pan tap before
 xiqc (toggle), MON feedback display, SaveCorr/RestoreCorr per band,
 per-band ps_att memory (Thetis TxAttenData).
 
+## 6b. PureSignal over Protocol 1 (HL2) — 2026-07-12
+
+The WDSP runtime above is protocol-agnostic; only the wire differs. The
+P1 wire (feedback via RX3/RX4 at nrx=4, LNA-as-attenuator, PS enable
+bit, link restart on the enable edge, SetPk 0.2400, feedback rate = RX
+rate, ≤192 kHz) is audited and specified in **docs/P1-TX-SCOPE.md §6**;
+ps.c selects the wire via `ps_configure()`. This is also the intended
+alternative route to PS on the ANAN 10E (TX-DESIGN §9 lockout). Live
+verification on the HL2 pending — `radio_ps_supported()` flips only at
+that test.
+
 ## 6. ⛔ TX-safety deltas (require explicit sign-off, then TX-SAFETY.md update)
 
 1. **ADC0 attenuator during PS TX** = `ps_attenuation` (0–31 dB) instead of

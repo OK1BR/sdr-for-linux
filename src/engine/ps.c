@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "wdsp.h"
+#include "protocol1.h"
 #include "protocol2.h"
 #include "tx.h"
 #include "ps.h"
@@ -29,6 +30,44 @@ static GMutex   s_lock;            /* fences the config below (GUI vs status)   
 static int      s_enable;
 static int      s_att;
 static double   s_setpk = PS_SETPK_DEFAULT;
+
+/* Wire selection (ps_configure, called by the GUI before tx_run_start; the
+ * defaults reproduce the pre-P1 behavior for every other ps_start caller).
+ * P2: fixed 192 kHz feedback DDC pair. P1/HL2: feedback = RX3/RX4 at the RX
+ * sample rate (piHPSDR radio.c:977), SetPk default 0.2400 (P1-TX-SCOPE §6). */
+static int      s_p1;
+static int      s_fb_rate    = 192000;
+static double   s_setpk_def  = PS_SETPK_DEFAULT;
+
+void ps_configure(int p1, int feedback_rate_hz, double setpk_default) {
+  s_p1        = p1 ? 1 : 0;
+  s_fb_rate   = feedback_rate_hz > 0 ? feedback_rate_hz : 192000;
+  s_setpk_def = (setpk_default > 0.01 && setpk_default < 1.01)
+                ? setpk_default : PS_SETPK_DEFAULT;
+}
+
+/* The one place PS state reaches the wire — P1 vs P2 dispatch. On P2 this is
+ * the feedback-DDC pair + attenuator exception + ALEX_PS_BIT (protocol2.c);
+ * on P1 the PS enable bit + LNA-as-attenuator registers (protocol1.c — nrx
+ * itself is latched at link start; the GUI restarts the link on the enable
+ * edge, piHPSDR tx_ps_onoff parity). */
+static void wire_set(int enable, int att) {
+  if (s_p1) {
+    if (enable) {
+      p1_ps_state ps = { .enabled = 1, .attenuation = att };
+      p1_set_ps(&ps);
+    } else {
+      p1_set_ps(NULL);
+    }
+  } else {
+    if (enable) {
+      p2_ps_state ps = { .enabled = 1, .attenuation = att, .feedback_ant = 0 };
+      p2_set_ps(&ps);
+    } else {
+      p2_set_ps(NULL);
+    }
+  }
+}
 
 static volatile gint s_keyed;      /* g_atomic: keyed && !CW (feed gate)        */
 static volatile gint s_auto = 1;   /* g_atomic: "Auto attenuate" (Thetis default on) */
@@ -79,11 +118,12 @@ static void apply_params(void) {
   SetPSLoopDelay(s_ch, 0.0);
 }
 
-/* P2 feedback (listener thread): accumulate 1024 pairs, then hand to the
- * calibration engine — exactly piHPSDR tx_add_ps_iq_samples (transmitter.c:
- * 2068-2132; G2E has no do_scale, so no DAC-feedback rescaling). Dropped
- * whenever not keyed-non-CW: stale/CW feedback must never reach a running
- * calibration. */
+/* Feedback (P1/P2 listener thread — identical callback contract): accumulate
+ * 1024 pairs, then hand to the calibration engine — exactly piHPSDR
+ * tx_add_ps_iq_samples (transmitter.c:2068-2132; no do_scale on the G2E and
+ * none on the HL2's P1 feedback either — o_p.c feeds the raw 2⁻²³ samples).
+ * Dropped whenever not keyed-non-CW: stale/CW feedback must never reach a
+ * running calibration. */
 static void feed_cb(const double *txfb, const double *rxfb, int n_pairs, void *user) {
   (void)user;
   if (!g_atomic_int_get(&s_keyed)) { return; }
@@ -100,7 +140,7 @@ static void feed_cb(const double *txfb, const double *rxfb, int n_pairs, void *u
       acc_rx += rxfb[2*i]*rxfb[2*i] + rxfb[2*i+1]*rxfb[2*i+1];
     }
     acc_n += n_pairs;
-    if (acc_n >= 192000) {
+    if (acc_n >= s_fb_rate) {                    /* ~1 Hz at the feedback rate */
       fprintf(stderr, "ps dbg: rms_tx(DAC)=%.4f  rms_rx(coupler)=%.4f\n",
               sqrt(acc_tx / acc_n), sqrt(acc_rx / acc_n));
       fflush(stderr);
@@ -117,7 +157,7 @@ static void feed_cb(const double *txfb, const double *rxfb, int n_pairs, void *u
     dump_left = 0;
     if (p && *p) {
       dumpf = fopen(p, "wb");
-      if (dumpf) { dump_left = 2 * 192000; }
+      if (dumpf) { dump_left = 2 * s_fb_rate; }   /* ~2 s at the feedback rate */
     }
   }
   if (dumpf && dump_left > 0) {
@@ -149,23 +189,27 @@ int ps_start(void) {
   if (s_started) { return 0; }
   s_ch = tx_dsp_channel();
   if (s_ch < 0) { return -1; }
-  SetPSFeedbackRate(s_ch, 192000);   /* P2 feedback DDCs are fixed 192 kHz (radio.c:977) */
+  /* P2: fixed 192 kHz feedback DDCs (radio.c:977); P1: the RX sample rate —
+   * ps_configure() set the right one for the connected radio. */
+  SetPSFeedbackRate(s_ch, s_fb_rate);
   apply_params();
-  p2_set_ps_iq_cb(feed_cb, NULL);
+  if (s_p1) { p1_set_ps_iq_cb(feed_cb, NULL); }
+  else      { p2_set_ps_iq_cb(feed_cb, NULL); }
   s_started = 1;
   return 0;
 }
 
 void ps_stop(void) {
   if (!s_started) { return; }
-  p2_set_ps_iq_cb(NULL, NULL);
+  if (s_p1) { p1_set_ps_iq_cb(NULL, NULL); }
+  else      { p2_set_ps_iq_cb(NULL, NULL); }
   g_mutex_lock(&s_lock);
   int was_on = s_enable;
   s_enable = 0;
   g_mutex_unlock(&s_lock);
   if (was_on) {
     SetPSControl(s_ch, 1, 0, 0, 0);
-    p2_set_ps(NULL);
+    wire_set(0, 0);
   }
   g_atomic_int_set(&s_keyed, 0);
   s_started = 0;
@@ -174,8 +218,8 @@ void ps_stop(void) {
 void ps_set(int enable, int att_db, double setpk) {
   if (att_db < 0)    { att_db = 0; }
   if (att_db > 31)   { att_db = 31; }
-  if (setpk < 0.01)  { setpk = PS_SETPK_DEFAULT; }   /* guard: tiny SetPk breaks calcc */
-  if (setpk > 1.01)  { setpk = PS_SETPK_DEFAULT; }
+  if (setpk < 0.01)  { setpk = s_setpk_def; }   /* guard: tiny SetPk breaks calcc */
+  if (setpk > 1.01)  { setpk = s_setpk_def; }
 
   g_mutex_lock(&s_lock);
   int was_on = s_enable;
@@ -196,8 +240,7 @@ void ps_set(int enable, int att_db, double setpk) {
      * already on (att/SetPk spin) must NOT drop the running correction: plain
      * automode re-arm only. The state machine idles in LWAIT until MOX brings
      * feedback samples — no sleep needed on the RX side. */
-    p2_ps_state ps = { .enabled = 1, .attenuation = att_db, .feedback_ant = 0 };
-    p2_set_ps(&ps);
+    wire_set(1, att_db);
     if (!was_on) { SetPSControl(s_ch, 1, 0, 1, 0); }
     else         { ps_resume(); }
   } else if (was_on) {
@@ -209,7 +252,7 @@ void ps_set(int enable, int att_db, double setpk) {
     if (!g_atomic_int_get(&s_keyed)) {
       for (int i = 0; i < 7; i++) { pscc(s_ch, PS_BLOCK, zeros, zeros); }
     }
-    p2_set_ps(NULL);
+    wire_set(0, 0);
   }
 }
 
@@ -297,8 +340,7 @@ void ps_auto_tick(int keyed, int twotone) {
     if (att > 0) {
       SetPSControl(s_ch, 1, 0, 0, 0);
       g_mutex_lock(&s_lock); s_att = 0; g_mutex_unlock(&s_lock);
-      p2_ps_state ps = { .enabled = 1, .attenuation = 0, .feedback_ant = 0 };
-      p2_set_ps(&ps);
+      wire_set(1, 0);
       fprintf(stderr, "ps: auto-att stall (no cal in 4 s at %d dB) — restarting hunt at 0 dB\n", att);
       a_state = 1;
       return;
@@ -328,8 +370,7 @@ void ps_auto_tick(int keyed, int twotone) {
                                                     clamp leaves att unchanged */
     if (na != att) {
       g_mutex_lock(&s_lock); s_att = na; g_mutex_unlock(&s_lock);
-      p2_ps_state ps = { .enabled = 1, .attenuation = na, .feedback_ant = 0 };
-      p2_set_ps(&ps);                            /* new level on the wire (kick) */
+      wire_set(1, na);                           /* new level on the wire (kick) */
       fprintf(stderr, "ps: auto-att %d -> %d dB (fdbk %d)\n", att, na, f);
     }
     a_state = 1;

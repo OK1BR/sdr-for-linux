@@ -243,6 +243,12 @@ int settings_load_txdev(Settings *s, const char *group) {
       char *pt = g_key_file_get_string(kf, group, "pa_trim", NULL);
       if (pt) { g_strlcpy(s->pa_trim, pt, sizeof(s->pa_trim)); g_free(pt); }
     }
+    /* PS calibration is per radio (SetPk: G2E 0.2899 vs HL2 0.2400 — the
+     * caller pre-sets this radio's defaults; keys present here override). */
+    if (g_key_file_has_key(kf, group, "ps_att", NULL))
+      s->ps_att = g_key_file_get_integer(kf, group, "ps_att", NULL);
+    if (g_key_file_has_key(kf, group, "ps_setpk", NULL))
+      s->ps_setpk = g_key_file_get_double(kf, group, "ps_setpk", NULL);
   }
   g_key_file_free(kf);
   return ok;
@@ -318,8 +324,8 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_TX,     "ptt_pedal", s->tx_ptt);
   g_key_file_set_integer(kf, GROUP_TX,     "ptt_tip",   s->tx_ptt_tip);
   g_key_file_set_integer(kf, GROUP_TX,     "ps_enable", s->ps_enable);
-  g_key_file_set_integer(kf, GROUP_TX,     "ps_att",    s->ps_att);
-  g_key_file_set_double (kf, GROUP_TX,     "ps_setpk",  s->ps_setpk);
+  g_key_file_set_integer(kf, txdev,        "ps_att",    s->ps_att);   /* ⛔ PS cal  */
+  g_key_file_set_double (kf, txdev,        "ps_setpk",  s->ps_setpk); /* per radio */
   g_key_file_set_integer(kf, GROUP_TX,     "ps_auto",   s->ps_auto);
   g_key_file_set_integer(kf, GROUP_TX,     "ps_stbl",   s->ps_stbl);
   g_key_file_set_integer(kf, GROUP_TX,     "monitor",   s->tx_mon);

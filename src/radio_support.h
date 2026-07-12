@@ -107,23 +107,28 @@ typedef struct {
   double      m_c1, m_c2;            /* wattmeter: ADC volts, fwd coupler      */
   double      m_rc2_hf, m_rc2_6m;    /* wattmeter: reverse coupler HF / 6 m    */
   int         m_fwd_off, m_rev_off;  /* wattmeter: ADC pedestal offsets        */
+  double      ps_setpk;              /* PureSignal SetPk (expected full-scale
+                                        TX-DAC feedback envelope) default —
+                                        piHPSDR transmitter.c:1203-1241: P2
+                                        non-Saturn 0.2899, P1 HL2 0.2400
+                                        ("measured value 0.2386")             */
   const char *cfg_group;             /* per-radio TX-cal settings group        */
 } radio_tx_profile_t;
 
 static inline const radio_tx_profile_t *radio_tx_profile(const DISCOVERED *d) {
   static const radio_tx_profile_t g2e = {   /* live-calibrated (TX-DESIGN §7) */
-    100.0, 38.8, 5.0, 0.12, 0.15, 0.70, 48, 42, "tx"
+    100.0, 38.8, 5.0, 0.12, 0.15, 0.70, 48, 42, 0.2899, "tx"
   };
   static const radio_tx_profile_t hermes2 = {  /* ANAN 10E — piHPSDR defaults */
-    10.0, 25.0, 3.3, 0.095, 0.095, 0.5, 6, 3, "tx-hermes2"
+    10.0, 25.0, 3.3, 0.095, 0.095, 0.5, 6, 3, 0.2899, "tx-hermes2"
   };
   static const radio_tx_profile_t hl2 = {
     /* Hermes Lite 2, 5 W PA — piHPSDR transmitter.c:685-693 wattmeter branch
      * (c2=1.5, ~16× the 10E's 0.095!) + fwd/rev offsets 6/6; pa_calibration
      * default upstream is 40.5 dB ("the No. 1 problem for new HermesLite
      * users is 'no RF output'", band.c) → clamp floor 25 leaves calibration
-     * room below it. All P1-TX-SCOPE §2. */
-    5.0, 25.0, 3.3, 1.5, 1.5, 1.5, 6, 6, "tx-hl2"
+     * room below it. All P1-TX-SCOPE §2; ps_setpk §6. */
+    5.0, 25.0, 3.3, 1.5, 1.5, 1.5, 6, 6, 0.2400, "tx-hl2"
   };
   if (d != NULL && d->protocol == ORIGINAL_PROTOCOL &&
       d->device == DEVICE_HERMES_LITE2) { return &hl2; }

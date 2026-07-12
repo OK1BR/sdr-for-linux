@@ -2,10 +2,12 @@
  * sdr-for-linux — PureSignal runtime (F7 / PS-2, docs/PS-SCOPE.md).
  *
  * The WDSP side of PureSignal: owns the calcc control calls (SetPSControl /
- * SetPSMox / params), accumulates the P2 feedback stream (p2_ps_iq_cb) into
- * 1024-pair blocks and feeds pscc(), and snapshots GetPSInfo for the UI.
- * The wire side (feedback DDC pair, attenuator exception, ALEX_PS_BIT) is
- * PS-1 in protocol2.c — this module drives it via p2_set_ps().
+ * SetPSMox / params), accumulates the feedback stream (p2_ps_iq_cb or
+ * p1_ps_iq_cb — ps_configure selects) into 1024-pair blocks and feeds
+ * pscc(), and snapshots GetPSInfo for the UI. The wire side is protocol2.c
+ * (feedback DDC pair, attenuator exception, ALEX_PS_BIT) or protocol1.c
+ * (PS enable bit, LNA-as-attenuator, nrx=4 — P1-TX-SCOPE §6); this module
+ * drives it via p2_set_ps()/p1_set_ps().
  *
  * ⛔ TX safety: PS never keys anything. It only becomes active while the
  * operator is keyed through tx_gate (tx_run calls ps_key on the gate slot),
@@ -20,11 +22,22 @@
 #define SDRFL_ENGINE_PS_H
 
 /*
+ * Select the wire (GUI, BEFORE tx_run_start / ps_start; optional — defaults
+ * reproduce the P2/G2E behavior): `p1` routes the PS state through
+ * protocol1.c (PS enable bit + LNA-as-attenuator, P1-TX-SCOPE §6) and the
+ * P1 feedback callback; `feedback_rate_hz` is what SetPSFeedbackRate gets —
+ * fixed 192000 on P2, the RX sample rate on P1 (piHPSDR radio.c:977);
+ * `setpk_default` is the SetPk fallback/clamp value from the radio profile
+ * (P2 non-Saturn 0.2899, P1 HL2 0.2400 — transmitter.c:1203-1241).
+ */
+void ps_configure(int p1, int feedback_rate_hz, double setpk_default);
+
+/*
  * Initialise after the WDSP TX channel exists (tx_dsp_create): declares the
- * fixed 192 kHz P2 feedback rate (SetPSFeedbackRate), applies the piHPSDR
+ * feedback rate (SetPSFeedbackRate, per ps_configure), applies the piHPSDR
  * default parameter set (map/pin/ptol/moxdelay 0.2 s/ampdelay 150 ns;
- * transmitter.c:1069-1080) and registers the P2 feedback callback.
- * PS itself stays OFF until ps_set(). Returns 0 on success.
+ * transmitter.c:1069-1080) and registers the feedback callback on the
+ * configured wire. PS itself stays OFF until ps_set(). Returns 0 on success.
  */
 int  ps_start(void);
 

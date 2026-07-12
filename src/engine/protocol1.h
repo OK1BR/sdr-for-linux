@@ -34,6 +34,13 @@ typedef void (*p1_iq_cb)(const double *iq, int n_pairs, void *user);
  * sends the METIS start command, and spawns the EP2 sender (keepalive/C&C
  * round-robin, 1 packet / 2.625 ms) + EP6 listener threads.
  * Returns 0 on success, negative on error (no answer / bad rate).
+ *
+ * PureSignal: with p1_set_ps({enabled}) armed BEFORE this call the link runs
+ * nrx=4 (RX3/RX4 = the HL2's hard-wired feedback pair, P1-TX-SCOPE §6) —
+ * ⛔ capped at 192 kHz (4×RX EP6 @384k ≈ 83 Mbit/s saturates the HL2's
+ * 100BASE-T). nrx is LATCHED here, piHPSDR-style (tx_ps_onoff restarts the
+ * whole protocol; HPSDR firmwares hang on live stream reconfig) — the GUI
+ * restarts the link on every PS-enable edge.
  */
 int p1_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
                 p1_iq_cb cb, void *user);
@@ -77,13 +84,38 @@ typedef struct {
   int tune;       /* TUNE (AH4/IO-board ATU bit 0x10 NOT sent — no ATU here)   */
 } p1_tx_state;
 
+/* PureSignal wire state (P1-TX-SCOPE §6). With `enabled` the builders emit
+ * the piHPSDR PS deltas: 0x14-C2 |= 0x40 (PS enable bit, o_p.c:2284),
+ * 0x14-C4 rxgain = 31−attenuation while keyed (o_p.c:2288-2308) and
+ * 0x1C-C3 = 0xC0 | (31−attenuation) (the "TX att" register, o_p.c:2372-90)
+ * — the LNA is the HL2's PS feedback attenuator. ps == NULL / !enabled keeps
+ * every byte identical to the T4-verified TX build (p1txprobe-enforced). */
+typedef struct {
+  int enabled;      /* PS armed (also selects nrx=4 at the NEXT p1_rx_start) */
+  int attenuation;  /* feedback attenuation 0-31 dB (auto-att drives this)   */
+} p1_ps_state;
+
 /* Pure frame builders (offline-testable, no socket). tx == NULL → the exact
  * RX-only bytes the live engine sends today (regression guarantee, enforced
- * by sdrfl-p1txprobe). `step` advances the round-robin; returns next step. */
+ * by sdrfl-p1txprobe). `step` advances the round-robin; returns next step.
+ * `nrx` ∈ {1, 4}: receiver count on the wire — general C4 (nrx−1)<<3 bits
+ * (o_p.c:2036) and one NCO frame per RX in the round-robin (C0 = 0x04+2·chan,
+ * o_p.c:2120-2127; every chan carries `freq_hz` — chan ≥ 2 wants the DUC
+ * frequency, and our dial == DUC). Cycle length = nrx + 10. */
 void p1_build_cc_general(unsigned char c[5], int device, int rate_bits,
-                         long long freq_hz, const p1_tx_state *tx);
+                         long long freq_hz, const p1_tx_state *tx, int nrx);
 int p1_build_cc_round_robin(unsigned char c[5], int device, long long freq_hz,
-                            int lna_gain_db, int step, const p1_tx_state *tx);
+                            int lna_gain_db, int step, const p1_tx_state *tx,
+                            const p1_ps_state *ps, int nrx);
+
+/* Parse the sample payload of one 512-byte EP6 frame (pure, offline-testable
+ * — the status/telemetry side stays in the live parser). Writes chan-0 IQ to
+ * `rx1` and, at nrx == 4, the HL2 feedback pair to `rxfb` (chan 2, coupler)
+ * and `txfb` (chan 3, TX-DAC loopback) — old_protocol.c:1449-1471; all
+ * interleaved doubles scaled 2⁻²³. Returns samples parsed ((512−8)/(6·nrx+2),
+ * o_p.c:1416) or −1 on bad sync. */
+int p1_ep6_parse_samples(const unsigned char *f, int nrx,
+                         double *rx1, double *txfb, double *rxfb);
 
 /*
  * Encode TX IQ pairs to the EP2 payload form: per sample 4 zero audio bytes
@@ -125,6 +157,32 @@ void p1_set_tx_state(const p1_tx_state *tx, double iq_scale);
  * 20 ms it sends a zero-IQ keepalive so the C&C stream and the watchdog
  * never starve. Dropped-on-overflow, counted in telemetry. */
 void p1_tx_iq_push(const double *iq, int n_pairs);
+
+/*
+ * ---- PureSignal (P1-TX-SCOPE §6) -------------------------------------------
+ *
+ * ⛔ PS never keys anything here: it only changes the feedback plumbing (nrx,
+ * LNA-as-attenuator, PS enable bit). Whether any of it reaches a keyed state
+ * still goes exclusively through p1_set_tx_state / tx_run's gate.
+ */
+
+/* Arm/update the PS wire state (NULL = off). `attenuation` applies live via
+ * the running C&C round-robin; `enabled` only takes effect for nrx at the
+ * NEXT p1_rx_start (the GUI restarts the link on the enable edge — see
+ * p1_rx_start). Thread-safe. */
+void p1_set_ps(const p1_ps_state *ps);
+
+/* Receiver count the running link was started with (1 also when stopped) —
+ * the GUI compares it against the wanted PS state to decide a link restart. */
+int p1_running_nrx(void);
+
+/* Feedback-pair callback (same contract as p2_ps_iq_cb): interleaved I/Q
+ * doubles, txfb = TX-DAC loopback (RX4), rxfb = coupler (RX3), called from
+ * the listener thread whenever the link runs nrx=4. Register before starting
+ * the link (single writer, no lock — mirrors p2_set_ps_iq_cb). */
+typedef void (*p1_ps_iq_cb)(const double *txfb, const double *rxfb,
+                            int n_pairs, void *user);
+void p1_set_ps_iq_cb(p1_ps_iq_cb cb, void *user);
 
 /* Read-only telemetry decoded from the EP6 status frames (addr 0-2). */
 typedef struct {

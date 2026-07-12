@@ -114,9 +114,64 @@ SWR bridge lives on the N2ADR filter board (fitted on Richard's unit).*
 - **Drive linearity**: same top-end compression as the G2E/10E — covered by
   the planned guided multi-point wattmeter/drive calibration (TODO).
 - **Digi TX** (TCI external audio): live check with Decodium pending.
-- **PureSignal on P1**: separate milestone — needs the multi-RX P1 link
-  (feedback via RX3/RX4), pscc feed, LNA-gain-based auto-attenuate
-  (piHPSDR maps 31−att into the 0x14 register during PS-TX), GetPk offset
-  17.0 (TX-DAC peak 0.230). No known firmware wedge on P1 (unlike P2 on
-  the 10E) — and the same infrastructure is the alternative route to PS
-  on the 10E, which also speaks P1.*
+- **PureSignal on P1**: separate milestone — full byte-level audit in §6
+  below (2026-07-12). No known firmware wedge on P1 (unlike P2 on the
+  10E) — and the same infrastructure is the alternative route to PS on
+  the 10E, which also speaks P1.*
+
+## 6. PureSignal over P1 (HL2) — piHPSDR audit @974acba (2026-07-12)
+
+Everything below read first-hand from old_protocol.c / radio.c /
+transmitter.c; line references at each item. The WDSP side (calcc/pscc,
+Thetis-style auto-att, TUNE park, key choreography) is protocol-agnostic
+and already live-proven on the G2E — docs/PS-SCOPE.md. Only the wire
+differs:
+
+- **Feedback channels are fixed in the gateware** (old_protocol.c:904-986):
+  HL2 (`DEVICE_HERMES_LITE2` branch) = **RX3 (chan 2) ← RX feedback
+  (coupler)** and **RX4 (chan 3) ← TX-DAC loopback**. With PS enabled the
+  P1 stream runs **nrx = 4** (how_many_receivers :1052-1105 — "TX feedback
+  hard-wired to RX4"); without PS we stay at 1.
+- **⛔ nrx changes only across a protocol restart**: piHPSDR tx_ps_onoff
+  (transmitter.c:2442-2530) does `old_protocol_stop() → 100 ms → set
+  puresignal → old_protocol_run()` — HPSDR firmwares historically hang on
+  live stream reconfig. We mirror it: the GUI restarts the P1 link
+  (p1_rx_stop/p1_rx_start) on the PS-enable edge; att/SetPk changes ride
+  the running C&C.
+- **EP6 frame at nrx>1**: samples/frame = `(512−8)/(6·nrx+2)`
+  (old_protocol.c:1416) → **19 at nrx=4** (last 10 bytes padding); per
+  sample nrx×(24-bit BE I + Q) then 16-bit mic. Status/ACK/telemetry
+  handling unchanged. Feedback pair → pscc exactly as
+  process_ozy_byte:1449-1471 (chan 2 = rxfb, chan 3 = txfb; both scaled
+  2⁻²³ like RX IQ). RX1 keeps streaming (and keeps its NCO) during PS TX.
+- **C&C**: C0=0x00 frame C4 `|= ((nrx−1)&7)<<3` (:2036); NCO frames
+  C0 = `0x04 + 2·chan` (:2120-2127), where chan ≥ 2 always carries the
+  **DUC/TX frequency** (channel_freq :1015-1030 — for us dial == DUC, so
+  all five frequency frames carry the same value today).
+- **PS enable bit**: 0x14-C2 `|= 0x40` while PS is on (:2284 — device-
+  independent in piHPSDR; verify live that gw 73.2 wants it).
+- **⛔ Attenuation = the AD9866 LNA, two write sites** (both must move
+  together): 0x14-C4 = `0x40 | rxgain` (:2288-2308) and 0x1C-C3 =
+  `0xC0 | rxgain` (:2372-2390, bit7 = "enable TX att", bit6 = 6-bit
+  range), where while TX-ing `rxgain = 31 − attenuation` with PS (else 0
+  with PA on; on RX `gain+12` as today). Our Thetis auto-att therefore
+  drives the SAME 0-31 att value as on P2, wire-mapped to `31 − att`.
+  PS-off builds stay byte-identical to the T4-verified TX build (0x1C
+  zeros, 0x14-C4 = RX gain always — HL2 firmware self-protects on TX).
+- **Feedback rate = the RX sample rate** (radio.c:977
+  `tx_ps_set_sample_rate(tx, active_receiver->sample_rate)` for P1 — NOT
+  the fixed 192 k of P2). Declare via SetPSFeedbackRate at ps_start and
+  on every link restart.
+- **SetPk default on P1-HL2 = 0.2400** (transmitter.c:1222, "measured
+  value 0.2386" — NOT the P2 0.2899). GetPk display offset for the MON
+  feedback spectrum = **17.0** (transmitter.c:838, TX-DAC peak 0.230).
+  → ps_setpk/ps_att move to the per-radio config group.
+- **Bandwidth**: nrx=4 EP6 ≈ 26 B/sample → 41.7 Mbit/s @192k (fine on the
+  HL2's 100BASE-T), but **83 Mbit/s @384k** — saturates the link. PS on
+  P1 is therefore gated to rates ≤ 192 kHz.
+- Discovery byte 0x13 = gateware RX count (HL2 wiki); piHPSDR ignores it
+  (supported_receivers hard-coded 2, old_discovery.c:504) and simply uses
+  4 on HL2. We read it, log it, and refuse PS if the gateware reports < 4.
+- Whitelist: `radio_ps_supported()` += HL2 **only at the live test** with
+  Richard (dummy load; PS-4-style checklist: 2T → fdbk window/auto-att →
+  GetPk vs 0.2400 → voice → IMD A/B).

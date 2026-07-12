@@ -233,10 +233,15 @@ typedef struct {
   int         tx_ptt_enabled;/* footswitch: radio PTT input = MOX (persisted)       */
   int         tx_ptt_tip;    /* PTT contact on mic-jack tip vs ring (persisted)     */
   int         ps_enable;     /* PureSignal on/off (persisted)                       */
-  int         ps_att;        /* PS ADC0 feedback attenuator during TX, dB (persisted)*/
-  double      ps_setpk;      /* PS SetPk — expected full-scale envelope (persisted) */
+  int         ps_att;        /* PS feedback attenuator during TX, dB (persisted per
+                                radio: P2 = ADC0 step att, P1 = LNA 31−att)         */
+  double      ps_setpk;      /* PS SetPk — expected full-scale envelope (persisted
+                                per radio; default from radio_tx_profile)           */
   int         ps_auto;       /* PS Auto attenuate (Thetis any-TX; persisted)        */
   int         ps_stbl;       /* PS STBL calibration smoothing (persisted)           */
+  DISCOVERED  radio_dev;     /* connected radio's discovery record (copy) — the P1
+                                PS-enable edge restarts the link from it            */
+  int         radio_dev_ok;
   char        picked_ip[64]; /* radio chosen in the startup picker ("" = none)      */
   int         tci_enable;    /* TCI server on/off (persisted, F6d-2a)               */
   int         tci_port;      /* TCI server port (persisted; ExpertSDR default 40001)*/
@@ -3265,7 +3270,48 @@ static void ps_apply(App *app) {
    * WEDGES the ANAN 10E outright (fw 10.3 can't run the P2 feedback-DDC
    * config; live-proven twice 2026-07-12) — the engine must never see
    * PS on for such a radio, whatever the persisted setting says. */
-  if (app->tx_ready) { ps_set(app->ps_enable && app->ps_allowed, app->ps_att, app->ps_setpk); }
+  if (!app->tx_ready) { return; }
+
+  int want = app->ps_enable && app->ps_allowed;
+
+  if (want && app->proto_p1 && app->rate > 192000) {
+    /* ⛔ P1 PS needs 4 receivers — EP6 @384k ≈ 83 Mbit/s saturates the HL2's
+     * 100BASE-T (P1-TX-SCOPE §6). Refuse rather than degrade. */
+    fprintf(stderr, "ps: P1 PureSignal needs a sample rate <= 192 kHz "
+            "(4-RX stream on a 100 Mbit link) — lower the rate first\n");
+    want = 0;
+  }
+
+  if (want && app->proto_p1 && app->radio_dev_ok &&
+      app->radio_dev.supported_receivers < 4) {
+    /* The feedback pair is hard-wired to RX3/RX4 — a gateware with fewer
+     * receivers (discovery byte 0x13) cannot stream it. */
+    fprintf(stderr, "ps: this gateware reports %d receivers — PureSignal "
+            "needs 4 (RX3/RX4 feedback); update the HL2 gateware\n",
+            app->radio_dev.supported_receivers);
+    want = 0;
+  }
+
+  ps_set(want, app->ps_att, app->ps_setpk);
+
+  /* P1: the receiver count is LATCHED at link start (piHPSDR tx_ps_onoff
+   * restarts the whole protocol — firmwares hang on live stream reconfig).
+   * On the enable edge restart the running link; ~0.3 s RX gap, and if the
+   * operator toggles mid-over the keyed state self-heals on the next gate
+   * slot (engine_set_tx_state refresh). att/SetPk changes ride the running
+   * C&C and never land here. */
+  if (app->proto_p1 && app->engine_ok && app->radio_dev_ok &&
+      want != (p1_running_nrx() > 1)) {
+    fprintf(stderr, "ps: restarting P1 link (%s feedback receivers)\n",
+            want ? "adding" : "dropping");
+    p1_rx_stop();
+
+    if (p1_rx_start(&app->radio_dev, app->freq, s_engine_rate, feed_cb, NULL) != 0) {
+      fprintf(stderr, "ps: P1 link restart FAILED — is the radio still there?\n");
+      app->engine_ok = 0;
+      app->connected = 0;
+    }
+  }
 }
 static void on_pref_ps_att(AdwSpinRow *r, GParamSpec *p, gpointer data) {
   (void)p; App *app = (App *)data;
@@ -4539,17 +4585,28 @@ static void start_radio(App *app) {
     app->pacal_min   = prof->pacal_min;
     app->patrim_step = prof->pa_watts / 10.0;
     app->ps_allowed  = radio_ps_supported(dev);
+    app->radio_dev   = *dev;          /* the P1 PS toggle restarts the link */
+    app->radio_dev_ok = 1;
     g_strlcpy(app->tx_group, prof->cfg_group, sizeof app->tx_group);
     if (strcmp(prof->cfg_group, "tx") != 0) {
       st.tx_pa = 0; st.tx_ant = 0;
       st.tx_drive = 1.0; st.tx_tune = 1.0; st.tx_digi_max = prof->pa_watts;
       st.pa_cal[0] = '\0'; st.pa_trim[0] = '\0';
+      /* ⛔ PS calibration is per radio too (SetPk differs: HL2 0.2400 vs G2E
+       * 0.2899 — P1-TX-SCOPE §6); this radio's group over its own defaults. */
+      st.ps_att = 0; st.ps_setpk = prof->ps_setpk;
       settings_load_txdev(&st, prof->cfg_group);
+      app->ps_att   = st.ps_att < 0 ? 0 : (st.ps_att > 31 ? 31 : st.ps_att);
+      app->ps_setpk = (st.ps_setpk >= 0.01 && st.ps_setpk <= 1.01)
+                      ? st.ps_setpk : prof->ps_setpk;
     }
     tx_cal_from_settings(app, &st);   /* re-clamp to this radio's rating */
     tx_meter_cal mc = { prof->m_c1, prof->m_c2, prof->m_rc2_hf, prof->m_rc2_6m,
                         prof->m_fwd_off, prof->m_rev_off, prof->pa_watts };
     tx_meter_set_cal(&mc);   /* before tx_run_start — the TX worker owns it after */
+    /* PS wire selection (before tx_run_start → ps_start): P1 feedback runs at
+     * the RX sample rate, P2 at fixed 192 k (piHPSDR radio.c:977). */
+    ps_configure(app->proto_p1, app->proto_p1 ? rate : 192000, prof->ps_setpk);
   }
 
   if (analyzer_create(0, app->pixels, rate, app->fps) != 0) {

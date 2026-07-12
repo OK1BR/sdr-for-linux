@@ -306,6 +306,14 @@ static gpointer p1_discover_receive_thread(gpointer data) {
     d->frequency_max = (d->device == DEVICE_HERMES_LITE ||
                         d->device == DEVICE_HERMES_LITE2) ? 38400000.0 : 61440000.0;
     d->supported_receivers = 2;   // old_discovery.c:504
+
+    if (d->device == DEVICE_HERMES_LITE2 && buffer[19] >= 1 && buffer[19] <= 8) {
+      // HL2 discovery byte 0x13 = gateware receiver count (hermeslite.py;
+      // the main gateware reports 4). PureSignal needs RX3/RX4 as the
+      // feedback pair — the GUI refuses PS below 4 (P1-TX-SCOPE §6).
+      // piHPSDR ignores this byte and hard-codes 2.
+      d->supported_receivers = buffer[19];
+    }
     snprintf(d->name, sizeof(d->name), "%s", p1_board_name(d->device));
     memcpy((void *)&d->network.address, (void *)&addr, sizeof(addr));
     d->network.address.sin_port = htons(DISCOVERY_PORT);
