@@ -63,7 +63,7 @@ radio picker rather than left to luck.
 |---|---|---|
 | Apache Labs **ANAN G2E** | HPSDR Protocol 2 | ✅ supported, developed & verified on this radio |
 | Apache Labs **ANAN 10E / 100B** (Hermes) | HPSDR Protocol 2 | ✅ supported — RX + TX live-verified (fw 10.3); per-radio PA calibration & 10 W scale. **PureSignal disabled**: the old Hermes firmware locks up on the P2 feedback-DDC switch mid-TX (power-cycle recovery); details in `docs/TX-DESIGN.md` §9 |
-| **Hermes Lite 2** | HPSDR Protocol 1 | ✅ supported, **RX only** — panadapter, audio, LNA gain (−12..+48 dB), N2ADR filter-board band switching, die-temperature readout, ADC-overload badge, TCI/SDC skimming. Rates 48–384 kHz, 0–38.4 MHz. TX is a future milestone |
+| **Hermes Lite 2** | HPSDR Protocol 1 | ✅ supported — **RX + TX + PureSignal live-verified** (gw 73.2): panadapter, audio, LNA gain (−12..+48 dB), N2ADR filter-board band switching, die temperature + 60 °C thermal TX trip, ADC-overload badge, TCI/SDC skimming, 5 W PA with per-band calibration (20 m calibrated, other bands under-drive until walked in), CW/voice, PureSignal over P1 (RX3/RX4 feedback; PS needs a sample rate ≤ 192 kHz). Rates 48–384 kHz, 0–38.4 MHz |
 | Other ANAN / Hermes P2 boards | Protocol 2 | ⛔ blocked until tested — open an issue if you can lend hardware + a dummy load |
 | Older P1 boards (HL1, Metis…) | Protocol 1 | ⛔ blocked until tested |
 

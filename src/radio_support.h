@@ -75,7 +75,17 @@ static inline int radio_tx_supported(const DISCOVERED *d) {
  * 4.4-class) tolerates it. Lifting this requires the Thetis key-down/key-up
  * ordering in the TX path + a live re-test (each failed try = power cycle). */
 static inline int radio_ps_supported(const DISCOVERED *d) {
-  return d != NULL && d->protocol == NEW_PROTOCOL && d->device == NEW_DEVICE_G1;
+  if (d == NULL) { return 0; }
+
+  /* G2E (P2): live-verified 2026-07-11. HL2 (P1): live test 2026-07-12,
+   * wire per docs/P1-TX-SCOPE.md §6.
+   * ⛔ ANAN 10E/HERMES2 over P2 stays LOCKED OUT — keying with PS enabled
+   * wedges fw 10.3 until a power cycle (TX-DESIGN §9, live-proven twice). */
+  if (d->protocol == NEW_PROTOCOL && d->device == NEW_DEVICE_G1) { return 1; }
+
+  if (d->protocol == ORIGINAL_PROTOCOL && d->device == DEVICE_HERMES_LITE2) { return 1; }
+
+  return 0;
 }
 
 /*

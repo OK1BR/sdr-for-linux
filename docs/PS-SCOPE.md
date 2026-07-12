@@ -242,9 +242,11 @@ P1 wire (feedback via RX3/RX4 at nrx=4, LNA-as-attenuator, PS enable
 bit, link restart on the enable edge, SetPk 0.2400, feedback rate = RX
 rate, ≤192 kHz) is audited and specified in **docs/P1-TX-SCOPE.md §6**;
 ps.c selects the wire via `ps_configure()`. This is also the intended
-alternative route to PS on the ANAN 10E (TX-DESIGN §9 lockout). Live
-verification on the HL2 pending — `radio_ps_supported()` flips only at
-that test.
+alternative route to PS on the ANAN 10E (TX-DESIGN §9 lockout).
+**Live-verified on the HL2 2026-07-12** (2T + voice into the dummy load:
+GetPk confirms SetPk 0.2400, auto-att bidirectional, 14 clean
+enable-edge link restarts — results in P1-TX-SCOPE §6);
+`radio_ps_supported()` includes the HL2 since that test.
 
 ## 6. ⛔ TX-safety deltas (require explicit sign-off, then TX-SAFETY.md update)
 

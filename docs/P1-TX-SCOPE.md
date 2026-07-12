@@ -175,3 +175,24 @@ differs:
 - Whitelist: `radio_ps_supported()` += HL2 **only at the live test** with
   Richard (dummy load; PS-4-style checklist: 2T → fdbk window/auto-att →
   GetPk vs 0.2400 → voice → IMD A/B).
+
+**★ LIVE-VERIFIED 2026-07-12 (HL2 gw 73.2, 20 m into the dummy load, SWR
+1.00):** RX regression nrx=1 ratio 1.0004 / 0 errors; nrx=4 with both
+feedback streams at full rate (throughput 5.2 MB/s @192k as computed).
+2T: fdbk in-window, ~12 cals/s, CORRECTING held. **GetPk 0.237–0.241
+under both 2T and voice → the piHPSDR HL2 SetPk default 0.2400 is
+confirmed** (upstream measured 0.2386). Auto-att via the LNA stepped both
+directions (0→2 dB at fdbk 183, 2→0 at fdbk 56), no oscillation, no
+stalls. Voice calibrates continuously (piHPSDR-pattern; rejected fits
+only at over edges, correction never dropped). The PS-enable link restart
+ran 14× (7 off/on A/B cycles) — clean nrx swap both ways every time.
+At low power (~1–2 W) correction is visually inconsequential — the 5 W
+PA is near-linear below ~3 W and fdbk sits below window (108) with the
+attenuation floor at 0; expected, references behave identically.
+Optional left: IMD A/B on the IC-705.
+
+One wire lesson landed during the test (see the listener): the gateware
+applies a changed RX count only **~8 ms into a started stream** — ~6
+frames arrive in the previous session's layout (structurally valid,
+full-scale sample garbage). The listener discards the first 25 ms of
+samples after every start.
