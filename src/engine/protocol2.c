@@ -505,14 +505,81 @@ void p2_tx_iq_framer_push(p2_tx_iq_framer *f, const double *iq, int n_pairs) {
   }
 }
 
-/* Dormant live emitter (F5): send to the radio's TX-IQ port 1029 via the engine
- * data socket. NOT called in F1-F4. */
+/* ---- TX IQ paced sender (anti-burst) -------------------------------------
+ * ⛔ The WDSP TX block is 2048 samples = 8.5 wire packets arriving at once
+ * every 10.7 ms. Sending them back-to-back over-runs the FPGA DUC FIFO and
+ * chops the SSB envelope on the air — the SAME disease as the P1 TX buzz
+ * (P1-TX-SCOPE §1: pace senders to the radio's FIFO, never by production).
+ * Mirror of piHPSDR's TXIQ thread (new_protocol.c:1987-2067): a packet ring
+ * + a sender thread with a coarse software model of the DUC FIFO — drain at
+ * 192 ksps, and while we are >1250 samples ahead sleep ~1 ms per packet.
+ * SPSC: producer = the TX feed thread (via the framer emit callback),
+ * consumer = the p2-txiq thread. Sequence numbers are already inside the
+ * framed packets (assigned in push order), so pacing preserves them. */
+#define TXIQ_RING_PKTS 128             /* 1444-B packets ≈ 160 ms @ 192 k */
+static unsigned char    txiq_ring[TXIQ_RING_PKTS][1444];
+static volatile guint   txiq_head;     /* producer index (feed thread)    */
+static volatile guint   txiq_tail;     /* consumer index (txiq thread)    */
+static volatile gint    txiq_drops;    /* ring-full drops (over stats)    */
+static GMutex           txiq_lock;     /* wake-up only — data is SPSC     */
+static GCond            txiq_cond;
+static GThread         *txiq_tid;
+
 void p2_tx_iq_socket_emit(const unsigned char *pkt, int len, void *user) {
   (void)user;
-  if (data_socket < 0) { return; }
-  struct sockaddr_in a = base_addr;      /* radio IP (set by p2_rx_start) */
-  a.sin_port = htons(TX_IQ_FROM_HOST_PORT);
-  sendto(data_socket, pkt, len, 0, (struct sockaddr *)&a, base_len);
+  if (data_socket < 0 || len != 1444) { return; }
+  guint h = txiq_head, t = txiq_tail;
+  if (h - t >= TXIQ_RING_PKTS) { g_atomic_int_inc(&txiq_drops); return; }
+  memcpy(txiq_ring[h % TXIQ_RING_PKTS], pkt, 1444);
+  g_atomic_int_set((volatile gint *)&txiq_head, (gint)(h + 1));
+  g_mutex_lock(&txiq_lock);
+  g_cond_signal(&txiq_cond);
+  g_mutex_unlock(&txiq_lock);
+}
+
+/* Read-and-clear the ring-full drop counter (the unkey over-stats line). */
+void p2_txiq_ring_stats_take(int *drops) {
+  *drops = g_atomic_int_exchange(&txiq_drops, 0);
+}
+
+static gpointer txiq_thread(gpointer data) {
+  (void)data;
+  double fifo = 0.0;                    /* samples we are ahead of the DUC */
+  gint64 last = g_get_monotonic_time();
+
+  while (p2running) {
+    g_mutex_lock(&txiq_lock);
+    while (p2running &&
+           (guint)g_atomic_int_get((volatile gint *)&txiq_head) == txiq_tail) {
+      g_cond_wait_until(&txiq_cond, &txiq_lock,
+                        g_get_monotonic_time() + 100000);
+    }
+    g_mutex_unlock(&txiq_lock);
+    if (!p2running) { break; }
+
+    /* piHPSDR new_protocol.c:2031-2061: estimate the DUC FIFO fill; lagging
+     * → send immediately, ahead → spread the packets ~1 ms apart. */
+    gint64 now = g_get_monotonic_time();
+    fifo -= (double)(now - last) * (192000.0 / 1e6);
+    last = now;
+    if (fifo < 0.0)    { fifo = 0.0; }
+    if (fifo > 1250.0) {
+      g_usleep(1000);
+      now = g_get_monotonic_time();
+      fifo -= (double)(now - last) * (192000.0 / 1e6);
+      last = now;
+      if (fifo < 0.0) { fifo = 0.0; }
+    }
+
+    struct sockaddr_in a = base_addr;   /* radio IP (set by p2_rx_start) */
+    a.sin_port = htons(TX_IQ_FROM_HOST_PORT);
+    sendto(data_socket, txiq_ring[txiq_tail % TXIQ_RING_PKTS], 1444, 0,
+           (struct sockaddr *)&a, base_len);
+    txiq_tail++;
+    fifo += 240.0;                      /* samples in the packet just sent */
+  }
+
+  return NULL;
 }
 
 /* ---- send wrappers (build + sendto + seq++) ----------------------------- */
@@ -1062,6 +1129,9 @@ int p2_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
   send_high_priority(1);    usleep(100000);
 
   timer_tid = g_thread_new("p2-timer", timer_thread, NULL);
+  txiq_head = txiq_tail = 0;
+  txiq_drops = 0;
+  txiq_tid = g_thread_new("p2-txiq", txiq_thread, NULL);
 
   t_print("p2: started dev=%d ddc=%d @ %lld Hz, %d Hz sample rate\n",
           cfg_device, cfg_ddc, freq_hz, sample_rate);
@@ -1075,6 +1145,10 @@ void p2_rx_stop(void) {
   kick_pending = 1;           /* the kick path re-checks p2running)             */
   g_cond_signal(&kick_cond);
   g_mutex_unlock(&kick_lock);
+  g_mutex_lock(&txiq_lock);   /* wake the TX IQ sender out of its wait */
+  g_cond_signal(&txiq_cond);
+  g_mutex_unlock(&txiq_lock);
+  if (txiq_tid)     { g_thread_join(txiq_tid);     txiq_tid = NULL; }
   if (timer_tid)    { g_thread_join(timer_tid);    timer_tid = NULL; }
   if (listener_tid) { g_thread_join(listener_tid); listener_tid = NULL; }
 

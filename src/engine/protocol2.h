@@ -288,4 +288,8 @@ void p2_tx_iq_framer_push(p2_tx_iq_framer *f, const double *iq, int n_pairs);
  */
 void p2_tx_iq_socket_emit(const unsigned char *pkt, int len, void *user);
 
+/* Read-and-clear the paced TX-IQ sender's ring-full drop counter — the per-over
+ * transport stats line in tx_run (nonzero = SSB audio lost on the wire). */
+void p2_txiq_ring_stats_take(int *drops);
+
 #endif /* SDRFL_ENGINE_PROTOCOL2_H */
