@@ -112,9 +112,18 @@ int mic_queued(void) {
 }
 
 void mic_flush(void) {
-  /* Consumer owns the tail; snap it up to head to discard the backlog. */
+  /* Consumer owns the tail. Discard the idle backlog but KEEP the freshest
+   * ~16 ms: an empty ring at key-on shorts every pull until the next PW
+   * capture buffer lands (the "shorts=512" one-quantum hole in the over
+   * stats, = a 10 ms silence chop at the start of every voice over). The
+   * kept tail doubles as a head start that catches the first word's attack. */
+  unsigned keep = 2048;  /* frames @48k = 43 ms ≈ 3 capture quanta (the stream
+                            asks for the audio-latency setting, ~15 ms): jitter
+                            headroom so mid-over pulls never race a late PW
+                            buffer into silence-padding (= crackle on air) */
   unsigned h = atomic_load_explicit(&m_head, memory_order_acquire);
-  atomic_store_explicit(&m_tail, h, memory_order_release);
+  unsigned t = atomic_load_explicit(&m_tail, memory_order_relaxed);
+  if (h - t > keep) { atomic_store_explicit(&m_tail, h - keep, memory_order_release); }
 }
 
 /* --- device enumeration (one-shot registry roundtrip) --------------------- */

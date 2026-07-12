@@ -126,10 +126,17 @@ void tx_run_set_comp(int on, double gain_db);
 /* Mic noise gate (downward expander; see tx_dsp_set_gate). Safe if TX isn't up. */
 void tx_run_set_gate(int on, double thresh_db);
 
-/* TX monitor (self-listen): while keyed, feed the mic (voice) or a sidetone
- * shaped by the CW envelope into the host audio via demod_monitor_push. Level
- * is set separately (demod_set_monitor_gain). Safe if TX isn't up. */
+/* TX monitor (self-listen): while keyed, feed the TX audio (voice/digi) or a
+ * sidetone shaped by the CW envelope into the host audio via
+ * demod_monitor_push. Level is set separately (demod_set_monitor_gain). Safe
+ * if TX isn't up. */
 void tx_run_set_monitor(int on);
+
+/* Monitor source: 0 (default) = processed TX audio — Re() of the WDSP output,
+ * exactly what goes on air (gate/PROC/TX filter/ALC applied, adds one DSP
+ * block of latency); 1 = raw mic before the chain (zero latency, the piHPSDR
+ * behaviour and our pre-2026-07-12 default). CW sidetone is unaffected. */
+void tx_run_set_monitor_raw(int on);
 
 /* TX panadapter zoom: set the displayed span (Hz). Safe if TX isn't up. */
 void tx_run_set_span(double span_hz);

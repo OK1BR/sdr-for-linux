@@ -114,6 +114,30 @@ static volatile int      s_want_tt;        /* g_atomic: two-tone test wants key 
 static volatile int      s_want_cw;        /* g_atomic: CW break-in wants key (feed thread) */
 static volatile int      s_mode;           /* g_atomic: current WDSP/demod mode           */
 static volatile int      s_monitor;        /* g_atomic: TX monitor (self-listen) on/off   */
+static volatile int      s_mon_raw;        /* g_atomic: monitor source — 0 = processed TX
+                                              audio (WDSP output, faithful to the air),
+                                              1 = raw mic (zero latency, piHPSDR style)   */
+static int               s_mon_skip;       /* feed-thread only: on_tx_iq call is CW —
+                                              the sidetone branch monitors instead        */
+
+/* SDRFL_TX_DUMP=<dir>: append raw float32 mono streams for TX-audio forensics
+ * — mic48k.f32 (the mic exactly as fed to WDSP, 48 kHz) and txre.f32 (Re of
+ * the WDSP IQ output = the transmitted sideband audio, at the DUC rate).
+ * Feed-thread only, opened on first use, flushed at UNKEY. Debug tool. */
+static FILE *s_dump_mic;
+static FILE *s_dump_tx;
+static int   s_dump_init;
+static void dump_ensure(void) {
+  const char *d;
+  s_dump_init = 1;
+  if (!(d = g_getenv("SDRFL_TX_DUMP")) || !d[0]) { return; }
+  char p[512];
+  g_snprintf(p, sizeof p, "%s/mic48k.f32", d);
+  s_dump_mic = fopen(p, "wb");
+  g_snprintf(p, sizeof p, "%s/txre.f32", d);
+  s_dump_tx = fopen(p, "wb");
+  fprintf(stderr, "tx: DUMP active — %s/{mic48k,txre}.f32\n", d);
+}
 
 /* External TX audio (TCI, F6d-2c): mono 48 k SPSC ring — producer = the TCI
  * service thread (tx_run_ext_push), consumer = the feed loop while keyed with
@@ -162,6 +186,35 @@ static void on_tx_iq(const double *iq, int n_pairs, void *u) {
   else      { p2_tx_iq_framer_push(&s_framer, iq, n_pairs); }
 
   tx_analyzer_feed(iq, n_pairs);
+
+  if (s_dump_tx && !s_mon_skip) {        /* forensics: the wire-bound audio */
+    static float db[TX_IQ_BLOCK];
+    int nd = n_pairs > TX_IQ_BLOCK ? TX_IQ_BLOCK : n_pairs;
+    for (int i = 0; i < nd; i++) { db[i] = (float)iq[2 * i]; }
+    fwrite(db, sizeof(float), (size_t)nd, s_dump_tx);
+  }
+
+  /* Faithful TX monitor: Re(IQ) of the WDSP output IS the processed sideband
+   * audio — exactly what keys the exciter, gate/PROC/TX-filter/ALC included
+   * (both sidebands: a real signal's spectrum is conjugate-symmetric). Only
+   * when the monitor source is "processed"; CW is skipped (its sidetone
+   * branch already plays the keying envelope). The one-pole DC block kills
+   * the TUNE carrier (0 Hz) so TUNE stays silent like before. The IQ here is
+   * pre drive-scaling on both protocols, so the level does not follow Drive. */
+  if (g_atomic_int_get(&s_monitor) && !g_atomic_int_get(&s_mon_raw) && !s_mon_skip) {
+    static float  mb[TX_IQ_BLOCK];
+    static double x1, y1;
+    double r = 1.0 - 125.6 / (double)s_iq_rate;    /* ~20 Hz cutoff */
+    if (n_pairs > TX_IQ_BLOCK) { n_pairs = TX_IQ_BLOCK; }
+    for (int i = 0; i < n_pairs; i++) {
+      double x = iq[2 * i];
+      double y = x - x1 + r * y1;
+      x1 = x; y1 = y;
+      mb[i] = (float)y;
+    }
+    demod_monitor_absolute(0);
+    demod_monitor_push(mb, n_pairs, s_iq_rate);
+  }
 }
 
 /* ⛔ Keying dispatch — the ONE place both protocols' wire state is applied.
@@ -373,11 +426,15 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
       mic_stats_take(&md, &ms);
 
       if (s_p1) { p1_tx_ring_stats_take(&ru, &rd); }
+      else      { p2_txiq_ring_stats_take(&rd); }
 
       if (md || ms || ru || rd) {
         fprintf(stderr, "tx: over stats — mic drops=%d shorts=%d, "
-                "p1 iq ring under=%d drops=%d\n", md, ms, ru, rd);
+                "iq ring under=%d drops=%d\n", md, ms, ru, rd);
       }
+
+      if (s_dump_mic) { fflush(s_dump_mic); }
+      if (s_dump_tx)  { fflush(s_dump_tx); }
     }
 
     fflush(stderr);
@@ -540,7 +597,9 @@ static gpointer tx_thread(gpointer u) {
           cwiq[2 * i]     = CW_IQ_AMP * (double)cwenv[i];
           cwiq[2 * i + 1] = 0.0;
         }
+        s_mon_skip = 1;              /* CW: the sidetone below monitors, not the IQ tap */
         on_tx_iq(cwiq, s_iq_block, NULL);
+        s_mon_skip = 0;
         if (g_atomic_int_get(&s_monitor)) {
           /* Sidetone: the SAME envelope that keys the RF, on a local tone. Its
            * trim is the FINAL level — demod_monitor_absolute(1) bypasses the
@@ -576,10 +635,13 @@ static gpointer tx_thread(gpointer u) {
           got = mic_pull(mic, FEED_BLOCK);
         }
         for (int i = got; i < FEED_BLOCK; i++) { mic[i] = 0.0f; }
+        if (!s_dump_init) { dump_ensure(); }
+        if (s_dump_mic) { fwrite(mic, sizeof(float), FEED_BLOCK, s_dump_mic); }
         tx_dsp_feed_mic(mic, FEED_BLOCK);       /* → IQ → framer → port 1029 */
-        if (g_atomic_int_get(&s_monitor)) {
-          /* Voice monitor: the raw mic block, like piHPSDR's audiomonitor
-           * (transmitter.c:1953 plays mic_sample × capped volume). */
+        if (g_atomic_int_get(&s_monitor) && g_atomic_int_get(&s_mon_raw)) {
+          /* Raw-mic monitor (opt-in): the untouched mic block, like piHPSDR's
+           * audiomonitor (transmitter.c:1953) — zero latency, but NOT what
+           * goes on air. Default is the processed tap in on_tx_iq. */
           demod_monitor_absolute(0);
           demod_monitor_push(mic, FEED_BLOCK, tx_dsp_in_rate());
         }
@@ -801,6 +863,7 @@ void tx_run_set_comp(int on, double gain_db) { tx_dsp_set_compressor(on, gain_db
 void tx_run_set_gate(int on, double thresh_db) { tx_dsp_set_gate(on, thresh_db); }
 
 void tx_run_set_monitor(int on) { g_atomic_int_set(&s_monitor, on ? 1 : 0); }
+void tx_run_set_monitor_raw(int on) { g_atomic_int_set(&s_mon_raw, on ? 1 : 0); }
 
 void tx_run_set_span(double span_hz) { tx_analyzer_set_span(span_hz); }   /* TX zoom (analyzer locks) */
 

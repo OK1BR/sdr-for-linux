@@ -236,17 +236,29 @@ void demod_feed(const double *iq, int n_pairs) {
           if (sr < -1.0) { sr = -1.0; }
           if      (d_mute_gain < mgoal) { d_mute_gain += D_FADE_STEP; if (d_mute_gain > mgoal) { d_mute_gain = mgoal; } }
           else if (d_mute_gain > mgoal) { d_mute_gain -= D_FADE_STEP; if (d_mute_gain < mgoal) { d_mute_gain = mgoal; } }
-          /* TX monitor: pop one ring frame (0 on underrun) and add it after the
-           * mute gain, then clamp — the operator hears himself, never the RX. */
+          /* TX monitor: pop one ring frame and add it after the mute gain, then
+           * clamp — the operator hears himself, never the RX. Jitter buffer:
+           * the producer pushes in DSP-block bursts (~11 ms apart) on the TX
+           * wall clock; this drain runs on the radio clock. Popping the ring
+           * dry would chop every burst with silence (~94 Hz garble) — after an
+           * underrun hold silence until the ring has refilled ~25 ms (two
+           * bursts; kept small so the CW sidetone stays snappy). */
           double mon = 0.0;
           {
+            static int mon_wait = 1;
             unsigned mh = atomic_load_explicit(&mon_head, memory_order_acquire);
             unsigned mt = atomic_load_explicit(&mon_tail, memory_order_relaxed);
-            if (mt != mh) {
-              double g = atomic_load_explicit(&mon_abs, memory_order_relaxed)
-                           ? 1.0 : mon_gain;
-              mon = (double)mon_ring[mt & MON_MASK] * g;
-              atomic_store_explicit(&mon_tail, mt + 1, memory_order_release);
+            unsigned avail = mh - mt;
+            if (mon_wait && avail >= (unsigned)(d_arate / 40)) { mon_wait = 0; }
+            if (!mon_wait) {
+              if (avail == 0) {
+                mon_wait = 1;
+              } else {
+                double g = atomic_load_explicit(&mon_abs, memory_order_relaxed)
+                             ? 1.0 : mon_gain;
+                mon = (double)mon_ring[mt & MON_MASK] * g;
+                atomic_store_explicit(&mon_tail, mt + 1, memory_order_release);
+              }
             }
           }
           double ol = sl * d_mute_gain + mon, or_ = sr * d_mute_gain + mon;
