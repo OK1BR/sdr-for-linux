@@ -53,6 +53,50 @@ void p1_set_frequency(long long freq_hz);
  */
 void p1_set_gain(int db);
 
+/*
+ * ---- TX byte construction (T1, docs/P1-TX-SCOPE.md) ------------------------
+ *
+ * ⛔ SAFETY: these let the builders CONSTRUCT the TX bytes; they do NOT
+ * transmit. The live engine calls them with tx=NULL (see the hardcoded off
+ * call sites in protocol1.c) → the wire stays byte-identical to the verified
+ * RX build: MOX bit 0 on every frame, drive 0, T/R relay locked RX. Only the
+ * offline sdrfl-p1txprobe gate passes a non-NULL "hot" state, and only to
+ * hexdump-verify the layout against piHPSDR — never over a socket. Do NOT
+ * wire a non-off state into any live send before the T2-T4 phases of
+ * docs/P1-TX-SCOPE.md are cleared with Richard.
+ */
+
+/* HL2 TX state. drive_att is piHPSDR's drive_level: the 16-step hardware TX
+ * attenuator byte {0,16,...,240} of C&C 0x12-C1 (radio.c:2934-2996); the
+ * second drive component (IQ scaling) is applied by the TX IQ encoder. */
+typedef struct {
+  int mox;        /* key the radio → C0 |= 0x01 on EVERY frame (o_p.c:2769-89) */
+  int pa_enabled; /* 0x12-C2 = 0x08 (PA on) instead of 0x04 (T/R locked RX)    */
+  int in_band;    /* TX freq inside a ham band (else the drive byte is forced 0)*/
+  int drive_att;  /* hardware TX attenuator step, 0-240 in 16s (0x12-C1)       */
+  int tune;       /* TUNE (AH4/IO-board ATU bit 0x10 NOT sent — no ATU here)   */
+} p1_tx_state;
+
+/* Pure frame builders (offline-testable, no socket). tx == NULL → the exact
+ * RX-only bytes the live engine sends today (regression guarantee, enforced
+ * by sdrfl-p1txprobe). `step` advances the round-robin; returns next step. */
+void p1_build_cc_general(unsigned char c[5], int device, int rate_bits,
+                         long long freq_hz, const p1_tx_state *tx);
+int p1_build_cc_round_robin(unsigned char c[5], int device, long long freq_hz,
+                            int lna_gain_db, int step, const p1_tx_state *tx);
+
+/*
+ * Encode TX IQ pairs to the EP2 payload form: per sample 4 zero audio bytes
+ * (⛔ on the HL2 non-zero audio addresses the EXTENDED REGISTER space —
+ * old_protocol.c:1727-1735) + 16-bit signed BE I,Q via piHPSDR's
+ * (int32)(x*32766.672+32767.5)-32767 with `scale` (= drive IQ component)
+ * pre-applied; on HL-class the low byte of I and Q is masked & 0xFE (⛔ CWX
+ * guard, old_protocol.c:1752-1760 — the IQ LSBs are firmware keying bits).
+ * Writes n_pairs*8 bytes to `out`, returns bytes written. Pure function.
+ */
+int p1_tx_iq_encode(const double *iq, int n_pairs, double scale, int device,
+                    unsigned char *out);
+
 /* Read-only telemetry decoded from the EP6 status frames (addr 0-2). */
 typedef struct {
   int valid;          /* 1 once at least one status frame was parsed          */

@@ -159,6 +159,16 @@ executable('sdrfl-txprobe',
   install : false,
 )
 
+# Offline Protocol-1 TX byte-layout gate (T1, docs/P1-TX-SCOPE.md): the P1 twin
+# of sdrfl-txprobe — asserts the C&C frames + TX IQ payload against piHPSDR and
+# that the OFF state is byte-identical to the live RX build. NO radio, NO socket.
+executable('sdrfl-p1txprobe',
+  ['src/p1txprobe_main.c'] + engine_sources,
+  include_directories : [vendor_inc, engine_inc],
+  dependencies : engine_deps + [m_dep],
+  install : false,
+)
+
 # Headless Protocol-2 RX -> WDSP analyzer -> panadapter PNG. Milestone-1 step-4
 # gate. TAKES THE RADIO — piHPSDR must be disconnected. Links the vendored WDSP
 # (needs the GNU dialect, like sdrfl-wdsp-smoke) + our pure-Cairo renderer.

@@ -88,19 +88,30 @@ static unsigned char n2adr_oc_bits(long long f) {
   return 96;                         /* 12m + 10m      */
 }
 
-/* C0=0x00 frame: rate + OC/filter board + duplex (old_protocol.c:1810-2096). */
-static void cc_general(unsigned char *c) {
-  c[0] = 0x00;                       /* MOX bit 0 = never transmitting        */
-  c[1] = (unsigned char)s_rate_bits; /* C1 bits1:0 sample rate                */
+/* C0=0x00 frame: rate + OC/filter board + duplex (old_protocol.c:1810-2096).
+ * Pure builder — tx=NULL is the RX-only regression state (sdrfl-p1txprobe). */
+void p1_build_cc_general(unsigned char c[5], int device, int rate_bits,
+                         long long freq_hz, const p1_tx_state *tx) {
+  c[0] = 0x00;
+  c[1] = (unsigned char)rate_bits;   /* C1 bits1:0 sample rate                */
   c[2] = 0x00;
-  if (s_device == DEVICE_HERMES_LITE || s_device == DEVICE_HERMES_LITE2) {
-    long long f;
-    g_mutex_lock(&s_freq_lock); f = s_freq_hz; g_mutex_unlock(&s_freq_lock);
-    c[2] = (unsigned char)(n2adr_oc_bits(f) << 1);   /* filter-board relays   */
+  if (device == DEVICE_HERMES_LITE || device == DEVICE_HERMES_LITE2) {
+    c[2] = (unsigned char)(n2adr_oc_bits(freq_hz) << 1); /* filter-board relays
+                                        (N2ADR OCtx == OCrx, radio.c:2443)    */
   }
   c[3] = 0x00;                       /* no atten/dither/random/preamp         */
   c[4] = 0x04;                       /* duplex ALWAYS (old_protocol.c:2022) |
                                         (nrx-1)<<3 = 0 for one receiver      */
+  if (tx && tx->mox) { c[0] |= 0x01; }  /* ⛔ MOX rides EVERY frame
+                                           (old_protocol.c:2769-2789)         */
+}
+
+static void cc_general(unsigned char *c) {
+  long long f;
+  g_mutex_lock(&s_freq_lock); f = s_freq_hz; g_mutex_unlock(&s_freq_lock);
+  /* ⛔ tx = NULL hardcoded: the live link is RX-only until the T2-T4 phases
+   * of docs/P1-TX-SCOPE.md are cleared with Richard. */
+  p1_build_cc_general(c, s_device, s_rate_bits, f, NULL);
 }
 
 /* The round-robin C&C registers (old_protocol.c p1_command_loop :2106-2765),
@@ -113,35 +124,42 @@ static void cc_general(unsigned char *c) {
  * happened to land on RX1's NCO, but the TX NCO (filter-board tracking),
  * the LNA gain and the T/R-relay lock never reached the radio. Verified
  * byte-for-byte against old_protocol.c a second time on the fix. */
-static int cc_round_robin(unsigned char *c, int step) {
-  long long freq;
-  g_mutex_lock(&s_freq_lock); freq = s_freq_hz; g_mutex_unlock(&s_freq_lock);
+int p1_build_cc_round_robin(unsigned char c[5], int device, long long freq_hz,
+                            int lna_gain_db, int step, const p1_tx_state *tx) {
+  int hl = (device == DEVICE_HERMES_LITE || device == DEVICE_HERMES_LITE2);
   memset(c, 0, 5);
 
   switch (step) {
   case 0:                             /* 0x02: TX (DUC) frequency — kept on   */
     c[0] = 0x02;                      /* the RX frequency like piHPSDR on RX  */
-    be32(c + 1, (guint32)freq);       /* (old_protocol.c:2108; MOX 0/drive 0; */
-    break;                            /* HL2 gateware tracks the N2ADR filter
-                                         board LPF from THIS register)        */
+    be32(c + 1, (guint32)freq_hz);    /* (old_protocol.c:2108; HL2 gateware
+                                         tracks nothing from it, but the DUC
+                                         must sit on the VFO before any TX)   */
+    break;
 
   case 1:                             /* 0x04: RX1 DDC frequency              */
     c[0] = 0x04;                      /* (old_protocol.c:2120)                */
-    be32(c + 1, (guint32)freq);
+    be32(c + 1, (guint32)freq_hz);
     break;
 
-  case 2:                             /* 0x12: drive 0 + HL2 relay safety     */
+  case 2:                             /* 0x12: drive + HL2 relay/PA           */
     c[0] = 0x12;                      /* (old_protocol.c:2163)                */
-    c[1] = 0;                         /* drive level 0                        */
-    if (s_device == DEVICE_HERMES_LITE || s_device == DEVICE_HERMES_LITE2) {
-      c[2] = 0x04;                    /* ⛔ T/R relay locked to RX, always     */
-    }                                 /*   (old_protocol.c:2243-2248)         */
+    /* Drive byte = the HL2 16-step hardware TX attenuator (radio.c:2934-96);
+     * 0 with no TX state, and forced 0 out of band (old_protocol.c:2159). */
+    c[1] = (unsigned char)((tx && tx->in_band) ? (tx->drive_att & 0xF0) : 0);
+    if (hl) {
+      if (tx && tx->pa_enabled) {
+        c[2] = 0x08;                  /* ⛔ PA enable (ADDR-9 bit 19,          */
+      } else {                        /*    old_protocol.c:2238-2242)         */
+        c[2] = 0x04;                  /* ⛔ T/R relay locked to RX — the       */
+      }                               /*    PA-off/dry-key state (:2243-2248) */
+    }
     break;
 
   case 3:                             /* 0x14: HL2 LNA gain (extended mode)   */
     c[0] = 0x14;                      /* (old_protocol.c:2258)                */
-    if (s_device == DEVICE_HERMES_LITE || s_device == DEVICE_HERMES_LITE2) {
-      int g = g_atomic_int_get(&s_gain_db);
+    if (hl) {
+      int g = lna_gain_db;
       if (g < -12) { g = -12; }
       if (g >  48) { g =  48; }
       c[4] = (unsigned char)(0x40 | (g + 12));   /* old_protocol.c:2292-2308  */
@@ -160,10 +178,51 @@ static int cc_round_robin(unsigned char *c, int step) {
     c[1] = 25; c[2] = 0; c[3] = 100; c[4] = 0;
     break;
 
+  case 9:                             /* 0x2E: HL2 PTT hang + TX FIFO latency */
+    c[0] = 0x2E;                      /* (old_protocol.c:2536-2549)           */
+    if (hl) {
+      c[3] = 20;                      /* PTT hang 20 ms (bits 4:0)            */
+      c[4] = 40;                      /* TX latency 40 ms (bits 6:0) — the    */
+    }                                 /* FPGA buffers this much TX IQ         */
+    break;
+
   default: c[0] = 0x24; break;        /* Orion-II Alex2 — zeros, end of cycle */
   }
 
-  return (step + 1) % 10;
+  if (tx && tx->mox) { c[0] |= 0x01; }  /* ⛔ MOX rides EVERY frame            */
+  return (step + 1) % 11;
+}
+
+static int cc_round_robin(unsigned char *c, int step) {
+  long long freq;
+  g_mutex_lock(&s_freq_lock); freq = s_freq_hz; g_mutex_unlock(&s_freq_lock);
+  /* ⛔ tx = NULL hardcoded — see cc_general(). */
+  return p1_build_cc_round_robin(c, s_device, freq,
+                                 g_atomic_int_get(&s_gain_db), step, NULL);
+}
+
+/* TX IQ → EP2 payload (pure; contract in protocol1.h — audio slots zero,
+ * 16-bit BE with piHPSDR's scaling, HL-class CWX LSB guard). */
+int p1_tx_iq_encode(const double *iq, int n_pairs, double scale, int device,
+                    unsigned char *out) {
+  int hl = (device == DEVICE_HERMES_LITE || device == DEVICE_HERMES_LITE2);
+  unsigned char lsb_mask = hl ? 0xFE : 0xFF;   /* ⛔ CWX guard (o_p.c:1752-60) */
+  unsigned char *p = out;
+
+  for (int i = 0; i < n_pairs; i++) {
+    /* old_protocol.c:1720-1760 — the int arithmetic below is verbatim
+     * piHPSDR (implicit ×0.99999 headroom); scale = the IQ half of the
+     * two-component HL2 drive (radio.c drive_scale). */
+    gint32 is = (gint32)(iq[2 * i]     * scale * 32766.672 + 32767.5) - 32767;
+    gint32 qs = (gint32)(iq[2 * i + 1] * scale * 32766.672 + 32767.5) - 32767;
+    *p++ = 0; *p++ = 0; *p++ = 0; *p++ = 0;   /* ⛔ audio = extended addrs    */
+    *p++ = (unsigned char)((is >> 8) & 0xFF);
+    *p++ = (unsigned char)( is       & lsb_mask);
+    *p++ = (unsigned char)((qs >> 8) & 0xFF);
+    *p++ = (unsigned char)( qs       & lsb_mask);
+  }
+
+  return n_pairs * 8;
 }
 
 /* Build + send one 1032-byte EP2 packet (old_protocol.c metis_write :2835). */
