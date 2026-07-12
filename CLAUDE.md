@@ -96,7 +96,7 @@ fw 10.3 switch sync mode mid-TX and hang (power-cycle recovery). Lifting it
 = Thetis ordering in tx_run/protocol2, or P1 PS after the HL2 milestone.
 Details: TX-DESIGN §9.
 
-**★ HL2 / Protocol 1 milestone — R1+R2+R3 DONE, ALL LIVE (2026-07-12):**
+**★ HL2 / Protocol 1 milestone — COMPLETE (R1-R4), ALL LIVE (2026-07-12):**
 Hermes Lite 2 (192.168.1.21, gw 73.2) is a supported RX-only radio in the
 GUI. `discovery_p1.c` (MAC dedup, HL1/HL2 split), `protocol1.[ch]` (EP2
 sender = keepalive + C&C round-robin, EP6 parser, p2-identical IQ callback
@@ -113,13 +113,17 @@ host-driven** via OC bits in the C0=0x00 frame (per-band table from
 piHPSDR radio.c:2443), no gateware automatism — relays confirmed clicking
 live. Scope + wire ref: `docs/P1-SCOPE.md`.
 
-**★ Next session: HL2 R4 polish** — ADC-overload badge + HL2 temperature
-(EP6 addr-1) into the GUI tick via `p1_get_telemetry` (data already
-decoded), consider decoupling TCI from the TX runtime (RX-only radios
-can't feed SDC today). 10E leftovers: pa_cal for the remaining bands
-(~32-34 expected), digi TX meter live check. (`~/.local` install refreshed
-2026-07-12 via `meson install -C build-release` — pre-R3; refresh again
-after R4.)
+**R4 (same day):** ADC-overload badge + die temperature (footer "Temp"
+slot, green <45 / red >55 °C) from `p1_get_telemetry` in the GUI tick;
+**TCI decoupled from the TX runtime** — starts for RX-only radios too
+(TX ops already refuse on `!tx_ready`), so the HL2 can feed SDC/skimmer.
+README hardware table updated.
+
+**★ Next candidates (Richard picks):** new alpha release (supported HW
+grew G2E → +10E +HL2 since v0.1.0); 10E leftovers (pa_cal remaining
+bands ~32-34, digi TX meter live check); Square SDR bring-up (he has
+one); 10E PureSignal unlock via the Thetis key-down/up sequencing
+(TX-DESIGN §9, risky — power cycle per failed try); AUR recheck.
 
 **Older follow-ups:** off-centre pan, AGC-target vs `SDRFL_GAIN`, audio
 clock-drift smoothing, absolute dBm cal, nonlinear wattmeter cal

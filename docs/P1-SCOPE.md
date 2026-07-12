@@ -51,7 +51,7 @@ without starting the stream (documented only in gateware + hermeslite.py).
 | R1 ✅ | P1 link core: socket, start/stop, EP2 sender thread (1032 B / 2.625 ms pacing, zeroed audio+IQ payload), C&C round-robin builder, EP6 parser (sync hunt, seq check, 63×24-bit IQ → float) | `sdrfl-p1probe` (headless IQ counter, like sdrfl-rxprobe) — PASS live 2026-07-12 |
 | R2 ✅ | Feed the existing WDSP analyzer + demod/audio path (they are protocol-agnostic — same `on_rx_iq` contract as P2). Both gates grew the start_radio discovery policy (P2 first, P1 round only when the pinned IP didn't answer), select the radio BY IP (not `discovered[0]` — the broadcast fallback also collects the P2 radios), and branch p1/p2_rx_start on `dev->protocol`; audioprobe caps a >384k rate to P1's maximum | PASS live 2026-07-12: panprobe @192k (40 m band picture, floor −115 dB), audioprobe @384k-capped (CW audio, 0 ferr, queue ≤3 ms) |
 | R3 ✅ | GUI integration: whitelist `radio_supported()` += HERMES_LITE2 (RX-only; TX/PS whitelists exclude P1 structurally), one `engine_set_frequency()` dispatch for all 7 tuning paths, footer LNA slider (−12..+48 dB, persisted `[rx] lna`) replacing Att on P1, prefs rate list 48-384 k, 6 m band button greyed (38.4 MHz cap) | PASS live 2026-07-12: tuning/controls + filter-board relays confirmed by Richard. Landed two WIRE FIXES (see §4): the R1 C0 double-shift and the N2ADR OC bits |
-| R4 | Polish: LNA gain slider semantics, ADC-overload badge from status addr 0, HL2 temperature telemetry (exciter-power slot: `0.0795898*raw − 50` °C), TX-FIFO/PTT status ignored on RX | live |
+| R4 ✅ | Polish: ADC-overload badge ("ADC OVL", single-ADC text) + die temperature (`0.0795898*raw − 50` °C, EMA, footer "Temp" slot replacing "Supply", green <45/amber/red >55 °C) from `p1_get_telemetry` in the GUI tick; TCI server decoupled from the TX runtime (starts for RX-only radios — control/RX-audio/IQ/spots work, TX ops already refuse on `!tx_ready`); LNA slider + PTT-ignore landed in R3/R1 | PASS live 2026-07-12: temperature shown (~33 °C), TCI up on the HL2 |
 
 Reuse from the P2 engine: analyzer, demod, audio_pw, panadapter/waterfall,
 picker, settings — the ONLY new code is the P1 link (discovery done + R1)
@@ -126,7 +126,8 @@ N2ADR filter board, 2026-07-12):
   MAC, P2 (vendored logic, unmodified) does not — the picker dedups rows,
   `sdrfl-discover` output may show a P2 radio twice. Cosmetic.
 
-*Written 2026-07-12 after the discovery step went live; R1+R2+R3 landed and
-live-verified the same day. Next: R4 polish — ADC-overload badge + HL2
-temperature into the GUI tick (p1_get_telemetry already decodes them), and
-consider decoupling TCI from the TX runtime so RX-only radios can feed SDC.*
+*Written 2026-07-12 after the discovery step went live; the ENTIRE RX
+milestone (R1-R4) landed and was live-verified the same day. The HL2 is a
+supported RX-only radio. Still here for the future: P1 TX (§3 facts
+pre-collected; full TX-SAFETY process + Richard's consent required), P1 PS
+as the possible 10E-PS route, HL1/Metis whitelisting after a live test.*

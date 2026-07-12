@@ -12,8 +12,8 @@ full-resolution floating-point panadapter. **No DSP is reimplemented**; WDSP
 does the heavy lifting.
 
 > **Status: alpha.** Everything below is implemented and verified live on an
-> Apache Labs **ANAN G2E** and (since 2026-07-12) an **ANAN 10E** — currently
-> the two supported radios; see [Supported hardware](#supported-hardware).
+> Apache Labs **ANAN G2E**, an **ANAN 10E** and (RX-only) a **Hermes Lite 2**
+> — the supported radios; see [Supported hardware](#supported-hardware).
 
 ![SDR for Linux — 20 m CW on the ANAN G2E](docs/img/main-window.png)
 
@@ -63,8 +63,9 @@ radio picker rather than left to luck.
 |---|---|---|
 | Apache Labs **ANAN G2E** | HPSDR Protocol 2 | ✅ supported, developed & verified on this radio |
 | Apache Labs **ANAN 10E / 100B** (Hermes) | HPSDR Protocol 2 | ✅ supported — RX + TX live-verified (fw 10.3); per-radio PA calibration & 10 W scale. **PureSignal disabled**: the old Hermes firmware locks up on the P2 feedback-DDC switch mid-TX (power-cycle recovery); details in `docs/TX-DESIGN.md` §9 |
+| **Hermes Lite 2** | HPSDR Protocol 1 | ✅ supported, **RX only** — panadapter, audio, LNA gain (−12..+48 dB), N2ADR filter-board band switching, die-temperature readout, ADC-overload badge, TCI/SDC skimming. Rates 48–384 kHz, 0–38.4 MHz. TX is a future milestone |
 | Other ANAN / Hermes P2 boards | Protocol 2 | ⛔ blocked until tested — open an issue if you can lend hardware + a dummy load |
-| Hermes Lite 2, older P1 boards | Protocol 1 | ⛔ not implemented (P1 is the milestone in progress) |
+| Older P1 boards (HL1, Metis…) | Protocol 1 | ⛔ blocked until tested |
 
 Each radio keeps its **own TX calibration** (PA calibration per band, wattmeter
 trim, drive/antenna/PA-enable) in its own config section — calibrating one

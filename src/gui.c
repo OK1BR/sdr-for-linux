@@ -155,6 +155,8 @@ typedef struct {
   double      supply_v;      /* supply voltage (V), EMA-smoothed; 0 = unknown   */
   GtkWidget  *volt_label;    /* footer supply-voltage readout                   */
   double      volt_shown;    /* last value pushed to volt_label (markup throttle)*/
+  double      temp_c;        /* P1/HL2 die temperature (°C), EMA; 0 = unknown   */
+  double      temp_shown;    /* last value pushed to volt_label (P1 reuses it)  */
   double      pan_high, pan_low;              /* visible dB window (dBm)          */
   int         drag_gutter;   /* the active drag started in the left dB gutter    */
   double      drag_base_high, drag_base_low;  /* pan window captured at drag-begin */
@@ -1300,7 +1302,8 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
   int ovl0 = now < app->ovl0_until;
   int ovl1 = now < app->ovl1_until;
   if (ovl0 || ovl1) {
-    const char *txt = (ovl0 && ovl1) ? "ADC0+1 OVL" : ovl0 ? "ADC0 OVL" : "ADC1 OVL";
+    const char *txt = app->proto_p1 ? "ADC OVL"    /* HL2: single ADC */
+                    : (ovl0 && ovl1) ? "ADC0+1 OVL" : ovl0 ? "ADC0 OVL" : "ADC1 OVL";
     cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
     cairo_set_font_size(cr, 12.0);
     cairo_text_extents_t ext;
@@ -1514,6 +1517,7 @@ static void tick_tx(App *app, GtkWidget *widget) {
 
 static void update_span_label(App *app);   /* fwd: zoom slider updates it via tick */
 static void update_volt_label(App *app);   /* fwd: defined with the footer controls */
+static void update_temp_label(App *app);   /* fwd: the P1/HL2 twin (same footer slot) */
 static void on_zoom_changed(GtkRange *r, gpointer data);   /* fwd: footer zoom slider */
 
 /* TX readout (F6a): ONLY a refusal/trip reason, flashed red for a few seconds —
@@ -1546,31 +1550,45 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
     if (app->radio_mode) {
       band_apply(app);   /* swap in this band's remembered dB levels on QSY */
       if (app->cur_band >= 0) { app->band_freq[app->cur_band] = app->freq; }  /* track freq */
-      /* Poll HP-status telemetry once per frame (read-and-clear → single
-       * consumer). Latch the overload badges with a hold; raw analog words
-       * are parsed but not shown until a live voltage calibration exists. */
-      p2_telemetry t;
-      p2_get_telemetry(&t);
+      /* Poll telemetry once per frame (read-and-clear → single consumer).
+       * Latch the overload badge with a hold. P2 = HP-status packet (dual-ADC
+       * badge + supply voltage); P1/HL2 = EP6 status frames (single-ADC badge
+       * + AD9866 die temperature in the same footer slot, R4). */
       gint64 now = g_get_monotonic_time();
       /* Suppress the ADC-overload badge across the TX→RX transition: dropping the
        * step attenuators from 31 dB back to 0 lets the relay-crosstalk tail clip
        * the ADC for a moment — a known transient, not a real RX overload. */
       int ovl_suppress = app->tx_display || (app->tx_settle_until && now < app->tx_settle_until);
-      if (!ovl_suppress) {
-        if (t.adc0_overload) { app->ovl0_until = now + ADC_OVL_HOLD_US; }
-        if (t.adc1_overload) { app->ovl1_until = now + ADC_OVL_HOLD_US; }
-      }
-      app->tlm_valid = t.valid;
-      if (t.valid && t.raw_adc1 > 0) {
-        static double kcal = -1.0;
-        if (kcal < 0.0) {
-          const char *e = getenv("SDRFL_VOLT_CAL");
-          kcal = (e && *e) ? atof(e) : SUPPLY_V_PER_COUNT;
+      if (app->proto_p1) {
+        p1_telemetry t;
+        p1_get_telemetry(&t);
+        if (!ovl_suppress && t.adc_overload) { app->ovl0_until = now + ADC_OVL_HOLD_US; }
+        app->tlm_valid = t.valid;
+        if (t.valid && t.temp_raw > 0) {
+          double c = 0.0795898 * t.temp_raw - 50.0;   /* piHPSDR rx_panadapter.c:884 */
+          app->temp_c = (app->temp_c != 0.0)
+                        ? app->temp_c + SUPPLY_V_EMA * (c - app->temp_c) : c;
+          update_temp_label(app);
         }
-        double v = t.raw_adc1 * kcal;
-        app->supply_v = (app->supply_v > 0.0)
-                        ? app->supply_v + SUPPLY_V_EMA * (v - app->supply_v) : v;
-        update_volt_label(app);
+      } else {
+        p2_telemetry t;
+        p2_get_telemetry(&t);
+        if (!ovl_suppress) {
+          if (t.adc0_overload) { app->ovl0_until = now + ADC_OVL_HOLD_US; }
+          if (t.adc1_overload) { app->ovl1_until = now + ADC_OVL_HOLD_US; }
+        }
+        app->tlm_valid = t.valid;
+        if (t.valid && t.raw_adc1 > 0) {
+          static double kcal = -1.0;
+          if (kcal < 0.0) {
+            const char *e = getenv("SDRFL_VOLT_CAL");
+            kcal = (e && *e) ? atof(e) : SUPPLY_V_PER_COUNT;
+          }
+          double v = t.raw_adc1 * kcal;
+          app->supply_v = (app->supply_v > 0.0)
+                          ? app->supply_v + SUPPLY_V_EMA * (v - app->supply_v) : v;
+          update_volt_label(app);
+        }
       }
       /* TX (F6a): keep the runtime's TX frequency on the VFO and reflect status.
        * If the gate refused or a protection latch tripped while TUNE is held,
@@ -2732,6 +2750,23 @@ static void update_volt_label(App *app) {
   gtk_label_set_markup(GTK_LABEL(app->volt_label), m);
 }
 
+/* P1/HL2 twin: the footer slot shows the AD9866 die temperature instead of a
+ * supply voltage (the HL2 reports temperature in the EP6 addr-1 status slot;
+ * no voltage telemetry exists). Thresholds: the HL2 community treats ≳55 °C
+ * as fan territory — green < 45, amber 45-55, red above. */
+static void update_temp_label(App *app) {
+  if (!app->volt_label || app->temp_c == 0.0) { return; }
+  double c = app->temp_c;
+  if (app->temp_shown != 0.0 && fabs(c - app->temp_shown) < 0.1) { return; }
+  app->temp_shown = c;
+  const char *col = (c > 55.0) ? "#f2413d"    /* hot — add a fan  */
+                  : (c > 45.0) ? "#fbb724"    /* warm             */
+                  :              "#8cf08c";   /* ok               */
+  char m[96];
+  snprintf(m, sizeof m, "<span foreground='%s'><b>%.1f °C</b></span>", col, c);
+  gtk_label_set_markup(GTK_LABEL(app->volt_label), m);
+}
+
 /* Zoom slider snaps to octave detents (1×,2×,…,128×): continuous re-config while
  * dragging looked rough, so reconfig fires only when the detent actually changes
  * (one cheap wisdom-backed SetAnalyzer per notch). */
@@ -2950,7 +2985,7 @@ static GtkWidget *build_bottom_controls(App *app) {
   /* Supply-voltage readout, right-aligned — telemetry lives on the footer. */
   app->volt_label = gtk_label_new("—");
   gtk_widget_add_css_class(app->volt_label, "span");
-  gtk_box_append(GTK_BOX(bar), labeled("Supply", app->volt_label));
+  gtk_box_append(GTK_BOX(bar), labeled(app->proto_p1 ? "Temp" : "Supply", app->volt_label));
   return bar;
 }
 
@@ -4608,11 +4643,16 @@ static void start_radio(App *app) {
     tx_run_set_span(tx_span_hz(app));  /* TX span ← saved zoom, matching the RX axis */
     cw_push(app);   /* persisted CW keyer speed, hang + sidetone (F6d-1c) */
     ps_apply(app);  /* persisted PureSignal (F7/PS-2; off by default)     */
-    tci_apply(app); /* persisted TCI server (F6d-2a; off by default)      */
     tx_update_mic(app);   /* open the mic now if we start in a voice mode (no warm-up lag) */
   } else {
     fprintf(stderr, "TX runtime init failed — RX only\n");
   }
+
+  /* Persisted TCI server (F6d-2a; off by default) — independent of the TX
+   * runtime since HL2 R4: on an RX-only radio it still serves control, RX
+   * audio/IQ (SDC skimming) and spots; every TX-touching TCI op already
+   * refuses on !tx_ready, and the prefs toggle took this path all along. */
+  tci_apply(app);
 
   /* Front-end gain: out with the first C&C/HP round. P1 = HL2 LNA gain, P2 =
    * step attenuator (both land in atomics, safe before the link starts). */
