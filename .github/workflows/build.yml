@@ -1,14 +1,14 @@
-# CI + AppImage. Two jobs:
-#  - gates: build + the offline engine gates (no radio needed) on every push/PR
+# CI + AppImage — runs at RELEASE time only (Richard 2026-07-12: no CI on
+# every commit; the local gates cover development). Two jobs:
+#  - gates: build + the offline engine gates (no radio needed) on v* tags,
+#    external pull requests, and manual dispatch
 #  - appimage: bundle on ubuntu-24.04 (glibc 2.39 floor — Ubuntu 24.04+,
-#    Fedora 40+, Mint 22, Arch, ...); runs ONLY on v* tag pushes (releases)
-#    and attaches the AppImage to the GitHub Release (alpha/beta tags marked
-#    pre-release)
+#    Fedora 40+, Mint 22, Arch, ...); v* tags only, attaches the AppImage to
+#    the GitHub Release (alpha/beta tags marked pre-release)
 name: build
 
 on:
   push:
-    branches: [main]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
