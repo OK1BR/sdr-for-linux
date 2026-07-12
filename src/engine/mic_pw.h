@@ -49,6 +49,12 @@ float mic_peak(void);
 /* Frames currently queued in the capture ring (latency diagnostics). */
 int  mic_queued(void);
 
+/* Read-and-clear ring health: `drops` = frames discarded on a full ring,
+ * `shorts` = frames the puller wanted but weren't there (starvation — WDSP
+ * gets a silence-padded block each time; periodic shorts are audible).
+ * Single consumer: tx_run's unkey stats line. */
+void mic_stats_take(int *drops, int *shorts);
+
 /*
  * Drop everything currently queued (consumer-side; call from the same thread as
  * mic_pull). Use at MOX key-down so the exciter starts on fresh mic audio rather

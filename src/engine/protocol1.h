@@ -216,6 +216,12 @@ void p1_get_tx_meters(int *fwd_raw, int *rev_raw, double *temp_c,
  * of p2_tx_fwd_max_take; destructive — single consumer = tx_run). */
 int p1_tx_fwd_max_take(void);
 
+/* Read-and-clear the TX IQ ring health: `under` = keyed packets sent with a
+ * zero-IQ payload (production stalled >20 ms → hole in the RF envelope),
+ * `drops` = samples discarded on a full ring. Periodic underruns during an
+ * over are the digital-buzz suspect. Single consumer (tx_run unkey stats). */
+void p1_tx_ring_stats_take(int *under, int *drops);
+
 /* Radio-side PTT input state (EP6 status C0 bit 0) — non-destructive; the
  * footswitch intent poll (tx_run) reads it like p2_ptt_get. */
 int p1_ptt_get(void);

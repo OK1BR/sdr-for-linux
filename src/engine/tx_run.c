@@ -354,6 +354,22 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     for (int i = 0; i < 4; i++) { tx_dsp_feed_mic(silence, FEED_BLOCK); }
     tx_dsp_run(0);
     fprintf(stderr, "tx: UNKEY (%s)\n", (r.reason && r.reason[0]) ? r.reason : "release");
+
+    /* Per-over audio-transport health (buzz/click forensics, 2026-07-12):
+     * silent when everything is clean. mic shorts/drops cover the capture
+     * ring on both protocols; the IQ-ring numbers are P1's EP2 sender. */
+    {
+      int md, ms, ru = 0, rd = 0;
+      mic_stats_take(&md, &ms);
+
+      if (s_p1) { p1_tx_ring_stats_take(&ru, &rd); }
+
+      if (md || ms || ru || rd) {
+        fprintf(stderr, "tx: over stats — mic drops=%d shorts=%d, "
+                "p1 iq ring under=%d drops=%d\n", md, ms, ru, rd);
+      }
+    }
+
     fflush(stderr);
   } else if (keyed) {
     engine_set_tx_state(&r.state);   /* refresh (frequency/antenna may have changed) */

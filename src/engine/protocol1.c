@@ -442,15 +442,35 @@ static gpointer sender_thread(gpointer data) {
   unsigned char payload[PKT_SAMPLES * 8];
 
   while (g_atomic_int_get(&s_running)) {
-    /* Keyed? → production-paced like piHPSDR (old_protocol.c:250-330): one
-     * packet per 126 ring samples, clocked by the WDSP/CW producer. A 20 ms
-     * cap sends a zero-IQ keepalive so C&C and the HL2 watchdog never starve
-     * (the FPGA's 40 ms TX-latency buffer rides over the gap). */
+    /* ⛔ FIXED 2.625 ms cadence in BOTH directions. The radio consumes TX IQ
+     * at its own 48 k clock and the HL2 TX FIFO (40 ms latency target,
+     * ~75 ms cap) expects a smooth feed; the ring absorbs the producer's
+     * bursts. The first version sent keyed packets production-paced — one
+     * WDSP block (1024 samples) = 8 packets back-to-back every 21 ms, which
+     * oscillated the FIFO into its under/over limits at the ~47 Hz block
+     * rate and put a mains-like BUZZ on every TX mode (live-diagnosed
+     * 2026-07-12; the "FIFO bits climbing ~30/s on both sides" of the T4
+     * open item was the same artifact). piHPSDR throttles its keyed sender
+     * off a host-side FIFO-fill estimate for exactly this reason
+     * (old_protocol.c:250-330); a fixed send grid achieves the same smooth
+     * fill without the estimate. */
+    gint64 now = g_get_monotonic_time();
+
+    if (next > now) {
+      g_usleep((gulong)(next - now));
+    } else if (now - next > 250000) {
+      next = now;                          /* fell far behind (suspend) — resync */
+    }
+
     g_mutex_lock(&s_tx_lock);
     int keyed = s_tx_on && s_tx_state.mox;
 
     if (keyed) {
-      gint64 until = g_get_monotonic_time() + 20000;
+      /* Give a late producer a short grace inside this slot, then send a
+       * zero-IQ keepalive rather than starving C&C and the HL2 watchdog
+       * (the FPGA's 40 ms latency buffer rides over the hole; counted as
+       * an underrun — periodic underruns are an audible defect). */
+      gint64 until = next + 20000;
 
       while (g_atomic_int_get(&s_running) && s_tx_on && s_tx_state.mox &&
              s_txr_in - s_txr_out < PKT_SAMPLES) {
@@ -466,26 +486,21 @@ static gpointer sender_thread(gpointer data) {
         }
 
         s_txr_out += PKT_SAMPLES;
+        next += PACKET_US;                 /* stay on the precise grid */
       } else {
         s_txr_under++;
+        next = g_get_monotonic_time() + PACKET_US;   /* starved: resync — no
+                                                        catch-up burst after */
       }
 
       g_mutex_unlock(&s_tx_lock);
       send_ep2(&rr, have ? payload : NULL);
-      next = g_get_monotonic_time() + PACKET_US;   /* re-arm the idle timer */
       continue;
     }
 
     g_mutex_unlock(&s_tx_lock);
     send_ep2(&rr, NULL);
     next += PACKET_US;
-    gint64 now = g_get_monotonic_time();
-
-    if (next > now) {
-      g_usleep((gulong)(next - now));
-    } else if (now - next > 250000) {
-      next = now;                          /* fell far behind (suspend) — resync */
-    }
   }
 
   return NULL;
@@ -940,4 +955,15 @@ void p1_set_ps_iq_cb(p1_ps_iq_cb cb, void *user) {
 
 int p1_running_nrx(void) {
   return (s_sock >= 0) ? s_nrx : 1;
+}
+
+void p1_tx_ring_stats_take(int *under, int *drops) {
+  g_mutex_lock(&s_tx_lock);
+
+  if (under) { *under = s_txr_under; }
+
+  if (drops) { *drops = s_txr_drops; }
+
+  s_txr_under = s_txr_drops = 0;
+  g_mutex_unlock(&s_tx_lock);
 }

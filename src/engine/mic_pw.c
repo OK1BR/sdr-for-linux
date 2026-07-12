@@ -25,6 +25,11 @@ static float          m_ring[RING_FRAMES];
 static atomic_uint    m_head;   /* producer (PW capture thread) frame index */
 static atomic_uint    m_tail;   /* consumer (TX feed thread) frame index    */
 static volatile float m_peak;   /* best-effort level meter (benign races)   */
+static atomic_uint    m_drops;  /* frames dropped on a full ring (drift /
+                                   stalled-consumer diagnostics)            */
+static atomic_uint    m_short;  /* frames the puller wanted but the ring
+                                   didn't have (starvation → WDSP gets a
+                                   short block; periodic = audible buzz)    */
 
 static struct pw_thread_loop *m_loop;
 static struct pw_stream       *m_stream;
@@ -46,7 +51,10 @@ static void on_process(void *userdata) {
   unsigned h = atomic_load_explicit(&m_head, memory_order_relaxed);
   unsigned t = atomic_load_explicit(&m_tail, memory_order_acquire);
   unsigned space = RING_FRAMES - (h - t);
-  if (nframes > space) { nframes = space; }           /* full → drop the newest */
+  if (nframes > space) {                              /* full → drop the newest */
+    atomic_fetch_add_explicit(&m_drops, nframes - space, memory_order_relaxed);
+    nframes = space;
+  }
 
   float peak = m_peak;
   for (uint32_t i = 0; i < nframes; i++) {
@@ -73,10 +81,22 @@ int mic_pull(float *out, int frames) {
   unsigned t = atomic_load_explicit(&m_tail, memory_order_relaxed);
   unsigned avail = h - t;
   unsigned n = (unsigned)frames;
-  if (n > avail) { n = avail; }
+  if (n > avail) {
+    atomic_fetch_add_explicit(&m_short, n - avail, memory_order_relaxed);
+    n = avail;
+  }
   for (unsigned i = 0; i < n; i++) { out[i] = m_ring[(t + i) & RING_MASK]; }
   atomic_store_explicit(&m_tail, t + n, memory_order_release);
   return (int)n;
+}
+
+/* Read-and-clear the ring health counters (single consumer: the unkey stats
+ * line in tx_run). Nonzero drops/shorts during an over = the buzz/click
+ * suspects: periodic shorts sound like mains hum. */
+void mic_stats_take(int *drops, int *shorts) {
+  if (drops)  { *drops  = (int)atomic_exchange_explicit(&m_drops, 0, memory_order_relaxed); }
+
+  if (shorts) { *shorts = (int)atomic_exchange_explicit(&m_short, 0, memory_order_relaxed); }
 }
 
 float mic_peak(void) {
