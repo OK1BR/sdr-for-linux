@@ -70,18 +70,49 @@ static void be32(unsigned char *p, guint32 v) {
   p[2] = (v >>  8) & 0xFF; p[3] = v & 0xFF;
 }
 
-/* C0=0x00 frame: rate + duplex + RX count (old_protocol.c:1810-2096). */
+/* N2ADR companion filter board: the HL2's J16 open-collector outputs drive
+ * the board's LPF relays, and piHPSDR selects them PER BAND via the OC bits
+ * in the C0=0x00 frame (N2ADR is its default filter board for HL-class
+ * radios; values = radio.c radio_n2adr_oc_settings :2443-2471, sent at
+ * old_protocol.c:1916 as OCrx << 1). There is NO gateware automatism — the
+ * host must set these or the relays never move. Between ham bands we pick
+ * the next-higher LPF (a low-pass only needs its cutoff above the RX
+ * frequency); inside every ham band the value matches piHPSDR exactly.
+ * With no filter board fitted the J16 pins drive nothing — harmless. */
+static unsigned char n2adr_oc_bits(long long f) {
+  if (f <  2500000) { return  1; }   /* 160m           */
+  if (f <  4700000) { return 66; }   /* 80m            */
+  if (f <  7500000) { return 68; }   /* 60m + 40m      */
+  if (f < 14500000) { return 72; }   /* 30m + 20m      */
+  if (f < 21600000) { return 80; }   /* 17m + 15m      */
+  return 96;                         /* 12m + 10m      */
+}
+
+/* C0=0x00 frame: rate + OC/filter board + duplex (old_protocol.c:1810-2096). */
 static void cc_general(unsigned char *c) {
   c[0] = 0x00;                       /* MOX bit 0 = never transmitting        */
   c[1] = (unsigned char)s_rate_bits; /* C1 bits1:0 sample rate                */
-  c[2] = 0x00;                       /* OC outputs 0                          */
+  c[2] = 0x00;
+  if (s_device == DEVICE_HERMES_LITE || s_device == DEVICE_HERMES_LITE2) {
+    long long f;
+    g_mutex_lock(&s_freq_lock); f = s_freq_hz; g_mutex_unlock(&s_freq_lock);
+    c[2] = (unsigned char)(n2adr_oc_bits(f) << 1);   /* filter-board relays   */
+  }
   c[3] = 0x00;                       /* no atten/dither/random/preamp         */
   c[4] = 0x04;                       /* duplex ALWAYS (old_protocol.c:2022) |
                                         (nrx-1)<<3 = 0 for one receiver      */
 }
 
 /* The round-robin C&C registers (old_protocol.c p1_command_loop :2106-2765),
- * reduced to the RX-only/HL2 set from the P1-SCOPE "minimum viable" list. */
+ * reduced to the RX-only/HL2 set from the P1-SCOPE "minimum viable" list.
+ *
+ * ⛔ The 0x.. values below are the FINAL C0 bytes exactly as piHPSDR sends
+ * them — the register address is already in bits [7:1] and bit 0 is MOX
+ * (never set here: every constant is even). R1 shipped these shifted once
+ * more (`0x02 << 1` …) — RX still worked because the mislabeled "TX" frame
+ * happened to land on RX1's NCO, but the TX NCO (filter-board tracking),
+ * the LNA gain and the T/R-relay lock never reached the radio. Verified
+ * byte-for-byte against old_protocol.c a second time on the fix. */
 static int cc_round_robin(unsigned char *c, int step) {
   long long freq;
   g_mutex_lock(&s_freq_lock); freq = s_freq_hz; g_mutex_unlock(&s_freq_lock);
@@ -89,25 +120,26 @@ static int cc_round_robin(unsigned char *c, int step) {
 
   switch (step) {
   case 0:                             /* 0x02: TX (DUC) frequency — kept on   */
-    c[0] = 0x02 << 1;                 /* the RX frequency (duplex consistency; */
-    be32(c + 1, (guint32)freq);       /* drive is 0 and MOX never set)        */
-    break;
+    c[0] = 0x02;                      /* the RX frequency like piHPSDR on RX  */
+    be32(c + 1, (guint32)freq);       /* (old_protocol.c:2108; MOX 0/drive 0; */
+    break;                            /* HL2 gateware tracks the N2ADR filter
+                                         board LPF from THIS register)        */
 
   case 1:                             /* 0x04: RX1 DDC frequency              */
-    c[0] = 0x04 << 1;
+    c[0] = 0x04;                      /* (old_protocol.c:2120)                */
     be32(c + 1, (guint32)freq);
     break;
 
   case 2:                             /* 0x12: drive 0 + HL2 relay safety     */
-    c[0] = 0x12 << 1;
-    c[1] = 0;                         /* drive level 0 (old_protocol.c:2159)  */
+    c[0] = 0x12;                      /* (old_protocol.c:2163)                */
+    c[1] = 0;                         /* drive level 0                        */
     if (s_device == DEVICE_HERMES_LITE || s_device == DEVICE_HERMES_LITE2) {
       c[2] = 0x04;                    /* ⛔ T/R relay locked to RX, always     */
     }                                 /*   (old_protocol.c:2243-2248)         */
     break;
 
   case 3:                             /* 0x14: HL2 LNA gain (extended mode)   */
-    c[0] = 0x14 << 1;
+    c[0] = 0x14;                      /* (old_protocol.c:2258)                */
     if (s_device == DEVICE_HERMES_LITE || s_device == DEVICE_HERMES_LITE2) {
       int g = g_atomic_int_get(&s_gain_db);
       if (g < -12) { g = -12; }
@@ -118,17 +150,17 @@ static int cc_round_robin(unsigned char *c, int step) {
     }
     break;
 
-  case 4: c[0] = 0x16 << 1; break;    /* ADC1 att / CW reversed — zeros       */
-  case 5: c[0] = 0x1C << 1; break;    /* RX1←ADC0, TX att — zeros             */
-  case 6: c[0] = 0x1E << 1; break;    /* internal CW keyer DISABLED (bit0=0)  */
-  case 7: c[0] = 0x20 << 1; break;    /* CW hang/sidetone — zeros             */
+  case 4: c[0] = 0x16; break;         /* ADC1 att / CW reversed — zeros       */
+  case 5: c[0] = 0x1C; break;         /* RX1←ADC0, TX att — zeros             */
+  case 6: c[0] = 0x1E; break;         /* internal CW keyer DISABLED (bit0=0)  */
+  case 7: c[0] = 0x20; break;         /* CW hang/sidetone — zeros             */
 
   case 8:                             /* 0x22: PWM min/max "harmless" values  */
-    c[0] = 0x22 << 1;                 /* (old_protocol.c:2442-2450)           */
+    c[0] = 0x22;                      /* (old_protocol.c:2442-2450)           */
     c[1] = 25; c[2] = 0; c[3] = 100; c[4] = 0;
     break;
 
-  default: c[0] = 0x24 << 1; break;   /* Orion-II Alex2 — zeros, end of cycle */
+  default: c[0] = 0x24; break;        /* Orion-II Alex2 — zeros, end of cycle */
   }
 
   return (step + 1) % 10;

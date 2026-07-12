@@ -41,7 +41,9 @@ int p1_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
 /* Stop the stream (EF FE 04 00), join threads, close the socket. */
 void p1_rx_stop(void);
 
-/* Re-tune RX1 (thread-safe; the sender's next 0x04 frame carries it). */
+/* Re-tune RX1 (thread-safe; the sender's next 0x04 frame carries it — and the
+ * 0x02 frame keeps the TX NCO on the same value, which is what the HL2
+ * gateware's automatic N2ADR filter-board LPF selection tracks). */
 void p1_set_frequency(long long freq_hz);
 
 /*
