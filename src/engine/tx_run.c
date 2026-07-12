@@ -341,6 +341,16 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
             r.state.tune ? "TUNE" : (cw_key ? "CW" : "MOX"), freq,
             r.state.pa_enabled ? "ON" : "off", cfg.antenna + 1, r.state.drive);
     fflush(stderr);
+
+    /* Zero the transport counters at key-on so the UNKEY stats line shows
+     * THIS over only — while idle the mic ring legitimately overflows (the
+     * capture runs, nobody pulls, mic_flush discards the backlog anyway). */
+    {
+      int d0, s0;
+      mic_stats_take(&d0, &s0);
+
+      if (s_p1) { p1_tx_ring_stats_take(&d0, &s0); }
+    }
   } else if (!keyed && *prev_keyed) {
     /* KEY OFF (operator release OR protection trip): drop MOX first, stop the
      * tone, flush a little audio, then stop the channel. */

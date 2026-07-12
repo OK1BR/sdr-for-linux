@@ -39,13 +39,26 @@ MOX bit never set, drive 0, T/R relay locked RX (0x12-C2 = 0x04).
 - **0x2E** (:2536-2549): C3 = PTT hang 20 ms (bits 4:0), C4 = **TX latency
   40 ms** (bits 6:0) — the FPGA buffers 40 ms of TX IQ before RF starts
   (FIFO holds ~75 ms / 3600 samples). Send this register during setup.
-- **Pacing** (:250-330): during TX the EP2 stream is clocked by TX IQ
-  production at 48 kHz — 126 samples per packet ⇒ nominal 2.625 ms, with a
-  host-side FIFO estimate throttling the send delay (0/500/2000 µs). The
-  radio reports **TX FIFO underrun/overrun in EP6 addr-0 C3 bits 0xC0**
-  (:1268-1290; mask underruns right after the RX→TX transition until the
-  FIFO first fills). Underrun = broken RF envelope; overrun = latency
-  creep — both must be surfaced.
+- **⛔ Pacing — LESSON LEARNED THE HARD WAY (2026-07-12)**: piHPSDR
+  (:250-330) throttles the keyed EP2 stream off a host-side FIFO-fill
+  estimate (send delays 0/500/2000 µs) for a reason. Our first sender was
+  "production-paced" (send as soon as 126 ring samples exist) — but the P1
+  WDSP chain produces 1024-sample blocks, so 8 packets left back-to-back
+  every 21.3 ms and the HL2 TX FIFO (40 ms latency target, ~75 ms cap)
+  oscillated into its under/over limits at the ~47 Hz block rate. Result:
+  a **mains-like buzz on EVERY TX mode** (TUNE tone, 2T, SSB), independent
+  of drive and PS — undetected for a whole day because the T4 checklist
+  verified the CW envelope in the WIRE log instead of listening off-air.
+  The fix: the keyed sender runs on the same **fixed 2.625 ms grid** as
+  the idle keepalive (the TX IQ ring absorbs producer bursts; a starved
+  slot sends a zero-IQ keepalive, is counted, and resyncs the grid — no
+  catch-up bursts). ⛔ Never pace P1 TX sends by production again, and
+  **every future TX bring-up checklist must include an off-air LISTENING
+  step** — a clean wire log does not mean clean RF. The radio reports TX
+  FIFO underrun/overrun in EP6 addr-0 C3 bits 0xC0 (:1268-1290; mask
+  underruns right after the RX→TX transition until the FIFO first fills);
+  per-over transport stats (mic ring + IQ ring) print at UNKEY when
+  nonzero.
 
 ## 2. Telemetry & protections (EP6 status, 16-sample EMA like piHPSDR)
 
@@ -104,11 +117,13 @@ SWR bridge lives on the N2ADR filter board (fitted on Richard's unit).*
 
 ## 5. Open items after the live day
 
-- **TX FIFO status semantics (gw 73.2)**: the addr-0 C3 top bits climb on
-  BOTH sides ~30/s while the RF is demonstrably clean — they look like
-  fill-level watermark indicators, not the latched events piHPSDR's comment
-  suggests (measured there on gw 7.2). Verify against the HL2 gateware
-  source; counters demoted to SDRFL_LAT_DEBUG until then.
+- ~~**TX FIFO status semantics (gw 73.2)**: the addr-0 C3 top bits climb on
+  BOTH sides ~30/s while the RF is demonstrably clean~~ — **RESOLVED
+  2026-07-12: the RF was NOT clean.** Those were real under/over events
+  caused by our bursty production-paced sender (see the ⛔ pacing lesson,
+  §1); the flags counted the ~47 Hz FIFO oscillation that was audible as
+  a buzz once anyone listened off-air. With the fixed-grid sender the
+  audio is clean; the flags remain useful telemetry (SDRFL_LAT_DEBUG).
 - **Per-band pa_cal**: only 20 m calibrated (28.4 dB); the rest sit at the
   under-driving 53 dB default — calibrate as bands get used.
 - **Drive linearity**: same top-end compression as the G2E/10E — covered by

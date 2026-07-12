@@ -66,6 +66,12 @@ the status bit is ignored (today's behavior, bit-for-bit).
 - [ ] **CW**: if the internal keyer/sidetone is enabled via TX-specific,
       verify the attenuator + LPF + lockout rules also hold for
       hardware-keyed CW (firmware keys without a host MOX).
+- [ ] **Off-air LISTENING check** (added 2026-07-12 after the HL2 buzz):
+      every live TX bring-up must include actually listening to the signal
+      on an independent receiver — TUNE tone, 2T and voice. A clean wire
+      log and a clean-looking spectrum do NOT prove clean audio: the P1
+      production-paced sender buzzed at ~47 Hz on every mode for a whole
+      day while all logs "looked fine" (P1-TX-SCOPE §1 pacing lesson).
 
 Relay hot-switching itself (RF ramp-down before relay movement) is sequenced
 by the P2 gateware, not the host — but ONLY if the host state is consistent:

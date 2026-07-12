@@ -107,6 +107,12 @@ N2ADR filter board, 2026-07-12):
   30/20m=72, 17/15m=80, 12/10m=96 (radio.c:2443-2471). Our
   `n2adr_oc_bits()` maps the RX frequency to those values with next-higher-
   LPF thresholds between ham bands. No board fitted → pins drive nothing.
+- **⛔ Keyed EP2 sends go on the fixed 2.625 ms grid, never
+  production-paced** (P1-TX-SCOPE §1, live-diagnosed 2026-07-12): bursting
+  one WDSP block as 8 back-to-back packets oscillates the HL2 TX FIFO at
+  the ~47 Hz block rate = a mains-like buzz on ALL TX audio. Corollary:
+  **TX bring-up checklists must include off-air listening** — the wire
+  log looked clean for a whole day while every mode buzzed.
 
 - The same UDP socket carries everything; the radio sends EP6 to whatever
   host port sent the start command — bind once, keep it.
