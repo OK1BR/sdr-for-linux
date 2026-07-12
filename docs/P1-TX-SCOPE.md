@@ -93,10 +93,12 @@ MOX bit never set, drive 0, T/R relay locked RX (0x12-C2 = 0x04).
 
 | Phase | Content | Gate |
 |---|---|---|
-| T1 | Offline builders + `sdrfl-p1txprobe`: hexdump TX-hot frames, assert every byte against §1; assert the OFF state is byte-identical to the RX build | offline, no radio |
-| T2 | Engine: 48 k TX WDSP route, EP2 ring feed, tx_run dispatch, FIFO health | offline + dry analysis |
-| T3 | Protections: wattmeter profile, SWR drop, temperature guard, FIFO badges | offline |
-| T4 | Live checklist into the dummy load, step-by-step consent: dry key (PA off = relay stays RX!) → PA on 1 W → per-band pa_cal → SWR test → CW → voice → digi | live, Richard present |
+| T1 ✅ | Offline builders + `sdrfl-p1txprobe`: hexdump TX-hot frames, assert every byte against §1; assert the OFF state is byte-identical to the RX build | PASS 2026-07-12 (offline) + live RX regression |
+| T2 ✅ | Engine: 48 k TX WDSP route (CFIR off — proven by the 0.5000-vs-0.4481 = ×0.896 magnitude in the txdsp gate), EP2 TX-IQ ring, production-paced keyed sender (20 ms zero-IQ keepalive cap), tx_run dispatch (engine_set_tx_state, drive split), CW amp 1.0 on P1 | PASS 2026-07-12: p1txprobe + txprobe + txdsp-test (new P1 section) |
+| T3 ✅ | Protections: fwd/rev EMA + PEP max-hold + TX FIFO health in the EP6 parser, thermal trip 60 °C in tx_gate (4 new txgate-test cases), fwd/rev swap hook, HL2 radio_tx_profile (5 W, c2=1.5, offsets 6/6, [tx-hl2], pa_cal floor 25), P1 footswitch PTT | PASS 2026-07-12 (all offline gates + live RX regression) |
+| T4 | Live checklist into the dummy load, step-by-step consent; `radio_tx_supported()` += HL2 happens HERE, not before: dry key (PA off = relay stays RX!) → PA on 1 W → per-band pa_cal → SWR test → CW → voice → digi | live, Richard present |
 
-*Audited & written 2026-07-12. The HL2 ships TX on the low-power RF1 path
-when the PA is off — that is the natural "dry key" first step.*
+*Audited & written 2026-07-12; T1-T3 landed the same day. The HL2 ships TX
+on the low-power RF1 path when the PA is off — that is the natural "dry
+key" first step. NOTE for T4: the SWR bridge lives on the N2ADR filter
+board (fitted on Richard's unit) — fwd/rev telemetry needs it.*
