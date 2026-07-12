@@ -4633,7 +4633,7 @@ static void start_radio(App *app) {
       adw_toast_set_timeout(t, 8);
       adw_toast_overlay_add_toast(ADW_TOAST_OVERLAY(app->toast_overlay), t);
     }
-  } else if (tx_run_start(app->freq, app->pixels, app->fps) == 0) {
+  } else if (tx_run_start(app->freq, app->pixels, app->fps, app->proto_p1) == 0) {
     app->tx_ready = 1;
     tx_push_cfg(app);
     tx_run_set_mic_gain(app->tx_mic_gain);   /* persisted SSB mic gain into the TX panel */

@@ -97,6 +97,35 @@ int p1_build_cc_round_robin(unsigned char c[5], int device, long long freq_hz,
 int p1_tx_iq_encode(const double *iq, int n_pairs, double scale, int device,
                     unsigned char *out);
 
+/*
+ * ---- live TX (T2, docs/P1-TX-SCOPE.md §3) ----------------------------------
+ *
+ * ⛔ p1_set_tx_state with a keyed state is what makes the radio transmit.
+ * Only tx_run's gate path may call it (exactly like p2_set_tx_state), and on
+ * the HL2 only after the T4 live checklist — until then radio_tx_supported()
+ * excludes P1 radios, so tx_run never starts and these stay uncalled.
+ */
+
+/* Map the classic 0-255 drive request onto the HL2's two components: the
+ * 16-step hardware TX attenuator byte and the host IQ scale (verbatim
+ * piHPSDR radio.c:2934-2996). */
+void p1_drive_split(int level, int *att_step, double *iq_scale);
+
+/* Apply/clear the live TX state. tx=NULL reverts to the RX-only off state
+ * (MOX 0, drive 0, T/R relay per PA flag → locked RX). `iq_scale` is the
+ * drive's IQ component from p1_drive_split, baked into the TX IQ encoder.
+ * Thread-safe; the EP2 sender picks the state up on its next frame and, on
+ * a key-on edge, resets the TX IQ ring for minimum latency. */
+void p1_set_tx_state(const p1_tx_state *tx, double iq_scale);
+
+/* Push TX IQ pairs (interleaved doubles from the WDSP TX channel / CW
+ * generator, 48 kHz) into the EP2 payload ring. Encodes via p1_tx_iq_encode
+ * with the applied iq_scale. While keyed the sender is clocked by this ring
+ * (126 samples per packet, piHPSDR pacing model); with no samples within
+ * 20 ms it sends a zero-IQ keepalive so the C&C stream and the watchdog
+ * never starve. Dropped-on-overflow, counted in telemetry. */
+void p1_tx_iq_push(const double *iq, int n_pairs);
+
 /* Read-only telemetry decoded from the EP6 status frames (addr 0-2). */
 typedef struct {
   int valid;          /* 1 once at least one status frame was parsed          */

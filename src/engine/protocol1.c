@@ -52,17 +52,40 @@ static guint32          s_tx_seq;       /* EP2 sequence */
 static GMutex           s_tel_lock;
 static p1_telemetry     s_tel;
 
+/* ---- live TX state + IQ ring (T2, docs/P1-TX-SCOPE.md) --------------------
+ * ⛔ s_tx_on with a mox state is the ONLY thing that puts the MOX bit on the
+ * wire. It is set exclusively by p1_set_tx_state (tx_run's gate path); the
+ * RX-only build never calls that, so everything below stays inert. */
+#define TXRING_SAMPLES  8192          /* power of two, ~170 ms @ 48 k          */
+#define TXRING_BYTES    (TXRING_SAMPLES * 8)
+#define PKT_SAMPLES     126           /* TX IQ samples per EP2 packet (2×63)   */
+static GMutex           s_tx_lock;
+static GCond            s_tx_cond;    /* signalled by p1_tx_iq_push            */
+static p1_tx_state      s_tx_state;   /* valid while s_tx_on                   */
+static int              s_tx_on;
+static double           s_tx_scale;   /* drive IQ component (p1_drive_split)   */
+static unsigned char    s_txring[TXRING_BYTES];
+static unsigned int     s_txr_in, s_txr_out;   /* free-running sample counters */
+static int              s_txr_drops;  /* ring-full pushes (diagnostic)         */
+static int              s_txr_under;  /* keyed packets sent with zero IQ       */
+
 /* ---- EP2 frame builders --------------------------------------------------- */
 
-/* Write one 512-byte USB frame: sync + C0..C4 + zeroed sample payload.
- * `c` points at 5 bytes C0..C4. The MOX bit (C0[0]) is NEVER set here. */
-static void put_frame(unsigned char *f, const unsigned char *c) {
-  memset(f, 0, FRAME_LEN);
+/* Write one 512-byte USB frame: sync + C0..C4 + sample payload. `c` points at
+ * 5 bytes C0..C4 (the builders own the MOX bit). `payload` is 504 bytes of
+ * encoded 63×(4 B audio + 4 B TX IQ), or NULL for the all-zero RX payload. */
+static void put_frame(unsigned char *f, const unsigned char *c,
+                      const unsigned char *payload) {
   f[0] = 0x7F; f[1] = 0x7F; f[2] = 0x7F;       /* sync (old_protocol.c:70)    */
   memcpy(f + 3, c, 5);
-  /* payload stays zero: 63×(4 B headphone audio + 4 B TX IQ). The HL2 has no
-   * audio codec and discards audio; the all-zero first sample pair doubles as
-   * "extended address 0 = none" (P1-SCOPE §2). Zero TX IQ = no drive either. */
+  if (payload) {
+    memcpy(f + 8, payload, FRAME_LEN - 8);
+  } else {
+    /* zero payload: the HL2 has no audio codec and discards audio; the
+     * all-zero first sample pair doubles as "extended address 0 = none"
+     * (P1-SCOPE §2). Zero TX IQ = no RF either. */
+    memset(f + 8, 0, FRAME_LEN - 8);
+  }
 }
 
 static void be32(unsigned char *p, guint32 v) {
@@ -106,12 +129,22 @@ void p1_build_cc_general(unsigned char c[5], int device, int rate_bits,
                                            (old_protocol.c:2769-2789)         */
 }
 
+/* Copy the applied TX state for one build round (NULL when off). */
+static const p1_tx_state *tx_snapshot(p1_tx_state *buf) {
+  const p1_tx_state *tx = NULL;
+  g_mutex_lock(&s_tx_lock);
+  if (s_tx_on) { *buf = s_tx_state; tx = buf; }
+  g_mutex_unlock(&s_tx_lock);
+  return tx;
+}
+
 static void cc_general(unsigned char *c) {
   long long f;
+  p1_tx_state txb;
   g_mutex_lock(&s_freq_lock); f = s_freq_hz; g_mutex_unlock(&s_freq_lock);
-  /* ⛔ tx = NULL hardcoded: the live link is RX-only until the T2-T4 phases
-   * of docs/P1-TX-SCOPE.md are cleared with Richard. */
-  p1_build_cc_general(c, s_device, s_rate_bits, f, NULL);
+  /* ⛔ tx is non-NULL only after p1_set_tx_state — never in the RX-only build
+   * (radio_tx_supported excludes P1 until the T4 live checklist). */
+  p1_build_cc_general(c, s_device, s_rate_bits, f, tx_snapshot(&txb));
 }
 
 /* The round-robin C&C registers (old_protocol.c p1_command_loop :2106-2765),
@@ -195,10 +228,12 @@ int p1_build_cc_round_robin(unsigned char c[5], int device, long long freq_hz,
 
 static int cc_round_robin(unsigned char *c, int step) {
   long long freq;
+  p1_tx_state txb;
   g_mutex_lock(&s_freq_lock); freq = s_freq_hz; g_mutex_unlock(&s_freq_lock);
-  /* ⛔ tx = NULL hardcoded — see cc_general(). */
+  /* ⛔ tx handling identical to cc_general(). */
   return p1_build_cc_round_robin(c, s_device, freq,
-                                 g_atomic_int_get(&s_gain_db), step, NULL);
+                                 g_atomic_int_get(&s_gain_db), step,
+                                 tx_snapshot(&txb));
 }
 
 /* TX IQ → EP2 payload (pure; contract in protocol1.h — audio slots zero,
@@ -225,16 +260,95 @@ int p1_tx_iq_encode(const double *iq, int n_pairs, double scale, int device,
   return n_pairs * 8;
 }
 
-/* Build + send one 1032-byte EP2 packet (old_protocol.c metis_write :2835). */
-static void send_ep2(int *rr_step) {
+/* Drive split: classic 0-255 request → HL2 hardware attenuator step + IQ
+ * scale. Thresholds and factors verbatim piHPSDR radio.c:2934-2996. */
+void p1_drive_split(int level, int *att_step, double *iq_scale) {
+  static const struct { int min; int att; double k; } T[] = {
+    {241, 240, 0.0039215}, {228, 224, 0.0041539}, {215, 208, 0.0044000},
+    {203, 192, 0.0046607}, {192, 176, 0.0049369}, {181, 160, 0.0052295},
+    {171, 144, 0.0055393}, {161, 128, 0.0058675}, {152, 112, 0.0062152},
+    {144,  96, 0.0065835}, {136,  80, 0.0069736}, {128,  64, 0.0073868},
+    {121,  48, 0.0078245}, {114,  32, 0.0082881}, {108,  16, 0.0087793},
+    {  0,   0, 0.0092995},
+  };
+
+  if (level < 0)   { level = 0; }
+
+  if (level > 255) { level = 255; }
+
+  for (unsigned i = 0; i < G_N_ELEMENTS(T); i++) {
+    if (level >= T[i].min) {
+      *att_step = T[i].att;
+      *iq_scale = (double)level * T[i].k;
+      return;
+    }
+  }
+}
+
+/* ⛔ Live TX state — tx_run's gate path only (contract in protocol1.h). */
+void p1_set_tx_state(const p1_tx_state *tx, double iq_scale) {
+  g_mutex_lock(&s_tx_lock);
+
+  if (tx) {
+    int key_edge = !s_tx_on || (tx->mox && !s_tx_state.mox);
+    s_tx_state = *tx;
+    s_tx_scale = iq_scale;
+    s_tx_on    = 1;
+
+    if (key_edge) {              /* fresh over: drop stale ring content for  */
+      s_txr_out = s_txr_in;      /* minimum latency (piHPSDR txring_flag)    */
+    }
+  } else {
+    s_tx_on    = 0;
+    s_tx_scale = 0.0;
+  }
+
+  g_cond_signal(&s_tx_cond);     /* wake the sender for the state edge */
+  g_mutex_unlock(&s_tx_lock);
+}
+
+void p1_tx_iq_push(const double *iq, int n_pairs) {
+  unsigned char enc[256 * 8];
+
+  while (n_pairs > 0) {
+    int chunk = n_pairs > 256 ? 256 : n_pairs;
+    double scale;
+    g_mutex_lock(&s_tx_lock);
+    scale = s_tx_on ? s_tx_scale : 0.0;
+    g_mutex_unlock(&s_tx_lock);
+    p1_tx_iq_encode(iq, chunk, scale, s_device, enc);
+
+    g_mutex_lock(&s_tx_lock);
+    unsigned int used = s_txr_in - s_txr_out;
+
+    if (used + (unsigned)chunk > TXRING_SAMPLES) {
+      s_txr_drops++;                       /* producer ahead — drop, keep RF   */
+    } else {
+      for (int i = 0; i < chunk; i++) {
+        memcpy(s_txring + ((s_txr_in + i) % TXRING_SAMPLES) * 8, enc + i * 8, 8);
+      }
+
+      s_txr_in += (unsigned)chunk;
+      g_cond_signal(&s_tx_cond);
+    }
+
+    g_mutex_unlock(&s_tx_lock);
+    iq      += 2 * chunk;
+    n_pairs -= chunk;
+  }
+}
+
+/* Build + send one 1032-byte EP2 packet (old_protocol.c metis_write :2835).
+ * `payload` = 1008 bytes of encoded TX IQ (two frames) or NULL for zeros. */
+static void send_ep2(int *rr_step, const unsigned char *payload) {
   unsigned char pkt[EP2_PACKET_LEN];
   unsigned char cc[5];
   pkt[0] = 0xEF; pkt[1] = 0xFE; pkt[2] = 0x01; pkt[3] = 0x02;   /* EP2 */
   be32(pkt + 4, s_tx_seq++);
   cc_general(cc);                          /* frame 1: always C0=0x00         */
-  put_frame(pkt + 8, cc);
+  put_frame(pkt + 8, cc, payload);
   *rr_step = cc_round_robin(cc, *rr_step); /* frame 2: round-robin register   */
-  put_frame(pkt + 520, cc);
+  put_frame(pkt + 520, cc, payload ? payload + 504 : NULL);
 
   if (sendto(s_sock, pkt, sizeof(pkt), 0,
              (struct sockaddr *)&s_radio, sizeof(s_radio)) < 0) {
@@ -261,9 +375,45 @@ static gpointer sender_thread(gpointer data) {
   (void)data;
   int rr = 0;
   gint64 next = g_get_monotonic_time();
+  unsigned char payload[PKT_SAMPLES * 8];
 
   while (g_atomic_int_get(&s_running)) {
-    send_ep2(&rr);
+    /* Keyed? → production-paced like piHPSDR (old_protocol.c:250-330): one
+     * packet per 126 ring samples, clocked by the WDSP/CW producer. A 20 ms
+     * cap sends a zero-IQ keepalive so C&C and the HL2 watchdog never starve
+     * (the FPGA's 40 ms TX-latency buffer rides over the gap). */
+    g_mutex_lock(&s_tx_lock);
+    int keyed = s_tx_on && s_tx_state.mox;
+
+    if (keyed) {
+      gint64 until = g_get_monotonic_time() + 20000;
+
+      while (g_atomic_int_get(&s_running) && s_tx_on && s_tx_state.mox &&
+             s_txr_in - s_txr_out < PKT_SAMPLES) {
+        if (!g_cond_wait_until(&s_tx_cond, &s_tx_lock, until)) { break; }
+      }
+
+      int have = (s_txr_in - s_txr_out >= PKT_SAMPLES);
+
+      if (have) {
+        for (int i = 0; i < PKT_SAMPLES; i++) {
+          memcpy(payload + i * 8,
+                 s_txring + ((s_txr_out + i) % TXRING_SAMPLES) * 8, 8);
+        }
+
+        s_txr_out += PKT_SAMPLES;
+      } else {
+        s_txr_under++;
+      }
+
+      g_mutex_unlock(&s_tx_lock);
+      send_ep2(&rr, have ? payload : NULL);
+      next = g_get_monotonic_time() + PACKET_US;   /* re-arm the idle timer */
+      continue;
+    }
+
+    g_mutex_unlock(&s_tx_lock);
+    send_ep2(&rr, NULL);
     next += PACKET_US;
     gint64 now = g_get_monotonic_time();
 
@@ -400,6 +550,11 @@ int p1_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
   s_cb      = cb;
   s_user    = user;
   s_tx_seq  = 0;
+  g_mutex_lock(&s_tx_lock);                /* fresh link: TX state off, ring   */
+  s_tx_on = 0; s_tx_scale = 0.0;           /* empty (⛔ RX-only until keyed    */
+  s_txr_in = s_txr_out = 0;                /* through tx_run's gate)           */
+  s_txr_drops = s_txr_under = 0;
+  g_mutex_unlock(&s_tx_lock);
   g_mutex_lock(&s_freq_lock); s_freq_hz = freq_hz; g_mutex_unlock(&s_freq_lock);
   memset(&s_tel, 0, sizeof(s_tel));
   memcpy(&s_radio, &dev->network.address, sizeof(s_radio));
@@ -431,9 +586,9 @@ int p1_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
 
   for (int try = 0; try < 10 && !ok; try++) {
     int rr = 0;
-    send_ep2(&rr);                        /* frames: 0x00 + 0x02 (TX freq)    */
+    send_ep2(&rr, NULL);                  /* frames: 0x00 + 0x02 (TX freq)    */
     g_usleep(20000);
-    send_ep2(&rr);                        /* frames: 0x00 + 0x04 (RX1 freq)   */
+    send_ep2(&rr, NULL);                  /* frames: 0x00 + 0x04 (RX1 freq)   */
     g_usleep(20000);
     metis_start_stop(1);
     unsigned char probe[2048];
@@ -464,7 +619,11 @@ int p1_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
 void p1_rx_stop(void) {
   if (s_sock < 0) { return; }
 
+  p1_set_tx_state(NULL, 0.0);              /* ⛔ belt-and-braces: unkey first  */
   g_atomic_int_set(&s_running, 0);
+  g_mutex_lock(&s_tx_lock);                /* wake a sender blocked on the    */
+  g_cond_signal(&s_tx_cond);               /* TX ring cond                    */
+  g_mutex_unlock(&s_tx_lock);
 
   if (s_sender)   { g_thread_join(s_sender);   s_sender = NULL; }
 

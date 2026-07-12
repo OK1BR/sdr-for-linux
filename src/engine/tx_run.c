@@ -17,6 +17,7 @@
 #include <string.h>
 #include <stdatomic.h>
 
+#include "protocol1.h"
 #include "protocol2.h"
 #include "tx.h"
 #include "tx_meter.h"
@@ -46,13 +47,23 @@ static int lat_on(void) {
                                    overdrives the speaker through the voice monitor gain */
 
 #define TX_MODE_IS_CW(m) ((m) == DEMOD_CWL || (m) == DEMOD_CWU)
-#define CW_IQ_AMP        0.896   /* DC-signal gain comp for the radio's DUC CFIR (piHPSDR) */
+/* CW carrier amplitude: on P2 the TXA chain's compensating CFIR attenuates a
+ * DC signal to 0.896 of full scale, so the direct-synthesized carrier must
+ * match it (piHPSDR transmitter.c:1737-1747). P1 has no CFIR → 1.0 (:1722-32). */
+#define CW_IQ_AMP        (s_p1 ? 1.0 : 0.896)
 #define CW_CUTOFF_US     (20 * 1000000LL)   /* 20 s continuous-key hardware backstop */
 #define CW_PTT_DELAY_US  30000   /* key-on → first RF: MOX must land on the wire first
                                     (piHPSDR cw_keyer_ptt_delay default, radio.c:203) */
 
-#define TX_IQ_RATE   192000  /* WDSP TX channel output rate (matches tx.c)     */
-#define TX_IQ_BLOCK  2048    /* IQ pairs per on_tx_iq block (512*192k/48k)     */
+/* WDSP TX channel output rate + CW/sidetone block size — protocol-dependent
+ * since HL2 TX (T2): P2 = 192 k / 2048-pair blocks, P1 = 48 k / 512. The
+ * defines are the P2 values and the ARRAY BOUND (maximum); the runtime values
+ * live in s_iq_rate/s_iq_block, set by tx_run_start. */
+#define TX_IQ_RATE   192000  /* P2 rate; also matches tx.c's P2 chain          */
+#define TX_IQ_BLOCK  2048    /* max IQ pairs per on_tx_iq block (P2 512*192/48)*/
+static int s_p1;             /* Protocol-1 radio (HL2) — set by tx_run_start   */
+static int s_iq_rate  = TX_IQ_RATE;
+static int s_iq_block = TX_IQ_BLOCK;
 
 #define TX_FLO        150.0    /* default TX audio passband low edge  (Hz)               */
 #define TX_FHI        2850.0   /* default TX audio passband high edge (Hz)               */
@@ -141,12 +152,43 @@ static GMutex            s_status_lock;
 static p2_tx_iq_framer   s_framer;
 static int               s_log_ctr;         /* ~1 Hz keyed power log throttle */
 
-/* TX IQ from the WDSP TX channel → frame → port-1029 socket, and → the TX
- * panadapter analyzer (spectrum of what we transmit). */
+/* TX IQ from the WDSP TX channel → the protocol's wire path (P2: frame →
+ * port-1029 socket; P1: EP2 payload ring), and → the TX panadapter analyzer
+ * (spectrum of what we transmit). */
 static void on_tx_iq(const double *iq, int n_pairs, void *u) {
   (void)u;
-  p2_tx_iq_framer_push(&s_framer, iq, n_pairs);
+
+  if (s_p1) { p1_tx_iq_push(iq, n_pairs); }
+  else      { p2_tx_iq_framer_push(&s_framer, iq, n_pairs); }
+
   tx_analyzer_feed(iq, n_pairs);
+}
+
+/* ⛔ Keying dispatch — the ONE place both protocols' wire state is applied.
+ * The generic p2_tx_state is the master; on P1 it maps to p1_tx_state with
+ * the drive split into the HL2's HW-attenuator + IQ-scale pair (P1-TX-SCOPE
+ * §1). NULL unkeys both. Antenna/tx_freq have no P1 equivalent (no Alex; the
+ * 0x02 register already tracks the VFO). */
+static void engine_set_tx_state(const p2_tx_state *tx) {
+  if (!s_p1) {
+    p2_set_tx_state(tx);
+    return;
+  }
+
+  if (!tx) {
+    p1_set_tx_state(NULL, 0.0);
+    return;
+  }
+
+  p1_tx_state s;
+  double scale;
+  memset(&s, 0, sizeof s);
+  s.mox        = tx->mox || tx->tune;   /* P1: TUNE keys via the same MOX bit */
+  s.pa_enabled = tx->pa_enabled;
+  s.in_band    = tx->in_band;
+  s.tune       = tx->tune;
+  p1_drive_split(tx->in_band ? tx->drive : 0, &s.drive_att, &scale);
+  p1_set_tx_state(&s, scale);
 }
 
 static void publish(const tx_run_status *st) {
@@ -267,7 +309,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
       }
     }
     tx_dsp_run(1);
-    p2_set_tx_state(&r.state);
+    engine_set_tx_state(&r.state);
     g_atomic_int_set(&s_keyed_pub, 1);   /* RX mute router keys off this NOW */
     LAT("key_on %s", r.state.tune ? "TUNE" : (cw_key ? "CW" : "MOX"));
     fprintf(stderr, "tx: KEY %s  freq=%lld Hz  PA=%s  ANT%d  drive=%d/255\n",
@@ -277,7 +319,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   } else if (!keyed && *prev_keyed) {
     /* KEY OFF (operator release OR protection trip): drop MOX first, stop the
      * tone, flush a little audio, then stop the channel. */
-    p2_set_tx_state(NULL);
+    engine_set_tx_state(NULL);
     /* Unkey flag FIRST: the WDSP flush below blocks ~100 ms (measured) and the
      * RX-audio settle window must not wait for it — it starts at the T/R drop. */
     g_atomic_int_set(&s_keyed_pub, 0);
@@ -289,7 +331,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     fprintf(stderr, "tx: UNKEY (%s)\n", (r.reason && r.reason[0]) ? r.reason : "release");
     fflush(stderr);
   } else if (keyed) {
-    p2_set_tx_state(&r.state);   /* refresh (frequency/antenna may have changed) */
+    engine_set_tx_state(&r.state);   /* refresh (frequency/antenna may have changed) */
     tx_dsp_set_mode(cfg.mode, flo, fhi);   /* live TX-filter change while keyed —
                                               WDSP setters no-op when unchanged */
     if (tt_want_now != tt_applied) {       /* two-tone toggled mid-over */
@@ -364,7 +406,7 @@ static gpointer tx_thread(gpointer u) {
   (void)u;
   float  silence[FEED_BLOCK];
   float  mic[FEED_BLOCK];
-  float  cwenv[TX_IQ_BLOCK];       /* CW envelope @192k */
+  float  cwenv[TX_IQ_BLOCK];       /* CW envelope @ the TX IQ rate (max bound) */
   double cwiq[2 * TX_IQ_BLOCK];    /* CW IQ (I=amp·env, Q=0) */
   memset(silence, 0, sizeof silence);
   int prev_keyed = 0, prev_want = 0, keyed = 0, keyed_mox = 0, keyed_cw = 0;
@@ -433,21 +475,21 @@ static gpointer tx_thread(gpointer u) {
          * first dits (a dot @30 WPM is only 40 ms). */
         int rf_hold = (now - cw_key_on) < CW_PTT_DELAY_US;
         g_mutex_lock(&s_cw_lock);
-        if (s_cw && !rf_hold) { cw_gen_pull(s_cw, cwenv, TX_IQ_BLOCK); }
+        if (s_cw && !rf_hold) { cw_gen_pull(s_cw, cwenv, s_iq_block); }
         else                  { memset(cwenv, 0, sizeof cwenv); }
         g_mutex_unlock(&s_cw_lock);
         if (lat_on()) {                  /* first/last RF envelope of the over */
           static int lat_rf_live;
           int nz = 0;
-          for (int i = 0; i < TX_IQ_BLOCK; i++) { if (cwenv[i] != 0.0f) { nz = 1; break; } }
+          for (int i = 0; i < s_iq_block; i++) { if (cwenv[i] != 0.0f) { nz = 1; break; } }
           if (nz && !lat_rf_live)  { LAT("rf_first"); lat_rf_live = 1; }
           if (!nz && lat_rf_live)  { LAT("rf_last");  lat_rf_live = 0; }
         }
-        for (int i = 0; i < TX_IQ_BLOCK; i++) {
+        for (int i = 0; i < s_iq_block; i++) {
           cwiq[2 * i]     = CW_IQ_AMP * (double)cwenv[i];
           cwiq[2 * i + 1] = 0.0;
         }
-        on_tx_iq(cwiq, TX_IQ_BLOCK, NULL);
+        on_tx_iq(cwiq, s_iq_block, NULL);
         if (g_atomic_int_get(&s_monitor)) {
           /* Sidetone: the SAME envelope that keys the RF, on a local tone. Its
            * trim is the FINAL level — demod_monitor_absolute(1) bypasses the
@@ -456,14 +498,14 @@ static gpointer tx_thread(gpointer u) {
           static double ph;
           float st[TX_IQ_BLOCK];
           double amp  = pow(10.0, (double)g_atomic_int_get(&s_st_cdb) / 2000.0);
-          double step = 2.0 * G_PI * (double)g_atomic_int_get(&s_st_hz) / (double)TX_IQ_RATE;
-          for (int i = 0; i < TX_IQ_BLOCK; i++) {
+          double step = 2.0 * G_PI * (double)g_atomic_int_get(&s_st_hz) / (double)s_iq_rate;
+          for (int i = 0; i < s_iq_block; i++) {
             st[i] = (float)(amp * (double)cwenv[i] * sin(ph));
             ph += step;
             if (ph > 2.0 * G_PI) { ph -= 2.0 * G_PI; }
           }
           demod_monitor_absolute(1);
-          demod_monitor_push(st, TX_IQ_BLOCK, TX_IQ_RATE);
+          demod_monitor_push(st, s_iq_block, s_iq_rate);
         }
       } else if (keyed_mox) {
         /* MOX: pull live mic — or the external TCI ring (digi TX audio) — and
@@ -504,8 +546,15 @@ static gpointer tx_thread(gpointer u) {
   return NULL;
 }
 
-int tx_run_start(long long tx_freq_hz, int pan_pixels, int fps) {
+int tx_run_start(long long tx_freq_hz, int pan_pixels, int fps, int p1) {
   if (s_thread) { return 0; }   /* already up */
+
+  /* Protocol wire path: P1 = 48 k TX IQ into the EP2 payload ring, 512-pair
+   * blocks (same 10.67 ms block duration as P2's 2048 @ 192 k → PACE_US and
+   * the CW timing hold unchanged). */
+  s_p1       = p1;
+  s_iq_rate  = p1 ? 48000 : TX_IQ_RATE;
+  s_iq_block = p1 ? 512   : TX_IQ_BLOCK;
 
   /* SAFE defaults before the thread can look at the config. */
   g_mutex_lock(&s_cfg_lock);
@@ -532,7 +581,7 @@ int tx_run_start(long long tx_freq_hz, int pan_pixels, int fps) {
   /* CW envelope generator @192k (the TX IQ rate) — safe defaults; GUI pushes the
    * operator's WPM/weight/ramp. It only makes an envelope; it never keys. */
   g_mutex_lock(&s_cw_lock);
-  if (!s_cw) { s_cw = cw_gen_new(TX_IQ_RATE, 20, 50.0, 9.0); }
+  if (!s_cw) { s_cw = cw_gen_new(s_iq_rate, 20, 50.0, 9.0); }
   else       { cw_gen_flush(s_cw); }
   s_cw_hang_deadline = 0;   /* no hang held over from a previous runtime */
   g_mutex_unlock(&s_cw_lock);
@@ -546,8 +595,8 @@ int tx_run_start(long long tx_freq_hz, int pan_pixels, int fps) {
   p2_tx_iq_framer_init(&s_framer, p2_tx_iq_socket_emit, NULL);
   double flo, fhi;
   tx_passband(TX_MODE_DFLT, TX_FLO, TX_FHI, &flo, &fhi);
-  if (tx_dsp_create(TX_MODE_DFLT, flo, fhi, on_tx_iq, NULL) != 0) { return -1; }
-  tx_analyzer_create(pan_pixels, TX_IQ_RATE, TX_IQ_BLOCK, fps);
+  if (tx_dsp_create(TX_MODE_DFLT, flo, fhi, s_p1, on_tx_iq, NULL) != 0) { return -1; }
+  tx_analyzer_create(pan_pixels, s_iq_rate, s_iq_block, fps);
   tx_meter_reset();
   tx_gate_reset();
   ps_start();               /* PureSignal runtime (stays OFF until the GUI arms it) */
@@ -568,7 +617,7 @@ void tx_run_stop(void) {
   s_thread = NULL;
   g_atomic_int_set(&s_keyed_pub, 0);
   ps_stop();               /* unhook the feedback callback before the channel dies */
-  p2_set_tx_state(NULL);   /* belt-and-braces: ensure the wire state is RX-only */
+  engine_set_tx_state(NULL);   /* belt-and-braces: ensure the wire state is RX-only */
   tx_dsp_destroy();
   tx_analyzer_destroy();
   g_mutex_lock(&s_cw_lock);

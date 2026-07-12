@@ -127,7 +127,7 @@ int main(void) {
 
   /* TX DSP + IQ path. */
   p2_tx_iq_framer_init(&g_framer, p2_tx_iq_socket_emit, NULL);
-  tx_dsp_create(TXKEY_USB, 150.0, 2850.0, on_tx_iq, NULL);
+  tx_dsp_create(TXKEY_USB, 150.0, 2850.0, 0, on_tx_iq, NULL);   /* P2 gate */
   tx_dsp_run(1);
   tx_meter_reset();
   tx_gate_reset();

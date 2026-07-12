@@ -16,17 +16,23 @@
 
 /*
  * TX IQ callback: interleaved I/Q doubles [I0,Q0,I1,Q1,...], `n_pairs` pairs, at
- * the DUC output rate (192 kHz). Called from whatever thread feeds the mic.
+ * the DUC output rate (192 kHz on P2, 48 kHz on P1). Called from whatever thread
+ * feeds the mic.
  */
 typedef void (*tx_iq_cb)(const double *iq, int n_pairs, void *user);
 
 /*
  * Create the TX channel (WDSP id chosen internally, distinct from the RX channel).
  * `mode` is a WDSP mode (DEMOD_USB=1, DEMOD_LSB=0, …); flo/fhi is the TX passband
- * in Hz (e.g. 150/2850). Decoded IQ is delivered to `cb`/`user`. The channel is
- * created STOPPED — call tx_dsp_run(1) before feeding. Returns 0 on success.
+ * in Hz (e.g. 150/2850). `p1` selects the protocol's DUC rate chain (piHPSDR
+ * transmitter.c:987-1010): P2 = 512 in / 96 k dsp / 192 k out with the P2
+ * compensating CFIR; P1 = 1024 in / 48 k dsp / 48 k out, ⛔ CFIR OFF
+ * (transmitter.c:1325 — the CFIR compensates the P2 firmware's interpolation
+ * filter; on P1 it would distort the TX spectrum). Decoded IQ is delivered to
+ * `cb`/`user`. The channel is created STOPPED — call tx_dsp_run(1) before
+ * feeding. Returns 0 on success.
  */
-int tx_dsp_create(int mode, double flo, double fhi, tx_iq_cb cb, void *user);
+int tx_dsp_create(int mode, double flo, double fhi, int p1, tx_iq_cb cb, void *user);
 
 /* Start (1) / stop (0) the WDSP TX channel (SetChannelState). Off after create. */
 void tx_dsp_run(int on);

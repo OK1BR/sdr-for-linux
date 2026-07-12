@@ -95,10 +95,13 @@ typedef struct {
  * (idle, unkeyed) worker thread. Call AFTER the WDSP RX channel exists but BEFORE
  * p2_rx_start starts the RX flow, so OpenChannel doesn't race the live RX channel.
  * `tx_freq_hz` is the initial TX frequency; `pan_pixels`/`fps` size the TX
- * panadapter (24 kHz span). Starts with a SAFE default config (PA off, drive 0,
- * SWR protection on). Returns 0 on success, negative on error.
+ * panadapter (24 kHz span). `p1` selects the Protocol-1 wire path (HL2: 48 k
+ * TX IQ into the EP2 payload, drive split HW-att + IQ scale, no CFIR — see
+ * docs/P1-TX-SCOPE.md) instead of the P2 port-1029 stream. Starts with a SAFE
+ * default config (PA off, drive 0, SWR protection on). Returns 0 on success,
+ * negative on error.
  */
-int  tx_run_start(long long tx_freq_hz, int pan_pixels, int fps);
+int  tx_run_start(long long tx_freq_hz, int pan_pixels, int fps, int p1);
 
 /* Copy the latest TX panadapter frame (dB) into out[0..pixels-1]; 1 if fresh.
  * Meaningful only while keyed (the TX channel produces IQ only then). */

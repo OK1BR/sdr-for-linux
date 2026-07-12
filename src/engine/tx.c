@@ -14,16 +14,14 @@
 #include "tx.h"
 
 #define TX_CHANNEL   8      /* WDSP channel id (RX uses 0; TXA/RXA share the space) */
-#define TX_BUFSIZE   512    /* mic samples per fexchange0 (in_size)                 */
 #define TX_DSPSIZE   2048   /* WDSP internal DSP block                              */
 #define TX_IN_RATE   48000  /* mic input rate                                       */
-#define TX_DSP_RATE  96000  /* WDSP dsp rate (power-of-two multiple of both)        */
-#define TX_OUT_RATE  192000 /* DUC IQ output rate (P2 / G2E)                         */
 
 static int       t_id;
 static int       t_ready;
-static int       t_out_samples;   /* IQ pairs per fexchange0 out = 512*192k/48k = 2048 */
-static double   *t_mic;           /* mic input as IQ (I=sample, Q=0), 2*TX_BUFSIZE    */
+static int       t_in_size;       /* mic samples per fexchange0 (512 P2 / 1024 P1) */
+static int       t_out_samples;   /* IQ pairs per fexchange0 out (2048 P2 / 1024 P1)*/
+static double   *t_mic;           /* mic input as IQ (I=sample, Q=0), 2*t_in_size   */
 static int       t_fill;          /* mic samples accumulated                         */
 static double   *t_iq;            /* fexchange0 output, 2*t_out_samples interleaved   */
 static tx_iq_cb  t_cb;
@@ -33,10 +31,17 @@ static int       t_err;           /* last non-zero fexchange0 error             
 static long      t_ferr;          /* count of fexchange0 calls with error            */
 static long      t_blocks;        /* fexchange0 calls                                */
 
-int tx_dsp_create(int mode, double flo, double fhi, tx_iq_cb cb, void *user) {
+int tx_dsp_create(int mode, double flo, double fhi, int p1, tx_iq_cb cb, void *user) {
+  /* Rate chains verbatim piHPSDR transmitter.c:987-1010:
+   * P2 192 k out → in 512 / dsp 96 k / ratio 4; P1 48 k out → in 1024 /
+   * dsp 48 k / ratio 1 (large P1 output buffers would overflow the radio's
+   * TX FIFO — hence the bigger input block, not a bigger output one). */
+  int dsp_rate = p1 ? 48000 : 96000;
+  int out_rate = p1 ? 48000 : 192000;
+  t_in_size     = p1 ? 1024 : 512;
   t_id          = TX_CHANNEL;
-  t_out_samples = TX_BUFSIZE * (TX_OUT_RATE / TX_IN_RATE);   /* 2048 */
-  t_mic  = g_new0(double, 2 * TX_BUFSIZE);
+  t_out_samples = t_in_size * (out_rate / TX_IN_RATE);
+  t_mic  = g_new0(double, 2 * t_in_size);
   t_iq   = g_new0(double, 2 * t_out_samples);
   t_cb   = cb;
   t_user = user;
@@ -47,12 +52,13 @@ int tx_dsp_create(int mode, double flo, double fhi, tx_iq_cb cb, void *user) {
 
   g_mutex_lock(&t_lock);
   /* type=1 (transmit), state=0 (created stopped — tx_dsp_run starts it). */
-  OpenChannel(t_id, TX_BUFSIZE, TX_DSPSIZE, TX_IN_RATE, TX_DSP_RATE, TX_OUT_RATE,
+  OpenChannel(t_id, t_in_size, TX_DSPSIZE, TX_IN_RATE, dsp_rate, out_rate,
               1, 0, 0.010, 0.025, 0.0, 0.010, 1);
   SetTXABandpassWindow(t_id, 1);        /* 7-term Blackman-Harris */
   SetTXABandpassRun(t_id, 1);
   SetTXABandpassFreqs(t_id, flo, fhi);
-  SetTXACFIRRun(t_id, 1);               /* P2 compensating FIR — required */
+  SetTXACFIRRun(t_id, p1 ? 0 : 1);      /* ⛔ P2 firmware requires it, P1 must
+                                           NOT run it (transmitter.c:1325)   */
   SetTXAAMSQRun(t_id, 0);               /* mic noise gate off */
   SetTXAALCAttack(t_id, 1);
   SetTXAALCDecay(t_id, 10);
@@ -82,7 +88,7 @@ void tx_dsp_feed_mic(const float *mic, int n) {
       t_mic[t_fill * 2    ] = (double)mic[i];   /* I = mic sample */
       t_mic[t_fill * 2 + 1] = 0.0;              /* Q = 0 (real mic) */
       t_fill++;
-      if (t_fill >= TX_BUFSIZE) {
+      if (t_fill >= t_in_size) {
         int err = 0;
         fexchange0(t_id, t_mic, t_iq, &err);    /* mic block -> IQ block */
         t_blocks++;

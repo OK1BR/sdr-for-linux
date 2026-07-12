@@ -67,16 +67,19 @@ static double env_peak(const double *iq, int n) {
 }
 
 /* Feed a 1000 Hz mic tone (amplitude `amp`, `blocks`×512 samples, optional PROC)
- * through a fresh TX channel in `mode`; return the |DFT| at +1000/-1000/+5000 Hz
- * plus the envelope peak over the settled tail. Returns the fexchange0 error. */
-static int run_tone(int mode, double amp, int blocks, int comp, double comp_db,
-                    double *m_plus, double *m_minus, double *m_junk, double *m_env) {
+ * through a fresh TX channel in `mode` on the `p1` (48 k, no CFIR) or P2 (192 k)
+ * chain; return the |DFT| at +1000/-1000/+5000 Hz plus the envelope peak over
+ * the settled tail. Returns the fexchange0 error. */
+static int run_tone_p(int mode, int p1, double amp, int blocks, int comp,
+                      double comp_db, double *m_plus, double *m_minus,
+                      double *m_junk, double *m_env) {
   g_np = 0;
+  double rate = p1 ? 48000.0 : 192000.0;
   /* Signed passband selects the sideband in WDSP (same convention as RX): USB is
    * a positive passband, LSB a negative one (cf. gui.c FILT_USB/FILT_LSB). */
   double flo = (mode == TXTEST_LSB) ? -2850.0 : 150.0;
   double fhi = (mode == TXTEST_LSB) ?  -150.0 : 2850.0;
-  tx_dsp_create(mode, flo, fhi, on_tx_iq, NULL);
+  tx_dsp_create(mode, flo, fhi, p1, on_tx_iq, NULL);
   tx_dsp_set_compressor(comp, comp_db);
   tx_dsp_set_gate(g_gate_on, g_gate_db);
   tx_dsp_run(1);
@@ -86,15 +89,20 @@ static int run_tone(int mode, double amp, int blocks, int comp, double comp_db,
     for (int i = 0; i < 512; i++) { mic[i] = (float)(amp * sin(ph)); ph += dph; }
     tx_dsp_feed_mic(mic, 512);
   }
-  int an = 40000, a0 = g_np - an;                /* settled tail, past transients */
+  int an = p1 ? 10000 : 40000, a0 = g_np - an;   /* settled tail, past transients */
   if (a0 < 0) { a0 = g_np / 2; an = g_np - a0; }
-  *m_plus  = cmag_at(g_iq + 2 * a0, an, +1000.0, 192000.0);
-  *m_minus = cmag_at(g_iq + 2 * a0, an, -1000.0, 192000.0);
-  *m_junk  = cmag_at(g_iq + 2 * a0, an, +5000.0, 192000.0);
+  *m_plus  = cmag_at(g_iq + 2 * a0, an, +1000.0, rate);
+  *m_minus = cmag_at(g_iq + 2 * a0, an, -1000.0, rate);
+  *m_junk  = cmag_at(g_iq + 2 * a0, an, +5000.0, rate);
   if (m_env) { *m_env = env_peak(g_iq + 2 * a0, an); }
   int err = tx_dsp_last_error();
   tx_dsp_destroy();
   return err;
+}
+
+static int run_tone(int mode, double amp, int blocks, int comp, double comp_db,
+                    double *m_plus, double *m_minus, double *m_junk, double *m_env) {
+  return run_tone_p(mode, 0, amp, blocks, comp, comp_db, m_plus, m_minus, m_junk, m_env);
 }
 
 /* ---- 2. RX-side decode (mirror of decode_iq, np.c:2446) ------------------ */
@@ -132,6 +140,24 @@ int main(void) {
   int lerr = run_tone(TXTEST_LSB, 0.5, 90, 0, 0.0, &lp, &lm, &lj, NULL);
   char det[160];
   ok("fexchange0 no error (USB+LSB)", uerr == 0 && lerr == 0, "");
+
+  /* ---- 1b. P1 (HL2) chain: 48 k out, no CFIR — same clean-SSB criteria ---- */
+  {
+    printf("\n[P1 TX DSP] the 48 k / CFIR-off chain (T2, docs/P1-TX-SCOPE.md):\n");
+    double pp, pm, pj;
+    int np_before;
+    int perr = run_tone_p(TXTEST_USB, 1, 0.5, 90, 0, 0.0, &pp, &pm, &pj, NULL);
+    np_before = g_np;
+    ok("fexchange0 no error (P1 USB)", perr == 0, "");
+    snprintf(det, sizeof det, "out pairs %d (in 90*512 @1:1)", np_before);
+    ok("P1 output rate 1:1 with mic rate", np_before == 90 * 512, det);
+    /* Same WDSP baseband convention as the P2 USB case: the tone lands on the
+     * −1 kHz side (the DUC flips it on air). Magnitude 0.5 vs P2's 0.4481 =
+     * ×0.896 — direct proof the P2-only CFIR really is off on the P1 chain. */
+    snprintf(det, sizeof det, "-1k %.4f  +1k %.6f  +5k %.6f (P2 CFIR would give %.4f)",
+             pm, pp, pj, pm * 0.896);
+    ok("P1 tone clean (image/junk < 1%)", pm > 0.45 && pp < pm / 100 && pj < pm / 100, det);
+  }
   double us_hi = up > um ? up : um, us_lo = up > um ? um : up;
   double ls_hi = lp > lm ? lp : lm, ls_lo = lp > lm ? lm : lp;
   snprintf(det, sizeof det, "USB +1k=%.4f -1k=%.4f | LSB +1k=%.4f -1k=%.4f", up, um, lp, lm);
