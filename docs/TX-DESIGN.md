@@ -643,3 +643,120 @@ Lifting the lockout = implement the Thetis ordering (PS RX-specific before
 MOX on key-down, RX restore before un-MOX on key-up, ± quiesce) and re-test
 live — each failed attempt costs a power cycle. Alternative for the 10E:
 PureSignal over Protocol 1 once P1 lands (HL2 milestone).
+
+## 10. P2 TX transport hardening — continuous DUC stream + TCI key ownership (2026-07-13, live-verified)
+
+Night session after the SSB saga (see CONTEST/saga notes). Three mechanism
+fixes, all live-verified on the G2E into the dummy load; tree gates PASS.
+
+**N3 completed — continuous DUC zero stream (Thetis parity).** The P2 feed
+thread now emits zero-IQ blocks to the framer whenever it is NOT keyed, so
+port 1029 carries 800 pkt/s from app start (encoded silence; WDSP idle).
+Verified against the C10 v11.0.5 gateware before landing: the interpolator
+drains the TX FIFO unconditionally (`CicInterpM5` enable is hard `1'd1`) so
+the FIFO can never fill during RX, and `IQ_Tx_data = FPGA_PTT ? data : 0`
+(Hermes.v:1021) plus MOX-off/drive-0 makes RF from zeros impossible. What it
+buys: no key-down FIFO-empty transient, and the radio's DUC sequence-error
+counter (HP status bytes 32-35) is now a TRUE lost-packet tripwire — during
+overs and across key edges it stays at zero (live: R5-R10). The constant +2
+right after app start is expected and harmless: first packet vs the radio's
+stale `last_sequence_number` (survives run toggles, byte_to_48bits.v:128) +
+the p2 restart to the configured rate (ring reset). ⚠ Any growth AFTER
+stream start = real wire loss — investigate immediately.
+
+**Mic-clock pacing is self-healing now.** The one-shot permanent fallback
+(N2 v2) is gone: on timeout the feed falls back to the local timer AND
+re-probes the radio's mic-clock credit non-blockingly each block, resuming
+radio-clock pacing when the stream returns. Needed because the pacing now
+runs continuously from app start (before p2 is even up) and must survive
+p2 link restarts. v1's lesson holds: a timeout never consumes credit, and
+each block is paced by exactly one discipline.
+
+**⛔ TCI stuck-MOX fixed — the real cause of both live "MOX held" incidents.**
+It was never a missing WS pong (live A: lws answers client pings, RTT 1 ms;
+the night client blocked its own asyncio loop with subprocess.run). Two real
+holes, both closed:
+1. `tx_owner` only tracked TCI-*audio* ownership, so a client that keyed
+   mic-source MOX (`trx:0,true;` without `,tci`) and vanished left MOX held.
+   New `s_trx_client` records the keyer slot for BOTH sources; CLOSED unkeys
+   when the keyer departs. The reporter forgets the keyer whenever TRX drops
+   from any path, so a stale slot can never unkey someone else's over.
+2. A client's final `trx:0,false;` immediately followed by close lost the
+   race: process_payload_idle (main loop) saw `inuse==0` and dropped it.
+   The keyer-reap in CLOSED now covers that too (live R6: disconnect →
+   "keying TCI client disconnected — unkeyed" → clean UNKEY).
+Plus `retry_and_idle_policy` on the lws context (validity PING at 10 s idle,
+hangup at 30 s): a half-open client (died with no close frame — the true
+night scenario) is reaped and unkeyed in ≤ ~30 s (live B: SIGSTOPped keyed
+client → reap + unkey in 28 s). piHPSDR has no such policy — deliberate delta.
+
+**End-to-end voice verification (R9/R10, corrected after Richard's ear
+review):** the WIRE is faithful — mic dump ↔ WDSP output (txre) track 1:1
+(DEXP −45 deepens gaps, zero syllable chopping), transport clean (0 seq
+errors, 0 ring drops/shorts), and txre matches the tx48.wav acceptance
+reference on spectral balance (60-300 vs 300-2700 Hz: +1.0 vs +0.1 dB).
+The IC-705 bench recording of a low-RMS voice over does NOT correspond to
+the wire, and canNOT: spectrograms show it is an AGC-INVERTED image of a
+weak signal over a strong receiver floor (gaps = floor pulled up ~30 dB,
+speech = gain-reduction dark stripes; band-envelope similarity ≈ 0.1).
+An earlier r=0.861 "spectral similarity" claim was a flawed metric
+(flattened spectrogram correlation measures average spectral shape, not
+temporal correspondence) — retracted. ⚠ Bench rules: the 705-USB free-air
+pickup is usable for TONE dBc forensics (R6: 704/1904 Hz + ±100 Hz
+sidebands cleanly resolved) but NOT for voice-quality judgment at
+dummy-load leakage levels — feed it real signal (coupler/attenuator),
+AGC off / manual RF gain, battery + no USB against EMI. Also found:
+config filt_lo had regressed 150→100 via a config-backup restore, so the
+100-300 Hz room rumble (fan-blade lines 106-292 Hz) passed the TX filter
+and WAS transmitted; measured on txre: a 250/300 Hz low edge cuts the
+rumble by 8/38 dB. Restored to the 150 default (250-300 is Richard's
+optional Prefs call against the fans).
+
+**Resolution (R13, 2026-07-13 ~01:15, linear measurement):** Richard turned
+the 705's AGC OFF and the inter-word noise persisted — falsifying the AGC
+theory too. R13 (two overs, drive 10/30 W, 705 recorded linearly) settled
+it: the inter-word level equals the bench's NO-TX floor exactly (−48.5 dBFS
+before/between/after the overs vs −45..−48.5 inside the overs' gaps), and
+the speech-over-floor margin improved exactly by the added TX power — the
+floor does not scale with drive, so it is NOT in the modulation path. The
+wire carries ~40 dB speech/gap contrast; the bench link budget (antenna-to-
+antenna + attenuation at the 705) simply put speech only 12-20 dB above the
+receiver's own floor. With AGC on, that floor is pumped up in every pause
+(the audible "rise"); with AGC off it is constant but still prominent.
+⚠ **Reference bench rule:** off-air voice judgment needs the signal ≥ 40 dB
+above the monitoring receiver's floor (reduce attenuation / tighten
+coupling), else every pause fills with the bench floor regardless of TX
+quality. Ruled out live along the way: ALC (A/B with SDRFL_TX_NOALC — never
+engages, min 0.0 dB), leveler (no call sites since no-knobs; wire gap
+profile flat), PipeWire processors (graph clean), receiver AGC (this test),
+and a 300 Hz TX low edge (made contrast 3.5 dB WORSE — reverted to 150).
+
+## 11. Audio reference layout (2026-07-13, Richard's ask after the saga)
+
+Everything you hear or say now lives on the **Audio** preferences page,
+three groups; per-row "· live" / "· restart to apply" markers throughout:
+- **Receive**: output device, output sample rate (48/96/192 — AF is
+  filter-limited, higher is pointless), digital master gain (1 =
+  calibrated).
+- **Transmit**: microphone device (Default = system source), TX bandpass
+  low/high edge (reference **150 / 2850 Hz**, live-applied; eSSB = raise
+  the high edge, mind the band plan), monitor (MON) level. Group header
+  states the fixed chain: mic → TX bandpass → ALC limiter — no hidden
+  processing; the level is made on the PREAMP against the TX HUD Mic bar
+  (peaks −6..0 dBFS).
+- **Latency**: PipeWire quantum (RX out + mic capture).
+The Radio page's Transmit group keeps only power/keying/safety. Dead
+config keys of the pre-no-knobs era (mic_gain, comp, comp_db, gate,
+gate_db, monitor_raw — some carried uninitialised garbage) are removed
+from the Settings struct and actively scrubbed from config.ini on save.
+
+**Knobs returned (2026-07-13, Richard's explicit call — reverses the
+2026-07-12 no-knobs decision):** Mic gain (−12..+30 dB), Noise gate DEXP
+(switch + threshold −60..−10 dBFS) and PROC (switch + 0-20 dB compression)
+are back as operator settings in the Audio page's Transmit group, in chain
+order ahead of the bandpass rows. Defaults reproduce the validated fixed-era
+behaviour exactly: mic gain 0, PROC off, gate ON at −45 dBFS. All live
+(gate_slot re-asserts per slot; WDSP setters no-op when unchanged). ⛔ The
+digi/TCI clean-chain rule is now enforced in the ENGINE, not the GUI: the
+knobs act on the live mic in voice modes only — with an external TX-audio
+source or in DIGU/DIGL, mic gain forces 0 and gate/PROC force off.

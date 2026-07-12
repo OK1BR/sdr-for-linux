@@ -169,8 +169,6 @@ int settings_load(Settings *s) {
       s->tx_mon = g_key_file_get_integer(kf, GROUP_TX, "monitor", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "monitor_db", NULL))
       s->tx_mon_db = g_key_file_get_double(kf, GROUP_TX, "monitor_db", NULL);
-    if (g_key_file_has_key(kf, GROUP_TX, "monitor_raw", NULL))
-      s->tx_mon_raw = g_key_file_get_integer(kf, GROUP_TX, "monitor_raw", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "cw_wpm", NULL))
       s->cw_wpm = g_key_file_get_integer(kf, GROUP_TX, "cw_wpm", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "cw_pitch", NULL))
@@ -318,6 +316,10 @@ int settings_save(const Settings *s) {
   g_key_file_set_double (kf, txdev,        "drive_digi_max", s->tx_digi_max);
   g_key_file_set_double (kf, txdev,        "tune_w",    s->tx_tune);
   g_key_file_set_double (kf, GROUP_TX,     "swr_alarm", s->tx_swr);
+  /* monitor_raw stays dead (never applied; old files carried garbage in it —
+   * found 2026-07-13: 1667403520). The voice-chain knob keys below are LIVE
+   * again since 2026-07-13 (Richard returned them, Audio prefs page). */
+  g_key_file_remove_key(kf, GROUP_TX, "monitor_raw", NULL);
   g_key_file_set_double (kf, GROUP_TX,     "mic_gain",  s->mic_gain);
   g_key_file_set_integer(kf, GROUP_TX,     "comp",      s->tx_comp);
   g_key_file_set_double (kf, GROUP_TX,     "comp_db",   s->tx_comp_db);
@@ -332,7 +334,6 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_TX,     "ps_stbl",   s->ps_stbl);
   g_key_file_set_integer(kf, GROUP_TX,     "monitor",   s->tx_mon);
   g_key_file_set_double (kf, GROUP_TX,     "monitor_db", s->tx_mon_db);
-  g_key_file_set_integer(kf, GROUP_TX,     "monitor_raw", s->tx_mon_raw);
   g_key_file_set_integer(kf, GROUP_TX,     "cw_wpm",    s->cw_wpm);
   g_key_file_set_integer(kf, GROUP_TX,     "cw_pitch",  s->cw_pitch);
   g_key_file_set_double (kf, GROUP_TX,     "cw_sidetone_db", s->cw_st_db);

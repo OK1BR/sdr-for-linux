@@ -66,11 +66,14 @@ typedef struct {
   double    tx_digi_max;/* ⛔ drive cap in DIGU/DIGL, W (100 = uncapped)          */
   double    tx_tune;    /* TUNE power request (W)                                 */
   double    tx_swr;     /* SWR trip threshold                                     */
+  /* Voice-chain knobs — removed 2026-07-12 (no-knobs), RETURNED 2026-07-13 on
+   * Richard's call, now on the Audio prefs page. Voice modes + live mic only;
+   * the digi/TCI clean-chain rule is enforced in the engine. */
   double    mic_gain;   /* TX mic gain (dB, SSB voice) — SetTXAPanelGain1         */
   int       tx_comp;    /* speech processor (PROC) on/off                         */
-  double    tx_comp_db; /* PROC compression (dB, 0-20; 0 = auto-leveler only)     */
+  double    tx_comp_db; /* PROC compression (dB, 0-20)                            */
   int       tx_gate;    /* mic noise gate (DEXP) on/off                           */
-  double    tx_gate_db; /* gate threshold (dBFS, post-mic-gain; -60..-10)         */
+  double    tx_gate_db; /* gate threshold (dBFS; −45 = live-validated default)    */
   int       tx_ptt;     /* footswitch: radio PTT input keys like MOX (0/1)        */
   int       tx_ptt_tip; /* PTT contact on mic-jack tip (0 = ring, Apache default) */
   int       ps_enable;  /* PureSignal on/off (F7/PS-2)                            */
@@ -80,7 +83,6 @@ typedef struct {
   int       ps_stbl;    /* PS STBL (SetPSStabilize) — references default 0        */
   int       tx_mon;     /* TX monitor (self-listen: voice mic / CW sidetone)      */
   double    tx_mon_db;  /* monitor level (dB, -40..0)                             */
-  int       tx_mon_raw; /* monitor source: 0 = processed TX audio, 1 = raw mic    */
   double    tx_flo;     /* TX audio filter low edge (Hz; default 150)             */
   double    tx_fhi;     /* TX audio filter high edge (Hz; default 2850, eSSB up)  */
   int       cw_wpm;     /* CW keyer speed (WPM, F6d-1c)                           */

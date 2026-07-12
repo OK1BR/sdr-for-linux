@@ -63,7 +63,10 @@ int tx_dsp_create(int mode, double flo, double fhi, int p1, tx_iq_cb cb, void *u
   SetTXAAMSQRun(t_id, 0);               /* TXA squelch unused — the gate is DEXP */
   SetTXAALCAttack(t_id, 1);
   SetTXAALCDecay(t_id, 10);
-  SetTXAALCSt(t_id, 1);                 /* ALC always on (piHPSDR: never switch off) */
+  /* SDRFL_TX_NOALC=1: forensic A/B only (Richard 2026-07-13, gap-gain hunt) —
+   * never ship a build relying on it; ALC is the last peak limiter before
+   * the DUC and piHPSDR never switches it off. */
+  SetTXAALCSt(t_id, getenv("SDRFL_TX_NOALC") ? 0 : 1);
   SetTXAPreGenRun(t_id, 0);
   SetTXAPostGenRun(t_id, 0);            /* tune/two-tone generators off until asked */
   SetTXAPanelRun(t_id, 1);

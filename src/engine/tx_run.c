@@ -103,6 +103,11 @@ typedef struct {
   char   country_key[8];
   double pa_trim[11];
   double tx_flo, tx_fhi;   /* TX audio passband edges (Hz, positive lo<hi) */
+  double mic_gain_db;      /* voice-chain knobs (2026-07-13; see tx_run_cfg) */
+  int    comp_on;
+  double comp_db;
+  int    gate_on;
+  double gate_db;
 } tx_cfg_i;
 
 static GThread          *s_thread;
@@ -114,11 +119,13 @@ static volatile int      s_want_tt;        /* g_atomic: two-tone test wants key 
 static volatile int      s_want_cw;        /* g_atomic: CW break-in wants key (feed thread) */
 static volatile int      s_mode;           /* g_atomic: current WDSP/demod mode           */
 static volatile int      s_monitor;        /* g_atomic: TX monitor (self-listen) on/off   */
+static double            s_alc_min_over;   /* gate-slot only: deepest ALC reduction (dB) */
 static volatile int      s_mon_raw;        /* g_atomic: monitor source — 0 = processed TX
                                               audio (WDSP output, faithful to the air),
                                               1 = raw mic (zero latency, piHPSDR style)   */
 static int               s_mon_skip;       /* feed-thread only: on_tx_iq call is CW —
                                               the sidetone branch monitors instead        */
+static volatile int      s_keyed_pub;      /* lock-free keyed flag (see tx_run_keyed)     */
 
 /* SDRFL_TX_DUMP=<dir>: append raw float32 mono streams for TX-audio forensics
  * — mic48k.f32 (the mic exactly as fed to WDSP, 48 kHz) and txre.f32 (Re of
@@ -184,6 +191,12 @@ static void on_tx_iq(const double *iq, int n_pairs, void *u) {
 
   if (s_p1) { p1_tx_iq_push(iq, n_pairs); }
   else      { p2_tx_iq_framer_push(&s_framer, iq, n_pairs); }
+
+  /* N3: on P2 the chain (and this callback) runs CONTINUOUSLY — unkeyed it
+   * carries silence, keeping the radio's DUC FIFO primed and the sequence
+   * ticking (Thetis parity: zeros at 800 pkt/s during RX, no key-down
+   * transient). Everything below is keyed-only consumers. */
+  if (!s_p1 && !g_atomic_int_get(&s_keyed_pub)) { return; }
 
   tx_analyzer_feed(iq, n_pairs);
 
@@ -252,8 +265,8 @@ static void publish(const tx_run_status *st) {
 
 /* Lock-free keyed flag for per-IQ-block consumers (the GUI's RX-audio router
  * keys the RX-on-TX mute off this — polling the mutexed status from the GUI
- * frame tick added ~110 ms to every unkey, contest note #5). */
-static volatile int s_keyed_pub;
+ * frame tick added ~110 ms to every unkey, contest note #5). Declared with
+ * the top statics; on_tx_iq also gates its keyed-only consumers on it. */
 int tx_run_keyed(void) { return g_atomic_int_get(&s_keyed_pub); }
 
 /* One meter+gate slot (~20 Hz, plus an immediate run on any keying-intent
@@ -369,6 +382,19 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
      * (IQ starts on the next feed; the radio ignores it until MOX/relay land, so
      * no RF can precede a consistent TX state.) CW bypasses WDSP — the feed loop
      * emits the shaped carrier IQ directly; here we just assert the wire state. */
+    /* Voice-chain knobs (returned 2026-07-13, Richard's call): mic gain →
+     * DEXP gate → PROC, ahead of the bandpass + ALC. ⛔ The clean-chain rule
+     * SURVIVES the knobs: everything here applies to the LIVE MIC in a VOICE
+     * mode only — the TCI/digi feed and DIGU/DIGL run untouched, CW/TUNE/2T
+     * never pass through the mic path. Gate default −45 dBFS is the
+     * live-validated floor (room noise −50..−57, softest speech −45..−40;
+     * −30 provably chopped 30 % of speech time — keep the threshold BELOW
+     * the quietest speech, not between speech RMS and peaks). */
+    int voice_mic = is_voice && !g_atomic_int_get(&s_ext_src);
+    tx_dsp_set_mic_gain(voice_mic ? cfg.mic_gain_db : 0.0);
+    tx_dsp_set_compressor(voice_mic && cfg.comp_on, cfg.comp_db);
+    tx_dsp_set_gate(voice_mic && cfg.gate_on,
+                    cfg.gate_db != 0.0 ? cfg.gate_db : -45.0);
     tx_dsp_set_mode(cfg.mode, flo, fhi);
     tx_dsp_tune_tone(r.state.tune ? 1 : 0, 0.0);   /* TUNE = post-gen carrier */
     if (tt_want_now) { tx_dsp_two_tone(1, tt_sign * 700.0, tt_sign * 1900.0); }
@@ -432,6 +458,10 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
         fprintf(stderr, "tx: over stats — mic drops=%d shorts=%d, "
                 "iq ring under=%d drops=%d\n", md, ms, ru, rd);
       }
+      /* Deepest ALC gain reduction of the over (20 Hz meter samples) — the
+       * gap-gain forensics: 0.0 = the ALC never engaged at all. */
+      fprintf(stderr, "tx: over ALC min %.1f dB\n", s_alc_min_over);
+      s_alc_min_over = 0.0;
 
       if (s_dump_mic) { fflush(s_dump_mic); }
       if (s_dump_tx)  { fflush(s_dump_tx); }
@@ -442,6 +472,13 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     engine_set_tx_state(&r.state);   /* refresh (frequency/antenna may have changed) */
     tx_dsp_set_mode(cfg.mode, flo, fhi);   /* live TX-filter change while keyed —
                                               WDSP setters no-op when unchanged */
+    {   /* voice-chain knobs live too (same no-op-when-unchanged contract) */
+      int voice_mic = is_voice && !g_atomic_int_get(&s_ext_src);
+      tx_dsp_set_mic_gain(voice_mic ? cfg.mic_gain_db : 0.0);
+      tx_dsp_set_compressor(voice_mic && cfg.comp_on, cfg.comp_db);
+      tx_dsp_set_gate(voice_mic && cfg.gate_on,
+                      cfg.gate_db != 0.0 ? cfg.gate_db : -45.0);
+    }
     if (tt_want_now != tt_applied) {       /* two-tone toggled mid-over */
       tx_dsp_two_tone(tt_want_now, tt_sign * 700.0, tt_sign * 1900.0);
       tt_applied = tt_want_now;
@@ -486,6 +523,10 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   st.swr       = tx_meter_swr();
   if (keyed) { tx_dsp_get_meters(&st.mic_pk, &st.alc_gain, &st.lvlr_gain); }  /* live WDSP TX level */
   else       { st.mic_pk = -99.0; st.alc_gain = 0.0; st.lvlr_gain = 0.0; }
+  if (st.alc_gain > -100.0 && st.alc_gain < s_alc_min_over) {   /* over-stats; the
+       meter reads log(0) garbage before the first block flows — ignore it */
+    s_alc_min_over = st.alc_gain;
+  }
   /* Digi (TCI) TX-audio level: peak over the samples pushed since the last
    * slot (meter only — the audio is untouched, ⛔ digi clean-chain rule). */
   unsigned epk = atomic_exchange_explicit(&s_ext_pk_u, 0u, memory_order_relaxed);
@@ -519,6 +560,8 @@ static gpointer tx_thread(gpointer u) {
   memset(silence, 0, sizeof silence);
   int prev_keyed = 0, prev_want = 0, keyed = 0, keyed_mox = 0, keyed_cw = 0;
   int prev_intent = 0;             /* keying-intent fingerprint (edge-triggered gate) */
+  int mic_clock_ok = 0;            /* P2: radio mic stream paces the feed; flips on the
+                                      first clock credit, self-heals across link drops */
   gint64 last_gate = 0, next_feed = 0, cw_key_on = 0;
 
   while (g_atomic_int_get(&s_running)) {
@@ -560,7 +603,7 @@ static gpointer tx_thread(gpointer u) {
       prev_intent = intent;
       keyed = gate_slot(&prev_keyed, &prev_want, silence, &keyed_mox, &keyed_cw, fresh);
       if (keyed && next_feed == 0) { next_feed = g_get_monotonic_time(); }
-      if (!keyed) { next_feed = 0; }
+      if (!keyed && s_p1) { next_feed = 0; }   /* P2 paces continuously (N3) */
     }
 
     /* 20 s continuous-key hardware backstop: abort the Morse so break-in unkeys. */
@@ -572,6 +615,23 @@ static gpointer tx_thread(gpointer u) {
       }
     } else { cw_key_on = 0; }
 
+    /* N2 v2 (2026-07-12 night): on P2 the keyed TX production is paced by the
+     * RADIO's mic stream (port 1026, 64 @48 k, 750 pkt/s — live-verified on
+     * the G2E), the same master clock as the DUC, so host production can
+     * never drift against the radio and the DUC FIFO can never starve
+     * mid-over. This matters because the C10 gateware handles a TX FIFO
+     * underrun by silently REPEATING the last IQ sample — no flag, no
+     * counter (v11.0.5 Verilog: CicInterpM5 req1 is unconditional, rdempty
+     * unconnected, CC_encoder byte[4] has no FIFO bits) — i.e. every host
+     * stall > the FIFO lead lands as AM/PM grit on the modulation.
+     * v1 of this failed live: timeout == block duration and a timeout did
+     * not consume credit → ~3.6 % over-rate, warbled voice. v2: the 100 ms
+     * timeout is purely a stream-absence detector → fall back to the proven
+     * local-timer pacing, and RESUME the radio clock if credits reappear (a
+     * non-blocking probe per block — the stream now paces the continuous N3
+     * feed from app start, so it must survive p2 link restarts; P1/HL2
+     * always use the timer, no mic-stream contract there). */
+    int fed = 0;
     if (keyed) {
       if (keyed_cw) {
         /* CW: pull the shaped envelope and emit it as a keyed carrier IQ
@@ -648,12 +708,55 @@ static gpointer tx_thread(gpointer u) {
       } else {
         tx_dsp_feed_mic(silence, FEED_BLOCK);   /* TUNE: post-gen carrier, mic muted */
       }
-      next_feed += PACE_US;
-      gint64 slack = next_feed - g_get_monotonic_time();
-      if (slack > 0) { g_usleep((gulong)slack); }
-      else           { next_feed = g_get_monotonic_time(); }   /* fell behind → resync */
+      fed = 1;
+    } else if (!s_p1) {
+      /* N3, second half (Thetis parity, 2026-07-12): while UNKEYED on P2 the
+       * feed thread keeps the DUC stream alive with zero-IQ blocks at the
+       * same cadence — 800 pkt/s of encoded silence from app start (WDSP
+       * stays idle; zeros need no DSP; on_tx_iq's keyed gate skips every
+       * keyed-only consumer). No RF can result: MOX off, drive 0, zero
+       * payload, and the gateware forces the DUC input to zero while
+       * un-MOXed anyway (Hermes.v:1021). The TX FIFO cannot fill either —
+       * the interpolator drains it at 192 k unconditionally (CicInterpM5
+       * enable is hard 1'd1, v11.0.5). What this buys: the DUC FIFO is
+       * primed and the sequence numbering is wire-verified BEFORE the first
+       * key-on — no start-of-over transient, and the radio's DUC seq-error
+       * counter becomes a true lost-packet detector (any bump after stream
+       * start = real loss; the single +1 AT stream start is expected — the
+       * radio checks against a stale last_sequence_number that survives run
+       * toggles, byte_to_48bits.v:128). */
+      static const double zblk[2 * TX_IQ_BLOCK];
+      on_tx_iq(zblk, s_iq_block, NULL);
+      fed = 1;
     } else {
-      g_usleep(IDLE_US);
+      g_usleep(IDLE_US);       /* P1 idles unkeyed — no unkeyed-stream contract */
+    }
+
+    if (fed) {
+      /* One pacing discipline per produced block, keyed or not: the radio's
+       * mic clock when it ticks, the local timer when it does not. */
+      int paced = 0;
+      if (!s_p1) {
+        if (mic_clock_ok) {
+          if (p2_mic_clock_wait(FEED_BLOCK, 100000)) {
+            paced = 1;
+          } else {
+            mic_clock_ok = 0;
+            fprintf(stderr, "tx: radio mic clock lost — timer pacing (auto-resumes)\n");
+            fflush(stderr);
+            next_feed = g_get_monotonic_time();   /* resync the timer path */
+          }
+        } else if (p2_mic_clock_wait(FEED_BLOCK, 0)) {   /* non-blocking probe */
+          mic_clock_ok = 1;                 /* radio clock ticking — slave to it */
+          paced = 1;
+        }
+      }
+      if (!paced) {
+        next_feed += PACE_US;
+        gint64 slack = next_feed - g_get_monotonic_time();
+        if (slack > 0) { g_usleep((gulong)slack); }
+        else           { next_feed = g_get_monotonic_time(); }   /* fell behind → resync */
+      }
     }
   }
   return NULL;
@@ -761,6 +864,11 @@ void tx_run_set_cfg(const tx_run_cfg *cfg) {
   s_cfg.ptt_enabled    = cfg->ptt_enabled;
   s_cfg.tx_flo         = cfg->tx_flo;
   s_cfg.tx_fhi         = cfg->tx_fhi;
+  s_cfg.mic_gain_db    = cfg->mic_gain_db;
+  s_cfg.comp_on        = cfg->comp_on;
+  s_cfg.comp_db        = cfg->comp_db;
+  s_cfg.gate_on        = cfg->gate_on;
+  s_cfg.gate_db        = cfg->gate_db;
   g_strlcpy(s_cfg.country_key, cfg->country_key ? cfg->country_key : "", sizeof s_cfg.country_key);
   for (int i = 0; i < 11; i++) { s_cfg.pa_trim[i] = cfg->pa_trim[i]; }
   g_mutex_unlock(&s_cfg_lock);

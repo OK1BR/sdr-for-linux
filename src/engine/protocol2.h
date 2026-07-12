@@ -292,4 +292,14 @@ void p2_tx_iq_socket_emit(const unsigned char *pkt, int len, void *user);
  * transport stats line in tx_run (nonzero = SSB audio lost on the wire). */
 void p2_txiq_ring_stats_take(int *drops);
 
+/*
+ * N2 (2026-07-12): the radio's continuous mic stream (port 1026, 48 kHz) is
+ * the TX chain's sample clock — Thetis/piHPSDR parity, same master clock as
+ * the DUC, so host production can never drift against the radio. The tx_run
+ * feed thread blocks here for `need` samples of clock credit per block;
+ * 0 = timeout (no mic stream — fall back to local-timer pacing).
+ */
+int  p2_mic_clock_wait(int need, long long timeout_us);
+void p2_mic_clock_flush(void);
+
 #endif /* SDRFL_ENGINE_PROTOCOL2_H */

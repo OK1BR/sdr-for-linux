@@ -78,6 +78,15 @@ typedef struct {
 
 static Client              s_cli[TCI_MAX_CLIENTS];
 static GMutex              s_lock;        /* clients table + queues          */
+/* ⛔ Which client slot keyed the radio via `trx` (−1 = none) — BOTH sources,
+ * mic-MOX and TCI-audio. tx_owner only tracks TCI-audio ownership, so a
+ * mic-source keyer that vanished left MOX held forever (live 2026-07-12,
+ * twice: the client's final `trx:0,false` is dropped by the close race in
+ * process_payload_idle — inuse is already 0 — and CLOSED had nothing to
+ * unkey by). CLOSED unkeys when the departing slot matches. Guarded by
+ * s_lock; cleared whenever TCI unkeys or the reporter sees TRX drop (a
+ * GUI/pedal unkey), so a stale slot can never unkey someone else's over. */
+static int                 s_trx_client = -1;
 static struct lws_context *s_ctx;
 static GThread            *s_thread;
 static volatile int        s_run;
@@ -246,7 +255,14 @@ static gboolean tci_reporter(gpointer data) {
   if (!s_last.valid || lo != s_last.flo || hi != s_last.fhi) {
     tci_broadcastf("rx_filter_band:0,%d,%d;", lo, hi);
   }
-  if (!s_last.valid || trx != s_last.trx)   { tci_broadcastf("trx:0,%s;", trx ? "true" : "false"); }
+  if (!s_last.valid || trx != s_last.trx) {
+    tci_broadcastf("trx:0,%s;", trx ? "true" : "false");
+    if (!trx) {              /* unkeyed from ANY path — forget the TCI keyer */
+      g_mutex_lock(&s_lock);
+      s_trx_client = -1;
+      g_mutex_unlock(&s_lock);
+    }
+  }
   if (!s_last.valid || tune != s_last.tune) { tci_broadcastf("tune:0,%s;", tune ? "true" : "false"); }
   if (!s_last.valid || mute != s_last.mute) { tci_broadcastf("mute:%s;", mute ? "true" : "false"); }
   if (!s_last.valid || wpm != s_last.wpm)   { tci_broadcastf("cw_macros_speed:%d;", wpm); }
@@ -459,12 +475,16 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
         } else {
           s_ops.set_trx(1);              /* mic-sourced MOX, like the GUI key */
         }
+        g_mutex_lock(&s_lock);
+        s_trx_client = (int)(c - s_cli);   /* remember the keyer (any source) */
+        g_mutex_unlock(&s_lock);
       } else {
         s_ops.set_trx(0);
         int was;
         g_mutex_lock(&s_lock);
         was = c->tx_owner;
         c->tx_owner = 0;
+        s_trx_client = -1;
         g_mutex_unlock(&s_lock);
         if (was) { s_ops.set_tx_source_tci(0); }
       }
@@ -683,15 +703,17 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
   /* anything else: ignored (per spec: invalid commands are ignored) */
 }
 
-/* TX-owner client vanished (disconnect) — unkey + revert to mic, on the main
- * thread. A dangling key with no audio source must never stay up. */
+/* The keying client vanished (disconnect or validity-reap) — unkey + revert
+ * to mic, on the main thread. A dangling key with nobody responsible must
+ * never stay up; set_trx(0)/set_tx_source_tci(0) are no-ops when already
+ * clear, so firing this for an already-unkeyed radio is harmless. */
 static gboolean tx_owner_lost_idle(gpointer data) {
   (void)data;
   if (s_run) {
     s_ops.set_trx(0);
     s_ops.set_tx_source_tci(0);
     tci_broadcastf("trx:0,%s;", s_ops.get_trx() ? "true" : "false");
-    fprintf(stderr, "tci: TX-owner client disconnected — unkeyed\n");
+    fprintf(stderr, "tci: keying TCI client disconnected — unkeyed\n");
   }
   return G_SOURCE_REMOVE;
 }
@@ -862,8 +884,9 @@ static int lws_cb(struct lws *wsi, enum lws_callback_reasons reason,
   case LWS_CALLBACK_CLOSED:
     fprintf(stderr, "tci: client %d disconnected\n", *slot);
     g_mutex_lock(&s_lock);
-    if (c->tx_owner) {                   /* ⛔ never leave a key without owner */
+    if (c->tx_owner || s_trx_client == *slot) {   /* ⛔ never leave a key without owner */
       c->tx_owner = 0;
+      s_trx_client = -1;
       g_idle_add(tx_owner_lost_idle, NULL);
     }
     if (c->au_sub) { atomic_fetch_sub(&s_au_active, 1); }
@@ -1114,6 +1137,7 @@ int tci_server_start(int port, const TciOps *ops) {
   if (s_run) { return 0; }
   s_ops = *ops;
   memset(&s_cli, 0, sizeof(s_cli));
+  s_trx_client = -1;
   memset(&s_last, 0, sizeof(s_last));
   s_cw_delay_ms = 10;
   s_debug = g_getenv("SDRFL_TCI_DEBUG") != NULL;
@@ -1135,6 +1159,20 @@ int tci_server_start(int port, const TciOps *ops) {
   info.protocols = s_protocols;
   info.gid = -1;
   info.uid = -1;
+  /* ⛔ Connection-validity policy (2026-07-12 night, live failure): a client
+   * that dies WITHOUT a close frame (killed process, dropped link, client-side
+   * ping timeout) leaves a half-open TCP that lws never times out by default —
+   * LWS_CALLBACK_CLOSED never fires, so a TX-owner's key stays down (MOX held
+   * until someone force-unkeys over a new connection). With the policy lws
+   * PINGs a connection idle ≥10 s and hangs it up ≥30 s without proof of life;
+   * the hangup runs the CLOSED path → tx_owner_lost_idle → unkey. Live WS
+   * stacks auto-answer PING, so only truly dead peers are reaped. (piHPSDR
+   * has no such policy — same stuck-key hazard there; deliberate delta.) */
+  static const lws_retry_bo_t validity = {
+    .secs_since_valid_ping   = 10,
+    .secs_since_valid_hangup = 30,
+  };
+  info.retry_and_idle_policy = &validity;
   s_ctx = lws_create_context(&info);
   if (!s_ctx) {
     fprintf(stderr, "tci: lws_create_context failed (port %d busy?)\n", port);

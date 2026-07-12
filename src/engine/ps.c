@@ -157,7 +157,13 @@ static void feed_cb(const double *txfb, const double *rxfb, int n_pairs, void *u
     dump_left = 0;
     if (p && *p) {
       dumpf = fopen(p, "wb");
-      if (dumpf) { dump_left = 2 * s_fb_rate; }   /* ~2 s at the feedback rate */
+      if (dumpf) {
+        /* SDRFL_PS_DUMP_SECS overrides the ~2 s default (≤120 s) — long
+         * captures let us LISTEN to the coupler (what the PA really emits). */
+        const char *secs = getenv("SDRFL_PS_DUMP_SECS");
+        long s = (secs && atoi(secs) > 0 && atoi(secs) <= 120) ? atoi(secs) : 2;
+        dump_left = s * s_fb_rate;
+      }
     }
   }
   if (dumpf && dump_left > 0) {

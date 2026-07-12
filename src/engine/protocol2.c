@@ -97,6 +97,20 @@ static volatile gint tlm_ptt      = 0;
 static volatile gint cfg_ptt_enable = 0;   /* keep PTT readable during TX      */
 static volatile gint cfg_ptt_tip    = 0;   /* PTT on mic-jack tip (vs ring)    */
 
+/* ---- radio mic clock (N2, 2026-07-12 batch) -------------------------------
+ * The radio streams mic packets (port 1026, 64 samples @48 kHz, ~750/s)
+ * continuously in RX and TX. Thetis and piHPSDR both slave their entire TX
+ * chain to this stream — it ticks on the SAME master clock as the DUC, so the
+ * host production rate can never drift against the radio. We used to ignore
+ * it and pace the TX feed with a local monotonic timer (three clock domains).
+ * The listener counts the CLOCK (samples), not the payload — the local
+ * PipeWire mic / TCI ring / CW generator supply the audio, Thetis-style. */
+static volatile gint mic_clock;        /* accumulated mic-clock samples        */
+static GMutex        mic_clock_lock;
+static GCond         mic_clock_cond;
+/* keyed mirror for the listener (single writer: p2_set_tx_state) */
+static volatile gint cfg_tx_on_atomic;
+
 static int       cfg_device;
 static long long cfg_freq;       /* read by the timer thread, written by p2_set_frequency */
 static GMutex    freq_lock;      /* fences cfg_freq across the GUI/timer threads */
@@ -191,6 +205,22 @@ int p2_build_receive_specific(unsigned char *buf, int device, int sample_rate,
   buf[18 + ddc * 6] = ((sample_rate / 1000) >> 8) & 0xFF;  // rate kHz MSB
   buf[19 + ddc * 6] = ((sample_rate / 1000)     ) & 0xFF;  // rate kHz LSB
   buf[22 + ddc * 6] = 24;            // bits per sample
+
+  /* ⛔ N1 (2026-07-12, live-verified): the RX DDC is DISABLED while keyed —
+   * piHPSDR parity (np.c:1633-1641 sets no enable bits during non-duplex TX).
+   * Leaving it running polluted the TX with a ±100 Hz comb: measured on the
+   * IC-705, disabling dropped the comb from −11 to −33 dBc (E15, 2T A/B with
+   * only this variable changed). Also removes the 1536 kHz Ethernet back-
+   * stream + DDC compute during TX. The listener zero-feeds the demod chain
+   * (paced by the mic stream) so audio/monitor stay alive. SDRFL_TX_RXKEEP=1
+   * restores the old behaviour for A/B experiments only. */
+  {
+    static int rxkeep = -1;
+    if (rxkeep < 0) { const char *e = getenv("SDRFL_TX_RXKEEP"); rxkeep = (e && e[0] == '1'); }
+    if (!rxkeep && xmit && !(ps && ps->enabled)) {
+      buf[7] = 0;                    /* no DDC enabled while keyed (rates stay) */
+    }
+  }
 
   if (ps && ps->enabled && xmit) {
     /* PS feedback pair (np.c:1649-1668): DDC0 ← ADC0 = analog (coupler) RX
@@ -547,6 +577,20 @@ static gpointer txiq_thread(gpointer data) {
   double fifo = 0.0;                    /* samples we are ahead of the DUC */
   gint64 last = g_get_monotonic_time();
 
+  /* SSB-100Hz forensics: sweepable DUC FIFO lead. Default 1250 = piHPSDR
+   * (new_protocol.c:2050). Hypothesis under test: the gateware drains the
+   * FIFO in coarse (10 ms?) chunks, and a ~6.5 ms host lead starves it once
+   * per chunk → AM+PM comb at exactly the chunk rate. Debug-only knob. */
+  double lead = 1250.0;
+  {
+    const char *e = g_getenv("SDRFL_TXIQ_LEAD");
+    if (e && atoi(e) >= 240 && atoi(e) <= 45000) {
+      lead = (double)atoi(e);
+      t_print("p2: TXIQ FIFO lead override: %.0f samples (~%.1f ms)\n",
+              lead, lead / 192.0);
+    }
+  }
+
   while (p2running) {
     g_mutex_lock(&txiq_lock);
     while (p2running &&
@@ -563,7 +607,7 @@ static gpointer txiq_thread(gpointer data) {
     fifo -= (double)(now - last) * (192000.0 / 1e6);
     last = now;
     if (fifo < 0.0)    { fifo = 0.0; }
-    if (fifo > 1250.0) {
+    if (fifo > lead) {
       g_usleep(1000);
       now = g_get_monotonic_time();
       fifo -= (double)(now - last) * (192000.0 / 1e6);
@@ -706,6 +750,7 @@ void p2_set_tx_state(const p2_tx_state *tx) {
     memset(&cfg_tx, 0, sizeof(cfg_tx));
     cfg_tx_on = 0;
   }
+  g_atomic_int_set(&cfg_tx_on_atomic, cfg_tx_on);  /* listener's keyed mirror */
   g_mutex_unlock(&tx_state_lock);
 
   /* Key/unkey/drive/QSY/SWR-trip edge → wake the keepalive timer so the new
@@ -882,6 +927,52 @@ static void parse_high_priority_status(const unsigned char *buf, int len) {
   if (buf[5] & 0x01) { g_atomic_int_or(&tlm_adc0_ovl, 1); }
   if (buf[5] & 0x02) { g_atomic_int_or(&tlm_adc1_ovl, 1); }
 
+  /* byte 4 bits 5/6: DUC (TX) FIFO under/overrun since the previous status
+   * packet (np.c:2640-2641; p2app OutHighPriority.c clears the flags after
+   * every status send → each hit = one flagged status packet; during TX the
+   * status rate is ~1 kHz, resolving event rates up to ~500/s). Listener-
+   * local counters + 1 Hz print — deliberately NOT in p2_telemetry, whose
+   * read-and-clear counters would be split between its two consumers (GUI
+   * tick + tx_run slot).
+   * ⚠ Saturn/G2 (p2app) ONLY. The Hermes-C10 (G2E) gateware never sets these
+   * bits — its CC_encoder byte[4] carries just PTT/Dot/Dash/new_freq/lock/
+   * keyout (verified in the v11.0.5 Verilog) and the TX FIFO has no underrun
+   * visibility at all: on empty the DUC repeats the last IQ sample silently.
+   * So "0 under/over" on a G2E means NOTHING — do not read it as healthy. */
+  {
+    static int duc_under, duc_over, hp_pkts;
+    static gint64 t0;
+    if (buf[4] & 0x20) { duc_under++; }
+    if (buf[4] & 0x40) { duc_over++; }
+    hp_pkts++;
+    gint64 now = g_get_monotonic_time();
+    if (t0 == 0) { t0 = now; }
+    if (now - t0 >= 1000000) {
+      if (duc_under || duc_over) {
+        t_print("p2: DUC FIFO health — under=%d over=%d (of %d status pkts, %.1f s)\n",
+                duc_under, duc_over, hp_pkts, (double)(now - t0) / 1e6);
+      }
+      duc_under = duc_over = hp_pkts = 0;
+      t0 = now;
+    }
+  }
+
+  /* bytes 32-35: TX-IQ sequence-error counter, big-endian u32 — the C10
+   * (G2E) gateware's byte_to_48bits bumps it on every sequence-number
+   * mismatch on the DUC port (lost/reordered host packet), CC_encoder RAM
+   * word 28 → packet bytes 32-35. Cumulative per run; print on change —
+   * any growth during an over = TX IQ lost on the wire = audible grit. */
+  if (len > 35) {
+    static unsigned last_seqerr; static int have_seqerr;
+    unsigned se = ((unsigned)buf[32] << 24) | ((unsigned)buf[33] << 16) |
+                  ((unsigned)buf[34] << 8) | (unsigned)buf[35];
+    if (have_seqerr && se != last_seqerr) {
+      t_print("p2: DUC sequence errors: %u (+%u)\n", se, se - last_seqerr);
+    }
+    last_seqerr = se;
+    have_seqerr = 1;
+  }
+
   /* raw analog words (np.c:2661-2664), big-endian 16-bit. Uncalibrated: the
    * raw->volts scale is model-specific and NOT known for the G2E (neither
    * piHPSDR nor Thetis calibrate it) — surface raw, calibrate live later. */
@@ -970,11 +1061,89 @@ static gpointer listener_thread(gpointer data) {
       }
     } else if (sourceport == HIGH_PRIORITY_TO_HOST_PORT) {
       parse_high_priority_status(buffer, bytesread);
+    } else if (sourceport == MIC_LINE_TO_HOST_PORT) {
+      /* N2: the radio's mic stream (64 samples @48 kHz, 132 B, continuous in
+       * RX and TX) is the TX chain's sample CLOCK — Thetis/piHPSDR parity.
+       * Payload ignored (local mic/TCI/CW supply the audio); we only credit
+       * the clock and wake the tx feed. Clamped so an idle session cannot
+       * overflow the counter. */
+      int nsmp = (bytesread - 4) / 2;
+      /* Forensics (2026-07-12): we do not know whether the G2E actually
+       * streams port 1026 (the N2 live failure printed `no radio mic clock`).
+       * One-shot detection + a few 1 Hz rate lines settle it, then silence. */
+      {
+        static int mic_pkts, mic_lines;
+        static gint64 mic_t0;
+        gint64 mnow = g_get_monotonic_time();
+        if (mic_t0 == 0) {
+          mic_t0 = mnow;
+          t_print("p2: mic stream (port 1026) DETECTED — %d B, %d samples\n",
+                  bytesread, nsmp);
+        }
+        mic_pkts++;
+        if (mnow - mic_t0 >= 1000000) {
+          if (mic_lines < 5) {
+            t_print("p2: mic stream: %d pkts/s (%d samples/pkt)\n",
+                    mic_pkts, nsmp);
+            mic_lines++;
+          }
+          mic_pkts = 0;
+          mic_t0 = mnow;
+        }
+      }
+      if (nsmp > 0 && nsmp <= 720) {
+        g_mutex_lock(&mic_clock_lock);
+        gint c = g_atomic_int_get(&mic_clock) + nsmp;
+        if (c > 1024) { c = 1024; }    /* ≤2 blocks of key-on catch-up: no added
+                                        * first-block latency (credit is already
+                                        * banked), and the txiq pacer still owns
+                                        * the radio-FIFO lead — never a burst */
+        g_atomic_int_set(&mic_clock, c);
+        g_cond_signal(&mic_clock_cond);
+        g_mutex_unlock(&mic_clock_lock);
+
+        /* N1 companion: while keyed WITHOUT PS the RX DDC is disabled, so
+         * the demod chain (audio sink drain + TX-monitor mix) would starve.
+         * Feed zero IQ at the configured RX rate, paced by this mic stream
+         * (64 @48k ⇔ 64·rate/48k RX samples of real time) — the exact
+         * pattern decode_ps_iq() uses when PS feedback replaces the RX
+         * stream. RX is muted while keyed, so the zeros are inaudible. */
+        if (g_atomic_int_get(&cfg_tx_on_atomic) &&
+            !g_atomic_int_get(&ps_txmode) && cfg_cb) {
+          static const double zeros[2 * 64 * 32];    /* 1536k max ⇒ 32× (BSS) */
+          int ratio = cfg_sample_rate / 48000;
+          if (ratio < 1)  { ratio = 1; }
+          if (ratio > 32) { ratio = 32; }
+          cfg_cb(zeros, nsmp * ratio > 64 * 32 ? 64 * 32 : nsmp * ratio, cfg_user);
+        }
+      }
     }
-    // Remaining ports (command-resp 1024, mic 1026) are not needed for RX —
-    // ignore silently.
+    // Remaining port (command-resp 1024) is not needed — ignore silently.
   }
   return NULL;
+}
+
+/* N2: block until `need` mic-clock samples have accumulated, then consume
+ * them. Returns 1 on success, 0 on timeout (mic stream absent — the caller
+ * falls back to local-timer pacing so TX keeps working on radios/firmware
+ * that do not stream mic packets). Single consumer: the tx_run feed thread. */
+int p2_mic_clock_wait(int need, long long timeout_us) {
+  gint64 deadline = g_get_monotonic_time() + timeout_us;
+  g_mutex_lock(&mic_clock_lock);
+  while (g_atomic_int_get(&mic_clock) < need) {
+    if (!g_cond_wait_until(&mic_clock_cond, &mic_clock_lock, deadline)) {
+      g_mutex_unlock(&mic_clock_lock);
+      return 0;
+    }
+  }
+  g_atomic_int_set(&mic_clock, g_atomic_int_get(&mic_clock) - need);
+  g_mutex_unlock(&mic_clock_lock);
+  return 1;
+}
+
+/* Drop any accumulated mic-clock credit (start of a paced stretch). */
+void p2_mic_clock_flush(void) {
+  g_atomic_int_set(&mic_clock, 0);
 }
 
 /* One keepalive tick: sleep up to 100 ms, but wake early on a TX-state kick and
@@ -995,6 +1164,10 @@ static void timer_wait_or_kick(void) {
 
   if (kicked && p2running) {
     send_general();
+    /* The DDC enable rides in the RX-specific packet (N1: disabled while
+     * keyed), so a key/unkey edge must re-send it immediately — piHPSDR
+     * schedules receive_specific on every mox change too (radio.c:2405-2406). */
+    send_receive_specific();
     send_transmit_specific();
     send_high_priority(1);
   }
@@ -1027,12 +1200,10 @@ static gpointer timer_thread(gpointer data) {
       cycling = 0;
       break;
     }
-    /* While a live TX state is set, refresh General (PA-enable) every cycle so it
-     * can never lag the HP relay/MOX (case 8 already sent it this cycle). */
-    g_mutex_lock(&tx_state_lock);
-    int tx_active = cfg_tx_on;
-    g_mutex_unlock(&tx_state_lock);
-    if (tx_active && cycling != 0) { send_general(); }
+    /* N4 (2026-07-12): the extra General-per-100ms during TX is GONE — it was
+     * our delta against both references (piHPSDR: 800 ms always; Thetis sends
+     * no periodic C&C at all). PA-enable consistency at key edges is already
+     * guaranteed by the kick path (General + RX/TX-spec + HP synchronously). */
     timer_wait_or_kick();
   }
   return NULL;

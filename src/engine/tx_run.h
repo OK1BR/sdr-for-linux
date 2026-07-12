@@ -48,6 +48,16 @@ typedef struct {
   double      pa_trim[11];     /* wattmeter correction curve, W (F6b; identity dflt)*/
   double      tx_flo, tx_fhi;  /* TX audio passband edges, Hz (0/0 = 150/2850);
                                   sideband sign is applied per mode internally     */
+  /* Voice-chain knobs — returned 2026-07-13 on Richard's call (reversing the
+   * 2026-07-12 no-knobs decision). Applied to the LIVE MIC in VOICE modes
+   * only; the digi/TCI feed stays ⛔ clean (all forced off) and CW/TUNE/2T
+   * never pass through the mic path. */
+  double      mic_gain_db;     /* SetTXAPanelGain1 (0 = unity)                     */
+  int         comp_on;         /* PROC: WDSP COMP + auto-leveler (+CESSB >5.5 dB)  */
+  double      comp_db;         /* PROC compression, 0-20 dB                        */
+  int         gate_on;         /* DEXP noise gate                                  */
+  double      gate_db;         /* gate threshold dBFS (0 = default −45, the
+                                  live-validated value; −30 provably chopped)      */
 } tx_run_cfg;
 
 /* Live status for the meter / UI (thread-safe snapshot). */

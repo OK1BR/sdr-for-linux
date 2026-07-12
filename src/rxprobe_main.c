@@ -37,8 +37,14 @@ typedef struct {
   int       nfirst;
 } stats_t;
 
+/* SDRFL_IQ_DUMP=<path>: raw interleaved f64 I/Q of the whole collection —
+ * offline spectral forensics (e.g. hunting mains-locked sidebands on a
+ * strong external carrier to test the radio's own clock purity). */
+static FILE *iq_dumpf;
+
 static void on_iq(const double *iq, int n_pairs, void *user) {
   stats_t *s = user;
+  if (iq_dumpf) { fwrite(iq, sizeof(double), (size_t)(2 * n_pairs), iq_dumpf); }
   for (int i = 0; i < n_pairs; i++) {
     double I = iq[2 * i], Q = iq[2 * i + 1];
     s->sumsq += I * I + Q * Q;
@@ -72,6 +78,12 @@ int main(void) {
   long long freq = getenv_ll("SDRFL_FREQ", 14100000);
   int        rate = (int)getenv_ll("SDRFL_RATE", 192000);
   int        secs = (int)getenv_ll("SDRFL_SECS", 2);
+
+  const char *dp = getenv("SDRFL_IQ_DUMP");
+  if (dp && *dp) {
+    iq_dumpf = fopen(dp, "wb");
+    if (iq_dumpf) { fprintf(stderr, "IQ dump -> %s\n", dp); }
+  }
 
   if (getenv("SDRFL_DRYRUN")) {
     // Offline: build the three outgoing packets and hexdump them. Device G2E is
@@ -137,6 +149,7 @@ int main(void) {
   for (int i = 0; i < st.nfirst; i++) { printf(" (%.4f,%.4f)", st.first_i[i], st.first_q[i]); }
   printf("\n");
 
+  if (iq_dumpf) { fclose(iq_dumpf); iq_dumpf = NULL; }
   if (pairs <= 0) {
     fprintf(stderr, "no IQ received — check radio ownership / DDC port\n");
     return 3;

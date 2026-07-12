@@ -245,6 +245,11 @@ typedef struct {
   double      tx_mon_db;     /* monitor level dB (persisted)                        */
   double      tx_flo;        /* TX audio filter low edge, Hz (persisted)            */
   double      tx_fhi;        /* TX audio filter high edge, Hz (persisted; eSSB up)  */
+  double      mic_gain_db;   /* voice-chain knobs (persisted; voice + live mic only)*/
+  int         comp_on;
+  double      comp_db;
+  int         gate_on;
+  double      gate_db;
   int         cw_wpm;        /* CW keyer speed, WPM (persisted, F6d-1c)             */
   int         cw_pitch;      /* CW sidetone pitch, Hz (persisted)                   */
   double      cw_st_db;      /* CW sidetone level, dBFS (persisted)                 */
@@ -1036,6 +1041,16 @@ static void draw_tx_digi_meter(cairo_t *cr, App *app, int w, const tx_run_status
 #define TXF_LO_DFLT  150.0
 #define TXF_HI_DFLT 2850.0
 
+/* Voice-chain knobs (returned 2026-07-13, Richard's call — Audio prefs page). */
+#define MICG_DB_MIN  (-12.0)   /* mic gain, dB (0 = unity — the reference)       */
+#define MICG_DB_MAX   30.0
+#define GATE_DB_MIN  (-60.0)   /* DEXP threshold, dBFS (−45 = validated default) */
+#define GATE_DB_MAX  (-10.0)
+#define GATE_DB_DFLT (-45.0)
+#define COMP_DB_MIN    0.0     /* PROC compression, dB (piHPSDR range)           */
+#define COMP_DB_MAX   20.0
+#define COMP_DB_DFLT  10.0
+
 /* TX display span (Hz): the RX span (rate/zoom), capped at what the TX IQ holds. */
 static double tx_span_hz(App *app) {
   double z = app->zoom > 0.0 ? app->zoom : 1.0;
@@ -1697,6 +1712,11 @@ static void app_to_settings(const App *app, Settings *s) {
   s->tx_mon_db  = app->tx_mon_db;
   s->tx_flo     = app->tx_flo;
   s->tx_fhi     = app->tx_fhi;
+  s->mic_gain   = app->mic_gain_db;
+  s->tx_comp    = app->comp_on;
+  s->tx_comp_db = app->comp_db;
+  s->tx_gate    = app->gate_on;
+  s->tx_gate_db = app->gate_db;
   s->cw_wpm     = app->cw_wpm;
   s->cw_pitch   = app->cw_pitch;
   s->cw_st_db   = app->cw_st_db;
@@ -1881,6 +1901,11 @@ static void tx_push_cfg(App *app) {
   c.ptt_enabled    = app->tx_ptt_enabled;
   c.tx_flo         = app->tx_flo;
   c.tx_fhi         = app->tx_fhi;
+  c.mic_gain_db    = app->mic_gain_db;
+  c.comp_on        = app->comp_on;
+  c.comp_db        = app->comp_db;
+  c.gate_on        = app->gate_on;
+  c.gate_db        = app->gate_db;
   for (int i = 0; i < 11; i++) { c.pa_trim[i] = app->pa_trim[i]; }
   tx_run_set_cfg(&c);
 }
@@ -3535,6 +3560,34 @@ static void on_pref_tx_fhi(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   app->tx_fhi = adw_spin_row_get_value(r);
   tx_push_cfg(app); schedule_save(app);
 }
+/* Voice-chain knobs (2026-07-13) — same live contract as the passband: pushed
+ * via tx_push_cfg, gate_slot re-asserts each slot, WDSP no-ops if unchanged.
+ * Engine enforces voice+live-mic only (digi/TCI chain stays clean). */
+static void on_pref_mic_gain(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  app->mic_gain_db = gtk_range_get_value(r);
+  tx_push_cfg(app); schedule_save(app);
+}
+static void on_pref_gate(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->gate_on = adw_switch_row_get_active(r) ? 1 : 0;
+  tx_push_cfg(app); schedule_save(app);
+}
+static void on_pref_gate_db(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  app->gate_db = gtk_range_get_value(r);
+  tx_push_cfg(app); schedule_save(app);
+}
+static void on_pref_comp(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->comp_on = adw_switch_row_get_active(r) ? 1 : 0;
+  tx_push_cfg(app); schedule_save(app);
+}
+static void on_pref_comp_db(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  app->comp_db = gtk_range_get_value(r);
+  tx_push_cfg(app); schedule_save(app);
+}
 /* Per-band PA calibration (F6b): band index carried on the row. Clamped to the
  * safe [38.8,70.0] range; re-pushed so the current band's drive byte updates. */
 static void on_pref_pacal(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
@@ -3687,17 +3740,9 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, pref_switch("PTT on mic tip",
       "PTT contact on the mic-jack tip (off = ring, the Apache default) · live",
       app->tx_ptt_tip, G_CALLBACK(on_pref_tx_ptt_tip), app));
-  /* NO mic-chain knobs (Richard, 2026-07-12): the voice chain is fixed in code
-   * — mic → TX filter → ALC. Nothing here to mis-set. */
-  adw_preferences_group_add(g, pref_slider("Monitor level",
-      "dB into the RX audio output · live",
-      MON_DB_MIN, MON_DB_MAX, app->tx_mon_db, "%.0f dB", G_CALLBACK(on_pref_tx_mon_db), app));
-  adw_preferences_group_add(g, pref_spin("TX filter low",
-      "Hz · voice audio low edge (default 150) · live",
-      TXF_LO_MIN, TXF_LO_MAX, app->tx_flo, G_CALLBACK(on_pref_tx_flo), app));
-  adw_preferences_group_add(g, pref_spin("TX filter high",
-      "Hz · voice audio high edge (2850 default; 3500-6000 = eSSB — mind the band plan) · live",
-      TXF_HI_MIN, TXF_HI_MAX, app->tx_fhi, G_CALLBACK(on_pref_tx_fhi), app));
+  /* Audio-path rows (monitor level, TX bandpass) live on the AUDIO page since
+   * 2026-07-13 (Richard: everything you hear/say belongs in one place). This
+   * group keeps power, keying and safety only. */
   adw_preferences_group_add(g, pref_spin("Digi max drive",
       "W cap in DIGU/DIGL — FT8 &amp; co. run 100% duty, protect the PA (max = off) · live",
       1, app->pa_watts, app->tx_digi_max_w, G_CALLBACK(on_pref_digi_max), app));
@@ -3806,23 +3851,10 @@ static AdwDialog *build_prefs(App *app) {
    * the audio bandwidth (the filter). Rate + devices are restart-to-apply. */
   p = ADW_PREFERENCES_PAGE(g_object_new(ADW_TYPE_PREFERENCES_PAGE,
       "title", "Audio", "icon-name", "audio-speakers-symbolic", NULL));
+
+  /* Receive — everything you HEAR from the radio. */
   g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP,
-      "title", "Devices and rate", NULL));
-  { GtkStringList *m = gtk_string_list_new(NULL);
-    guint sel = 0;
-    for (guint i = 0; i < G_N_ELEMENTS(AUDIO_RATES); i++) {
-      char lbl[16]; snprintf(lbl, sizeof lbl, "%d kHz", AUDIO_RATES[i] / 1000);
-      gtk_string_list_append(m, lbl);
-      if (AUDIO_RATES[i] == app->audio_rate) { sel = i; }
-    }
-    GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "Sample rate",
-        "subtitle", "RX output, ≤ IQ rate; the AF band is filter-limited, above "
-                    "192 kHz is only fatter samples (mic is fixed 48 kHz by WDSP) "
-                    "· restart to apply",
-        "model", m, "selected", sel, NULL);
-    g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_audio_rate), app);
-    adw_preferences_group_add(g, row);
-  }
+      "title", "Receive", "description", "What you hear from the radio.", NULL));
   { app->audio_nsink = audio_list_sinks(app->audio_sinks, (int)G_N_ELEMENTS(app->audio_sinks));
     GtkStringList *m = gtk_string_list_new(NULL);
     gtk_string_list_append(m, "Default (auto)");
@@ -3831,11 +3863,40 @@ static AdwDialog *build_prefs(App *app) {
       gtk_string_list_append(m, app->audio_sinks[i].desc);
       if (app->audio_device[0] && strcmp(app->audio_sinks[i].name, app->audio_device) == 0) { sel = (guint)(i + 1); }
     }
-    GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "RX output device",
+    GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "Output device",
         "subtitle", "receive-audio soundcard · restart to apply", "model", m, "selected", sel, NULL);
     g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_audio_device), app);
     adw_preferences_group_add(g, row);
   }
+  { GtkStringList *m = gtk_string_list_new(NULL);
+    guint sel = 0;
+    for (guint i = 0; i < G_N_ELEMENTS(AUDIO_RATES); i++) {
+      char lbl[16]; snprintf(lbl, sizeof lbl, "%d kHz", AUDIO_RATES[i] / 1000);
+      gtk_string_list_append(m, lbl);
+      if (AUDIO_RATES[i] == app->audio_rate) { sel = i; }
+    }
+    GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "Output sample rate",
+        "subtitle", "≤ IQ rate; the AF band is filter-limited, above 192 kHz is "
+                    "only fatter samples · restart to apply",
+        "model", m, "selected", sel, NULL);
+    g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_audio_rate), app);
+    adw_preferences_group_add(g, row);
+  }
+  adw_preferences_group_add(g, pref_spin("Digital master gain",
+      "× on the demodulated audio after WDSP; 1 = calibrated default · live",
+      1, 32, app->gain, G_CALLBACK(on_pref_gain), app));
+  adw_preferences_page_add(p, g);
+
+  /* Transmit — everything you SAY into the radio. The chain itself is fixed
+   * in code (no-knobs, Richard 2026-07-12): mic → TX bandpass → ALC limiter,
+   * nothing hidden to mis-set; level is made on the preamp. */
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP,
+      "title", "Transmit",
+      "description", "Voice chain in order: mic → mic gain → noise gate → PROC → "
+                     "TX bandpass → ALC limiter. Applies to the live mic in voice "
+                     "modes only — digi/TCI audio bypasses everything (clean "
+                     "chain). Base level on the preamp; target = Mic bar peaks "
+                     "−6..0 dBFS on the TX HUD.", NULL));
   { app->mic_nsrc = mic_list_sources(app->mic_srcs, (int)G_N_ELEMENTS(app->mic_srcs));
     GtkStringList *m = gtk_string_list_new(NULL);
     gtk_string_list_append(m, "Default (auto)");
@@ -3844,17 +3905,40 @@ static AdwDialog *build_prefs(App *app) {
       gtk_string_list_append(m, app->mic_srcs[i].desc);
       if (app->mic_device[0] && strcmp(app->mic_srcs[i].name, app->mic_device) == 0) { sel = (guint)(i + 1); }
     }
-    GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "TX mic device",
-        "subtitle", "SSB capture soundcard (F6c) · restart to apply", "model", m, "selected", sel, NULL);
+    GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "Microphone device",
+        "subtitle", "SSB capture soundcard · restart to apply", "model", m, "selected", sel, NULL);
     g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_mic_device), app);
     adw_preferences_group_add(g, row);
   }
+  adw_preferences_group_add(g, pref_slider("Mic gain",
+      "dB after capture, before everything else; 0 = unity reference · live",
+      MICG_DB_MIN, MICG_DB_MAX, app->mic_gain_db, "%.0f dB", G_CALLBACK(on_pref_mic_gain), app));
+  adw_preferences_group_add(g, pref_switch("Noise gate (DEXP)",
+      "closes speech gaps below the threshold · live",
+      app->gate_on, G_CALLBACK(on_pref_gate), app));
+  adw_preferences_group_add(g, pref_slider("Gate threshold",
+      "dBFS · keep BELOW your quietest speech; −45 validated (−30 chops syllables) · live",
+      GATE_DB_MIN, GATE_DB_MAX, app->gate_db, "%.0f dB", G_CALLBACK(on_pref_gate_db), app));
+  adw_preferences_group_add(g, pref_switch("Speech processor (PROC)",
+      "WDSP COMP + auto-leveler (CESSB above 5.5 dB) — the chain's only makeup gain · live",
+      app->comp_on, G_CALLBACK(on_pref_comp), app));
+  adw_preferences_group_add(g, pref_slider("PROC compression",
+      "dB · contest punch ~6-12; watch the Lev/ALC bars on the TX HUD · live",
+      COMP_DB_MIN, COMP_DB_MAX, app->comp_db, "%.0f dB", G_CALLBACK(on_pref_comp_db), app));
+  adw_preferences_group_add(g, pref_spin("TX bandpass low edge",
+      "Hz · reference 150 (cuts sub-voice rumble; higher costs voice body) · live",
+      TXF_LO_MIN, TXF_LO_MAX, app->tx_flo, G_CALLBACK(on_pref_tx_flo), app));
+  adw_preferences_group_add(g, pref_spin("TX bandpass high edge",
+      "Hz · reference 2850; 3500-6000 = eSSB — mind the band plan · live",
+      TXF_HI_MIN, TXF_HI_MAX, app->tx_fhi, G_CALLBACK(on_pref_tx_fhi), app));
+  adw_preferences_group_add(g, pref_slider("Monitor level",
+      "self-listen (MON), dB into the RX audio output · live",
+      MON_DB_MIN, MON_DB_MAX, app->tx_mon_db, "%.0f dB", G_CALLBACK(on_pref_tx_mon_db), app));
   adw_preferences_page_add(p, g);
+
+  /* Shared plumbing. */
   g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP,
-      "title", "Levels and latency", NULL));
-  adw_preferences_group_add(g, pref_spin("Digital master gain",
-      "× on the demodulated audio after WDSP; 1 = calibrated default · live",
-      1, 32, app->gain, G_CALLBACK(on_pref_gain), app));
+      "title", "Latency", NULL));
   adw_preferences_group_add(g, pref_spin("Audio latency",
       "ms, PipeWire quantum for RX output AND TX mic capture · restart to apply",
       5, 100, app->latency, G_CALLBACK(on_pref_latency), app));
@@ -4178,6 +4262,10 @@ static void start_radio(App *app) {
                   .tx_tune = 10.0, .tx_swr = 3.0,
                   .audio_rate = 48000, .tx_mon_db = MON_DB_DFLT,
                   .tx_flo = TXF_LO_DFLT, .tx_fhi = TXF_HI_DFLT,
+                  /* Knob defaults = the validated fixed-era behaviour: unity
+                   * mic, PROC off, gate ON at −45 dBFS. */
+                  .mic_gain = 0.0, .tx_comp = 0, .tx_comp_db = COMP_DB_DFLT,
+                  .tx_gate = 1, .tx_gate_db = GATE_DB_DFLT,
                   /* PS defaults: continuous automode + Thetis-style Auto
                    * attenuate on (Richard's call 2026-07-11 v2, after the
                    * three-way audit; piHPSDR variant = tag ps-auto-att-pihpsdr).
@@ -4258,6 +4346,11 @@ static void start_radio(App *app) {
   app->tx_mon_db     = st.tx_mon_db < MON_DB_MIN ? MON_DB_MIN : (st.tx_mon_db > MON_DB_MAX ? MON_DB_MAX : st.tx_mon_db);
   app->tx_flo        = st.tx_flo < TXF_LO_MIN ? TXF_LO_MIN : (st.tx_flo > TXF_LO_MAX ? TXF_LO_MAX : st.tx_flo);
   app->tx_fhi        = st.tx_fhi < TXF_HI_MIN ? TXF_HI_MIN : (st.tx_fhi > TXF_HI_MAX ? TXF_HI_MAX : st.tx_fhi);
+  app->mic_gain_db   = st.mic_gain < MICG_DB_MIN ? MICG_DB_MIN : (st.mic_gain > MICG_DB_MAX ? MICG_DB_MAX : st.mic_gain);
+  app->comp_on       = st.tx_comp ? 1 : 0;
+  app->comp_db       = st.tx_comp_db < COMP_DB_MIN ? COMP_DB_MIN : (st.tx_comp_db > COMP_DB_MAX ? COMP_DB_MAX : st.tx_comp_db);
+  app->gate_on       = st.tx_gate ? 1 : 0;
+  app->gate_db       = st.tx_gate_db < GATE_DB_MIN ? GATE_DB_MIN : (st.tx_gate_db > GATE_DB_MAX ? GATE_DB_MAX : st.tx_gate_db);
   app->cw_wpm        = st.cw_wpm   < 5   ? 5   : (st.cw_wpm   > 60   ? 60   : st.cw_wpm);
   app->cw_pitch      = st.cw_pitch < 200 ? 200 : (st.cw_pitch > 1200 ? 1200 : st.cw_pitch);
   app->cw_st_db      = st.cw_st_db < CW_ST_DB_MIN ? CW_ST_DB_MIN : (st.cw_st_db > CW_ST_DB_MAX ? CW_ST_DB_MAX : st.cw_st_db);

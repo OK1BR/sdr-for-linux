@@ -172,8 +172,19 @@ int main(void) {
   p2_build_high_priority(buf, dev, f, 1, &tx, &ps0);
   chk("hp: memcmp(NULL, {0}) == 0", memcmp(ref, buf, 1444), 0);
   p2_build_receive_specific(ref, dev, 1536000, NULL, 0);
-  p2_build_receive_specific(buf, dev, 1536000, &ps0, 1);
+  p2_build_receive_specific(buf, dev, 1536000, &ps0, 0);
   chk("rxspec: memcmp(NULL, {0}) == 0", memcmp(ref, buf, 1444), 0);
+
+  /* N1 (2026-07-12): while keyed WITHOUT PS the RX DDC must be DISABLED —
+   * piHPSDR parity (np.c:1633-1641); leaving it running put a ±100 Hz comb
+   * on the TX (live A/B E15: −11 → −33 dBc). Rates stay programmed. */
+  printf("\n[RXspec N1] keyed non-PS -> DDC enable bitmap empty:\n");
+  p2_build_receive_specific(buf, dev, 1536000, NULL, 1);
+  chk("xmit=1 ps=NULL: buf[7] == 0", buf[7], 0);
+  p2_build_receive_specific(buf, dev, 1536000, &ps0, 1);
+  chk("xmit=1 ps={0}:  buf[7] == 0", buf[7], 0);
+  p2_build_receive_specific(buf, dev, 1536000, NULL, 0);
+  chk("xmit=0: DDC0 enabled again", buf[7], 0x01);
   p2_build_transmit_specific(ref, &cw, NULL);
   p2_build_transmit_specific(buf, &cw, &ps0);
   chk("txspec: memcmp(NULL, {0}) == 0", memcmp(ref, buf, 60), 0);
