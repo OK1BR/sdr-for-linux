@@ -301,6 +301,10 @@ int main(void) {
     g_usleep(10 * 1000);
   }
   check("audio_start delivers a binary Stream block", got_audio);
+  /* ⛔ ACK echo (2026-07-12): without the confirmation Decodium retries
+   * audio_start forever — and every retry used to reset the accumulator,
+   * chopping 20-40 ms out of the running stream (broken FT4/FT8 decodes). */
+  check("audio_start is echoed back (ACK)", rx_contains("audio_start:0;"));
   if (got_audio) {
     g_mutex_lock(&c_lock);
     const guint32 *h = (const guint32 *)c_bin->data;
@@ -315,8 +319,13 @@ int main(void) {
     printf("  FAIL stream header checks skipped (no audio arrived)\n");
   }
   client_send("audio_stop:0;");
-  g_usleep(200 * 1000);
-  while (g_main_context_iteration(NULL, FALSE)) {}
+  int got_stop_ack = 0;
+  for (int ms = 0; ms < 1000 && !got_stop_ack; ms += 10) {
+    while (g_main_context_iteration(NULL, FALSE)) {}
+    got_stop_ack = rx_contains("audio_stop:0;");
+    g_usleep(10 * 1000);
+  }
+  check("audio_stop is echoed back (ACK)", got_stop_ack);
 
   /* Sensors (2b): subscribe at the fastest cadence, expect both streams. */
   client_send("rx_sensors_enable:true,100;tx_sensors_enable:true,100;");

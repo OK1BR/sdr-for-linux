@@ -579,16 +579,32 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
     tci_sendf(c, "audio_samplerate:%d;", c->au_rate);
   } else if (strcmp(name, "audio_start") == 0) {
     g_mutex_lock(&s_lock);
-    if (!c->au_sub) { c->au_sub = 1; atomic_fetch_add(&s_au_active, 1); }
-    c->au_acc = 0; c->au_acccnt = 0; c->au_fill = 0;
+    if (!c->au_sub) {
+      c->au_sub = 1;
+      atomic_fetch_add(&s_au_active, 1);
+      /* Reset the packet accumulator on a FRESH subscribe only: clients
+       * re-issue audio_start (Decodium retries it while it thinks the
+       * command wasn't acknowledged), and zeroing a partially filled block
+       * each time chops 20-40 ms out of the running stream — enough to
+       * break FT4/FT8 decodes of weak signals (live-diagnosed 2026-07-12). */
+      c->au_acc = 0; c->au_acccnt = 0; c->au_fill = 0;
+      fprintf(stderr, "tci: audio_start — %d Hz, fmt %d, %d ch, block %d\n",
+              c->au_rate, c->au_fmt, c->au_ch, c->au_block);
+    }
     g_mutex_unlock(&s_lock);
-    fprintf(stderr, "tci: audio_start — %d Hz, fmt %d, %d ch, block %d\n",
-            c->au_rate, c->au_fmt, c->au_ch, c->au_block);
+    /* ⛔ ACK echo — the TCI convention is that the server confirms the
+     * command back (piHPSDR tci.c:2557, ExpertSDR does the same); without
+     * it Decodium retries audio_start forever. */
+    tci_sendf(c, "audio_start:%d;", (ac > 0 && av[0][0]) ? atoi(av[0]) : 0);
   } else if (strcmp(name, "audio_stop") == 0) {
     g_mutex_lock(&s_lock);
-    if (c->au_sub) { c->au_sub = 0; atomic_fetch_sub(&s_au_active, 1); }
+    if (c->au_sub) {
+      c->au_sub = 0;
+      atomic_fetch_sub(&s_au_active, 1);
+      fprintf(stderr, "tci: audio_stop\n");
+    }
     g_mutex_unlock(&s_lock);
-    fprintf(stderr, "tci: audio_stop\n");
+    tci_sendf(c, "audio_stop:%d;", (ac > 0 && av[0][0]) ? atoi(av[0]) : 0);
   } else if (strcmp(name, "audio_stream_sample_type") == 0) {
     if (ac > 0 && av[0][0]) {
       g_mutex_lock(&s_lock);
