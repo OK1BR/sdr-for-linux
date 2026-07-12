@@ -15,10 +15,12 @@
 /* Protection trip state (single control thread; no atomics). */
 static int s_tripped  = 0;   /* latched: refuse keying until release */
 static int s_pre_high = 0;   /* saw one over-limit reading (2-consecutive filter) */
+static const char *s_trip_reason = "SWR/antenna protection — release to reset";
 
 void tx_gate_reset(void) {
   s_tripped  = 0;
   s_pre_high = 0;
+  s_trip_reason = "SWR/antenna protection — release to reset";
 }
 
 void tx_gate_evaluate(const tx_gate_cfg *cfg, const tx_gate_in *in, tx_gate_result *out) {
@@ -79,7 +81,10 @@ void tx_gate_evaluate(const tx_gate_cfg *cfg, const tx_gate_in *in, tx_gate_resu
     if (!in->stale_reading) {
       int trip_now = open_antenna || (high_swr && !in->want_tune);
       if (trip_now) {
-        if (s_pre_high) { s_tripped = 1; }   /* second consecutive → trip + latch */
+        if (s_pre_high) {                    /* second consecutive → trip + latch */
+          s_tripped = 1;
+          s_trip_reason = "SWR/antenna protection — release to reset";
+        }
         s_pre_high = 1;
       } else {
         s_pre_high = 0;
@@ -87,10 +92,19 @@ void tx_gate_evaluate(const tx_gate_cfg *cfg, const tx_gate_in *in, tx_gate_resu
     }
   }
 
+  /* Thermal protection (HL2, docs/P1-TX-SCOPE.md §2): the die temperature is
+   * EMA'd and slow-moving, so one genuine over-limit reading is trustworthy —
+   * trip immediately, MOX included. 0 = no telemetry (P2 radios), disabled. */
+  if (cfg->temp_limit_c > 0.0 && !in->stale_reading &&
+      in->temp_c >= cfg->temp_limit_c) {
+    s_tripped = 1;
+    s_trip_reason = "PA overheat — let it cool, release to reset";
+  }
+
   /* Latched trip: drop MOX (state stays off) and keep refusing until release. */
   if (s_tripped) {
     out->tripped = 1;
-    out->reason  = "SWR/antenna protection — release to reset";
+    out->reason  = s_trip_reason;
     /* carry freq/antenna/PA so an RX-side view is still consistent, but NOT keyed */
     out->state.tx_freq    = in->freq_hz;
     out->state.antenna    = cfg->antenna;

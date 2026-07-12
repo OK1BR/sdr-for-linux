@@ -221,7 +221,8 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
    * keys (and the pedal would put mic audio on a digi frequency). Same intent
    * OR as the GUI button; tx_gate still decides whether it actually keys. */
   int is_voice  = !is_cw && cfg.mode != DEMOD_DIGU && cfg.mode != DEMOD_DIGL;
-  int want_ptt  = cfg.ptt_enabled && is_voice && p2_ptt_get();
+  int want_ptt  = cfg.ptt_enabled && is_voice &&
+                  (s_p1 ? p1_ptt_get() : p2_ptt_get());
   /* Two-tone test (PS calibration / IMD check) — keys exactly like MOX through
    * the gate (⛔ approved delta #2); excluded in CW (the feed loop would emit
    * a CW carrier instead of the WDSP chain). */
@@ -251,15 +252,35 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   gc.allow_oob       = cfg.allow_oob;
   gc.region          = (bp_region_t)cfg.region;
   gc.country_key     = cfg.country_key;
+  gc.temp_limit_c    = s_p1 ? 60.0 : 0.0;   /* HL2 thermal trip (P1-TX-SCOPE §2) */
 
   /* One real coupler reading per slot → tx_gate's 2-consecutive SWR filter sees
    * genuine consecutive samples (never a re-run on stale data). The wattmeter-trim
    * curve is (re)installed here so it stays owned by this worker thread. */
   p2_telemetry t; memset(&t, 0, sizeof t);
+  static double s_temp_c;                /* last P1 die temperature (this thread) */
   if (fresh_meter) {
     tx_meter_set_trim(cfg.pa_trim);
-    p2_get_telemetry(&t);
-    tx_meter_update(t.fwd_raw, t.rev_raw, p2_tx_fwd_max_take(), is_6m);
+    if (s_p1) {
+      int fwd = 0, rev = 0, fu = 0, fo = 0;
+      p1_get_tx_meters(&fwd, &rev, &s_temp_c, &fu, &fo);
+      /* HL2s with a reverse-wound current-sense transformer report fwd/rev
+       * swapped — piHPSDR swaps them back (transmitter.c:701-708); harmless
+       * on correct units (during TX fwd >> rev). */
+      if (rev > fwd) { int tmp = fwd; fwd = rev; rev = tmp; }
+      tx_meter_update(fwd, rev, p1_tx_fwd_max_take(), is_6m);
+      t.fwd_raw = fwd; t.rev_raw = rev;  /* keyed-log lines below reuse t */
+      /* TX FIFO health: underruns tear the RF envelope, overruns creep the
+       * latency — log every change while keyed (P1-TX-SCOPE §1). */
+      static int pu, po;
+      if (*prev_keyed && (fu != pu || fo != po)) {
+        fprintf(stderr, "tx: HL2 TX-FIFO under=%d over=%d\n", fu, fo); fflush(stderr);
+      }
+      pu = fu; po = fo;
+    } else {
+      p2_get_telemetry(&t);
+      tx_meter_update(t.fwd_raw, t.rev_raw, p2_tx_fwd_max_take(), is_6m);
+    }
     if (lat_on()) {                   /* RF-on-the-coupler edges (radio side) */
       static double lat_prev_fwd;
       double fw = tx_meter_fwd_w();
@@ -271,7 +292,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
 
   tx_gate_in in = { .want_mox = want_mox, .want_tune = want_tune, .freq_hz = freq,
                     .swr = tx_meter_swr(), .fwd_w = tx_meter_fwd_w(), .rev_w = tx_meter_rev_w(),
-                    .stale_reading = !fresh_meter };
+                    .stale_reading = !fresh_meter, .temp_c = s_temp_c };
   tx_gate_result r;
   tx_gate_evaluate(&gc, &in, &r);
   int keyed = r.keyed;

@@ -180,6 +180,25 @@ int main(void) {
     tx_gate_evaluate(&c, &i, &r); }                                 /* re-key */
   ok("re-key after release is permitted", r.keyed && !r.tripped, "");
 
+  /* 10. thermal trip (HL2, P1-TX-SCOPE §2): one genuine over-limit reading
+   * trips (EMA'd + slow-moving — no 2-consecutive filter); disabled with
+   * temp_limit_c 0 (P2 radios) or on stale evaluations. */
+  printf("\n[thermal] HL2 die-temperature trip @60 C:\n");
+  tx_gate_reset();
+  { tx_gate_cfg c = base_cfg(); c.temp_limit_c = 60.0; tx_gate_in i = base_in();
+    i.temp_c = 59.0; tx_gate_evaluate(&c, &i, &r); }
+  ok("below the limit keys normally", r.keyed && !r.tripped, "");
+  { tx_gate_cfg c = base_cfg(); c.temp_limit_c = 60.0; tx_gate_in i = base_in();
+    i.temp_c = 61.0; tx_gate_evaluate(&c, &i, &r); }
+  ok("one over-limit reading trips + drops MOX", r.tripped && !r.keyed, r.reason);
+  { tx_gate_cfg c = base_cfg(); c.temp_limit_c = 60.0; tx_gate_in i = base_in();
+    i.temp_c = 61.0; i.stale_reading = 1; tx_gate_reset();
+    tx_gate_evaluate(&c, &i, &r); }
+  ok("stale evaluation does not thermal-trip", r.keyed && !r.tripped, "");
+  { tx_gate_cfg c = base_cfg(); /* temp_limit_c 0 = P2 */ tx_gate_in i = base_in();
+    i.temp_c = 90.0; tx_gate_reset(); tx_gate_evaluate(&c, &i, &r); }
+  ok("limit 0 (P2, no telemetry) never trips", r.keyed && !r.tripped, "");
+
   printf("\n=== %d checks, %d failures ===\n", g_checks, g_fail);
   if (g_fail == 0) { printf("PASS — every safety guard behaves; the gate never keys out of band or through a trip.\n"); }
   else             { printf("FAIL — %d mismatch(es) above.\n", g_fail); }

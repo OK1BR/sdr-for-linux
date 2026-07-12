@@ -45,6 +45,10 @@ typedef struct {
   int         allow_oob;       /* allow out-of-band TX (default 0)                */
   bp_region_t region;          /* band-plan region for the in-band check          */
   const char *country_key;     /* "" / "CZ" / "US" national overrides             */
+  double      temp_limit_c;    /* thermal trip threshold, °C (0 = no temperature
+                                  telemetry / disabled — the P2 radios). HL2:
+                                  a 5 W PA with no Alex-style protection; the
+                                  community treats ≳60 °C as the hard stop.     */
 } tx_gate_cfg;
 
 /* Live inputs each evaluation (control + tx_meter). */
@@ -61,6 +65,7 @@ typedef struct {
                               must ignore it — a duplicate of one bad sample
                               must not count as the second reading. 0 (the
                               default) = genuine fresh poll, filter advances. */
+  double    temp_c;     /* die temperature, °C (0.0 = no reading yet)          */
 } tx_gate_in;
 
 typedef struct {

@@ -51,6 +51,8 @@ static guint32          s_tx_seq;       /* EP2 sequence */
 /* telemetry (listener writes, GUI reads) */
 static GMutex           s_tel_lock;
 static p1_telemetry     s_tel;
+static int              s_fwd_acc, s_rev_acc;  /* 16-sample EMA accumulators */
+static int              s_fwd_max;             /* PEP max-hold (take-decays)  */
 
 /* ---- live TX state + IQ ring (T2, docs/P1-TX-SCOPE.md) --------------------
  * ⛔ s_tx_on with a mox state is the ONLY thing that puts the MOX bit on the
@@ -447,15 +449,48 @@ static int parse_frame(const unsigned char *f, double *iq) {
     switch (reg) {
     case 0:                               /* C1 bit0 = ADC overflow (:1209)     */
       if (f[4] & 0x01) { s_tel.adc_overload = 1; }
+
+      {
+        /* TX FIFO health, C3 bits 0xC0 (old_protocol.c:1268-1290): during RX
+         * clear the mask; after a key-on ignore "underrun" until the FIFO
+         * first fills (the 40 ms latency buffer starts empty). */
+        static int fifo_filled;
+        int keyed;
+        g_mutex_lock(&s_tx_lock);
+        keyed = s_tx_on && s_tx_state.mox;
+        g_mutex_unlock(&s_tx_lock);
+
+        if (!keyed) {
+          fifo_filled = 0;
+        } else {
+          if ((f[6] & 0xC0) != 0x80) { fifo_filled = 1; }
+
+          if ((f[6] & 0xC0) == 0x80 && fifo_filled) { s_tel.tx_fifo_under++; }
+
+          if ((f[6] & 0xC0) == 0xC0) { s_tel.tx_fifo_over++; }
+        }
+      }
       break;
 
     case 1:                               /* exciter-power slot = HL2 temp      */
       s_tel.temp_raw = (f[4] << 8) | f[5];
+
+      {                                   /* C3C4 = fwd power: 16-EMA + PEP max */
+        int val = (f[6] << 8) | f[7];     /* (old_protocol.c:1305-1311)         */
+        s_fwd_acc = (15 * s_fwd_acc) / 16 + val;
+        s_tel.fwd_raw = s_fwd_acc / 16;
+
+        if (val > s_fwd_max) { s_fwd_max = val; }
+      }
       break;
 
-    case 2:                               /* AIN slot = HL2 PA current (:943)   */
-      s_tel.current_raw = (f[6] << 8) | f[7];
+    case 2: {                             /* C1C2 = rev power (o_p.c:1314-1317) */
+      int val = (f[4] << 8) | f[5];
+      s_rev_acc = (15 * s_rev_acc) / 16 + val;
+      s_tel.rev_raw = s_rev_acc / 16;
+      s_tel.current_raw = (f[6] << 8) | f[7];  /* AIN slot = PA current (:943)  */
       break;
+    }
 
     default:
       break;
@@ -655,4 +690,37 @@ void p1_get_telemetry(p1_telemetry *out) {
   *out = s_tel;
   s_tel.adc_overload = 0;                  /* latched: read + clear */
   g_mutex_unlock(&s_tel_lock);
+}
+
+void p1_get_tx_meters(int *fwd_raw, int *rev_raw, double *temp_c,
+                      int *fifo_under, int *fifo_over) {
+  g_mutex_lock(&s_tel_lock);
+
+  if (fwd_raw)    { *fwd_raw    = s_tel.fwd_raw; }
+
+  if (rev_raw)    { *rev_raw    = s_tel.rev_raw; }
+
+  if (temp_c)     { *temp_c     = s_tel.temp_raw > 0
+                                  ? 0.0795898 * s_tel.temp_raw - 50.0 : 0.0; }
+
+  if (fifo_under) { *fifo_under = s_tel.tx_fifo_under; }
+
+  if (fifo_over)  { *fifo_over  = s_tel.tx_fifo_over; }
+
+  g_mutex_unlock(&s_tel_lock);
+}
+
+int p1_tx_fwd_max_take(void) {
+  g_mutex_lock(&s_tel_lock);
+  int v = s_fwd_max;
+  s_fwd_max = (s_fwd_max * 15) / 16;       /* p2_tx_fwd_max_take ballistics */
+  g_mutex_unlock(&s_tel_lock);
+  return v;
+}
+
+int p1_ptt_get(void) {
+  g_mutex_lock(&s_tel_lock);
+  int v = s_tel.ptt;
+  g_mutex_unlock(&s_tel_lock);
+  return v;
 }

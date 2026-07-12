@@ -132,15 +132,34 @@ typedef struct {
   int adc_overload;   /* ADC clipped since last poll (latched, read+clear)    */
   int seq_errors;     /* EP6 sequence gaps seen so far                        */
   int sync_errors;    /* frames dropped for a bad 7F 7F 7F sync               */
-  int ptt, dot, dash; /* radio-side key/PTT inputs (state, RX-only: log only) */
+  int ptt, dot, dash; /* radio-side key/PTT inputs (state)                    */
   int temp_raw;       /* HL2: addr-1 "exciter power" slot = temperature ADC;
                          °C = 0.0795898*raw − 50 (piHPSDR rx_panadapter.c:884) */
   int current_raw;    /* HL2: addr-2 AIN slot = PA current ADC;
                          mA ≈ 0.505396*raw (rx_panadapter.c:943)              */
+  int fwd_raw;        /* addr-1 C3C4 fwd-power word, 16-sample EMA (o_p.c:1308) */
+  int rev_raw;        /* addr-2 C1C2 rev-power word, 16-sample EMA (o_p.c:1317) */
+  int tx_fifo_under;  /* TX FIFO underruns while keyed (cumulative; addr-0 C3
+                         bits 0xC0 == 0x80 after the post-key fill, :1268-90) */
+  int tx_fifo_over;   /* TX FIFO overruns (bits == 0xC0), cumulative          */
 } p1_telemetry;
 
 /* Snapshot telemetry (thread-safe). adc_overload is latched and cleared by
- * this read — single consumer. */
+ * this read — single consumer (the GUI tick). */
 void p1_get_telemetry(p1_telemetry *out);
+
+/* Non-destructive TX-meter accessor for tx_run's gate slot (does NOT clear
+ * the overload latch — the GUI tick stays its single consumer). Any output
+ * pointer may be NULL. temp_c is 0.0 until a temperature frame arrived. */
+void p1_get_tx_meters(int *fwd_raw, int *rev_raw, double *temp_c,
+                      int *fifo_under, int *fifo_over);
+
+/* PEP: per-frame forward-power maximum, decayed ×15/16 per read (the P1 twin
+ * of p2_tx_fwd_max_take; destructive — single consumer = tx_run). */
+int p1_tx_fwd_max_take(void);
+
+/* Radio-side PTT input state (EP6 status C0 bit 0) — non-destructive; the
+ * footswitch intent poll (tx_run) reads it like p2_ptt_get. */
+int p1_ptt_get(void);
 
 #endif /* SDRFL_ENGINE_PROTOCOL1_H */
