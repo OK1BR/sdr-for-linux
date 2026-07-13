@@ -12,6 +12,9 @@ add_project_arguments('-D_GNU_SOURCE', language : 'c')
 add_project_arguments('-DSDRFL_VERSION="@0@"'.format(meson.project_version()),
                       language : 'c')
 
+# --- Meson modules ----------------------------------------------------------
+gnome = import('gnome')  # used in data/ for post-install icon/desktop DB refresh
+
 # --- Dependencies -----------------------------------------------------------
 # gtk4/opus come in transitively via the vendored piHPSDR headers; openssl is
 # the password KDF, zlib decompresses network spectrum. As the piHPSDR engine
