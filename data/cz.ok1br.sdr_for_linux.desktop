@@ -9,3 +9,4 @@ Terminal=false
 Categories=AudioVideo;Audio;HamRadio;
 Keywords=SDR;ham;radio;HPSDR;ANAN;amateur;shortwave;transceiver;panadapter;
 StartupNotify=true
+StartupWMClass=cz.ok1br.sdr_for_linux
