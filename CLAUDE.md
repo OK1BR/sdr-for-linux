@@ -146,16 +146,32 @@ create` (CI has `generate_release_notes: false` so it can't clobber
 them). Night-forensics leftover cleaned: the per-over "ALC min" print
 is now SDRFL_TX_DUMP-only.
 
-**★ RELEASED 2026-07-13 (same day): v0.2.1** — hotfix: the application
-icon never showed (generic gear). Windows created before the
-AdwApplication (radio picker, wisdom progress) had an EMPTY WM_CLASS /
-app-id and the app set no window icon, so the shell had nothing to
-match against the .desktop — worst in the AppImage (argv[0] =
-"AppRun.wrapped"). Fix (8e1c524): `g_set_prgname(app-id)` +
-`gtk_window_set_default_icon_name()` in main() before any GTK init.
-Verified via xprop (WM_CLASS + _NET_WM_ICON 48×48) on the dev build,
-the ~/.local install AND the released AppImage. ⛔ Release smoke-test
-lesson: check the dock/Alt-Tab icon too, not just that the GUI runs.
+**⛔ The app-icon saga behind that release (same day, condensed):** the
+first cut of v0.2.0 (+ a v0.2.1 hotfix) shipped with a generic-gear app
+icon; Richard ordered both deleted and ONE clean v0.2.0 re-cut with the
+icon actually fixed. THREE stacked root causes, all fixed in main:
+(1) windows created before the AdwApplication (radio picker, wisdom
+progress) carried no identity — fixed by `g_set_prgname(app-id)` +
+`gtk_window_set_default_icon_name()` in main() (8e1c524) and
+`StartupWMClass` in the .desktop; (2) **GTK 4.14's Wayland backend (the
+version bundled in the AppImage; Ubuntu 24.04) ignores prgname** and
+falls back to app id "GTK Application" — fixed by stamping the Wayland
+app id explicitly via `gdk_wayland_toplevel_set_application_id()` after
+realize (`src/app_identity.h`, 1f3372b); (3) the linuxdeploy GTK hook
+forced `GDK_BACKEND=x11` (GTK3-era workaround) — CI now seds it out
+like GTK_THEME (44ad479), the AppImage runs Wayland-native. Verified
+user-visibly in a **headless GNOME Shell lab** (`gnome-shell --headless
+--unsafe-mode` under `dbus-run-session`, then `org.gnome.Shell.Eval` +
+window-tracker introspection — the technique of choice for any future
+desktop-integration verification; scriptable, no VM, no operator): the
+exact AppImage composition (new binary against bundled GTK 4.14)
+resolves to app "SDR for Linux", icon `cz.ok1br.sdr_for_linux`,
+`is_window_backed=false`. Note: Richard's own long-running gnome-shell
+50.3 session additionally failed to match even windows whose WM_CLASS
+was verifiably correct (xprop), while a fresh shell instance on the
+same machine + files matched instantly — poisoned tracker/app-cache
+state in that one process; a re-login fixes his local desktop and is
+unrelated to what new users get.
 
 **★ Next candidates (Richard picks):** P1 PureSignal milestone
 (multi-RX P1 link, RX3/RX4 feedback); 10E leftovers (pa_cal remaining
