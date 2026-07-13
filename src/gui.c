@@ -4726,6 +4726,17 @@ int main(int argc, char **argv) {
    * GSK_RENDERER always wins. Must precede any GTK init (the picker's too). */
   g_setenv("GSK_RENDERER", "cairo", FALSE);
 
+  /* Window ↔ application-icon association. The shell matches a window to
+   * cz.ok1br.sdr_for_linux.desktop (and its icon) by Wayland app-id / X11
+   * WM_CLASS; both derive from the program name for every window created
+   * BEFORE the AdwApplication exists (radio picker, wisdom progress) — and
+   * inside an AppImage argv[0] is "AppRun.wrapped", so nothing matches.
+   * The default icon name additionally gives X11 windows a _NET_WM_ICON
+   * fallback, so an unintegrated AppImage (its GTK hook forces
+   * GDK_BACKEND=x11) shows our icon with no .desktop installed at all. */
+  g_set_prgname("cz.ok1br.sdr_for_linux");
+  gtk_window_set_default_icon_name("cz.ok1br.sdr_for_linux");
+
   g_orig_argv = argv;   /* for the in-app "Restart now" toast */
   App app;
   memset(&app, 0, sizeof(app));
