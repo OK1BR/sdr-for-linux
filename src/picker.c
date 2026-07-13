@@ -12,6 +12,7 @@
 #include <string.h>
 #include <arpa/inet.h>
 
+#include "app_identity.h"
 #include "discovered.h"
 #include "discovery.h"
 #include "picker.h"
@@ -240,6 +241,8 @@ int picker_run(const char *last_ip, char *ip, int ip_len) {
   gtk_box_append(GTK_BOX(box), bar);
 
   gtk_window_set_child(p.win, box);
+  gtk_widget_realize(GTK_WIDGET(p.win));   /* surface must exist for the id */
+  sdrfl_claim_app_identity(p.win);
   gtk_window_present(p.win);
 
   start_discovery(&p, "", 1);        /* broadcast on all interfaces */

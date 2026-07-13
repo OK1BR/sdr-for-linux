@@ -17,6 +17,7 @@
 #include <string.h>
 #include <fftw3.h>     /* fftw_version, fftw_import_wisdom_from_filename */
 
+#include "app_identity.h"
 #include "wisdom_gate.h"
 #include "wdsp.h"      /* WDSPwisdom(), wisdom_get_status() */
 
@@ -157,6 +158,8 @@ static void run_first_run_ui(const char *dir) {
     .done    = 0,
   };
 
+  gtk_widget_realize(win);                 /* surface must exist for the id */
+  sdrfl_claim_app_identity(GTK_WINDOW(win));
   gtk_window_present(GTK_WINDOW(win));
   GThread *worker = g_thread_new("fftw-wisdom", wisdom_worker, &job);
   guint tick = g_timeout_add(100, wisdom_tick, &job);
