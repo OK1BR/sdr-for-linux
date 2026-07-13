@@ -1,0 +1,74 @@
+# nfpm configuration — builds the .deb and .rpm attached to GitHub releases.
+# Run from the repo root after staging a release build:
+#   meson setup build-pkg --buildtype=release --prefix=/usr
+#   meson compile -C build-pkg
+#   DESTDIR=$PWD/build-pkg/staging meson install -C build-pkg
+#   SDRFL_VERSION=x.y.z nfpm package -f packaging/nfpm.yaml -p deb -t dist/
+#   SDRFL_VERSION=x.y.z nfpm package -f packaging/nfpm.yaml -p rpm -t dist/
+#
+# The DSP stack (WDSP, rnnoise, libspecbleach) is vendored and statically
+# linked — only ubiquitous platform libraries appear as dependencies.
+#
+# Dependency names are verified against Ubuntu 24.04 (noble) + Debian 13
+# (trixie) for the .deb and Fedora 40+ for the .rpm; CI installs both
+# packages in fresh containers and ldd-checks the binary before a release
+# artifact is attached, so a renamed distro package fails the pipeline
+# instead of the user.
+
+name: sdr-for-linux
+arch: amd64
+platform: linux
+version: ${SDRFL_VERSION}
+section: hamradio
+priority: optional
+maintainer: Richard Fakenberg <rifak@protonmail.com>
+vendor: OK1BR
+homepage: https://github.com/OK1BR/sdr-for-linux
+license: GPL-3.0-or-later
+description: |
+  Modern GTK4 SDR application for HPSDR / ANAN transceivers.
+  Reuses the proven piHPSDR engine — the HPSDR Protocol 1/2 radio links and
+  the WDSP DSP library — under a native GTK4/libadwaita control surface with
+  a full-resolution floating-point panadapter. RX + TX (SSB, CW, digi via
+  TCI), PureSignal, band-plan overlay, DX spots.
+
+contents:
+  - src: build-pkg/staging/usr/bin/sdr-for-linux
+    dst: /usr/bin/sdr-for-linux
+  - src: build-pkg/staging/usr/share/applications/cz.ok1br.sdr_for_linux.desktop
+    dst: /usr/share/applications/cz.ok1br.sdr_for_linux.desktop
+  - src: build-pkg/staging/usr/share/icons/hicolor/scalable/apps/cz.ok1br.sdr_for_linux.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/cz.ok1br.sdr_for_linux.svg
+  - src: build-pkg/staging/usr/share/metainfo/cz.ok1br.sdr_for_linux.metainfo.xml
+    dst: /usr/share/metainfo/cz.ok1br.sdr_for_linux.metainfo.xml
+
+overrides:
+  deb:
+    # Ubuntu 24.04+ / Debian 13+ (the t64 names post 64-bit time_t transition)
+    depends:
+      - libc6 (>= 2.39)
+      - libgtk-4-1
+      - libadwaita-1-0 (>= 1.5)
+      - libcairo2
+      - libglib2.0-0t64
+      - libfftw3-single3
+      - libfftw3-double3
+      - libpipewire-0.3-0t64
+      - libwebsockets19t64
+      - libssl3t64
+      - zlib1g
+    recommends:
+      - pipewire
+  rpm:
+    # Fedora 40+
+    depends:
+      - gtk4
+      - libadwaita >= 1.5
+      - cairo
+      - glib2
+      - fftw-libs-single
+      - fftw-libs-double
+      - pipewire-libs
+      - libwebsockets
+      - openssl-libs
+      - zlib

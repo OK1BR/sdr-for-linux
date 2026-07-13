@@ -17,3 +17,4 @@ pihpsdr-client
 compile_commands.json
 .cache/
 build-*/
+dist/

@@ -459,8 +459,11 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
                 "iq ring under=%d drops=%d\n", md, ms, ru, rd);
       }
       /* Deepest ALC gain reduction of the over (20 Hz meter samples) — the
-       * gap-gain forensics: 0.0 = the ALC never engaged at all. */
-      fprintf(stderr, "tx: over ALC min %.1f dB\n", s_alc_min_over);
+       * gap-gain forensics: 0.0 = the ALC never engaged at all. Only with an
+       * active TX dump: it is a forensics companion, not an every-over line. */
+      if (s_dump_mic || s_dump_tx) {
+        fprintf(stderr, "tx: over ALC min %.1f dB\n", s_alc_min_over);
+      }
       s_alc_min_over = 0.0;
 
       if (s_dump_mic) { fflush(s_dump_mic); }

@@ -34,6 +34,18 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.0" date="2026-07-13">
+      <description>
+        <p>
+          Two new supported radios: ANAN 10E/100B (Protocol 2, RX+TX) and
+          Hermes Lite 2 (Protocol 1, RX+TX including PureSignal). Contest
+          hardening: CW keying latency cut to ~35 ms, turnaround to ~200 ms,
+          per-mode AGC, mode-aware TX HUD. TX transport hardening on both
+          protocols, TX audio chain controls (mic gain, noise gate,
+          processor), faithful TX monitor, TCI robustness fixes.
+        </p>
+      </description>
+    </release>
     <release version="0.1.0-alpha" date="2026-07-11">
       <description>
         <p>
