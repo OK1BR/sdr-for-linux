@@ -146,6 +146,17 @@ create` (CI has `generate_release_notes: false` so it can't clobber
 them). Night-forensics leftover cleaned: the per-over "ALC min" print
 is now SDRFL_TX_DUMP-only.
 
+**★ RELEASED 2026-07-13 (same day): v0.2.1** — hotfix: the application
+icon never showed (generic gear). Windows created before the
+AdwApplication (radio picker, wisdom progress) had an EMPTY WM_CLASS /
+app-id and the app set no window icon, so the shell had nothing to
+match against the .desktop — worst in the AppImage (argv[0] =
+"AppRun.wrapped"). Fix (8e1c524): `g_set_prgname(app-id)` +
+`gtk_window_set_default_icon_name()` in main() before any GTK init.
+Verified via xprop (WM_CLASS + _NET_WM_ICON 48×48) on the dev build,
+the ~/.local install AND the released AppImage. ⛔ Release smoke-test
+lesson: check the dock/Alt-Tab icon too, not just that the GUI runs.
+
 **★ Next candidates (Richard picks):** P1 PureSignal milestone
 (multi-RX P1 link, RX3/RX4 feedback); 10E leftovers (pa_cal remaining
 bands ~32-34, digi TX meter live check); Square SDR bring-up; 10E PS
