@@ -132,12 +132,30 @@ items: FIFO-bit semantics on gw 73.2, other bands' pa_cal, digi live
 check, P1 PureSignal as its own milestone → also the alternative PS
 route for the 10E). ⛔ Release condition (full HL2 TX) is now MET.
 
-**★ Next candidates (Richard picks):** the release (his condition met —
-release notes need his approval); P1 PureSignal milestone (multi-RX P1
-link, RX3/RX4 feedback); 10E leftovers (pa_cal remaining bands ~32-34,
-digi TX meter live check); Square SDR bring-up; 10E PS via Thetis
-sequencing (TX-DESIGN §9, risky); AUR recheck. CI runs only on v* tags
-now (Richard 2026-07-12).
+**★ RELEASED 2026-07-13: v0.2.0** — first REGULAR release (Richard's
+call: plain semver from now on, 0.x while maturing, no more alpha/beta
+suffixes — the CI marks pre-release only for tags containing
+alpha/beta). Three artifact formats, all from one tag build:
+**AppImage + .deb (Ubuntu 24.04+/Debian 13+) + .rpm (Fedora 40+)** via
+`packaging/nfpm.yaml`; the CI `artifacts` job install-tests both
+packages in fresh ubuntu:24.04/fedora:40 containers BEFORE attaching
+anything (dep names are hand-verified against noble/trixie/Fedora —
+t64 names!), tag must match the meson version, `workflow_dispatch` =
+dry run without attach. Release body = curated notes via `gh release
+create` (CI has `generate_release_notes: false` so it can't clobber
+them). Night-forensics leftover cleaned: the per-over "ALC min" print
+is now SDRFL_TX_DUMP-only.
+
+**★ Next candidates (Richard picks):** P1 PureSignal milestone
+(multi-RX P1 link, RX3/RX4 feedback); 10E leftovers (pa_cal remaining
+bands ~32-34, digi TX meter live check); Square SDR bring-up; 10E PS
+via Thetis sequencing (TX-DESIGN §9, risky); AUR recheck; TX EQ (WDSP
+TXA EQ stage, Thetis/piHPSDR parity — fits the mic-chain tuning).
+Tonight (2026-07-13): audio-chain tuning with the Heil PR 40 + SPL
+Channel One mk3 (baseline: tube/EQ/de-esser out, gain ~55-60 dB,
+judged via SDRFL_TX_DUMP, NOT the 705 bench), plus the TX config
+leftovers from the night smoke test (drive/tune 43, filt 40/4000,
+gate −30, PROC on — Richard wants to re-set these himself).
 
 **Older follow-ups:** off-centre pan, AGC-target vs `SDRFL_GAIN`, audio
 clock-drift smoothing, absolute dBm cal, nonlinear wattmeter cal
