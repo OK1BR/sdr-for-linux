@@ -91,6 +91,12 @@ jobs:
           else
             export VERSION="${SDRFL_VERSION}-git$(git rev-parse --short HEAD)"
           fi
+          # linuxdeploy derives the AppRun target from the .desktop Exec and
+          # expects a bare binary name; the absolute /usr/bin path we now bake
+          # in for distro installs would confuse it. Strip it back to bare here.
+          # Only touches AppDir — the deb/rpm staging copy keeps the absolute
+          # path, so packages are unaffected.
+          sed -i 's|^Exec=.*/|Exec=|' AppDir/usr/share/applications/cz.ok1br.sdr_for_linux.desktop
           # Phase 1: deploy libs + GTK plugin (hooks, schemas, pixbuf loaders)
           ./linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
             --appdir AppDir \
