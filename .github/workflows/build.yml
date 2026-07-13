@@ -101,6 +101,14 @@ jobs:
           # GTK3-era default): it would suppress libadwaita's own stylesheet.
           rm -f AppDir/usr/lib/gtk-4.0/*/media/libmedia-gstreamer.so
           sed -i '/^export GTK_THEME=/d' AppDir/apprun-hooks/linuxdeploy-plugin-gtk.sh
+          # The hook's forced X11 backend is a GTK3-era workaround we must NOT
+          # inherit: GNOME 50 (X11 backend removed) fails to match XWayland
+          # windows' WM_CLASS to the .desktop entry, so the app shows a generic
+          # gear in the dash/Alt-Tab. Our GTK4 app runs Wayland natively (the
+          # NVIDIA GL crash the hook worked around is already covered by the
+          # GSK_RENDERER=cairo default in main()); GDK autodetects x11 on X11
+          # sessions.
+          sed -i '/^export GDK_BACKEND=x11/d' AppDir/apprun-hooks/linuxdeploy-plugin-gtk.sh
           # Phase 2: pack the AppImage
           ./linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
             --appdir AppDir \
