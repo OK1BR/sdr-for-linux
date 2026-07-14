@@ -111,10 +111,14 @@ sudo dnf install ./sdr-for-linux-*.x86_64.rpm
 
 Both packages are install-tested in fresh containers by the release CI.
 
-**Arch Linux (AUR)** — planned; blocked for now on AUR's upstream freeze of
-new-account registrations (June 2026 malware cleanup). Meanwhile the
-AppImage runs fine on Arch, or build from source below —
-`packaging/PKGBUILD` works locally with `makepkg`.
+**Arch Linux (AUR)** — [`sdr-for-linux`](https://aur.archlinux.org/packages/sdr-for-linux):
+
+```sh
+paru -S sdr-for-linux      # or: yay -S sdr-for-linux
+```
+
+Or without a helper: `git clone https://aur.archlinux.org/sdr-for-linux.git &&
+cd sdr-for-linux && makepkg -si`. The AppImage also runs fine on Arch.
 
 **Build from source** — the DSP engine (**WDSP**, plus **rnnoise** and
 **libspecbleach**) is vendored in `vendor/` and built from source; only

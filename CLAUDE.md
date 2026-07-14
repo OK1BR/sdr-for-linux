@@ -49,8 +49,8 @@ and imports it instantly ever after (verified: 2nd run 0.0 s). Gate:
 
 **★ RELEASED 2026-07-11: v0.1.0-alpha** — GitHub pre-release with AppImage
 (CI builds it on every v* tag), README + screenshot, PKGBUILD ready (AUR
-blocked upstream: registrations frozen since the June 2026 malware wave —
-recheck periodically). Same day: **first contest deployment (~130 CW QSOs)**
+was blocked by the June 2026 registration freeze — **now published, see
+below**). Same day: **first contest deployment (~130 CW QSOs)**
 → 10 findings in `docs/CONTEST-NOTES-2026-07-11.md`, 9 closed + live-verified
 the same day (right-click threshold, spot/HUD collisions, per-mode AGC,
 **latency batch: CW TCI→RF 320→32-42 ms, turnaround 445→201 ms**, picker
@@ -173,10 +173,30 @@ same machine + files matched instantly — poisoned tracker/app-cache
 state in that one process; a re-login fixes his local desktop and is
 unrelated to what new users get.
 
+**★ AUR PUBLISHED 2026-07-14 — `sdr-for-linux`** is live on the AUR
+(https://aur.archlinux.org/packages/sdr-for-linux, maintainer **ok1br**,
+0.2.0-1). AUR reopened new-account registrations after the June 2026
+malware freeze; **Richard registered the account himself** (creating
+accounts for the user is off-limits), the push was ours with his consent.
+Security done right: the SSH host key was verified against the official
+"AUR Migration: New SSH HostKeys" Arch news (ed25519
+`SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4`, + ECDSA + RSA — all
+matched) and pinned into `known_hosts`; auth confirmed via `list-repos`.
+The AUR package repo (`ssh://aur@aur.archlinux.org/sdr-for-linux.git`,
+key `~/.ssh/aur_ed25519`) carries just `PKGBUILD` + `.SRCINFO`
+(`makepkg --printsrcinfo`). ⛔ **Release checklist now has a 4th artifact:
+every new version tag MUST also bump the AUR package** — clone/pull the
+AUR repo, edit `pkgver`/`pkgrel`/`sha256sums` in `PKGBUILD`, regenerate
+`.SRCINFO`, commit + push (push needs Richard's explicit OK). Gotcha:
+`aur.archlinux.org` and `gitlab.archlinux.org` sit behind Anubis
+proof-of-work — only a real browser reads them; WebFetch/curl get
+"Access Denied". The register captcha's `sed` salt is per-page-render,
+so recompute the `pacman -V` answer against the *current* form.
+
 **★ Next candidates (Richard picks):** P1 PureSignal milestone
 (multi-RX P1 link, RX3/RX4 feedback); 10E leftovers (pa_cal remaining
 bands ~32-34, digi TX meter live check); Square SDR bring-up; 10E PS
-via Thetis sequencing (TX-DESIGN §9, risky); AUR recheck; TX EQ (WDSP
+via Thetis sequencing (TX-DESIGN §9, risky); TX EQ (WDSP
 TXA EQ stage, Thetis/piHPSDR parity — fits the mic-chain tuning).
 Tonight (2026-07-13): audio-chain tuning with the Heil PR 40 + SPL
 Channel One mk3 (baseline: tube/EQ/de-esser out, gain ~55-60 dB,
