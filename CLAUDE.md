@@ -208,11 +208,21 @@ OPEN: ~12 ms/frame of main-thread CPU inside GSK GL (NVIDIA
 upload/swap) — next: perf profile, `__GL_YIELD=USLEEP`. Frame-clock
 diagnosis technique (GDK_DEBUG=frames + timestamper) in RENDERING.md.
 
-**★ Next candidates (Richard picks):** P1 PureSignal milestone
+**★ NEXT MILESTONE (Richard's pick, 2026-08-01): RX + TX equalizer —
+parametric, with a graphical display.** Both directions (RX audio chain +
+TX mic chain), parametric control (per-band freq/gain/Q, not just fixed
+graphic-EQ sliders), and a graphical curve view in the UI. Step 1 is the
+WDSP capability audit: what the vendored RXA/TXA EQ stages actually offer
+(graphic vs parametric, band count/edges) vs piHPSDR + Thetis usage, and
+whether parametric needs our own biquad stage in front of/instead of the
+WDSP EQ. The loved EQ mockup template in `docs/mockups/` is the UI seed;
+fits the mic-chain tuning thread (Heil PR 40 + SPL Channel One).
+
+**★ Other candidates (Richard picks):** P1 PureSignal milestone
 (multi-RX P1 link, RX3/RX4 feedback); 10E leftovers (pa_cal remaining
 bands ~32-34, digi TX meter live check); Square SDR bring-up; 10E PS
-via Thetis sequencing (TX-DESIGN §9, risky); TX EQ (WDSP
-TXA EQ stage, Thetis/piHPSDR parity — fits the mic-chain tuning).
+via Thetis sequencing (TX-DESIGN §9, risky). (TX EQ folded into the
+equalizer milestone above.)
 Tonight (2026-07-13): audio-chain tuning with the Heil PR 40 + SPL
 Channel One mk3 (baseline: tube/EQ/de-esser out, gain ~55-60 dB,
 judged via SDRFL_TX_DUMP, NOT the 705 bench), plus the TX config
