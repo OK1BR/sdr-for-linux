@@ -21,7 +21,7 @@ gnome = import('gnome')  # used in data/ for post-install icon/desktop DB refres
 # (radio link + WDSP) is imported milestone by milestone, its deps (e.g. the
 # WDSP library, portaudio/pulse) will be added here.
 cc          = meson.get_compiler('c')
-gtk_dep     = dependency('gtk4')
+gtk_dep     = dependency('gtk4', version: '>= 4.10')  # gtk_snapshot_append_scaled_texture (RENDERING.md)
 adw_dep     = dependency('libadwaita-1')  # GTK4 control surface (headerbar, prefs, rows)
 glib_dep    = dependency('glib-2.0')  # engine is GLib-only (headless), no GTK
 opus_dep    = dependency('opus')
