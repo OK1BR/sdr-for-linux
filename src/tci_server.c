@@ -661,6 +661,17 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
     if (ac > 0 && av[0][0] && s_ops.spot_delete) { s_ops.spot_delete(av[0]); }
   } else if (strcmp(name, "spot_clear") == 0) {
     if (s_ops.spot_clear) { s_ops.spot_clear(); }
+  } else if (strcmp(name, "clicked_on_spot") == 0 ||
+             strcmp(name, "rx_clicked_on_spot") == 0) {
+    /* A client clicked a spot on ITS end (the skimmer's decode pane) —
+     * relay to every client both ways, exactly like our own panadapter
+     * click, so log-for-linux prefills from the broadcast. The sender
+     * does its own tuning via vfo; the radio is not touched here.
+     * clicked_on_spot:call,hz; / rx_clicked_on_spot:rx,ch,call,hz; */
+    const int ci = (name[0] == 'r') ? 2 : 0;
+    if (ac > ci + 1 && av[ci][0]) {
+      tci_server_spot_clicked(av[ci], g_ascii_strtoll(av[ci + 1], NULL, 10));
+    }
   } else if (strcmp(name, "iq_samplerate") == 0) {
     if (ac > 0 && av[0][0]) {
       int r = atoi(av[0]);

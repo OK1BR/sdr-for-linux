@@ -98,8 +98,10 @@ void tci_server_iq_push(const double *iq, int n_pairs, int rate);
 void tci_server_set_iq_rate(int rate);
 int  tci_server_get_iq_rate(void);
 
-/* Operator clicked a spot on our panadapter (F6d-2e): notify every client
- * (rx_clicked_on_spot + the legacy clicked_on_spot). Main thread. */
+/* A spot was clicked — on our panadapter (F6d-2e, main thread) or on a
+ * client's end (the skimmer's decode pane; relayed by the command parser,
+ * LWS thread — the broadcast queue is any-thread-safe): notify every client
+ * (rx_clicked_on_spot + the legacy clicked_on_spot). */
 void tci_server_spot_clicked(const char *callsign, long long hz);
 
 /* TX pacing clock (F6d-2c): emit a TX_CHRONO frame asking the TX-owner client

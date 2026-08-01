@@ -467,6 +467,24 @@ int main(void) {
     check("spot click broadcasts rx_clicked_on_spot (+legacy)", got_click);
   }
 
+  /* A CLIENT-originated click (the skimmer's decode pane) relays to every
+   * client both ways — log-for-linux prefills from the broadcast. Both the
+   * legacy and the rx_ form must be accepted on the way in. */
+  client_send("clicked_on_spot:9A1AA,7012340;"
+              "rx_clicked_on_spot:0,0,OK2XYZ,7015670;");
+  {
+    int got_relay = 0;
+    for (int ms = 0; ms < 2000 && !got_relay; ms += 10) {
+      while (g_main_context_iteration(NULL, FALSE)) {}
+      got_relay = rx_contains("rx_clicked_on_spot:0,0,9A1AA,7012340;") &&
+                  rx_contains("clicked_on_spot:9A1AA,7012340;") &&
+                  rx_contains("rx_clicked_on_spot:0,0,OK2XYZ,7015670;") &&
+                  rx_contains("clicked_on_spot:OK2XYZ,7015670;");
+      g_usleep(10 * 1000);
+    }
+    check("client-sent click relays to every client (both forms)", got_relay);
+  }
+
   /* ---- TX audio over TCI (F6d-2c): key with source tci, get the chrono
    * clock, answer with a TX_AUDIO block, unkey reverts to mic. Runs LAST so
    * its binary frames don't pollute the RX-audio header checks above. */

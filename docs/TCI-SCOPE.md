@@ -198,7 +198,13 @@ platform-library category — do not vendor).
   only. Click on a label = exact-Hz tune + rx_clicked_on_spot:0,0,call,hz
   (+ legacy clicked_on_spot) broadcast back to clients. Prefs → Display →
   "DX spots (TCI)" switch, persisted ([display] spots, default on). Gate:
-  37 checks (spot ops round-trip + click broadcast).
+  40 checks (spot ops round-trip + click broadcast + client-click relay).
+  **Client-originated clicks relay (2026-08-01):** a client may SEND
+  `clicked_on_spot:call,hz;` (or the rx_ form) — skimmer-for-linux does on a
+  decoded-callsign click in its pane — and the server rebroadcasts both
+  forms to every client, exactly like a local panadapter click, so
+  log-for-linux prefills its Call entry from any client's click. The sender
+  tunes itself via `vfo`; the relay never touches radio state.
 
 ## Safety (unchanged, non-negotiable)
 
