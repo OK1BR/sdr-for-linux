@@ -28,6 +28,16 @@ void waterfall_push(Waterfall *wf, const uint8_t *dbm, int n);
 void waterfall_draw(Waterfall *wf, cairo_t *cr, int x, int y, int w, int h);
 
 /*
+ * Snapshot-path access (GPU rendering): the backing ARGB32 history bitmap and
+ * a serial bumped on every content change (row push, palette switch, resize),
+ * so a caller can cache a GPU texture keyed on the serial and re-upload only
+ * when the bitmap actually changed. Surface is NULL before the first push.
+ * Still GTK-free — the caller owns the texture side.
+ */
+cairo_surface_t *waterfall_surface(Waterfall *wf);
+unsigned         waterfall_serial(const Waterfall *wf);
+
+/*
  * Shared amplitude palette, so the panadapter can colour its trace/fill with
  * the same hues (noise = blue … peaks = red). `t` in [0,1], returns rgb [0,1].
  */

@@ -131,6 +131,8 @@ typedef struct {
 
   Waterfall  *wf;
   GtkWidget  *area;
+  GdkTexture *wf_tex[2];        /* cached GPU textures: [0] RX, [1] TX waterfall */
+  unsigned    wf_tex_serial[2]; /* waterfall_serial() the cache was built from   */
   GtkWidget  *mode_btns[DEMOD_NMODES];  /* toggle per DEMOD_* id (keys ↔ buttons) */
   double      zoom;          /* current display zoom (1 = full span)           */
   long long   tune_step;     /* scroll-tuning step (Hz); freq snaps to it       */
@@ -1117,8 +1119,9 @@ static void draw_tx(cairo_t *cr, int w, int h, App *app) {
   cairo_move_to(cr, cx + half_khz * 1000.0 * pxhz + 8, ly); cairo_show_text(cr, "kHz");
   cairo_restore(cr);
 
-  /* TX waterfall (bottom): transmitted-spectrum history. */
-  if (app->tx_wf) { waterfall_draw(app->tx_wf, cr, 0, ph, w, h - ph); }
+  /* TX waterfall (bottom): transmitted-spectrum history — drawn by the widget
+   * snapshot as a GPU-scaled texture UNDER this cairo layer (see
+   * sdrfl_display_snapshot); here only the separator on top of it. */
   cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.55);
   cairo_rectangle(cr, 0, ph - 1, w, 2);
   cairo_fill(cr);
@@ -1191,32 +1194,42 @@ static void draw_tx(cairo_t *cr, int w, int h, App *app) {
   }
 }
 
-static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer data) {
-  (void)area;
-  App *app = (App *)data;
+/* ---- draw-path profiler (SDRFL_DRAW_PROF=1): per-section ms, dumped 1×/s -- */
+enum { PROF_TEX, PROF_CAIRO, PROF_PAN, PROF_NSEC };
+static gint64 prof_sum[PROF_NSEC];
+static int    prof_frames;
+static gint64 prof_next_dump;
+static int    prof_enabled = -1;
+static int prof_on(void) {
+  if (prof_enabled < 0) { prof_enabled = getenv("SDRFL_DRAW_PROF") != NULL; }
+  return prof_enabled;
+}
+static void prof_add(int sec, gint64 t0) {
+  if (prof_on()) { prof_sum[sec] += g_get_monotonic_time() - t0; }
+}
+static void prof_frame(void) {
+  if (!prof_on()) { return; }
+  prof_frames++;
+  gint64 now = g_get_monotonic_time();
+  if (!prof_next_dump) { prof_next_dump = now + G_USEC_PER_SEC; return; }
+  if (now < prof_next_dump) { return; }
+  int n = prof_frames > 0 ? prof_frames : 1;
+  printf("drawprof: tex=%.2f cairo=%.2f (of which pan=%.2f) ms/frame (%d f/s)\n",
+         prof_sum[PROF_TEX] / 1000.0 / n, prof_sum[PROF_CAIRO] / 1000.0 / n,
+         prof_sum[PROF_PAN] / 1000.0 / n, prof_frames);
+  fflush(stdout);
+  memset(prof_sum, 0, sizeof prof_sum);
+  prof_frames = 0;
+  prof_next_dump = now + G_USEC_PER_SEC;
+}
 
+/* The spectrum part (top ph rows incl. the separator): panadapter, scales,
+ * spots, passband, badges, S-meter — everything cairo above the waterfall.
+ * Rendered into a cairo node that covers ONLY this region, so the per-frame
+ * software raster + upload stop scaling with the waterfall area. */
+static void draw_upper(cairo_t *cr, int w, int ph, App *app) {
   panadapter_set_range(app->pan_high, app->pan_low);   /* grab-to-move dB window */
   panadapter_set_grid(app->show_db_grid, app->show_db_scale);
-
-  if (!app->connected) {
-    const char *msg = app->radio_mode ? "No radio found on the LAN"
-                                       : client_strerror(app->conn_err);
-    char buf[160];
-    snprintf(buf, sizeof(buf), "Not connected: %s", msg);
-    panadapter_draw(cr, w, h, NULL, NULL, 0, 1, buf, NULL, 0.5);
-    return;
-  }
-  if (!app->have_frame) {
-    panadapter_draw(cr, w, h, NULL, NULL, 0, 1,
-                    app->radio_mode ? "Radio up — calibrating…" : "Connected — waiting for spectrum…", NULL, 0.5);
-    return;
-  }
-
-  /* While keyed, the whole area is the TX panadapter (no RX trace / waterfall). */
-  if (app->tx_display) { draw_tx(cr, w, h, app); return; }
-
-  int ph = (int)(h * PANADAPTER_FRACTION);
-  if (ph < 1) ph = 1;
 
   double low, span;
   waterfall_range(app->wf, &low, &span);
@@ -1239,7 +1252,9 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
   cairo_save(cr);
   cairo_rectangle(cr, 0, 0, w, ph);
   cairo_clip(cr);
+  gint64 tpan = g_get_monotonic_time();
   panadapter_draw(cr, w, ph, &app->frame, smoothed, low, span, NULL, bname, vfo_x(app, w) / w);
+  prof_add(PROF_PAN, tpan);
   if (app->radio_mode && (app->show_freq_grid || app->show_freq_scale)) {
     draw_freq_scale(cr, app, w, ph);
   }
@@ -1309,12 +1324,21 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
 
   draw_s_meter(cr, app, w);
 
-  waterfall_draw(app->wf, cr, 0, ph, w, h - ph);
-
+  /* Separator over the waterfall's top edge (the GPU texture sits under us). */
   cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.55);
   cairo_rectangle(cr, 0, ph - 1, w, 2);
   cairo_fill(cr);
+}
 
+/* True when the waterfall region needs a cairo overlay node at all — must
+ * match exactly what draw_wf_overlays() can paint, or overlays would vanish. */
+static int wf_overlays_wanted(const App *app) {
+  return app->radio_mode && app->show_filter_wf && app->fhi > app->flo;
+}
+
+/* Overlays ON the waterfall (filter edges / VFO line / select-mode cursor
+ * carried down): a small cairo node over the texture, only when enabled. */
+static void draw_wf_overlays(cairo_t *cr, int w, int h, int ph, App *app) {
   /* Optionally carry the filter (both edges) + the VFO centre line down through
    * the waterfall, so signals line up with the passband over time. Toggleable. */
   if (app->radio_mode && app->show_filter_wf && app->fhi > app->flo) {
@@ -1356,6 +1380,134 @@ static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer da
     cairo_move_to(cr, gxc, ph); cairo_line_to(cr, gxc, h);
     cairo_stroke(cr);
   }
+}
+
+/* Full-surface cairo fallback: the status screens (no radio / calibrating /
+ * network errors) and the TX display. Same content as the old draw func minus
+ * the waterfall bitmap, which the snapshot layers under this as a texture. */
+static void draw_all(cairo_t *cr, int w, int h, App *app) {
+  panadapter_set_range(app->pan_high, app->pan_low);
+  panadapter_set_grid(app->show_db_grid, app->show_db_scale);
+
+  if (!app->connected) {
+    const char *msg = app->radio_mode ? "No radio found on the LAN"
+                                       : client_strerror(app->conn_err);
+    char buf[160];
+    snprintf(buf, sizeof(buf), "Not connected: %s", msg);
+    panadapter_draw(cr, w, h, NULL, NULL, 0, 1, buf, NULL, 0.5);
+    return;
+  }
+  if (!app->have_frame) {
+    panadapter_draw(cr, w, h, NULL, NULL, 0, 1,
+                    app->radio_mode ? "Radio up — calibrating…" : "Connected — waiting for spectrum…", NULL, 0.5);
+    return;
+  }
+
+  /* While keyed, the whole area is the TX panadapter (no RX trace / waterfall). */
+  if (app->tx_display) { draw_tx(cr, w, h, app); return; }
+
+  int ph = (int)(h * PANADAPTER_FRACTION);
+  if (ph < 1) { ph = 1; }
+  draw_upper(cr, w, ph, app);
+  draw_wf_overlays(cr, w, h, ph, app);
+}
+
+/* ---- SdrflDisplay: the spectrum/waterfall widget (GSK snapshot path) -------
+ * A custom widget instead of GtkDrawingArea so the waterfall skips the CPU
+ * scale-blit: the history bitmap goes to the GPU as a texture (re-uploaded
+ * only when its serial changed) and the renderer scales it — NEAREST, crisp
+ * streaks like piHPSDR. Everything else stays the existing cairo code in a
+ * node ON TOP of the texture, pixel-identical to the old draw func. */
+#define SDRFL_TYPE_DISPLAY (sdrfl_display_get_type())
+G_DECLARE_FINAL_TYPE(SdrflDisplay, sdrfl_display, SDRFL, DISPLAY, GtkWidget)
+struct _SdrflDisplay { GtkWidget parent_instance; App *app; };
+G_DEFINE_TYPE(SdrflDisplay, sdrfl_display, GTK_TYPE_WIDGET)
+
+/* Cached GPU texture per waterfall (slot 0 = RX, 1 = TX), keyed on the
+ * waterfall's content serial: unchanged bitmap → same GdkTexture object →
+ * the renderer reuses its GPU copy, no per-frame upload. */
+static GdkTexture *wf_texture_get(App *app, Waterfall *wf, int slot) {
+  cairo_surface_t *s = waterfall_surface(wf);
+  if (!s) { return NULL; }
+  unsigned serial = waterfall_serial(wf);
+  if (app->wf_tex[slot] && app->wf_tex_serial[slot] == serial) {
+    return app->wf_tex[slot];
+  }
+  cairo_surface_flush(s);
+  int   sw     = cairo_image_surface_get_width(s);
+  int   sh     = cairo_image_surface_get_height(s);
+  int   stride = cairo_image_surface_get_stride(s);
+  /* Copy the pixels (the surface keeps mutating under us); ARGB32 premultiplied
+   * native-endian is exactly GDK_MEMORY_DEFAULT. ~2 MB, only on content change. */
+  GBytes *bytes = g_bytes_new(cairo_image_surface_get_data(s), (gsize)stride * sh);
+  GdkTexture *t = gdk_memory_texture_new(sw, sh, GDK_MEMORY_DEFAULT, bytes, (gsize)stride);
+  g_bytes_unref(bytes);
+  g_clear_object(&app->wf_tex[slot]);
+  app->wf_tex[slot]        = t;
+  app->wf_tex_serial[slot] = serial;
+  return t;
+}
+
+static void sdrfl_display_snapshot(GtkWidget *widget, GtkSnapshot *snapshot) {
+  App *app = SDRFL_DISPLAY(widget)->app;
+  int w = gtk_widget_get_width(widget), h = gtk_widget_get_height(widget);
+  if (!app || w < 1 || h < 1) { return; }
+  int live = app->connected && app->have_frame;
+  int ph = (int)(h * PANADAPTER_FRACTION);
+  if (ph < 1) { ph = 1; }
+
+  /* Waterfall first (bottom layer) — the active one (RX, or TX while keyed).
+   * The status screens (not connected / calibrating) paint the full area
+   * opaque in the cairo layer, so appending unconditionally is safe. */
+  if (live) {
+    Waterfall *wf   = app->tx_display ? app->tx_wf : app->wf;
+    int        slot = app->tx_display ? 1 : 0;
+    if (wf && h - ph > 0) {
+      gint64 t0 = g_get_monotonic_time();
+      GdkTexture *t = wf_texture_get(app, wf, slot);
+      prof_add(PROF_TEX, t0);
+      if (t) {
+        gtk_snapshot_append_scaled_texture(snapshot, t, GSK_SCALING_FILTER_NEAREST,
+            &GRAPHENE_RECT_INIT(0.0f, (float)ph, (float)w, (float)(h - ph)));
+      }
+    }
+  }
+
+  gint64 tc = g_get_monotonic_time();
+  if (live && !app->tx_display) {
+    /* RX: cairo only over the spectrum strip (+1 px of separator overlap);
+     * the waterfall region stays pure texture — no software raster/upload of
+     * that half — plus a small overlay node only when the operator wants
+     * filter/select lines carried down. */
+    cairo_t *cr = gtk_snapshot_append_cairo(snapshot,
+        &GRAPHENE_RECT_INIT(0.0f, 0.0f, (float)w, (float)(ph + 1)));
+    draw_upper(cr, w, ph, app);
+    cairo_destroy(cr);
+    if (wf_overlays_wanted(app) && h - ph > 0) {
+      cr = gtk_snapshot_append_cairo(snapshot,
+          &GRAPHENE_RECT_INIT(0.0f, (float)ph, (float)w, (float)(h - ph)));
+      draw_wf_overlays(cr, w, h, ph, app);
+      cairo_destroy(cr);
+    }
+  } else {
+    cairo_t *cr = gtk_snapshot_append_cairo(snapshot,
+        &GRAPHENE_RECT_INIT(0.0f, 0.0f, (float)w, (float)h));
+    draw_all(cr, w, h, app);
+    cairo_destroy(cr);
+  }
+  prof_add(PROF_CAIRO, tc);
+  prof_frame();
+}
+
+static void sdrfl_display_class_init(SdrflDisplayClass *klass) {
+  GTK_WIDGET_CLASS(klass)->snapshot = sdrfl_display_snapshot;
+}
+static void sdrfl_display_init(SdrflDisplay *d) { (void)d; }
+
+static GtkWidget *sdrfl_display_new(App *app) {
+  SdrflDisplay *d = g_object_new(SDRFL_TYPE_DISPLAY, NULL);
+  d->app = app;
+  return GTK_WIDGET(d);
 }
 
 /* Network path: pull a decoded frame and fold it into the dBm EMA. */
@@ -4140,8 +4292,7 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
   GtkWidget *tv = adw_toolbar_view_new();
   adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(tv), header);
 
-  app->area = gtk_drawing_area_new();
-  gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(app->area), draw_cb, app, NULL);
+  app->area = sdrfl_display_new(app);
   gtk_widget_set_vexpand(app->area, TRUE);
 
   GtkWidget *content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);

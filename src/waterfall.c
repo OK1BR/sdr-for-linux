@@ -29,6 +29,7 @@ struct Waterfall {
   int              auto_init;
   int              manual;     /* 1 = pinned to man_low/man_span, no auto-track */
   double           man_low, man_span;
+  unsigned         serial;     /* bumped on any pixel change (texture-cache key) */
 };
 
 /* -------- Selectable colour palettes ---------------------------------------
@@ -136,8 +137,12 @@ void waterfall_set_palette(Waterfall *wf, int idx) {
       }
     }
     cairo_surface_mark_dirty(wf->surf);
+    wf->serial++;
   }
 }
+
+cairo_surface_t *waterfall_surface(Waterfall *wf) { return wf ? wf->surf : NULL; }
+unsigned         waterfall_serial(const Waterfall *wf) { return wf ? wf->serial : 0; }
 
 void waterfall_range(const Waterfall *wf, double *low, double *span) {
   if (wf->manual) { *low = wf->man_low; *span = wf->man_span; return; }
@@ -250,6 +255,7 @@ void waterfall_push(Waterfall *wf, const uint8_t *dbm, int n) {
   }
 
   cairo_surface_mark_dirty(wf->surf);
+  wf->serial++;
 }
 
 void waterfall_draw(Waterfall *wf, cairo_t *cr, int x, int y, int w, int h) {
