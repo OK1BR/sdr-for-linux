@@ -4716,15 +4716,24 @@ int main(int argc, char **argv) {
            "Environment:\n"
            "  SDRFL_RADIO_IP   radio IP (skips the picker)\n"
            "  PIHPSDR_PWD      password for --server mode\n"
-           "  GSK_RENDERER     GTK renderer override (default here: cairo)\n",
+           "  GSK_RENDERER     GTK renderer override (default: gl on GTK >= 4.22, else cairo)\n",
            SDRFL_VERSION);
     return 0;
   }
 
-  /* GTK4's GL renderer crashes on NVIDIA+Wayland; our drawing is pure Cairo
-   * anyway, so default to the cairo renderer. FALSE = an operator's explicit
-   * GSK_RENDERER always wins. Must precede any GTK init (the picker's too). */
-  g_setenv("GSK_RENDERER", "cairo", FALSE);
+  /* Renderer default by runtime GTK. The GL renderer crashed on NVIDIA+Wayland
+   * in the GTK-4.14 era (the AppImage still bundles 4.14), so those stay on
+   * cairo; on ≥ 4.22 GL is live-verified (2026-08-01, RTX 5070 + Wayland) and
+   * kills the frame-present jitter of the software path — the drawing-area
+   * content is still Cairo-rasterized, but composition/upload move to the GPU.
+   * FALSE = an operator's explicit GSK_RENDERER always wins. Must precede any
+   * GTK init (the picker's too). */
+  gboolean gl_ok = gtk_get_major_version() > 4 ||
+                   (gtk_get_major_version() == 4 && gtk_get_minor_version() >= 22);
+  g_setenv("GSK_RENDERER", gl_ok ? "gl" : "cairo", FALSE);
+  printf("renderer: GSK_RENDERER=%s (GTK %u.%u%s)\n", g_getenv("GSK_RENDERER"),
+         gtk_get_major_version(), gtk_get_minor_version(),
+         gl_ok ? "" : " — GL unverified there, cairo default");
 
   /* Window ↔ application-icon association. The shell matches a window to
    * cz.ok1br.sdr_for_linux.desktop (and its icon) by Wayland app-id / X11
