@@ -156,6 +156,14 @@ sudo meson install -C build      # install binary + desktop integration
 
 Settings persist in `~/.config/sdr-for-linux/config.ini`.
 
+**Display rendering** is chosen automatically: on GTK ≥ 4.22 the app uses
+GTK's GPU (GL) renderer — the waterfall history is scaled by the graphics
+card and the frame pacing is much steadier at high FPS; on older GTK
+(including the AppImage's bundled 4.14) it stays on the proven CPU Cairo
+renderer. The startup log prints the choice (`renderer: GSK_RENDERER=…`),
+and setting `GSK_RENDERER` yourself always wins. Details in
+[`docs/RENDERING.md`](docs/RENDERING.md).
+
 ## Known limitations
 
 - **Three radios: ANAN G2E, ANAN 10E/100B, Hermes Lite 2** (whitelist, see
@@ -165,8 +173,10 @@ Settings persist in `~/.config/sdr-for-linux/config.ini`.
   not wired up
 - Wattmeter uses a single per-band calibration factor — accurate on HF,
   over-reads ~25 % on 6 m (a guided nonlinear calibration is planned)
-- On NVIDIA + Wayland the app defaults to GTK's Cairo renderer to avoid a
-  GTK4 GL crash (set `GSK_RENDERER` yourself to override)
+- GPU rendering needs GTK ≥ 4.22; on older GTK (e.g. the AppImage's bundled
+  4.14, where GL crashed on NVIDIA + Wayland) the display stays on the CPU
+  Cairo renderer (set `GSK_RENDERER` yourself to override — see
+  [`docs/RENDERING.md`](docs/RENDERING.md))
 
 ## Architecture
 

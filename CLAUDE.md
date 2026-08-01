@@ -193,6 +193,21 @@ proof-of-work — only a real browser reads them; WebFetch/curl get
 "Access Denied". The register captcha's `sed` salt is per-page-render,
 so recompute the `pacman -V` answer against the *current* form.
 
+**★ RENDER MILESTONE 2026-08-01 (90cd88e + fec8131, docs/RENDERING.md):**
+the 60 FPS stutter ("game lag") was the CPU cairo renderer's 10–13 ms
+frame cost missing the 16.7 ms budget — NOT the data path (engine/audio
+unaffected; GUI always pulls the latest analyzer frame). Fixes, both
+live-verified on the G2E: (1) renderer default is now **GL on GTK ≥ 4.22**
+(cairo on older/AppImage; explicit GSK_RENDERER wins; startup log prints
+the choice) — collapses frame jitter, >40 ms hitches 100–566/min → ~2/min;
+(2) **SdrflDisplay** snapshot widget — waterfall = GPU-scaled texture
+(re-upload only on `waterfall_serial()` change), cairo shrunk to the
+spectrum strip, our snapshot now ~1.1 ms/frame (`SDRFL_DRAW_PROF=1`).
+⛔ Vulkan renderer measured and REJECTED (30–36 f/s on NVIDIA 610.43).
+OPEN: ~12 ms/frame of main-thread CPU inside GSK GL (NVIDIA
+upload/swap) — next: perf profile, `__GL_YIELD=USLEEP`. Frame-clock
+diagnosis technique (GDK_DEBUG=frames + timestamper) in RENDERING.md.
+
 **★ Next candidates (Richard picks):** P1 PureSignal milestone
 (multi-RX P1 link, RX3/RX4 feedback); 10E leftovers (pa_cal remaining
 bands ~32-34, digi TX meter live check); Square SDR bring-up; 10E PS
@@ -319,12 +334,15 @@ build** + vendor **Protocol-2 discovery** (find the radio on the LAN). See
 ```sh
 meson setup build && meson compile -C build
 # GUI, DIRECT RADIO (default): radio-picker dialog (broadcast discovery, pick
-# one) → P2 RX → WDSP analyzer → panadapter. TAKES THE RADIO once started
-# (piHPSDR must be closed). GSK_RENDERER=cairo avoids the NVIDIA+Wayland GTK4
-# GL crash. Env: SDRFL_RADIO_IP (skips the picker) / SDRFL_FREQ / SDRFL_RATE.
-GSK_RENDERER=cairo ./build/sdr-for-linux
+# one — the picker NEVER auto-starts, the saved IP is only preselected) → P2 RX
+# → WDSP analyzer → panadapter. TAKES THE RADIO once started (piHPSDR must be
+# closed). Renderer is auto: GL (GPU) on GTK >= 4.22, cairo on older — the
+# startup log prints the choice; explicit GSK_RENDERER always wins (see
+# docs/RENDERING.md). Env: SDRFL_RADIO_IP (skips the picker) / SDRFL_FREQ /
+# SDRFL_RATE; SDRFL_DRAW_PROF=1 = per-section draw cost 1×/s.
+./build/sdr-for-linux
 # GUI, network remote head onto a running piHPSDR server (v0 path):
-GSK_RENDERER=cairo PIHPSDR_PWD='Test5' ./build/sdr-for-linux --server 127.0.0.1 50000
+PIHPSDR_PWD='Test5' ./build/sdr-for-linux --server 127.0.0.1 50000
 # headless engine gates (need the radio free): IQ probe / analyzer→panadapter PNG
 ./build/sdrfl-rxprobe
 RENDER_OUT=/tmp/pan.png ./build/sdrfl-panprobe    # SDRFL_SELFTEST=1 = no radio
