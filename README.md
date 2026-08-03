@@ -210,4 +210,4 @@ scope, band plans.
 
 ## Author
 
-Richard Fakenberg — **OK1BR**
+Richard Fakenberg — **OK1BR** — [rifak.cz](https://rifak.cz)
