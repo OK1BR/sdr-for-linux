@@ -333,6 +333,14 @@ path as hazardous and observe, without exception:
    library versions + store/settings paths + the TCI endpoint). The other
    apps are being brought up to this dialog's level; each does it in its
    own development.
+7. **The Website field in the repo header. TO DO (written down 2026-08-04 at
+   Richard's request, across every one of his projects.)** Every OK1BR repo
+   has that field empty while its README already points at
+   [rifak.cz](https://rifak.cz) — so the GitHub sidebar, which is the first
+   place a visitor looks, links nowhere. Repo metadata, not code:
+   `gh repo edit OK1BR/sdr-for-linux --homepage https://rifak.cz` (or the web
+   UI). Whoever next works this project sets it; the same note is in the
+   scope of every sibling.
 
 **Next concrete step** (does NOT need the radio free): get **WDSP into the meson
 build** + vendor **Protocol-2 discovery** (find the radio on the LAN). See
