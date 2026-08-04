@@ -318,6 +318,21 @@ path as hazardous and observe, without exception:
    bridge (verified with WSJT-X/fldigi/CQRLOG) — zero work on our side.
    Reopen only with a concrete app that neither speaks TCI nor works through
    tciadapter.
+6. **A GNOME-correct About dialog — top it up. TO DO (written down
+   2026-08-04 at Richard's request, across every app of the family.)** Every
+   app must open the same kind of About from its primary menu, and its
+   strings must agree with what the `.desktop` entry and the AppStream
+   metainfo say — one truth about the app, not three. **This app's About
+   (`act_about` in `src/gui.c`) is the family REFERENCE**: application
+   icon (= the GApplication id, which is also the installed icon's file
+   name), name, version, developer, comments, website, issue URL,
+   copyright, `GTK_LICENSE_GPL_3_0` and two acknowledgement sections for
+   the vendored code are all there. **The one gap is `debug_info`** —
+   versions and paths a user can paste into a bug report straight from
+   its Copy button (`log-for-linux`'s About builds a good one:
+   library versions + store/settings paths + the TCI endpoint). The other
+   apps are being brought up to this dialog's level; each does it in its
+   own development.
 
 **Next concrete step** (does NOT need the radio free): get **WDSP into the meson
 build** + vendor **Protocol-2 discovery** (find the radio on the LAN). See
