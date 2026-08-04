@@ -332,7 +332,11 @@ path as hazardous and observe, without exception:
    its Copy button (`log-for-linux`'s About builds a good one:
    library versions + store/settings paths + the TCI endpoint). The other
    apps are being brought up to this dialog's level; each does it in its
-   own development.
+   own development. **The version must be findable FROM THE UI** (Richard,
+   2026-08-04): a `--version` flag on the command line does NOT satisfy
+   this — someone who launched the app from the app grid must see which
+   version he runs without leaving it. This About already shows it; the
+   rule is written down so nobody "solves" it with a CLI flag elsewhere.
 7. **The Website field in the repo header. TO DO (written down 2026-08-04 at
    Richard's request, across every one of his projects.)** Every OK1BR repo
    has that field empty while its README already points at
