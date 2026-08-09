@@ -335,7 +335,9 @@ path as hazardous and observe, without exception:
    (accessors: `wisdom_cache_dir()`/`wisdom_fftw_version()` in
    wisdom_gate.h, `audio_backend_version()` in engine/audio.h).
    Verified user-visibly in the headless GNOME Shell lab (server mode;
-   radio-mode line composition identical but not live-checked). The other
+   radio-mode line composition identical but not live-checked — Richard,
+   2026-08-09: check the radio-mode About as part of the pre-release
+   test pass of the next version). The other
    apps are being brought up to this dialog's level; each does it in its
    own development. **The version must be findable FROM THE UI** (Richard,
    2026-08-04): a `--version` flag on the command line does NOT satisfy
