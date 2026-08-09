@@ -23,7 +23,11 @@ install_data('cz.ok1br.sdr_for_linux.metainfo.xml',
 # Refresh the icon cache and desktop database at install time so the app and
 # its icon show up without requiring a re-login. Automatically skipped when
 # DESTDIR is set (distro packaging), leaving those steps to the packager.
+# update-desktop-database (desktop-file-utils) is an install-time nicety, not
+# a build dependency — skip it where absent (CI, minimal systems) instead of
+# failing meson setup.
 gnome.post_install(
   gtk_update_icon_cache   : true,
-  update_desktop_database : true,
+  update_desktop_database : find_program('update-desktop-database',
+                                         required : false).found(),
 )
