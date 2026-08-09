@@ -208,6 +208,22 @@ OPEN: ~12 ms/frame of main-thread CPU inside GSK GL (NVIDIA
 upload/swap) — next: perf profile, `__GL_YIELD=USLEEP`. Frame-clock
 diagnosis technique (GDK_DEBUG=frames + timestamper) in RENDERING.md.
 
+**★ RELEASED 2026-08-09: v0.3.0** — the GL-renderer release (render
+milestone above + About debug_info + TCI spot-click relay + desktop-entry
+fixes; GTK ≥ 4.10 required). Pre-release pass: 6 offline gates, headless
+lab About check in BOTH modes (server + live G2E radio), CI dry-run.
+Dry-run caught a regression: `gnome.post_install(update_desktop_database)`
+hard-required desktop-file-utils at meson setup (1744b68 makes it
+optional). ⛔ **AUR bump 0.3.0 PENDING — AUR is down for maintenance**
+(ssh reports it; checked 2026-08-09). Everything is staged in
+`/var/tmp/sdrfl-aur-0.3.0/` (PKGBUILD 0.3.0-1 + .SRCINFO,
+makepkg-built + namcap-clean; tarball sha256 a04e7ab…bbc83). When AUR
+returns: clone/pull the AUR repo, copy those two files, commit
+"Update to 0.3.0", push — and if the SSH host key does NOT match the
+pinned one, STOP and verify against official Arch news first (the 2026-06
+maintenance was a migration with NEW host keys; another one may rotate
+them again).
+
 **★ NEXT MILESTONE (Richard's pick, 2026-08-01): RX + TX equalizer —
 parametric, with a graphical display.** Both directions (RX audio chain +
 TX mic chain), parametric control (per-band freq/gain/Q, not just fixed
