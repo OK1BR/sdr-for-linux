@@ -173,21 +173,27 @@ static void run_first_run_ui(const char *dir) {
   g_free(job.dir);
 }
 
-void wisdom_ensure(void) {
-  /* SDRFL_WISDOM_DIR overrides the cache location verbatim (used by
-   * sdrfl-wisdom-test to exercise a fresh build in a throwaway dir). */
+/* SDRFL_WISDOM_DIR overrides the cache location verbatim (used by
+ * sdrfl-wisdom-test to exercise a fresh build in a throwaway dir). */
+static char *resolve_dir(void) {
   const char *env = g_getenv("SDRFL_WISDOM_DIR");
-  char *dir;
-  if (env && *env) {
-    dir = g_strdup(env);
-  } else {
-    char *tag = g_strdup(fftw_version);   /* e.g. "fftw-3.3.11-sse2-avx2" */
-    g_strcanon(tag,
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-", '-');
-    dir = g_build_filename(g_get_user_config_dir(), "sdr-for-linux",
-                           "wisdom", tag, NULL);
-    g_free(tag);
-  }
+  if (env && *env) { return g_strdup(env); }
+  char *tag = g_strdup(fftw_version);   /* e.g. "fftw-3.3.11-sse2-avx2" */
+  g_strcanon(tag,
+      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-", '-');
+  char *dir = g_build_filename(g_get_user_config_dir(), "sdr-for-linux",
+                               "wisdom", tag, NULL);
+  g_free(tag);
+  return dir;
+}
+
+char *wisdom_cache_dir(void) { return resolve_dir(); }
+
+const char *wisdom_fftw_version(void) { return fftw_version; }
+
+void wisdom_ensure(void) {
+  const char *env = g_getenv("SDRFL_WISDOM_DIR");
+  char *dir = resolve_dir();
   g_mkdir_with_parents(dir, 0755);
   char *file = g_build_filename(dir, WISDOM_FILE, NULL);
 

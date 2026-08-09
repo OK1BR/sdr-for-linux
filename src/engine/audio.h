@@ -45,4 +45,8 @@ int audio_queued(void);
 /* Stop and tear down the sink. */
 void audio_stop(void);
 
+/* Backend name + runtime library version, e.g. "PipeWire 1.4.2" — for the
+ * About debug info. Static string, do not free. */
+const char *audio_backend_version(void);
+
 #endif /* SDRFL_ENGINE_AUDIO_H */

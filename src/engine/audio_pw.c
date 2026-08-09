@@ -208,3 +208,11 @@ void audio_stop(void) {
   if (a_loop) { pw_thread_loop_destroy(a_loop); a_loop = NULL; }
   pw_deinit();
 }
+
+const char *audio_backend_version(void) {
+  static char buf[48];
+  if (!buf[0]) {
+    snprintf(buf, sizeof buf, "PipeWire %s", pw_get_library_version());
+  }
+  return buf;
+}

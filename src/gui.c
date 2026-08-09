@@ -44,6 +44,7 @@
 #include "settings.h"
 #include "bandplan.h"
 #include "wisdom_gate.h"
+#include "wdsp.h"      /* GetWDSPVersion() — About debug info */
 #include "picker.h"
 #include "radio_support.h"
 #include "tci_server.h"
@@ -4204,7 +4205,8 @@ static void act_prefs(GSimpleAction *a, GVariant *param, gpointer data) {
 }
 
 static void act_about(GSimpleAction *a, GVariant *param, gpointer data) {
-  (void)a; (void)param; (void)data;
+  (void)a; (void)param;
+  App *app = (App *)data;
   GtkWindow *win = gtk_application_get_active_window(
       GTK_APPLICATION(g_application_get_default()));
   AdwDialog *dlg = adw_about_dialog_new();
@@ -4220,6 +4222,43 @@ static void act_about(GSimpleAction *a, GVariant *param, gpointer data) {
   adw_about_dialog_set_issue_url(ad, "https://github.com/OK1BR/sdr-for-linux/issues");
   adw_about_dialog_set_copyright(ad, "© 2026 Richard Fakenberg, OK1BR");
   adw_about_dialog_set_license_type(ad, GTK_LICENSE_GPL_3_0);
+  {  /* Troubleshooting → Debug Information: everything a bug report needs,
+      * pasteable via the dialog's Copy button. Runtime (not compile-time)
+      * library versions — an AppImage bundles different ones. */
+    char *cfg = g_build_filename(g_get_user_config_dir(), "sdr-for-linux",
+                                 "config.ini", NULL);
+    char *wis = wisdom_cache_dir();
+    char *radio = app->radio_mode
+        ? g_strdup_printf("%s at %s (HPSDR Protocol %d)",
+                          app->radio_name[0] ? app->radio_name : "unknown",
+                          app->radio_ip, app->proto_p1 ? 1 : 2)
+        : g_strdup("network server mode (--server)");
+    char *tci = app->radio_mode   /* no TCI server on the v0 network path */
+        ? g_strdup_printf("TCI: %s, port %d\n",
+                          app->tci_enable ? "on" : "off", app->tci_port)
+        : g_strdup("");
+    const char *renderer = g_getenv("GSK_RENDERER");
+    char *dbg = g_strdup_printf(
+        "SDR for Linux %s\n"
+        "GTK %u.%u.%u, libadwaita %u.%u.%u, GSK_RENDERER=%s\n"
+        "WDSP %d.%02d, %s, %s\n"
+        "Radio: %s\n"
+        "%s"
+        "Config: %s\n"
+        "Wisdom: %s",
+        SDRFL_VERSION,
+        gtk_get_major_version(), gtk_get_minor_version(),
+        gtk_get_micro_version(),
+        adw_get_major_version(), adw_get_minor_version(),
+        adw_get_micro_version(),
+        renderer ? renderer : "default",
+        GetWDSPVersion() / 100, GetWDSPVersion() % 100,
+        wisdom_fftw_version(), audio_backend_version(),
+        radio, tci,
+        cfg, wis);
+    adw_about_dialog_set_debug_info(ad, dbg);
+    g_free(dbg); g_free(tci); g_free(radio); g_free(wis); g_free(cfg);
+  }
   const char *engine[] = {
     "piHPSDR — Christoph van Wüllen DL1YCF, John Melton G0ORX https://github.com/dl1ycf/pihpsdr",
     "WDSP — Warren Pratt NR0V",

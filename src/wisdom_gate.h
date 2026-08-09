@@ -18,4 +18,12 @@
  * cache is written. Call once, before analyzer_create()/demod_create(). */
 void wisdom_ensure(void);
 
+/* Resolved cache directory (~/.config/sdr-for-linux/wisdom/<fftw-build>, or
+ * the SDRFL_WISDOM_DIR override) — for the About debug info. Caller frees. */
+char *wisdom_cache_dir(void);
+
+/* FFTW's own build string (e.g. "fftw-3.3.11-sse2-avx2") — the wisdom cache
+ * is only readable by the exact build that wrote it, so bug reports need it. */
+const char *wisdom_fftw_version(void);
+
 #endif /* SDRFL_WISDOM_GATE_H */

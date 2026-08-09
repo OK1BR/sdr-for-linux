@@ -318,33 +318,34 @@ path as hazardous and observe, without exception:
    bridge (verified with WSJT-X/fldigi/CQRLOG) — zero work on our side.
    Reopen only with a concrete app that neither speaks TCI nor works through
    tciadapter.
-6. **A GNOME-correct About dialog — top it up. TO DO (written down
-   2026-08-04 at Richard's request, across every app of the family.)** Every
-   app must open the same kind of About from its primary menu, and its
+6. **A GNOME-correct About dialog — DONE 2026-08-09 (family rule written
+   down 2026-08-04 at Richard's request, across every app of the family.)**
+   Every app must open the same kind of About from its primary menu, and its
    strings must agree with what the `.desktop` entry and the AppStream
    metainfo say — one truth about the app, not three. **This app's About
    (`act_about` in `src/gui.c`) is the family REFERENCE**: application
    icon (= the GApplication id, which is also the installed icon's file
    name), name, version, developer, comments, website, issue URL,
-   copyright, `GTK_LICENSE_GPL_3_0` and two acknowledgement sections for
-   the vendored code are all there. **The one gap is `debug_info`** —
-   versions and paths a user can paste into a bug report straight from
-   its Copy button (`log-for-linux`'s About builds a good one:
-   library versions + store/settings paths + the TCI endpoint). The other
+   copyright, `GTK_LICENSE_GPL_3_0`, two acknowledgement sections for
+   the vendored code, **and `debug_info`** — everything a bug report needs,
+   pasteable from the Troubleshooting page's Copy button: app version,
+   runtime GTK/libadwaita versions, effective `GSK_RENDERER`, WDSP + FFTW
+   build string + PipeWire version, connected radio (name/IP/protocol),
+   TCI state+port (radio mode only), config.ini and wisdom-cache paths
+   (accessors: `wisdom_cache_dir()`/`wisdom_fftw_version()` in
+   wisdom_gate.h, `audio_backend_version()` in engine/audio.h).
+   Verified user-visibly in the headless GNOME Shell lab (server mode;
+   radio-mode line composition identical but not live-checked). The other
    apps are being brought up to this dialog's level; each does it in its
    own development. **The version must be findable FROM THE UI** (Richard,
    2026-08-04): a `--version` flag on the command line does NOT satisfy
    this — someone who launched the app from the app grid must see which
    version he runs without leaving it. This About already shows it; the
    rule is written down so nobody "solves" it with a CLI flag elsewhere.
-7. **The Website field in the repo header. TO DO (written down 2026-08-04 at
-   Richard's request, across every one of his projects.)** Every OK1BR repo
-   has that field empty while its README already points at
-   [rifak.cz](https://rifak.cz) — so the GitHub sidebar, which is the first
-   place a visitor looks, links nowhere. Repo metadata, not code:
-   `gh repo edit OK1BR/sdr-for-linux --homepage https://rifak.cz` (or the web
-   UI). Whoever next works this project sets it; the same note is in the
-   scope of every sibling.
+7. **The Website field in the repo header — DONE 2026-08-09** (`gh repo
+   edit OK1BR/sdr-for-linux --homepage https://rifak.cz`, verified via
+   `gh repo view`). The same note stays in the scope of every sibling
+   OK1BR repo — set it there too when next working those projects.
 
 **Next concrete step** (does NOT need the radio free): get **WDSP into the meson
 build** + vendor **Protocol-2 discovery** (find the radio on the LAN). See
