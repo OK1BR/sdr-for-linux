@@ -83,6 +83,9 @@ PA off, ANT1, 1 W.
 - Linux with **PipeWire** as the sound server (standard on 2024+ distros)
 - For the AppImage: glibc ≥ 2.39 (Ubuntu 24.04+, Fedora 40+, Mint 22,
   openSUSE, Arch, …)
+- To build from source: **GTK ≥ 4.10** (enforced by meson) and
+  libadwaita ≥ 1.5. GPU rendering additionally wants GTK ≥ 4.22, but the
+  app runs fine below it on the Cairo renderer
 
 ## Install
 
@@ -126,7 +129,7 @@ ubiquitous platform libraries come from your distribution:
 
 | Need | Arch | Debian/Ubuntu | Fedora |
 |---|---|---|---|
-| GTK4 + libadwaita ≥ 1.5 | `gtk4 libadwaita` | `libgtk-4-dev libadwaita-1-dev` | `gtk4-devel libadwaita-devel` |
+| GTK4 ≥ 4.10 + libadwaita ≥ 1.5 | `gtk4 libadwaita` | `libgtk-4-dev libadwaita-1-dev` | `gtk4-devel libadwaita-devel` |
 | FFTW (single + double) | `fftw` | `libfftw3-dev` | `fftw-devel` |
 | PipeWire client | `libpipewire` | `libpipewire-0.3-dev` | `pipewire-devel` |
 | libwebsockets (TCI) | `libwebsockets` | `libwebsockets-dev` | `libwebsockets-devel` |
@@ -177,6 +180,14 @@ and setting `GSK_RENDERER` yourself always wins. Details in
   4.14, where GL crashed on NVIDIA + Wayland) the display stays on the CPU
   Cairo renderer (set `GSK_RENDERER` yourself to override — see
   [`docs/RENDERING.md`](docs/RENDERING.md))
+
+## Reporting a bug
+
+Open an [issue](https://github.com/OK1BR/sdr-for-linux/issues) and paste
+the debug info from the app: **menu → About → Troubleshooting → Copy**.
+It carries the app version, the GTK/libadwaita/WDSP/FFTW/PipeWire versions
+actually in use, the active renderer, the connected radio and protocol, and
+the config paths — which is most of what a diagnosis needs.
 
 ## Architecture
 
