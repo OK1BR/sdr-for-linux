@@ -354,7 +354,10 @@ path as hazardous and observe, without exception:
    Verified user-visibly in the headless GNOME Shell lab (server mode;
    radio-mode line composition identical but not live-checked — Richard,
    2026-08-09: check the radio-mode About as part of the pre-release
-   test pass of the next version). The other
+   test pass of the next version). Add to that same pass (2026-08-12):
+   walk the *menu → About → Troubleshooting → Copy* path by hand, because
+   README now sends bug reporters down it — the wording was written from
+   the `gui.c` format string, not from clicking it. The other
    apps are being brought up to this dialog's level; each does it in its
    own development. **The version must be findable FROM THE UI** (Richard,
    2026-08-04): a `--version` flag on the command line does NOT satisfy
