@@ -7,17 +7,18 @@
   <summary>Software-defined radio for HPSDR / ANAN transceivers</summary>
   <description>
     <p>
-      A modern GTK4/libadwaita application for HPSDR Protocol 2 radios, built
-      on the proven piHPSDR engine and the WDSP DSP library. Full-resolution
-      floating-point panadapter and waterfall, RX demodulation (SSB, CW, AM,
-      digi) with low-latency PipeWire audio, and SSB/CW transmit with
-      PureSignal linearization.
+      A modern GTK4/libadwaita application for HPSDR Protocol 1 and Protocol 2
+      radios, built on the proven piHPSDR engine and the WDSP DSP library.
+      Full-resolution floating-point panadapter and waterfall, RX demodulation
+      (SSB, CW, AM, digi) with low-latency PipeWire audio, and SSB/CW transmit
+      with PureSignal linearization.
     </p>
     <p>
       Includes a TCI server (ExpertSDR3-compatible) for skimmers, loggers and
-      digimode software. Alpha software: the Apache Labs ANAN G2E is currently
-      the only radio verified on real hardware — other models are blocked by
-      a safety whitelist until they are tested.
+      digimode software. Three radios are verified on real hardware — the
+      Apache Labs ANAN G2E, the ANAN 10E/100B and the Hermes Lite 2 (all
+      RX + TX). Untested models are refused by a safety whitelist, because a
+      wrong relay or filter bit can physically damage a transmitter.
     </p>
   </description>
   <developer id="cz.ok1br">
@@ -34,6 +35,20 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.0" date="2026-08-09">
+      <description>
+        <p>
+          Smooth rendering: the spectrum display moves to the GPU. GTK's GL
+          renderer is the default on GTK 4.22 and newer, which collapses frame
+          jitter at 60 FPS, and the waterfall is drawn as a GPU-scaled texture
+          so the application's own frame cost drops to about a millisecond.
+          The About dialog gained a Troubleshooting page with copyable debug
+          info for bug reports, TCI relays spot clicks between clients, and the
+          desktop entry also works for plain source builds. Requires GTK 4.10
+          or newer.
+        </p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-07-13">
       <description>
         <p>
