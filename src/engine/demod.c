@@ -260,6 +260,29 @@ void demod_feed(const double *iq, int n_pairs) {
                 atomic_store_explicit(&mon_tail, mt + 1, memory_order_release);
               }
             }
+            /* SDRFL_MON_DEBUG=1: 1 Hz consumer-side state dump (temporary
+             * monitor forensics 2026-08-14). Feed thread only. */
+            {
+              static int mdbg = -1;
+              if (mdbg < 0) { const char *e = getenv("SDRFL_MON_DEBUG"); mdbg = (e && e[0] == '1'); }
+              if (mdbg) {
+                static double acc_mon2, acc_rx2; static long nacc, nwait, npop;
+                acc_mon2 += mon * mon;
+                acc_rx2  += sl * d_mute_gain * sl * d_mute_gain;
+                nacc++;
+                if (mon_wait) { nwait++; } else { npop++; }
+                if (nacc >= d_arate) {
+                  fprintf(stderr,
+                    "MONDBG cons: arate=%d avail=%u wait%%=%.0f pop%%=%.0f "
+                    "mon_rms=%.5f rxout_rms=%.5f mute_gain=%.2f mon_gain=%.3f abs=%d\n",
+                    d_arate, avail, 100.0 * nwait / nacc, 100.0 * npop / nacc,
+                    sqrt(acc_mon2 / nacc), sqrt(acc_rx2 / nacc), d_mute_gain,
+                    mon_gain, atomic_load_explicit(&mon_abs, memory_order_relaxed));
+                  fflush(stderr);
+                  acc_mon2 = acc_rx2 = 0.0; nacc = nwait = npop = 0;
+                }
+              }
+            }
           }
           double ol = sl * d_mute_gain + mon, or_ = sr * d_mute_gain + mon;
           if (ol >  1.0) { ol =  1.0; }  if (ol < -1.0) { ol = -1.0; }
@@ -459,6 +482,24 @@ void demod_monitor_push(const float *mono, int n, int src_rate) {
   unsigned h = atomic_load_explicit(&mon_head, memory_order_relaxed);
   unsigned t = atomic_load_explicit(&mon_tail, memory_order_acquire);
   unsigned space = MON_FRAMES - (h - t);
+  /* SDRFL_MON_DEBUG=1: 1 Hz producer-side dump (temporary forensics). */
+  {
+    static int mdbg = -1;
+    if (mdbg < 0) { const char *e = getenv("SDRFL_MON_DEBUG"); mdbg = (e && e[0] == '1'); }
+    if (mdbg) {
+      static double acc2; static long nin, ncalls, ndrop;
+      for (int i = 0; i < n; i++) { acc2 += (double)mono[i] * mono[i]; }
+      nin += n; ncalls++;
+      if (space == 0) { ndrop++; }
+      if (nin >= src_rate) {
+        fprintf(stderr, "MONDBG push: src=%d n/call=%d calls=%ld in_rms=%.5f "
+                "space=%u full_calls=%ld\n",
+                src_rate, n, ncalls, sqrt(acc2 / nin), space, ndrop);
+        fflush(stderr);
+        acc2 = 0.0; nin = ncalls = ndrop = 0;
+      }
+    }
+  }
   if (src_rate >= out_rate) {
     int step = src_rate / out_rate;               /* decimate (e.g. 192k → 48k) */
     for (int i = 0; i < n; i += step) {
