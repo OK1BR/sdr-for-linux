@@ -896,13 +896,25 @@ static void decode_ps_iq(const unsigned char *buffer, int len) {
    * audio sink (the monitor is mixed in AFTER the RX-on-TX mute, demod.c:239).
    * Feed zero IQ at the configured RX rate, paced by this feedback stream
    * (each 192 kHz feedback pair ⇔ rate/192k RX samples of real time). The RX
-   * is muted while keyed, so the zeros are inaudible by construction. */
+   * is muted while keyed, so the zeros are inaudible by construction.
+   * ⛔ Fractional pacing (issue #1, live-verified 2026-08-14): rates < 192k
+   * are NOT integer multiples of the fixed 192 kHz feedback rate — the old
+   * `rate/192000` integer ratio floored to 1 and fed 2×/4× real time at
+   * 96k/48k, so the sink ring overflowed and the TX-monitor ring underran
+   * (audibly chopped 2T monitor on the G2E; clean at 192k). The remainder
+   * accumulator makes the average feed rate exact at every rate. */
   if (pairs > 0 && cfg_cb) {
     static const double zeros[2 * 8 * (NET_BUFFER_SIZE / 12 + 1)];  /* zeroed BSS */
-    int ratio = cfg_sample_rate / 192000;
-    if (ratio < 1) { ratio = 1; }
-    if (ratio > 8) { ratio = 8; }          /* 1536k max ⇒ 8× (buffer bound)     */
-    cfg_cb(zeros, pairs * ratio, cfg_user);
+    static long long acc;                  /* listener thread only              */
+    acc += (long long)pairs * cfg_sample_rate;
+    int nfeed = (int)(acc / 192000);
+    acc %= 192000;
+    int chunk_max = 8 * (NET_BUFFER_SIZE / 12 + 1);
+    while (nfeed > 0) {
+      int n = nfeed > chunk_max ? chunk_max : nfeed;
+      cfg_cb(zeros, n, cfg_user);
+      nfeed -= n;
+    }
   }
 }
 
