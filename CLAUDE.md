@@ -274,7 +274,13 @@ both + the previously-missing `sdrfl-cw-test` now in the CI gate list.
 ⛔ Review corrections applied: tx_run `is_voice` had to exclude
 DEMOD_RTTY explicitly (else mode 12 = mic open!), and the parity sweep
 is `grep -ni digu` (case-insensitive — else the DEMOD_* test sites are
-missed). REMAINS: scope §8 step 5 = live dummy-load family gate
+missed). ⛔⛔ LIVE-CAUGHT (first QSOs, same day): **the HPSDR wire IQ is
+spectrally INVERTED in BOTH directions** — DDC known (tci_server
+conjugates the RX stream), DUC masked (WDSP voice bakes it in, CW Q=0
+immune); our direct FSK went out mark-LOW = reversed = unreadable
+(proven off-air via a KiwiSDR recording + dual-polarity slicer). Fix
+5e7bbcb: tx_run conjugates at the wire boundary; ANY future direct-IQ
+synthesis (PSK…) must conjugate there too. IC-705 decodes us since. REMAINS: scope §8 step 5 = live dummy-load family gate
 (skimmer decodes our own TX off the TCI IQ tap, wattmeter/duty check,
 SDC compatibility look — with Richard at the radio), then step 6 =
 log-for-linux transport (its repo, scope §4). RX decoding stays in
