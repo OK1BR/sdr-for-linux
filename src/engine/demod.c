@@ -52,7 +52,9 @@ static double   d_dbg_pk;          /* raw WDSP-out peak since last dump      */
 static int      d_mode = DEMOD_USB;   /* current demod mode (app id, may be RTTY) */
 static double   d_flo, d_fhi;         /* GUI-space passband (around the dial) */
 static int      d_cw_pitch = 600;     /* CW sidetone pitch (BFO offset), Hz   */
-static int      d_rtty_pitch = 2210;  /* RTTY audio pair centre, Hz (2125/2295) */
+static int      d_rtty_pitch = 800;   /* RTTY audio pair centre, Hz (715/885 —
+                                         operator-comfort default, Richard
+                                         2026-08-15; GUI pushes the setting) */
 
 /* WDSP has no FSK: DEMOD_RTTY runs the RXA channel as DIGL (RTTY-SCOPE §7B).
  * Every SetRXAMode call goes through this map; d_mode keeps the app id so

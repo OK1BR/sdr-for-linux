@@ -178,7 +178,7 @@ static GMutex            s_cw_lock;
 static rtty_gen         *s_rtty;           /* RTTY FSK generator, under s_rtty_lock         */
 static GMutex            s_rtty_lock;
 static volatile int      s_want_rtty;      /* g_atomic: RTTY content wants key (feed thread)*/
-static volatile int      s_rtty_pitch = 2210; /* g_atomic: monitor audio pair centre (Hz)   */
+static volatile int      s_rtty_pitch = 800;  /* g_atomic: monitor audio pair centre (Hz)   */
 static volatile int      s_rtty_cdb = -2000;  /* g_atomic: monitor level (dB × 100) — own
                                                  trim, NOT the CW sidetone level (the FSK
                                                  monitor is a continuous ~2.2 kHz tone)    */

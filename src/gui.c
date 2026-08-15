@@ -1056,7 +1056,10 @@ static void draw_tx_digi_meter(cairo_t *cr, App *app, int w, const tx_run_status
 #define CW_ST_DB_MAX    0.0    /* the monitor gain); −20 ≈ piHPSDR vol 50/127    */
 #define CW_ST_DB_DFLT (-20.0)
 #define CW_HANG_DFLT   250
-#define RTTY_PITCH_DFLT 2210   /* RTTY audio pair centre → mark 2125 / space 2295 */
+#define RTTY_PITCH_DFLT 800    /* RTTY audio pair centre → mark 715 / space 885.
+                                  Richard's call 2026-08-15: the classic 2125/2295
+                                  fatigues the ears; decode is IQ-side (skimmer),
+                                  so the audio pitch is pure operator comfort. */
 #define RTTY_MON_DB_DFLT (-20.0) /* RTTY monitor level — own trim: the FSK monitor
                                     is a CONTINUOUS ~2.2 kHz tone, needing a
                                     different comfort level than keyed CW at 700 */
@@ -4042,7 +4045,7 @@ static AdwDialog *build_prefs(App *app) {
   g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP,
       "title", "RTTY", NULL));
   adw_preferences_group_add(g, pref_slider("RTTY pitch",
-      "audio pair centre · 2210 = the classic 2125/2295, lower = easier on the ears · live",
+      "audio pair centre · default 800, 2210 = the classic 2125/2295 · live",
       300, 3000, app->rtty_pitch, "%.0f Hz", G_CALLBACK(on_pref_rtty_pitch), app));
   adw_preferences_group_add(g, pref_slider("Monitor level",
       "absolute dBFS · continuous FSK tone, own trim next to the CW sidetone · live",
