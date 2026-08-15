@@ -49,9 +49,15 @@ static double   d_mute_gain = 1.0; /* applied output gain, ramped → target (fe
 #define D_FADE_STEP (1.0 / 960.0)  /* ~20 ms mute/unmute fade at 48 kHz (no click) */
 static int      d_dbg_blocks;      /* fexchange0 calls since last dump       */
 static double   d_dbg_pk;          /* raw WDSP-out peak since last dump      */
-static int      d_mode = DEMOD_USB;   /* current WDSP RXA mode                */
+static int      d_mode = DEMOD_USB;   /* current demod mode (app id, may be RTTY) */
 static double   d_flo, d_fhi;         /* GUI-space passband (around the dial) */
 static int      d_cw_pitch = 600;     /* CW sidetone pitch (BFO offset), Hz   */
+static int      d_rtty_pitch = 2210;  /* RTTY audio pair centre, Hz (2125/2295) */
+
+/* WDSP has no FSK: DEMOD_RTTY runs the RXA channel as DIGL (RTTY-SCOPE §7B).
+ * Every SetRXAMode call goes through this map; d_mode keeps the app id so
+ * apply_passband still knows it is RTTY. */
+static int wdsp_mode_of(int mode) { return mode == DEMOD_RTTY ? DEMOD_DIGL : mode; }
 
 /* CW BFO offset (piHPSDR rx_set_offset @2312 + receiver.c:1481-1488): in CW
  * the dial reads the CARRIER — shift the spectrum by the sidetone pitch and
@@ -66,6 +72,11 @@ static void apply_passband(void) {
     off = -(double)d_cw_pitch; lo += d_cw_pitch; hi += d_cw_pitch;
   } else if (d_mode == DEMOD_CWL) {
     off =  (double)d_cw_pitch; lo -= d_cw_pitch; hi -= d_cw_pitch;
+  } else if (d_mode == DEMOD_RTTY) {
+    /* The CWL branch with the RTTY pitch: dial = FSK pair centre (what the
+     * skimmer spots — a clicked spot lands to the Hz), heard at the classic
+     * 2125/2295 audio pair via the LSB-side (DIGL) mapping. */
+    off =  (double)d_rtty_pitch; lo -= d_rtty_pitch; hi -= d_rtty_pitch;
   }
   SetRXAShiftFreq(d_id, off);
   RXANBPSetShiftFrequency(d_id, off);
@@ -196,7 +207,7 @@ int demod_create(int id, int in_rate, int mode, double flo, double fhi, double v
   SetRXAPanelRun(id, 1);
   SetRXAPanelSelect(id, 3);              /* use both I and Q */
   SetRXAPanelBinaural(id, d_binaural);   /* copy=1 (L=R, mono) off / copy=0 (L=I,R=Q) on */
-  SetRXAMode(id, mode);
+  SetRXAMode(id, wdsp_mode_of(mode));
   d_mode = mode; d_flo = flo; d_fhi = fhi;
   apply_passband();                     /* passband + CW BFO offset            */
   apply_agc();                          /* AGC character + threshold (d_agc_mode/d_agc_top) */
@@ -386,7 +397,7 @@ void demod_set_mode(int mode, double flo, double fhi) {
   g_mutex_lock(&d_lock);
   d_mode = mode; d_flo = flo; d_fhi = fhi;
   if (d_ready) {
-    SetRXAMode(d_id, mode);
+    SetRXAMode(d_id, wdsp_mode_of(mode));
     apply_passband();
   }
   g_mutex_unlock(&d_lock);
@@ -397,6 +408,14 @@ void demod_set_cw_pitch(int hz) {
   g_mutex_lock(&d_lock);
   d_cw_pitch = hz < 200 ? 200 : (hz > 1200 ? 1200 : hz);
   if (d_ready) { apply_passband(); }
+  g_mutex_unlock(&d_lock);
+}
+
+/* RTTY audio pair centre (live; re-shifts a running RTTY RX). */
+void demod_set_rtty_pitch(int hz) {
+  g_mutex_lock(&d_lock);
+  d_rtty_pitch = hz < 1000 ? 1000 : (hz > 3000 ? 3000 : hz);
+  if (d_ready && d_mode == DEMOD_RTTY) { apply_passband(); }
   g_mutex_unlock(&d_lock);
 }
 

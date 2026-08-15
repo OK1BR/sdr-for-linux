@@ -60,6 +60,10 @@ the status bit is ignored (today's behavior, bit-for-bit).
       (transmitter.c:770-790). Do not trip during TUNE.
 - [ ] **Per-band drive limits / PA calibration** (pa_trim table, drive_max,
       separate digi-mode max — radio.c pa_power_list, drive_digi_max).
+      Note (2026-08-15): **RTTY is a 100 % duty mode** like FT8 — it joins
+      the DIGU/DIGL drive cap (`digi_drive_clamp` + the tx_push_cfg
+      belt-and-braces clamp). Any pre-flight for an RTTY live test must
+      confirm the digi max drive is set for the PA in use.
 - [ ] **TX/RX transition silencing** (rx->txrxmax sample muting on the RX
       side, receiver.c rx_add_iq_samples) — audio hygiene, not PA safety,
       but part of the same transition code.

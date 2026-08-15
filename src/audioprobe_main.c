@@ -53,6 +53,7 @@ static int pick_mode(long long freq, double *flo, double *fhi, const char **name
   else if (m && !strcasecmp(m, "cwu")) { mode = DEMOD_CWU; }
   else if (m && !strcasecmp(m, "cwl")) { mode = DEMOD_CWL; }
   else if (m && !strcasecmp(m, "am"))  { mode = DEMOD_AM;  }
+  else if (m && !strcasecmp(m, "rtty")) { mode = DEMOD_RTTY; }
   else { mode = (freq < 10000000) ? DEMOD_LSB : DEMOD_USB; }
 
   const double st = 600.0;  /* CW sidetone */
@@ -62,6 +63,9 @@ static int pick_mode(long long freq, double *flo, double *fhi, const char **name
     case DEMOD_CWU: *flo =  st - 250; *fhi = st + 250;  *name = "CWU"; break;
     case DEMOD_CWL: *flo = -(st+250); *fhi = -(st-250); *name = "CWL"; break;
     case DEMOD_AM:  *flo = -4000;     *fhi = 4000;      *name = "AM";  break;
+    case DEMOD_RTTY: *flo = -250;     *fhi = 250;       *name = "RTTY"; break;
+                    /* GUI-space, symmetric around the dial = the FSK pair
+                       centre; demod shifts to the 2125/2295 audio pair */
     default:        *flo =  150;      *fhi = 2850;      *name = "USB"; break;
   }
   return mode;

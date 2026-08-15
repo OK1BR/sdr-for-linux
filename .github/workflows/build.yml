@@ -37,7 +37,8 @@ jobs:
       - name: Offline gates
         run: |
           for g in sdrfl-wdsp-smoke sdrfl-txprobe sdrfl-txgate-test \
-                   sdrfl-txdsp-test sdrfl-swr-test sdrfl-tci-test; do
+                   sdrfl-txdsp-test sdrfl-swr-test sdrfl-tci-test \
+                   sdrfl-cw-test sdrfl-rtty-test; do
             echo "── $g"
             ./build/$g
           done

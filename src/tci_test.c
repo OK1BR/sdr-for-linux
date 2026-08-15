@@ -31,14 +31,16 @@ static struct {
   int       trx, tune, mute, wpm;
   char      cw_text[256];
   int       cw_stopped;
+  char      rtty_text[256];
+  int       rtty_stopped;
   int       tx_src;         /* TCI is the TX audio source                  */
   int       txa_samples;    /* TX audio samples received                   */
   char      spot_call[20];  /* last spot received (F6d-2e)                 */
   long long spot_hz;
   unsigned  spot_argb;
   int       spot_deleted, spot_cleared;
-} S = { 14100000, "usb", 150, 2850, 25, 10, -12, 0, 0, 0, 20, "", 0, 0, 0,
-        "", 0, 0, 0, 0 };
+} S = { 14100000, "usb", 150, 2850, 25, 10, -12, 0, 0, 0, 20, "", 0, "", 0,
+        0, 0, "", 0, 0, 0, 0 };
 
 static long long s_get_freq(void) { return S.freq; }
 static void s_set_freq(long long f) { S.freq = f; }
@@ -62,6 +64,8 @@ static int s_get_wpm(void) { return S.wpm; }
 static void s_set_wpm(int w) { S.wpm = w; }
 static void s_cw_send(const char *t) { g_strlcat(S.cw_text, t, sizeof(S.cw_text)); }
 static void s_cw_stop(void) { S.cw_stopped = 1; }
+static void s_rtty_send(const char *t) { g_strlcat(S.rtty_text, t, sizeof(S.rtty_text)); }
+static void s_rtty_stop(void) { S.rtty_stopped = 1; }
 static int s_get_txen(void) { return 1; }
 static int s_get_rate(void) { return 192000; }
 static double s_get_smeter(void) { return -73.5; }
@@ -88,6 +92,7 @@ static const TciOps STUB_OPS = {
   s_get_smeter, s_get_txm, s_set_tx_src, s_txa_push,
   NULL,                                    /* iq_rate_changed: no persistence */
   s_spot_add, s_spot_del, s_spot_clear,
+  s_rtty_send, s_rtty_stop,                /* RTTY extension (appended last)  */
 };
 
 /* ---- LWS test client -------------------------------------------------------- */
@@ -211,6 +216,8 @@ static int cond_drive(void)   { return (int)(S.drive + 0.5) == 42; }
 static int cond_wpm(void)     { return S.wpm == 31; }
 static int cond_cwtext(void)  { return strstr(S.cw_text, "TEST: DE OK1BR") != NULL; }
 static int cond_stopped(void) { return S.cw_stopped; }
+static int cond_rttytext(void)    { return strstr(S.rtty_text, "UR 599, 001") != NULL; }
+static int cond_rtty_stopped(void) { return S.rtty_stopped; }
 static int cond_trx_on(void)  { return S.trx == 1; }
 static int cond_trx_off(void) { return S.trx == 0; }
 static int cond_tci_keyed(void)   { return S.trx == 1 && S.tx_src == 1; }
@@ -278,6 +285,13 @@ int main(void) {
 
   client_send("cw_macros_stop;");
   check("cw_macros_stop aborts", wait_for(cond_stopped, 2000));
+
+  check("handshake advertises rtty appended LAST",
+        rx_contains("modulations_list:am,lsb,usb,cw,cwl,cwu,digu,digl,rtty;"));
+  client_send("rtty_macros:0,UR 599~ 001;");
+  check("rtty_macros queues text with ~ unescaped to ,", wait_for(cond_rttytext, 2000));
+  client_send("rtty_macros_stop;");
+  check("rtty_macros_stop aborts", wait_for(cond_rtty_stopped, 2000));
 
   client_send("trx:0,true;");
   check("plain trx keys through the ops path", wait_for(cond_trx_on, 2000));

@@ -205,8 +205,9 @@ platform-library category — do not vendor).
   forms to every client, exactly like a local panadapter click, so
   log-for-linux prefills its Call entry from any client's click. The sender
   tunes itself via `vfo`; the relay never touches radio state.
-  **RTTY macros extension (spec'd 2026-08-15, NOT implemented —
-  docs/RTTY-SCOPE.md):** the RTTY twin of the CW text family, a family
+  **RTTY macros extension (spec'd + IMPLEMENTED 2026-08-15, offline-gated
+  by `sdrfl-tci-test`; live pass pending — docs/RTTY-SCOPE.md):** the RTTY
+  twin of the CW text family, a family
   extension (ExpertSDR3 has no RTTY text command or modulation name):
   `rtty_macros:<trx>,<text>;` (same escaping + leading-space word-gap
   semantics as `cw_macros`) and `rtty_macros_stop;`; `modulations_list`

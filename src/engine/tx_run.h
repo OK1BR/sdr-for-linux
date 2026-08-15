@@ -167,6 +167,22 @@ void tx_run_set_cw(int wpm, double weight, double ramp_ms, int hang_ms);
 void tx_run_set_sidetone(int pitch_hz, double level_db);
 
 /*
+ * RTTY (docs/RTTY-SCOPE.md) — the direct-FSK twin of the CW machinery. Queue
+ * text for the rtty_gen modulator (appended); while the generator has content
+ * the feed thread wants TX through the SAME tx_gate (no new keying path), and
+ * TX drops at message end after the mark tail — no hang time (Esc/stop aborts
+ * within one block; the 20 s continuous-key backstop applies). WDSP is
+ * bypassed like CW; the monitor plays the FSK at the RTTY pitch (LSB-side:
+ * mark 2125 / space 2295 at the 2210 default) on the CW sidetone level.
+ * set_rtty_pitch sets the monitor pitch (the RX offset lives in demod). All
+ * safe if TX isn't up (no-ops); keying only happens in RTTY mode + gated.
+ */
+void tx_run_rtty_send(const char *text);
+void tx_run_rtty_abort(void);
+void tx_run_rtty_progress(tx_cw_view *out);  /* HUD twin; hang_frac always 0 */
+void tx_run_set_rtty_pitch(int pitch_hz);
+
+/*
  * External TX audio source (TCI, F6d-2c). set_ext_source(1) makes the feed
  * loop pull mono 48 kHz audio pushed via tx_run_ext_push (thread-safe SPSC —
  * the TCI service thread produces) instead of the mic; keying still only

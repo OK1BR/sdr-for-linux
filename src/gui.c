@@ -256,6 +256,7 @@ typedef struct {
   int         cw_wpm;        /* CW keyer speed, WPM (persisted, F6d-1c)             */
   int         cw_pitch;      /* CW sidetone pitch, Hz (persisted)                   */
   double      cw_st_db;      /* CW sidetone level, dBFS (persisted)                 */
+  int         rtty_pitch;    /* RTTY audio pair centre, Hz (persisted; dflt 2210)   */
   int         cw_hang;       /* CW break-in hang, ms (persisted)                    */
   double      band_pacal[NBANDS]; /* per-band PA calibration, dB (F6b, persisted)   */
   double      pa_trim[11];   /* wattmeter correction curve, 11 pts W (F6b, persist) */
@@ -526,6 +527,13 @@ static const FilterPreset FILT_AM[] = {
   {-3300,3300,"6.6k"},{-2600,2600,"5.2k"},{-2000,2000,"4.0k"},{-1550,1550,"3.1k"},
   {-1450,1450,"2.9k"},{-1200,1200,"2.4k"},
 };
+static const FilterPreset FILT_RTTY[] = {  /* symmetric around the FSK pair centre
+  (= the dial); occupied bw ≈ shift 170 + keying sidebands ≈ 260 Hz minimum —
+  500 is the contest workhorse, 2.5k/1.5k are look-around widths (RTTY-SCOPE §2) */
+  {-1250,1250,"2.5k"},{-750,750,"1.5k"},{-500,500,"1.0k"},{-400,400,"800"},
+  {-300,300,"600"},{-250,250,"500"},{-225,225,"450"},{-200,200,"400"},
+  {-175,175,"350"},{-150,150,"300"},
+};
 
 /* Filter table + count + default index for a mode. */
 static const FilterPreset *mode_filters(int mode, int *n, int *deflt) {
@@ -538,6 +546,7 @@ static const FilterPreset *mode_filters(int mode, int *n, int *deflt) {
     case DEMOD_AM:   *deflt = 4; return FILT_AM;    /* 6.6k */
     case DEMOD_DIGU: *deflt = 2; return FILT_USB;   /* 3.8k — FT8 slots up to ~3.1 kHz */
     case DEMOD_DIGL: *deflt = 2; return FILT_LSB;   /* 3.8k mirrored                   */
+    case DEMOD_RTTY: *deflt = 5; return FILT_RTTY;  /* 500 — the contest default       */
     default:         *deflt = 5; return FILT_USB;
   }
 }
@@ -564,6 +573,7 @@ static int mode_from_name(const char *m) {
   else if (m && !strcasecmp(m, "am"))   return DEMOD_AM;
   else if (m && !strcasecmp(m, "digu")) return DEMOD_DIGU;
   else if (m && !strcasecmp(m, "digl")) return DEMOD_DIGL;
+  else if (m && !strcasecmp(m, "rtty")) return DEMOD_RTTY;
   return -1;
 }
 
@@ -910,15 +920,23 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
  * mouse gestures stay unchallenged). */
 static void draw_tx_cw_hud(cairo_t *cr, App *app, int w, const tx_run_status *ts) {
   tx_cw_view v;
-  tx_run_cw_progress(&v);
+  int rtty = app->mode == DEMOD_RTTY;    /* RTTY reuses this HUD (RTTY-SCOPE §2):
+                                            same sent-text strip, 45 Bd instead
+                                            of WPM, no HANG (no hang time) */
+  if (rtty) { tx_run_rtty_progress(&v); }
+  else      { tx_run_cw_progress(&v); }
   int cw_keyed = ts->mox && !ts->tune;   /* TUNE inside a CW mode is a plain carrier */
 
   double bw = METER_BW, bx = w - bw - METER_RM, by = METER_BY;
   cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
   cairo_set_font_size(cr, 19.0);
   char lbl[48];
-  snprintf(lbl, sizeof lbl, "%d WPM%s", app->cw_wpm,
-           !cw_keyed ? "" : (v.active ? " · KEY" : " · HANG"));
+  if (rtty) {
+    snprintf(lbl, sizeof lbl, "45 Bd%s", cw_keyed && v.active ? " · KEY" : "");
+  } else {
+    snprintf(lbl, sizeof lbl, "%d WPM%s", app->cw_wpm,
+             !cw_keyed ? "" : (v.active ? " · KEY" : " · HANG"));
+  }
   cairo_text_extents_t ex; cairo_text_extents(cr, lbl, &ex);
   if      (cw_keyed && v.active) { cairo_set_source_rgba(cr, 1.0, 0.34, 0.28, 0.98); } /* KEY: TX red */
   else if (cw_keyed)             { cairo_set_source_rgba(cr, 1.0, 0.72, 0.0, 0.95);  } /* HANG: amber */
@@ -1037,6 +1055,7 @@ static void draw_tx_digi_meter(cairo_t *cr, App *app, int w, const tx_run_status
 #define CW_ST_DB_MAX    0.0    /* the monitor gain); −20 ≈ piHPSDR vol 50/127    */
 #define CW_ST_DB_DFLT (-20.0)
 #define CW_HANG_DFLT   250
+#define RTTY_PITCH_DFLT 2210   /* RTTY audio pair centre → mark 2125 / space 2295 */
 #define TXF_LO_MIN    20.0     /* TX audio filter edges, Hz (150/2850 default;   */
 #define TXF_LO_MAX   500.0     /* high edge up to 6 kHz covers eSSB widths)      */
 #define TXF_HI_MIN  1500.0
@@ -1185,8 +1204,10 @@ static void draw_tx(cairo_t *cr, int w, int h, App *app) {
   }
 
   /* Top-right block is mode-aware (contest note #7): voice keeps the mic/ALC
-   * meter; CW gets the sent-text HUD; digi shows the TCI TX-audio level. */
-  if (app->mode == DEMOD_CWL || app->mode == DEMOD_CWU) {
+   * meter; CW and RTTY get the sent-text HUD; digi shows the TCI TX-audio
+   * level. */
+  if (app->mode == DEMOD_CWL || app->mode == DEMOD_CWU ||
+      app->mode == DEMOD_RTTY) {
     draw_tx_cw_hud(cr, app, w, &ts);
   } else if (app->mode == DEMOD_DIGU || app->mode == DEMOD_DIGL) {
     draw_tx_digi_meter(cr, app, w, &ts);
@@ -1874,6 +1895,7 @@ static void app_to_settings(const App *app, Settings *s) {
   s->cw_pitch   = app->cw_pitch;
   s->cw_st_db   = app->cw_st_db;
   s->cw_hang    = app->cw_hang;
+  s->rtty_pitch = app->rtty_pitch;
   s->tci_enable = app->tci_enable;
   s->tci_port   = app->tci_port;
   s->tci_iq_rate = app->tci_iq_rate;
@@ -1999,11 +2021,12 @@ static void tx_update_mic(App *app) {
   /* MOX/voice is only meaningful with the mic open (a voice mode); grey it out for
    * CW/data, exactly like the mic itself. Button may not exist yet during startup. */
   if (app->mox_btn) { gtk_widget_set_sensitive(app->mox_btn, want); }
-  /* Two-tone works in any non-CW mode (the WDSP chain runs; in CW the feed
-   * loop emits the carrier instead). */
+  /* Two-tone works in any non-CW, non-RTTY mode (the WDSP chain runs; in
+   * CW/RTTY the feed loop emits the generator IQ instead). */
   if (app->tt_btn) {
     gtk_widget_set_sensitive(app->tt_btn,
-        app->tx_ready && app->mode != DEMOD_CWL && app->mode != DEMOD_CWU);
+        app->tx_ready && app->mode != DEMOD_CWL && app->mode != DEMOD_CWU &&
+        app->mode != DEMOD_RTTY);
   }
 }
 
@@ -2018,7 +2041,8 @@ static void tx_update_mic(App *app) {
  * (setting the slider re-fires its handler with the clamped value, which
  * then pushes). Returns 1 when it clamped. */
 static int digi_drive_clamp(App *app) {
-  if ((app->mode == DEMOD_DIGU || app->mode == DEMOD_DIGL) &&
+  if ((app->mode == DEMOD_DIGU || app->mode == DEMOD_DIGL ||
+       app->mode == DEMOD_RTTY) &&                 /* RTTY = 100 % duty too */
       app->tx_drive_w > app->tx_digi_max_w) {
     app->tx_drive_w = app->tx_digi_max_w;
     if (app->drive_scale) {
@@ -2038,7 +2062,8 @@ static void tx_push_cfg(App *app) {
   c.antenna        = app->tx_antenna;
   c.drive_w        = app->tx_drive_w;
   /* belt & braces: whatever writer forgot to clamp, no digi TX exceeds the cap */
-  if ((app->mode == DEMOD_DIGU || app->mode == DEMOD_DIGL) &&
+  if ((app->mode == DEMOD_DIGU || app->mode == DEMOD_DIGL ||
+       app->mode == DEMOD_RTTY) &&
       c.drive_w > app->tx_digi_max_w) {
     c.drive_w = app->tx_digi_max_w;
   }
@@ -2433,9 +2458,14 @@ static gboolean on_key(GtkEventControllerKey *ctl, guint keyval, guint keycode,
     gtk_widget_queue_draw(app->area);
     return TRUE;
   }
-  /* Esc aborts any queued/running CW (the CW source is TCI, F6d-2; the F6d-1b
-   * 'k' test hotkey is gone — one stray keypress must never key the radio). */
-  if (keyval == GDK_KEY_Escape && app->tx_ready) { tx_run_cw_abort(); return TRUE; }
+  /* Esc aborts any queued/running CW or RTTY (the text source is TCI, F6d-2;
+   * the F6d-1b 'k' test hotkey is gone — one stray keypress must never key
+   * the radio). */
+  if (keyval == GDK_KEY_Escape && app->tx_ready) {
+    tx_run_cw_abort();
+    tx_run_rtty_abort();
+    return TRUE;
+  }
   /* CW dev trigger, ENV-GATED: Ctrl+Shift+K queues a test string, but only when
    * the app was launched with SDRFL_CW_TEST=1 (+ CW mode + TX up). A normal run
    * still has no key that can key the radio — the 45f73ae audit rule holds. */
@@ -2448,10 +2478,11 @@ static gboolean on_key(GtkEventControllerKey *ctl, guint keyval, guint keycode,
   }
   int mode;
   switch (gdk_keyval_to_lower(keyval)) {
-    case GDK_KEY_u: mode = DEMOD_USB; break;
-    case GDK_KEY_l: mode = DEMOD_LSB; break;
-    case GDK_KEY_c: mode = DEMOD_CWU; break;
-    case GDK_KEY_a: mode = DEMOD_AM;  break;
+    case GDK_KEY_u: mode = DEMOD_USB;  break;
+    case GDK_KEY_l: mode = DEMOD_LSB;  break;
+    case GDK_KEY_c: mode = DEMOD_CWU;  break;
+    case GDK_KEY_a: mode = DEMOD_AM;   break;
+    case GDK_KEY_r: mode = DEMOD_RTTY; break;
     default: return FALSE;
   }
   if (app->mode_btns[mode]) {
@@ -2502,13 +2533,15 @@ static void populate_filter_dd(App *app) {
 
 /* Per-mode-group AGC memory (contest note #8: a slow AGC left over from SSB
  * cost missed characters in CW — each group keeps its own AGC character).
- * Groups: SSB {LSB,USB}, CW {CWL,CWU}, AM, digi {DIGU,DIGL}. */
+ * Groups: SSB {LSB,USB}, CW {CWL,CWU}, AM, digi {DIGU,DIGL,RTTY} (RTTY joins
+ * the existing digi group — no 5th group, RTTY-SCOPE §2). */
 enum { AGCG_SSB = 0, AGCG_CW = 1, AGCG_AM = 2, AGCG_DIGI = 3 };
 static int agc_group_of(int mode) {
   switch (mode) {
     case DEMOD_CWL: case DEMOD_CWU:   return AGCG_CW;
     case DEMOD_AM:                    return AGCG_AM;
-    case DEMOD_DIGU: case DEMOD_DIGL: return AGCG_DIGI;
+    case DEMOD_DIGU: case DEMOD_DIGL:
+    case DEMOD_RTTY:                  return AGCG_DIGI;
     default:                          return AGCG_SSB;   /* LSB/USB */
   }
 }
@@ -2714,8 +2747,9 @@ static GtkWidget *build_controls(App *app) {
 
   /* Mode — segmented, grouped; keep a handle per DEMOD id for key sync. */
   static const int         mids[]   = {DEMOD_USB, DEMOD_LSB, DEMOD_CWL, DEMOD_CWU, DEMOD_AM,
-                                       DEMOD_DIGU, DEMOD_DIGL};
-  static const char *const mlabels[] = {"USB", "LSB", "CWL", "CWU", "AM", "DIGU", "DIGL"};
+                                       DEMOD_DIGU, DEMOD_DIGL, DEMOD_RTTY};
+  static const char *const mlabels[] = {"USB", "LSB", "CWL", "CWU", "AM", "DIGU", "DIGL",
+                                        "RTTY"};
   GtkWidget *modebox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_add_css_class(modebox, "linked");
   GtkWidget *group = NULL;
@@ -3444,6 +3478,19 @@ static void on_pref_cw_hang(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   cw_push(app); schedule_save(app);
 }
 
+/* RTTY: the audio pair centre — RX offset (demod shifter) + TX monitor pitch.
+ * One number, both consumers (RTTY-SCOPE §7A: dial = pair centre, heard at
+ * 2125/2295 by default). */
+static void rtty_push(App *app) {
+  demod_set_rtty_pitch(app->rtty_pitch);
+  tx_run_set_rtty_pitch(app->rtty_pitch);
+}
+static void on_pref_rtty_pitch(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  app->rtty_pitch = (int)gtk_range_get_value(r);
+  rtty_push(app); schedule_save(app);
+}
+
 /* ---- TCI server glue (F6d-2a) --------------------------------------------
  * The ops run on the GTK main thread (tci_server dispatches there) and reuse
  * the SAME paths as the on-screen controls — keying lands in tx_gate via the
@@ -3467,6 +3514,8 @@ static const char *tci_get_mode(void) {
     case DEMOD_AM:   return "am";
     case DEMOD_DIGU: return "digu";
     case DEMOD_DIGL: return "digl";
+    case DEMOD_RTTY: return "rtty";  /* family extension — ExpertSDR3 has no
+                                        rtty modulation name (TCI-SCOPE) */
     default:         return "usb";
   }
 }
@@ -3479,6 +3528,7 @@ static int tci_set_mode(const char *m) {
   else if (strcmp(m, "am") == 0)  { mode = DEMOD_AM; }
   else if (strcmp(m, "digu") == 0) { mode = DEMOD_DIGU; }
   else if (strcmp(m, "digl") == 0) { mode = DEMOD_DIGL; }
+  else if (strcmp(m, "rtty") == 0) { mode = DEMOD_RTTY; }
   else { return -1; }
   if (tci_app->mode_btns[mode]) {
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(tci_app->mode_btns[mode]), TRUE);
@@ -3558,6 +3608,14 @@ static void tci_cw_send(const char *t) {
   }
 }
 static void tci_cw_stop(void) { if (tci_app->tx_ready) { tx_run_cw_abort(); } }
+static void tci_rtty_send(const char *t) {
+  /* Queue only in RTTY mode (the tci_cw_send rule: text must never sit in the
+   * generator and key unexpectedly after a later mode switch). */
+  if (tci_app->tx_ready && tci_app->mode == DEMOD_RTTY) {
+    tx_run_rtty_send(t);
+  }
+}
+static void tci_rtty_stop(void) { if (tci_app->tx_ready) { tx_run_rtty_abort(); } }
 static int tci_get_tx_enable(void) { return tci_app->tx_ready && tci_app->tx_pa_enabled; }
 static int tci_get_rate(void) { return tci_app->rate; }
 static double tci_get_smeter(void) {
@@ -3634,6 +3692,7 @@ static const TciOps TCI_OPS = {
   tci_cw_send, tci_cw_stop, tci_get_tx_enable, tci_get_rate,
   tci_get_smeter, tci_get_tx_meters, tci_set_tx_src, tci_tx_audio_push,
   tci_iq_rate_changed, tci_spot_add, tci_spot_del, tci_spot_clear,
+  tci_rtty_send, tci_rtty_stop,     /* ⛔ appended LAST — positional init */
 };
 
 /* Start/stop the TCI server to match app->tci_enable (prefs + startup). */
@@ -3897,7 +3956,7 @@ static AdwDialog *build_prefs(App *app) {
    * 2026-07-13 (Richard: everything you hear/say belongs in one place). This
    * group keeps power, keying and safety only. */
   adw_preferences_group_add(g, pref_spin("Digi max drive",
-      "W cap in DIGU/DIGL — FT8 &amp; co. run 100% duty, protect the PA (max = off) · live",
+      "W cap in DIGU/DIGL/RTTY — 100% duty modes, protect the PA (max = off) · live",
       1, app->pa_watts, app->tx_digi_max_w, G_CALLBACK(on_pref_digi_max), app));
   /* F6b — per-band PA calibration table (like piHPSDR's PA-calibration menu). The
    * 38.8 dB floor is the safety limit; 53 dB is the validated G2E default. */
@@ -3967,6 +4026,14 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, pref_spin("Break-in hang",
       "ms · T/R hold after the last element (piHPSDR default 500) · live",
       0, 1000, app->cw_hang, G_CALLBACK(on_pref_cw_hang), app));
+  adw_preferences_page_add(p, g);
+  /* RTTY (RTTY-SCOPE §2): pitch only — 45.45 Bd / 170 Hz are constants, not
+   * knobs. Shares the CW page (both are the keyed text modes). */
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP,
+      "title", "RTTY", NULL));
+  adw_preferences_group_add(g, pref_slider("RTTY pitch",
+      "audio pair centre · 2210 = the classic 2125/2295 · live",
+      1000, 3000, app->rtty_pitch, "%.0f Hz", G_CALLBACK(on_pref_rtty_pitch), app));
   adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);
 
@@ -4463,6 +4530,7 @@ static void start_radio(App *app) {
                   .ps_setpk = 0.2899, .ps_auto = 1, .ps_stbl = 0,
                   .cw_wpm = CW_WPM_DFLT, .cw_pitch = CW_PITCH_DFLT,
                   .cw_st_db = CW_ST_DB_DFLT, .cw_hang = CW_HANG_DFLT,
+                  .rtty_pitch = RTTY_PITCH_DFLT,
                   .tci_enable = 0, .tci_port = 40001, .tci_iq_rate = 48000 };
   g_strlcpy(st.ip, "", sizeof(st.ip));   /* no radio default: the picker (or a
                                             saved config) provides the IP; empty
@@ -4545,6 +4613,8 @@ static void start_radio(App *app) {
   app->cw_pitch      = st.cw_pitch < 200 ? 200 : (st.cw_pitch > 1200 ? 1200 : st.cw_pitch);
   app->cw_st_db      = st.cw_st_db < CW_ST_DB_MIN ? CW_ST_DB_MIN : (st.cw_st_db > CW_ST_DB_MAX ? CW_ST_DB_MAX : st.cw_st_db);
   app->cw_hang       = st.cw_hang  < 0   ? 0   : (st.cw_hang  > 1000 ? 1000 : st.cw_hang);
+  app->rtty_pitch    = st.rtty_pitch < 1000 ? RTTY_PITCH_DFLT
+                     : (st.rtty_pitch > 3000 ? RTTY_PITCH_DFLT : st.rtty_pitch);
   app->tci_enable    = st.tci_enable ? 1 : 0;
   app->tci_port      = st.tci_port < 1024 ? 40001 : (st.tci_port > 65535 ? 40001 : st.tci_port);
   app->tci_iq_rate   = (st.tci_iq_rate == 96000 || st.tci_iq_rate == 192000 ||
@@ -4857,6 +4927,9 @@ static void start_radio(App *app) {
   } else {
     fprintf(stderr, "TX runtime init failed — RX only\n");
   }
+  rtty_push(app);   /* persisted RTTY pitch — the RX offset (demod shifter) must
+                       apply on RX-only radios too; the TX-monitor half is a
+                       plain atomic store, safe with no TX runtime */
 
   /* Persisted TCI server (F6d-2a; off by default) — independent of the TX
    * runtime since HL2 R4: on an RX-only radio it still serves control, RX

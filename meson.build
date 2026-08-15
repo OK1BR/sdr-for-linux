@@ -93,6 +93,7 @@ executable('sdr-for-linux',
     'src/engine/tx_run.c',    # TX runtime thread — GUI keying (F6a)
     'src/engine/ps.c',        # PureSignal runtime — WDSP calcc wiring (F7/PS-2)
     'src/engine/cw_gen.c',    # CW Morse envelope generator (F6d)
+    'src/engine/rtty_gen.c',  # RTTY direct-FSK IQ generator (RTTY-SCOPE)
   ] + engine_sources + ui_sources,
   include_directories : [vendor_inc, src_inc, engine_inc],
   # engine (protocol2 + analyzer + demod + PipeWire audio) alongside the v0
@@ -208,6 +209,16 @@ executable('sdrfl-swr-test',
 # range of speeds. Pure — NO radio, NO WDSP, NO socket.
 executable('sdrfl-cw-test',
   ['src/cw_test.c', 'src/engine/cw_gen.c'],
+  include_directories : [engine_inc],
+  dependencies : [m_dep],
+  install : false,
+)
+
+# Offline RTTY generator gate (docs/RTTY-SCOPE.md §0). ITA2 truth vectors +
+# generated FSK decoded by an independent in-test slicer at both runtime IQ
+# rates + envelope/phase hygiene. Pure — NO radio, NO WDSP, NO socket.
+executable('sdrfl-rtty-test',
+  ['src/rtty_test.c', 'src/engine/rtty_gen.c'],
   include_directories : [engine_inc],
   dependencies : [m_dep],
   install : false,

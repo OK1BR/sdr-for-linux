@@ -344,7 +344,9 @@ static gboolean send_initial_idle(gpointer data) {
   cli_send(c, "vfo_limits:0,61440000;");
   g_mutex_unlock(&s_lock);
   tci_sendf(c, "if_limits:-%d,%d;", s_ops.get_rate() / 2, s_ops.get_rate() / 2);
-  tci_sendf(c, "modulations_list:am,lsb,usb,cw,cwl,cwu,digu,digl;");
+  /* `rtty` is a family extension appended LAST — a third-party client that
+   * rejects unknown names sees the standard list first (RTTY-SCOPE §6). */
+  tci_sendf(c, "modulations_list:am,lsb,usb,cw,cwl,cwu,digu,digl,rtty;");
   tci_sendf(c, "mute:%s;", s_ops.get_mute() ? "true" : "false");
   tci_sendf(c, "volume:%d;", (int)(s_ops.get_volume() - 0.5));
   tci_sendf(c, "dds:0,%lld;", f);
@@ -563,6 +565,23 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
     }
   } else if (strcmp(name, "cw_macros_stop") == 0) {
     s_ops.cw_stop();
+  } else if (strcmp(name, "rtty_macros") == 0) {
+    /* The RTTY twin of cw_macros (family extension, docs/RTTY-SCOPE.md):
+     * same escaping and leading-space word-gap semantics; the ops layer keys
+     * the direct-FSK generator through tx_gate. */
+    if (ac > 1 && av[1][0] && s_ops.rtty_send) {
+      const char *lat = g_getenv("SDRFL_LAT_DEBUG");   /* latency audit t0 */
+      if (lat && lat[0] == '1') {
+        fprintf(stderr, "LAT %lld rtty_rx\n", (long long)g_get_monotonic_time());
+        fflush(stderr);
+      }
+      char *txt = g_strdup(av[1]);
+      cw_unescape(txt);
+      s_ops.rtty_send(txt);
+      g_free(txt);
+    }
+  } else if (strcmp(name, "rtty_macros_stop") == 0) {
+    if (s_ops.rtty_stop) { s_ops.rtty_stop(); }
   } else if (strcmp(name, "digu_offset") == 0 || strcmp(name, "digl_offset") == 0) {
     /* Digimode display offsets: stored + echoed so clients see a consistent
      * value; we do not shift the VFO (no CTUN yet — audio carries the full

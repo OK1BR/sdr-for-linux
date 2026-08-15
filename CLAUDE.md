@@ -252,24 +252,33 @@ clock-drift smoothing, absolute dBm cal, nonlinear wattmeter cal
 (guided workflow), mic-ring drift, PS-4 nice-to-haves (pre-xiqc TX pan
 tap, SaveCorr per band, per-band ps_att), TX display averaging design.
 
-**RTTY mode — zadání written (2026-08-15, Richard's request mid-RTTY
-contest; SPEC ONLY, nothing implemented).** `docs/RTTY-SCOPE.md` in the
-house skeleton: a real new mode (`DEMOD_RTTY = 12`, DIGL at the WDSP
-boundary) with its own `FILT_RTTY` set (default 500), and a direct-FSK
-TX modulator `rtty_gen` in the `cw_gen` contract — text arrives over a
-new TCI family extension `rtty_macros:`/`rtty_macros_stop;` (mirrors
-`cw_macros`; paragraph added to TCI-SCOPE.md), keyed through the same
-tx_gate, WDSP bypassed like CW, 100 % duty joins the digi drive clamp.
-Dial convention = the FSK pair CENTRE (what skimmer-for-linux spots —
-the spot-click loop stays Hz-exact), audio pair on the classic
-2125/2295. RX decoding deliberately stays in skimmer-for-linux
-(RTTY-capable + live-verified the same day); the driving use case is a
-log-for-linux F-key macro keying a whole exchange (its wire contract is
-§4 of the scope; its repo gets its own task). Gate `sdrfl-rtty-test`
-specced offline-first + a dummy-load family loop (the skimmer decodes
-our own TX). §7 lists five proposed decisions (dial/pitch, mode id,
-TCI names, filter ladder, fixed 45.45/170) awaiting Richard's confirm
-before implementation.
+**★ RTTY mode — IMPLEMENTED offline 2026-08-15 (same day as the zadání;
+§7 A-E confirmed by Richard; scope §8 steps 1-4 done, LIVE GATE PENDING).**
+`docs/RTTY-SCOPE.md`: a real new mode (`DEMOD_RTTY = 12`, mapped to DIGL
+at every WDSP boundary — SetRXAMode in demod.c, tx_passband/tx_dsp in
+tx_run) with its own `FILT_RTTY` set (default 500), and the direct-FSK
+modulator `src/engine/rtty_gen.{c,h}` in the `cw_gen` contract:
+ITA2 LSB-first (table identical to skimmer-for-linux, US-TTY figs,
+unshift-on-space, leading LTRS parks the shift), 45.45 Bd / ±85 Hz
+phase-continuous NCO, constant envelope, mark preamble 100 ms + ~1-bit
+mark tail, no hang. Text arrives over the TCI family extension
+`rtty_macros:`/`rtty_macros_stop;` (advertised LAST in
+`modulations_list`), keyed through the same tx_gate, WDSP bypassed like
+CW, 100 % duty joins the digi drive clamp; monitor = FSK mixed to the
+RTTY pitch (pref, default 2210 → 2125/2295), HUD reuses the CW
+sent-text strip ("45 Bd"), hotkey `r`. Dial = FSK pair CENTRE (spot
+click stays Hz-exact). Gates: `sdrfl-rtty-test` (ITA2 truth vectors +
+independent in-test slicer round-trip @48k/192k + envelope/phase
+hygiene) PASS; `sdrfl-tci-test` grew rtty_macros coverage (43 PASS);
+both + the previously-missing `sdrfl-cw-test` now in the CI gate list.
+⛔ Review corrections applied: tx_run `is_voice` had to exclude
+DEMOD_RTTY explicitly (else mode 12 = mic open!), and the parity sweep
+is `grep -ni digu` (case-insensitive — else the DEMOD_* test sites are
+missed). REMAINS: scope §8 step 5 = live dummy-load family gate
+(skimmer decodes our own TX off the TCI IQ tap, wattmeter/duty check,
+SDC compatibility look — with Richard at the radio), then step 6 =
+log-for-linux transport (its repo, scope §4). RX decoding stays in
+skimmer-for-linux by design.
 
 ## Approach (decided with Richard)
 

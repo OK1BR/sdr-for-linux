@@ -23,8 +23,9 @@ does the heavy lifting.
 **Receive**
 - Full-float panadapter + waterfall straight from the WDSP analyzer — no
   quantisation, no column cap; 6 colour palettes, adjustable averaging & FPS
-- SSB / CW / AM / SAM / DIGU / DIGL demodulation with piHPSDR filter presets,
-  passband drawn on the spectrum
+- SSB / CW / AM / SAM / DIGU / DIGL / RTTY demodulation with piHPSDR filter
+  presets, passband drawn on the spectrum (RTTY: dial = FSK pair centre,
+  heard on the classic 2125/2295 Hz pair)
 - AGC, noise reduction (ANR), noise blanker (ANB), auto-notch (ANF),
   binaural mode
 - Low-latency native **PipeWire** audio (~15 ms), 48/96/192 kHz
@@ -34,7 +35,7 @@ does the heavy lifting.
 - CW BFO offset done right: the dial reads the carrier, spots sound at your
   sidetone pitch
 
-**Transmit** (SSB voice, CW, digi via TCI)
+**Transmit** (SSB voice, CW, RTTY, digi via TCI)
 - MOX / TUNE with separate drive levels, per-band PA calibration,
   true-PEP wattmeter, SWR metering with automatic drive-drop protection
 - Mic via PipeWire with mic gain / noise gate / speech processor controls
@@ -42,7 +43,10 @@ does the heavy lifting.
   faithful TX monitor (plays the processed on-air audio), footswitch PTT
 - CW keying with clean first-dit and contest-grade latency (TCI→RF
   ~35 ms, turnaround ~200 ms), adjustable WPM / sidetone / break-in hang;
-  mode-aware TX HUD (CW sent-text with playhead, digi TX level)
+  mode-aware TX HUD (CW/RTTY sent-text with playhead, digi TX level)
+- Native RTTY: direct-FSK modulator (45.45 Bd / 170 Hz, phase-continuous),
+  keyed from text over TCI (`rtty_macros:`) — pair with a TCI logger and
+  the skimmer for decode
 - **PureSignal** linearization with Thetis-style auto-attenuate — calibrates
   continuously on voice, converges in seconds after drive/band changes
   (G2E and Hermes Lite 2; not available on old Hermes-class P2 firmware —

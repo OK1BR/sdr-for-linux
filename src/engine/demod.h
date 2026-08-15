@@ -10,10 +10,17 @@
 
 /* WDSP mode ids (match wdsp/RXA.h and piHPSDR mode.h). */
 /* Mode ids == WDSP RXA/TXA mode enum (RXA.h): LSB 0, USB 1, DSB 2, CWL 3,
- * CWU 4, FM 5, AM 6, DIGU 7, SPEC 8, DIGL 9, SAM 10, DRM 11. */
+ * CWU 4, FM 5, AM 6, DIGU 7, SPEC 8, DIGL 9, SAM 10, DRM 11.
+ * DEMOD_RTTY = 12 is OURS (the first id beyond the WDSP enum, RTTY-SCOPE §7B):
+ * WDSP has no FSK — at every WDSP boundary (SetRXAMode here, tx_passband/
+ * SetTXAMode in tx_run) RTTY maps to DIGL; TX bypasses WDSP entirely
+ * (rtty_gen direct-FSK IQ, the CW pattern). ⛔ Any code that branches on
+ * DEMOD_DIGU/DEMOD_DIGL must decide whether DEMOD_RTTY belongs in the same
+ * branch — sweep with `grep -ni digu` (case-insensitive: the C identifiers,
+ * not just the name strings) when touching mode logic. */
 enum { DEMOD_LSB = 0, DEMOD_USB = 1, DEMOD_CWL = 3, DEMOD_CWU = 4, DEMOD_AM = 6,
-       DEMOD_DIGU = 7, DEMOD_DIGL = 9 };
-#define DEMOD_NMODES 12   /* size for mode-indexed tables (ids are sparse) */
+       DEMOD_DIGU = 7, DEMOD_DIGL = 9, DEMOD_RTTY = 12 };
+#define DEMOD_NMODES 13   /* size for mode-indexed tables (ids are sparse) */
 
 /*
  * Set the RX audio OUTPUT sample rate (Hz) for the next demod_create(). This is
@@ -102,6 +109,12 @@ void demod_set_passband(double flo, double fhi);
 
 /* CW sidetone pitch = the CW BFO offset, Hz (live; thread-safe). */
 void demod_set_cw_pitch(int hz);
+
+/* RTTY audio pitch = the FSK pair centre in audio, Hz (live; thread-safe).
+ * The dial reads the pair CENTRE (what the skimmer spots); the LSB-side
+ * mapping puts mark/space at pitch∓85 — default 2210 = the classic
+ * 2125/2295 pair (RTTY-SCOPE §7A). */
+void demod_set_rtty_pitch(int hz);
 
 void demod_destroy(void);
 

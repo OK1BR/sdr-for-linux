@@ -1,5 +1,23 @@
 # RTTY mode — scope plan (zadání, 2026-08-15)
 
+> **STATUS 2026-08-15 (same day): §8 steps 1-4 IMPLEMENTED, offline-gated.**
+> Richard confirmed §7 A-E as proposed and green-lit implementation.
+> Landed: `rtty_gen.{c,h}` + `sdrfl-rtty-test` (PASS at 48 k + 192 k, in the
+> CI gate list together with the previously-missing `sdrfl-cw-test`); the
+> tx_run RTTY keyed source; the full mode plumbing (DEMOD_RTTY=12, FILT_RTTY,
+> mode strip + `r` hotkey, HUD, AGC digi group, drive clamp, persistence,
+> RTTY pitch pref); the TCI `rtty_macros` family (covered by
+> `sdrfl-tci-test`, 43 checks PASS). Two corrections found in review and
+> applied during implementation: (1) the **is_voice tripwire** — tx_run's
+> "not CW and not digi = voice" test had to learn DEMOD_RTTY explicitly or
+> mode 12 would have opened the mic path (fixed + commented in gate_slot);
+> (2) the §6 parity sweep must be **case-insensitive** (`grep -ni digu`) or
+> it misses the C identifiers `DEMOD_DIGU/DEMOD_DIGL` — exactly the
+> dangerous sites. Sweep run clean. **Pending: §8 step 5** (live dummy-load
+> family gate — skimmer decodes our own TX, wattmeter/duty check, SDC look)
+> **and step 6** (log-for-linux, its own repo). ⛔ No RTTY on-air before the
+> live gate passes with Richard present.
+
 Requested by Richard on 2026-08-15, mid-RTTY-contest, the same morning
 `skimmer-for-linux` M7 (RTTY decode) went live-verified. Goal: a first-class
 **RTTY mode** in this transceiver — its own mode button with its own filter
@@ -169,7 +187,10 @@ ramp-down within one block.
   line to the TX-SAFETY pre-flight notes.
 - **Four scattered mode-name converters** + the audioprobe copy — a
   missed one is a silent wrong-mode path; §5 lists all, the
-  implementation order ends with a `grep -n digu` sweep to prove parity.
+  implementation order ends with a `grep -ni digu` sweep to prove parity
+  (case-INSENSITIVE — a lowercase-only grep misses the C identifiers
+  `DEMOD_DIGU/DEMOD_DIGL`, i.e. the mode-test sites like tx_run's
+  is_voice, which are precisely the dangerous ones).
 - Saved `[rx] mode = 12` read by an OLDER build is unvalidated
   (pre-existing gap) — accepted and noted, not fixed here.
 

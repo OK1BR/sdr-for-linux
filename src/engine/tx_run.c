@@ -26,6 +26,7 @@
 #include "tx_run.h"
 #include "mic_pw.h"   /* live host-soundcard mic → exciter while MOX is keyed (F6c) */
 #include "cw_gen.h"   /* CW Morse envelope → keyed carrier (F6d)                    */
+#include "rtty_gen.h" /* RTTY direct-FSK IQ → keyed exciter (RTTY-SCOPE)            */
 #include "ps.h"       /* PureSignal runtime — key hand-off + status (F7/PS-2)       */
 #include "demod.h"    /* DEMOD_* mode ids + demod_monitor_push (TX monitor)         */
 
@@ -46,11 +47,17 @@ static int lat_on(void) {
                                    at 0.098, transmitter.c:1491) — NOT full scale, which
                                    overdrives the speaker through the voice monitor gain */
 
-#define TX_MODE_IS_CW(m) ((m) == DEMOD_CWL || (m) == DEMOD_CWU)
+#define TX_MODE_IS_CW(m)   ((m) == DEMOD_CWL || (m) == DEMOD_CWU)
+#define TX_MODE_IS_RTTY(m) ((m) == DEMOD_RTTY)
 /* CW carrier amplitude: on P2 the TXA chain's compensating CFIR attenuates a
  * DC signal to 0.896 of full scale, so the direct-synthesized carrier must
  * match it (piHPSDR transmitter.c:1737-1747). P1 has no CFIR → 1.0 (:1722-32). */
 #define CW_IQ_AMP        (s_p1 ? 1.0 : 0.896)
+/* RTTY runs the same direct-to-framer path at ±85 Hz, where the CIC droop the
+ * CFIR compensates is within ~0.01 dB of DC — the CW value carries over. ⛔ Not
+ * blindly trusted: the dummy-load gate checks power on the wattmeter
+ * (RTTY-SCOPE §6). */
+#define RTTY_IQ_AMP      CW_IQ_AMP
 #define CW_CUTOFF_US     (20 * 1000000LL)   /* 20 s continuous-key hardware backstop */
 #define CW_PTT_DELAY_US  30000   /* key-on → first RF: MOX must land on the wire first
                                     (piHPSDR cw_keyer_ptt_delay default, radio.c:203) */
@@ -79,7 +86,10 @@ static void tx_passband(int mode, double lo, double hi, double *flo, double *fhi
   if (!(lo > 0.0) || !(hi > lo + 100.0)) { lo = TX_FLO; hi = TX_FHI; }  /* sane fallback */
   switch (mode) {
   case DEMOD_LSB:
-  case DEMOD_DIGL: *flo = -hi;    *fhi = -lo;   break;  /* piHPSDR: LSB+DIGL mirror */
+  case DEMOD_DIGL:
+  case DEMOD_RTTY: *flo = -hi;    *fhi = -lo;   break;  /* piHPSDR: LSB+DIGL mirror;
+                                                           RTTY = DIGL (callers map
+                                                           first — belt & braces) */
   case DEMOD_CWL:
   case DEMOD_CWU:  *flo = -150.0; *fhi = 150.0; break;
   case DEMOD_AM:   *flo = -hi;    *fhi = hi;    break;  /* carrier ± high */
@@ -165,6 +175,10 @@ static _Atomic int      s_ext_clip_n;   /* samples at/above full scale */
 
 static cw_gen           *s_cw;             /* CW envelope generator (192k), under s_cw_lock */
 static GMutex            s_cw_lock;
+static rtty_gen         *s_rtty;           /* RTTY FSK generator, under s_rtty_lock         */
+static GMutex            s_rtty_lock;
+static volatile int      s_want_rtty;      /* g_atomic: RTTY content wants key (feed thread)*/
+static volatile int      s_rtty_pitch = 2210; /* g_atomic: monitor audio pair centre (Hz)   */
 static volatile int      s_cw_hang_ms = 250;   /* g_atomic: break-in hang time (ms)         */
 static gint64            s_cw_hang_deadline;   /* break-in hang end (monotonic µs); written
                                                   by the feed thread under s_cw_lock, read
@@ -277,24 +291,32 @@ int tx_run_keyed(void) { return g_atomic_int_get(&s_keyed_pub); }
  * 2-consecutive-readings filter (and p2_tx_fwd_max_take() is decay-on-read,
  * single consumer). Edge runs evaluate the gate on the meter's last state. */
 static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
-                     int *keyed_mox, int *keyed_cw, int fresh_meter) {
+                     int *keyed_mox, int *keyed_cw, int *keyed_rtty,
+                     int fresh_meter) {
   g_mutex_lock(&s_cfg_lock);  tx_cfg_i cfg = s_cfg;  g_mutex_unlock(&s_cfg_lock);
 
   int is_cw     = TX_MODE_IS_CW(g_atomic_int_get(&s_mode));
+  int is_rtty   = TX_MODE_IS_RTTY(g_atomic_int_get(&s_mode));
   int want_cw   = g_atomic_int_get(&s_want_cw);      /* CW break-in (feed thread) */
+  int want_rtty = g_atomic_int_get(&s_want_rtty);    /* RTTY content (feed thread)*/
   /* Footswitch (radio PTT input, HP-status byte 4 bit 0): a remote MOX button.
-   * Voice modes only — in CW the break-in keys, in DIGU/DIGL the TCI client
-   * keys (and the pedal would put mic audio on a digi frequency). Same intent
-   * OR as the GUI button; tx_gate still decides whether it actually keys. */
-  int is_voice  = !is_cw && cfg.mode != DEMOD_DIGU && cfg.mode != DEMOD_DIGL;
+   * Voice modes only — in CW the break-in keys, in RTTY the rtty_gen content
+   * keys, in DIGU/DIGL the TCI client keys (and the pedal would put mic audio
+   * on a digi frequency). Same intent OR as the GUI button; tx_gate still
+   * decides whether it actually keys. ⛔ RTTY must be excluded here explicitly
+   * — without it the mode-12 id would fall through as "voice" and open the
+   * mic path (the is_voice tripwire, RTTY-SCOPE §6). */
+  int is_voice  = !is_cw && !is_rtty &&
+                  cfg.mode != DEMOD_DIGU && cfg.mode != DEMOD_DIGL;
   int want_ptt  = cfg.ptt_enabled && is_voice &&
                   (s_p1 ? p1_ptt_get() : p2_ptt_get());
   /* Two-tone test (PS calibration / IMD check) — keys exactly like MOX through
-   * the gate (⛔ approved delta #2); excluded in CW (the feed loop would emit
-   * a CW carrier instead of the WDSP chain). */
-  int want_tt   = g_atomic_int_get(&s_want_tt) && !is_cw;
-  /* CW keys through the exciter exactly like MOX (MOX bit + drive, SWR-protected). */
-  int want_mox  = g_atomic_int_get(&s_want_mox) || want_ptt || want_tt || (is_cw && want_cw);
+   * the gate (⛔ approved delta #2); excluded in CW/RTTY (the feed loop would
+   * emit the generator IQ instead of the WDSP chain). */
+  int want_tt   = g_atomic_int_get(&s_want_tt) && !is_cw && !is_rtty;
+  /* CW/RTTY key through the exciter exactly like MOX (MOX bit + drive, SWR-protected). */
+  int want_mox  = g_atomic_int_get(&s_want_mox) || want_ptt || want_tt ||
+                  (is_cw && want_cw) || (is_rtty && want_rtty);
   int want_tune = g_atomic_int_get(&s_want_tune);
   int want      = want_mox || want_tune;
 
@@ -367,16 +389,22 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   tx_gate_evaluate(&gc, &in, &r);
   int keyed = r.keyed;
 
-  int cw_key = is_cw && r.state.mox && !r.state.tune;   /* MOX-keyed in a CW mode = CW */
+  int cw_key   = is_cw   && r.state.mox && !r.state.tune;   /* MOX-keyed in CW  */
+  int rtty_key = is_rtty && r.state.mox && !r.state.tune;   /* … in RTTY = FSK  */
+  int gen_key  = cw_key || rtty_key;      /* WDSP-bypassed generator sources   */
+  /* WDSP boundary: RTTY runs the TXA channel as DIGL (RTTY-SCOPE §7B — WDSP
+   * has no FSK; the chain is bypassed while rtty_key anyway, this keeps the
+   * channel state tidy for TUNE/2T inside the mode). */
+  int wmode = cfg.mode == DEMOD_RTTY ? DEMOD_DIGL : cfg.mode;
   double flo, fhi;
-  tx_passband(cfg.mode, cfg.tx_flo, cfg.tx_fhi, &flo, &fhi);
+  tx_passband(wmode, cfg.tx_flo, cfg.tx_fhi, &flo, &fhi);
   /* Two-tone generator follows the keyed state (single tx thread → static is
    * safe). 700+1900 Hz, negated for the LSB family (piHPSDR transmitter.c:
    * 2918-2928). Toggleable mid-over: the operator A/Bs PureSignal against a
    * steady spectrum. */
   static int tt_applied;
-  double tt_sign = (cfg.mode == DEMOD_LSB || cfg.mode == DEMOD_DIGL) ? -1.0 : 1.0;
-  int tt_want_now = want_tt && keyed && r.state.mox && !r.state.tune && !cw_key;
+  double tt_sign = (wmode == DEMOD_LSB || wmode == DEMOD_DIGL) ? -1.0 : 1.0;
+  int tt_want_now = want_tt && keyed && r.state.mox && !r.state.tune && !gen_key;
   if (keyed && !*prev_keyed) {
     /* KEY ON: bring up the DSP first, then assert the gate-approved wire state.
      * (IQ starts on the next feed; the radio ignores it until MOX/relay land, so
@@ -395,11 +423,11 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     tx_dsp_set_compressor(voice_mic && cfg.comp_on, cfg.comp_db);
     tx_dsp_set_gate(voice_mic && cfg.gate_on,
                     cfg.gate_db != 0.0 ? cfg.gate_db : -45.0);
-    tx_dsp_set_mode(cfg.mode, flo, fhi);
+    tx_dsp_set_mode(wmode, flo, fhi);
     tx_dsp_tune_tone(r.state.tune ? 1 : 0, 0.0);   /* TUNE = post-gen carrier */
     if (tt_want_now) { tx_dsp_two_tone(1, tt_sign * 700.0, tt_sign * 1900.0); }
     tt_applied = tt_want_now;
-    if (r.state.mox && !cw_key) {
+    if (r.state.mox && !gen_key) {
       if (g_atomic_int_get(&s_ext_src)) {
         /* TCI audio: drop stale ring content + prime the client's sender with
          * a few blocks of lead (TX_STREAM_AUDIO_BUFFERING is 50 ms default). */
@@ -415,9 +443,12 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     tx_dsp_run(1);
     engine_set_tx_state(&r.state);
     g_atomic_int_set(&s_keyed_pub, 1);   /* RX mute router keys off this NOW */
-    LAT("key_on %s", r.state.tune ? "TUNE" : (cw_key ? "CW" : "MOX"));
+    const char *ksrc = r.state.tune ? "TUNE"
+                     : cw_key       ? "CW"
+                     : rtty_key     ? "RTTY" : "MOX";
+    LAT("key_on %s", ksrc);
     fprintf(stderr, "tx: KEY %s  freq=%lld Hz  PA=%s  ANT%d  drive=%d/255\n",
-            r.state.tune ? "TUNE" : (cw_key ? "CW" : "MOX"), freq,
+            ksrc, freq,
             r.state.pa_enabled ? "ON" : "off", cfg.antenna + 1, r.state.drive);
     fflush(stderr);
 
@@ -473,7 +504,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     fflush(stderr);
   } else if (keyed) {
     engine_set_tx_state(&r.state);   /* refresh (frequency/antenna may have changed) */
-    tx_dsp_set_mode(cfg.mode, flo, fhi);   /* live TX-filter change while keyed —
+    tx_dsp_set_mode(wmode, flo, fhi);      /* live TX-filter change while keyed —
                                               WDSP setters no-op when unchanged */
     {   /* voice-chain knobs live too (same no-op-when-unchanged contract) */
       int voice_mic = is_voice && !g_atomic_int_get(&s_ext_src);
@@ -502,13 +533,13 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     }
   }
 
-  /* PureSignal key hand-off: MOX/TUNE keyed but NOT the CW carrier (WDSP is
-   * bypassed in CW → feedback is meaningless, piHPSDR transmitter.c:2114-2120).
-   * Every slot — ps_key/ps_tune edge-detect internally; SetPSMox is lock-free.
-   * TUNE parks PS (reset, resumed after — piHPSDR radio.c:2728). */
+  /* PureSignal key hand-off: MOX/TUNE keyed but NOT the CW/RTTY generator
+   * (WDSP is bypassed → feedback is meaningless, piHPSDR transmitter.c:
+   * 2114-2120). Every slot — ps_key/ps_tune edge-detect internally; SetPSMox
+   * is lock-free. TUNE parks PS (reset, resumed after — piHPSDR radio.c:2728). */
   ps_tune(keyed && r.state.tune);
-  ps_key(keyed && !cw_key);
-  ps_auto_tick(keyed && !cw_key, tt_applied);   /* Thetis: att steps on any TX;
+  ps_key(keyed && !gen_key);
+  ps_auto_tick(keyed && !gen_key, tt_applied);  /* Thetis: att steps on any TX;
                                                    stall detector 2T-only */
 
   tx_run_status st;
@@ -547,8 +578,9 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   g_atomic_int_set(&s_keyed_pub, keyed);
   publish(&st);
 
-  if (keyed_mox) { *keyed_mox = st.mox && !is_cw; }   /* voice mic path */
-  if (keyed_cw)  { *keyed_cw  = st.mox &&  is_cw; }    /* CW shaped-carrier path */
+  if (keyed_mox)  { *keyed_mox  = st.mox && !is_cw && !is_rtty; } /* voice/digi mic path  */
+  if (keyed_cw)   { *keyed_cw   = st.mox &&  is_cw; }    /* CW shaped-carrier path    */
+  if (keyed_rtty) { *keyed_rtty = st.mox &&  is_rtty; }  /* RTTY direct-FSK path      */
   *prev_keyed = keyed;
   *prev_want  = want;
   return keyed;
@@ -560,12 +592,14 @@ static gpointer tx_thread(gpointer u) {
   float  mic[FEED_BLOCK];
   float  cwenv[TX_IQ_BLOCK];       /* CW envelope @ the TX IQ rate (max bound) */
   double cwiq[2 * TX_IQ_BLOCK];    /* CW IQ (I=amp·env, Q=0) */
+  double rtiq[2 * TX_IQ_BLOCK];    /* RTTY FSK IQ (unit from rtty_gen, scaled) */
   memset(silence, 0, sizeof silence);
   int prev_keyed = 0, prev_want = 0, keyed = 0, keyed_mox = 0, keyed_cw = 0;
+  int keyed_rtty = 0;
   int prev_intent = 0;             /* keying-intent fingerprint (edge-triggered gate) */
   int mic_clock_ok = 0;            /* P2: radio mic stream paces the feed; flips on the
                                       first clock credit, self-heals across link drops */
-  gint64 last_gate = 0, next_feed = 0, cw_key_on = 0;
+  gint64 last_gate = 0, next_feed = 0, cw_key_on = 0, rtty_key_on = 0;
 
   while (g_atomic_int_get(&s_running)) {
     gint64 now = g_get_monotonic_time();
@@ -591,6 +625,19 @@ static gpointer tx_thread(gpointer u) {
     }
     g_atomic_int_set(&s_want_cw, want_cw_now);
 
+    /* RTTY bookkeeping (feed thread owns rtty_gen): content wants the key; no
+     * hang time — the generator's mark tail is inside its schedule and TX
+     * drops the moment it settles idle (RTTY-SCOPE: RTTY has no semi-break-in
+     * tradition). */
+    int rtty_mode = TX_MODE_IS_RTTY(g_atomic_int_get(&s_mode));
+    int want_rtty_now = 0;
+    if (rtty_mode) {
+      g_mutex_lock(&s_rtty_lock);
+      want_rtty_now = s_rtty && !rtty_gen_idle(s_rtty);
+      g_mutex_unlock(&s_rtty_lock);
+    }
+    g_atomic_int_set(&s_want_rtty, want_rtty_now);
+
     /* Edge-triggered gate (#5): any change in keying intent evaluates the gate
      * NOW instead of waiting out the 50 ms slot (measured 0-41 ms of both the
      * key-on and release budgets). Regular slots keep the meter/SWR cadence;
@@ -599,12 +646,14 @@ static gpointer tx_thread(gpointer u) {
                | (g_atomic_int_get(&s_want_tune) << 1)
                | (g_atomic_int_get(&s_want_tt)   << 2)
                | (want_cw_now                    << 3)
-               | (p2_ptt_get()                   << 4);
+               | (p2_ptt_get()                   << 4)
+               | (want_rtty_now                  << 5);
     int fresh = now - last_gate >= GATE_US;
     if (fresh || intent != prev_intent) {
       if (fresh) { last_gate = now; }
       prev_intent = intent;
-      keyed = gate_slot(&prev_keyed, &prev_want, silence, &keyed_mox, &keyed_cw, fresh);
+      keyed = gate_slot(&prev_keyed, &prev_want, silence, &keyed_mox, &keyed_cw,
+                        &keyed_rtty, fresh);
       if (keyed && next_feed == 0) { next_feed = g_get_monotonic_time(); }
       if (!keyed && s_p1) { next_feed = 0; }   /* P2 paces continuously (N3) */
     }
@@ -617,6 +666,17 @@ static gpointer tx_thread(gpointer u) {
         fprintf(stderr, "tx: CW 20 s cutoff — flushed\n"); fflush(stderr);
       }
     } else { cw_key_on = 0; }
+
+    /* The same backstop for a runaway RTTY queue (100 % duty; RTTY-SCOPE). */
+    if (keyed_rtty) {
+      if (rtty_key_on == 0) { rtty_key_on = now; }
+      else if (now - rtty_key_on > CW_CUTOFF_US) {
+        g_mutex_lock(&s_rtty_lock);
+        if (s_rtty) { rtty_gen_flush(s_rtty); }
+        g_mutex_unlock(&s_rtty_lock);
+        fprintf(stderr, "tx: RTTY 20 s cutoff — flushed\n"); fflush(stderr);
+      }
+    } else { rtty_key_on = 0; }
 
     /* N2 v2 (2026-07-12 night): on P2 the keyed TX production is paced by the
      * RADIO's mic stream (port 1026, 64 @48 k, 750 pkt/s — live-verified on
@@ -680,6 +740,39 @@ static gpointer tx_thread(gpointer u) {
           demod_monitor_absolute(1);
           demod_monitor_push(st, s_iq_block, s_iq_rate);
         }
+      } else if (keyed_rtty) {
+        /* RTTY: pull phase-continuous FSK IQ from rtty_gen and emit it straight
+         * to the framer — no WDSP (the CW pattern with a frequency toggle
+         * instead of an on/off envelope; RTTY-SCOPE §2). PTT delay: the same
+         * 30 ms zero-hold as CW WITHOUT consuming the queue — the schedule's
+         * mark preamble then lands after the MOX HP packet + T/R relay. */
+        int rf_hold = (now - rtty_key_on) < CW_PTT_DELAY_US;
+        g_mutex_lock(&s_rtty_lock);
+        if (s_rtty && !rf_hold) { rtty_gen_pull(s_rtty, rtiq, s_iq_block); }
+        else                    { memset(rtiq, 0, sizeof rtiq); }
+        g_mutex_unlock(&s_rtty_lock);
+        if (g_atomic_int_get(&s_monitor)) {
+          /* Monitor: the FSK itself, mixed to the RTTY pitch with the
+           * LSB-side mapping (audio = I·cos + Q·sin → mark 2125 / space
+           * 2295 at the 2210 default — exactly what a receiver hears).
+           * Absolute level = the CW sidetone trim (shared setting). */
+          static double ph;
+          float st[TX_IQ_BLOCK];
+          double amp  = pow(10.0, (double)g_atomic_int_get(&s_st_cdb) / 2000.0);
+          double step = 2.0 * G_PI * (double)g_atomic_int_get(&s_rtty_pitch)
+                        / (double)s_iq_rate;
+          for (int i = 0; i < s_iq_block; i++) {
+            st[i] = (float)(amp * (rtiq[2 * i] * cos(ph) + rtiq[2 * i + 1] * sin(ph)));
+            ph += step;
+            if (ph > 2.0 * G_PI) { ph -= 2.0 * G_PI; }
+          }
+          demod_monitor_absolute(1);
+          demod_monitor_push(st, s_iq_block, s_iq_rate);
+        }
+        for (int i = 0; i < 2 * s_iq_block; i++) { rtiq[i] *= RTTY_IQ_AMP; }
+        s_mon_skip = 1;      /* the mixed-up FSK above monitors, not the IQ tap */
+        on_tx_iq(rtiq, s_iq_block, NULL);
+        s_mon_skip = 0;
       } else if (keyed_mox) {
         /* MOX: pull live mic — or the external TCI ring (digi TX audio) — and
          * pad any underrun with silence so the exciter never stalls (PACE_US
@@ -805,6 +898,14 @@ int tx_run_start(long long tx_freq_hz, int pan_pixels, int fps, int p1) {
   s_cw_hang_deadline = 0;   /* no hang held over from a previous runtime */
   g_mutex_unlock(&s_cw_lock);
 
+  /* RTTY FSK generator at the same IQ rate (45.45 Bd / 170 Hz constants
+   * inside). Like cw_gen it only makes IQ; it never keys. */
+  g_atomic_int_set(&s_want_rtty, 0);
+  g_mutex_lock(&s_rtty_lock);
+  if (!s_rtty) { s_rtty = rtty_gen_new(s_iq_rate); }
+  else         { rtty_gen_flush(s_rtty); }
+  g_mutex_unlock(&s_rtty_lock);
+
   tx_run_status st; memset(&st, 0, sizeof st); st.running = 1; st.allowed = 1;
   publish(&st);
 
@@ -831,6 +932,7 @@ void tx_run_stop(void) {
   g_atomic_int_set(&s_want_tune, 0);
   g_atomic_int_set(&s_want_tt, 0);
   g_atomic_int_set(&s_want_cw, 0);
+  g_atomic_int_set(&s_want_rtty, 0);
   g_atomic_int_set(&s_running, 0);
   g_thread_join(s_thread);
   s_thread = NULL;
@@ -842,6 +944,9 @@ void tx_run_stop(void) {
   g_mutex_lock(&s_cw_lock);
   cw_gen_free(s_cw); s_cw = NULL;
   g_mutex_unlock(&s_cw_lock);
+  g_mutex_lock(&s_rtty_lock);
+  rtty_gen_free(s_rtty); s_rtty = NULL;
+  g_mutex_unlock(&s_rtty_lock);
   tx_run_status st; memset(&st, 0, sizeof st);
   publish(&st);
 }
@@ -922,6 +1027,35 @@ void tx_run_set_cw(int wpm, double weight, double ramp_ms, int hang_ms) {
 void tx_run_set_sidetone(int pitch_hz, double level_db) {
   g_atomic_int_set(&s_st_hz,  CLAMP(pitch_hz, 100, 2000));
   g_atomic_int_set(&s_st_cdb, (int)lrint(CLAMP(level_db, -40.0, 0.0) * 100.0));
+}
+
+/* --- RTTY (RTTY-SCOPE) — queue text; content keys via the feed thread. ----- */
+void tx_run_rtty_send(const char *text) {
+  if (!text) { return; }
+  g_mutex_lock(&s_rtty_lock);
+  if (s_rtty) { rtty_gen_send_text(s_rtty, text); }
+  g_mutex_unlock(&s_rtty_lock);
+}
+
+void tx_run_rtty_abort(void) {
+  g_mutex_lock(&s_rtty_lock);
+  if (s_rtty) { rtty_gen_flush(s_rtty); }
+  g_mutex_unlock(&s_rtty_lock);
+}
+
+void tx_run_rtty_progress(tx_cw_view *out) {
+  if (!out) { return; }
+  memset(out, 0, sizeof *out);
+  g_mutex_lock(&s_rtty_lock);
+  if (s_rtty) {
+    rtty_gen_progress(s_rtty, out->text, sizeof out->text, &out->cur);
+    out->active = !rtty_gen_idle(s_rtty);   /* no hang: hang_frac stays 0 */
+  }
+  g_mutex_unlock(&s_rtty_lock);
+}
+
+void tx_run_set_rtty_pitch(int pitch_hz) {
+  g_atomic_int_set(&s_rtty_pitch, CLAMP(pitch_hz, 1000, 3000));
 }
 
 void tx_run_set_ext_source(int on) {

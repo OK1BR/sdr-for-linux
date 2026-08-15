@@ -63,6 +63,13 @@ typedef struct {
                         unsigned argb, const char *text);
   void      (*spot_delete)(const char *call);
   void      (*spot_clear)(void);
+  /* RTTY text keying (family extension, docs/RTTY-SCOPE.md — ExpertSDR3 has
+   * no RTTY text command): `rtty_macros:<trx>,<text>;` queues the direct-FSK
+   * generator (content keys via tx_gate, like cw_send), `rtty_macros_stop;`
+   * aborts. Either may be NULL (no RTTY). ⛔ New fields append at the END —
+   * the GUI initializer is positional. */
+  void      (*rtty_send)(const char *text);
+  void      (*rtty_stop)(void);
 } TciOps;
 
 /* Start/stop the server. start returns 0 on success (port bound). *ops is

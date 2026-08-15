@@ -10,8 +10,8 @@
       A modern GTK4/libadwaita application for HPSDR Protocol 1 and Protocol 2
       radios, built on the proven piHPSDR engine and the WDSP DSP library.
       Full-resolution floating-point panadapter and waterfall, RX demodulation
-      (SSB, CW, AM, digi) with low-latency PipeWire audio, and SSB/CW transmit
-      with PureSignal linearization.
+      (SSB, CW, AM, digi, RTTY) with low-latency PipeWire audio, and
+      SSB/CW/RTTY transmit with PureSignal linearization.
     </p>
     <p>
       Includes a TCI server (ExpertSDR3-compatible) for skimmers, loggers and
