@@ -3574,8 +3574,14 @@ static void tci_set_tune_drive(double v) {
   schedule_save(tci_app);
 }
 static int tci_get_trx(void) {
-  return tci_app->mox_btn &&
-         gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(tci_app->mox_btn));
+  /* The REAL keyed state (any RF: MOX / TUNE / CW / RTTY text keying), not
+   * the MOX button — text keying never touches the button, so clients were
+   * never told the rig transmits. ExpertSDR semantics: trx follows actual
+   * PTT. The skimmer needs this to HOLD its decode channels while our TX
+   * deafens the RX (T/R + 31 dB att) instead of releasing and re-acquiring
+   * after every over (Richard, live 2026-08-15: "after TX it hangs and
+   * doesn't decode for a while"). Gate refusals correctly read false. */
+  return tci_app->tx_ready && tx_run_keyed();
 }
 static int tci_set_trx(int on) {
   if (!tci_app->tx_ready || !tci_app->mox_btn) { return -1; }
