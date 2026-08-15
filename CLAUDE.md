@@ -235,11 +235,12 @@ whether parametric needs our own biquad stage in front of/instead of the
 WDSP EQ. The loved EQ mockup template in `docs/mockups/` is the UI seed;
 fits the mic-chain tuning thread (Heil PR 40 + SPL Channel One).
 
-**★ Other candidates (Richard picks):** P1 PureSignal milestone
-(multi-RX P1 link, RX3/RX4 feedback); 10E leftovers (pa_cal remaining
-bands ~32-34, digi TX meter live check); Square SDR bring-up; 10E PS
-via Thetis sequencing (TX-DESIGN §9, risky). (TX EQ folded into the
-equalizer milestone above.)
+**★ Other candidates (Richard picks):** **RTTY mode (zadání 2026-08-15
+— docs/RTTY-SCOPE.md, see the status entry below)**; P1 PureSignal
+milestone (multi-RX P1 link, RX3/RX4 feedback); 10E leftovers (pa_cal
+remaining bands ~32-34, digi TX meter live check); Square SDR bring-up;
+10E PS via Thetis sequencing (TX-DESIGN §9, risky). (TX EQ folded into
+the equalizer milestone above.)
 Tonight (2026-07-13): audio-chain tuning with the Heil PR 40 + SPL
 Channel One mk3 (baseline: tube/EQ/de-esser out, gain ~55-60 dB,
 judged via SDRFL_TX_DUMP, NOT the 705 bench), plus the TX config
@@ -250,6 +251,25 @@ gate −30, PROC on — Richard wants to re-set these himself).
 clock-drift smoothing, absolute dBm cal, nonlinear wattmeter cal
 (guided workflow), mic-ring drift, PS-4 nice-to-haves (pre-xiqc TX pan
 tap, SaveCorr per band, per-band ps_att), TX display averaging design.
+
+**RTTY mode — zadání written (2026-08-15, Richard's request mid-RTTY
+contest; SPEC ONLY, nothing implemented).** `docs/RTTY-SCOPE.md` in the
+house skeleton: a real new mode (`DEMOD_RTTY = 12`, DIGL at the WDSP
+boundary) with its own `FILT_RTTY` set (default 500), and a direct-FSK
+TX modulator `rtty_gen` in the `cw_gen` contract — text arrives over a
+new TCI family extension `rtty_macros:`/`rtty_macros_stop;` (mirrors
+`cw_macros`; paragraph added to TCI-SCOPE.md), keyed through the same
+tx_gate, WDSP bypassed like CW, 100 % duty joins the digi drive clamp.
+Dial convention = the FSK pair CENTRE (what skimmer-for-linux spots —
+the spot-click loop stays Hz-exact), audio pair on the classic
+2125/2295. RX decoding deliberately stays in skimmer-for-linux
+(RTTY-capable + live-verified the same day); the driving use case is a
+log-for-linux F-key macro keying a whole exchange (its wire contract is
+§4 of the scope; its repo gets its own task). Gate `sdrfl-rtty-test`
+specced offline-first + a dummy-load family loop (the skimmer decodes
+our own TX). §7 lists five proposed decisions (dial/pitch, mode id,
+TCI names, filter ladder, fixed 45.45/170) awaiting Richard's confirm
+before implementation.
 
 ## Approach (decided with Richard)
 
