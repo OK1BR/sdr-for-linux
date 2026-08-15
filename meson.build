@@ -224,6 +224,15 @@ executable('sdrfl-rtty-test',
   install : false,
 )
 
+# TCI command-line client (dev tool): send text commands to a running app's
+# TCI server and print the replies — the RTTY live-gate keyer and a general
+# TCI poker while the logger integration is developed. Text frames only.
+executable('sdrfl-tci-send',
+  ['src/tci_send_main.c'],
+  dependencies : [lws_dep],
+  install : false,
+)
+
 # Offline TCI gate (F6d-2a, docs/TCI-SCOPE.md). Starts the TCI server with
 # stub ops, connects a real WebSocket client and verifies the handshake,
 # control round-trips + broadcasts, and CW queue/stop. NO radio, NO GUI.
