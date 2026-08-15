@@ -139,8 +139,11 @@ constant (a future `rtty_macros_baud` is cheap if ever needed).
 **UI.** RTTY button in the mode strip (`mids[]`/`mlabels[]`); free hotkey
 `r`; the TX progress HUD reuses the CW HUD drawing (dispatch by mode);
 AGC joins the existing digi AGC group (no 5th group — less surface).
-Preferences → RTTY: pitch only (advanced; default 2210). Shift 170 and
-45.45 Bd are constants, not knobs. Persistence (mode, per-mode filter,
+Preferences → RTTY: pitch (advanced; default 2210) + monitor level
+(own trim, default −20 dBFS — added after the 2026-08-15 live pass: the
+FSK monitor is a CONTINUOUS ~2.2 kHz tone, so sharing the CW sidetone
+level blasted at full perceived volume; Richard's request). Shift 170
+and 45.45 Bd are constants, not knobs. Persistence (mode, per-mode filter,
 band stacking) rides the existing plumbing; the four mode-name converters
 (`mode_from_name`, `tci_get_mode`, `tci_set_mode`, and the
 `audioprobe_main.c` copy) all learn `rtty`.

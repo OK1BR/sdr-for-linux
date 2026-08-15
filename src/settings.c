@@ -179,6 +179,8 @@ int settings_load(Settings *s) {
       s->cw_hang = g_key_file_get_integer(kf, GROUP_TX, "cw_hang", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "rtty_pitch", NULL))
       s->rtty_pitch = g_key_file_get_integer(kf, GROUP_TX, "rtty_pitch", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "rtty_mon_db", NULL))
+      s->rtty_mon_db = g_key_file_get_double(kf, GROUP_TX, "rtty_mon_db", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "tci", NULL))
       s->tci_enable = g_key_file_get_integer(kf, GROUP_TX, "tci", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "tci_port", NULL))
@@ -341,6 +343,7 @@ int settings_save(const Settings *s) {
   g_key_file_set_double (kf, GROUP_TX,     "cw_sidetone_db", s->cw_st_db);
   g_key_file_set_integer(kf, GROUP_TX,     "cw_hang",   s->cw_hang);
   g_key_file_set_integer(kf, GROUP_TX,     "rtty_pitch", s->rtty_pitch);
+  g_key_file_set_double(kf, GROUP_TX,      "rtty_mon_db", s->rtty_mon_db);
   g_key_file_set_integer(kf, GROUP_TX,     "tci",       s->tci_enable);
   g_key_file_set_integer(kf, GROUP_TX,     "tci_port",  s->tci_port);
   g_key_file_set_integer(kf, GROUP_TX,     "tci_iq_rate", s->tci_iq_rate);

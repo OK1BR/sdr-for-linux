@@ -257,6 +257,7 @@ typedef struct {
   int         cw_pitch;      /* CW sidetone pitch, Hz (persisted)                   */
   double      cw_st_db;      /* CW sidetone level, dBFS (persisted)                 */
   int         rtty_pitch;    /* RTTY audio pair centre, Hz (persisted; dflt 2210)   */
+  double      rtty_mon_db;   /* RTTY monitor level, dBFS (persisted; own trim)      */
   int         cw_hang;       /* CW break-in hang, ms (persisted)                    */
   double      band_pacal[NBANDS]; /* per-band PA calibration, dB (F6b, persisted)   */
   double      pa_trim[11];   /* wattmeter correction curve, 11 pts W (F6b, persist) */
@@ -1056,6 +1057,9 @@ static void draw_tx_digi_meter(cairo_t *cr, App *app, int w, const tx_run_status
 #define CW_ST_DB_DFLT (-20.0)
 #define CW_HANG_DFLT   250
 #define RTTY_PITCH_DFLT 2210   /* RTTY audio pair centre → mark 2125 / space 2295 */
+#define RTTY_MON_DB_DFLT (-20.0) /* RTTY monitor level — own trim: the FSK monitor
+                                    is a CONTINUOUS ~2.2 kHz tone, needing a
+                                    different comfort level than keyed CW at 700 */
 #define TXF_LO_MIN    20.0     /* TX audio filter edges, Hz (150/2850 default;   */
 #define TXF_LO_MAX   500.0     /* high edge up to 6 kHz covers eSSB widths)      */
 #define TXF_HI_MIN  1500.0
@@ -1896,6 +1900,7 @@ static void app_to_settings(const App *app, Settings *s) {
   s->cw_st_db   = app->cw_st_db;
   s->cw_hang    = app->cw_hang;
   s->rtty_pitch = app->rtty_pitch;
+  s->rtty_mon_db = app->rtty_mon_db;
   s->tci_enable = app->tci_enable;
   s->tci_port   = app->tci_port;
   s->tci_iq_rate = app->tci_iq_rate;
@@ -3478,16 +3483,21 @@ static void on_pref_cw_hang(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   cw_push(app); schedule_save(app);
 }
 
-/* RTTY: the audio pair centre — RX offset (demod shifter) + TX monitor pitch.
- * One number, both consumers (RTTY-SCOPE §7A: dial = pair centre, heard at
- * 2125/2295 by default). */
+/* RTTY: the audio pair centre — RX offset (demod shifter) + TX monitor pitch —
+ * and the monitor's own level trim. One push, all consumers (RTTY-SCOPE §7A:
+ * dial = pair centre, heard at 2125/2295 by default). */
 static void rtty_push(App *app) {
   demod_set_rtty_pitch(app->rtty_pitch);
-  tx_run_set_rtty_pitch(app->rtty_pitch);
+  tx_run_set_rtty(app->rtty_pitch, app->rtty_mon_db);
 }
 static void on_pref_rtty_pitch(GtkRange *r, gpointer data) {
   App *app = (App *)data;
   app->rtty_pitch = (int)gtk_range_get_value(r);
+  rtty_push(app); schedule_save(app);
+}
+static void on_pref_rtty_mon_db(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  app->rtty_mon_db = gtk_range_get_value(r);
   rtty_push(app); schedule_save(app);
 }
 
@@ -4034,6 +4044,10 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, pref_slider("RTTY pitch",
       "audio pair centre · 2210 = the classic 2125/2295 · live",
       1000, 3000, app->rtty_pitch, "%.0f Hz", G_CALLBACK(on_pref_rtty_pitch), app));
+  adw_preferences_group_add(g, pref_slider("Monitor level",
+      "absolute dBFS · continuous FSK tone, own trim next to the CW sidetone · live",
+      CW_ST_DB_MIN, CW_ST_DB_MAX, app->rtty_mon_db, "%.0f dB",
+      G_CALLBACK(on_pref_rtty_mon_db), app));
   adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);
 
@@ -4530,7 +4544,7 @@ static void start_radio(App *app) {
                   .ps_setpk = 0.2899, .ps_auto = 1, .ps_stbl = 0,
                   .cw_wpm = CW_WPM_DFLT, .cw_pitch = CW_PITCH_DFLT,
                   .cw_st_db = CW_ST_DB_DFLT, .cw_hang = CW_HANG_DFLT,
-                  .rtty_pitch = RTTY_PITCH_DFLT,
+                  .rtty_pitch = RTTY_PITCH_DFLT, .rtty_mon_db = RTTY_MON_DB_DFLT,
                   .tci_enable = 0, .tci_port = 40001, .tci_iq_rate = 48000 };
   g_strlcpy(st.ip, "", sizeof(st.ip));   /* no radio default: the picker (or a
                                             saved config) provides the IP; empty
@@ -4615,6 +4629,9 @@ static void start_radio(App *app) {
   app->cw_hang       = st.cw_hang  < 0   ? 0   : (st.cw_hang  > 1000 ? 1000 : st.cw_hang);
   app->rtty_pitch    = st.rtty_pitch < 1000 ? RTTY_PITCH_DFLT
                      : (st.rtty_pitch > 3000 ? RTTY_PITCH_DFLT : st.rtty_pitch);
+  app->rtty_mon_db   = st.rtty_mon_db < CW_ST_DB_MIN ? RTTY_MON_DB_DFLT
+                     : (st.rtty_mon_db > CW_ST_DB_MAX ? RTTY_MON_DB_DFLT
+                                                      : st.rtty_mon_db);
   app->tci_enable    = st.tci_enable ? 1 : 0;
   app->tci_port      = st.tci_port < 1024 ? 40001 : (st.tci_port > 65535 ? 40001 : st.tci_port);
   app->tci_iq_rate   = (st.tci_iq_rate == 96000 || st.tci_iq_rate == 192000 ||

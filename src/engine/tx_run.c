@@ -179,6 +179,9 @@ static rtty_gen         *s_rtty;           /* RTTY FSK generator, under s_rtty_l
 static GMutex            s_rtty_lock;
 static volatile int      s_want_rtty;      /* g_atomic: RTTY content wants key (feed thread)*/
 static volatile int      s_rtty_pitch = 2210; /* g_atomic: monitor audio pair centre (Hz)   */
+static volatile int      s_rtty_cdb = -2000;  /* g_atomic: monitor level (dB × 100) — own
+                                                 trim, NOT the CW sidetone level (the FSK
+                                                 monitor is a continuous ~2.2 kHz tone)    */
 static volatile int      s_cw_hang_ms = 250;   /* g_atomic: break-in hang time (ms)         */
 static gint64            s_cw_hang_deadline;   /* break-in hang end (monotonic µs); written
                                                   by the feed thread under s_cw_lock, read
@@ -755,10 +758,12 @@ static gpointer tx_thread(gpointer u) {
           /* Monitor: the FSK itself, mixed to the RTTY pitch with the
            * LSB-side mapping (audio = I·cos + Q·sin → mark 2125 / space
            * 2295 at the 2210 default — exactly what a receiver hears).
-           * Absolute level = the CW sidetone trim (shared setting). */
+           * Absolute level = the RTTY monitor trim (its OWN setting — a
+           * continuous tone needs a different comfort level than keyed
+           * Morse; Richard, live 2026-08-15). */
           static double ph;
           float st[TX_IQ_BLOCK];
-          double amp  = pow(10.0, (double)g_atomic_int_get(&s_st_cdb) / 2000.0);
+          double amp  = pow(10.0, (double)g_atomic_int_get(&s_rtty_cdb) / 2000.0);
           double step = 2.0 * G_PI * (double)g_atomic_int_get(&s_rtty_pitch)
                         / (double)s_iq_rate;
           for (int i = 0; i < s_iq_block; i++) {
@@ -1054,8 +1059,9 @@ void tx_run_rtty_progress(tx_cw_view *out) {
   g_mutex_unlock(&s_rtty_lock);
 }
 
-void tx_run_set_rtty_pitch(int pitch_hz) {
+void tx_run_set_rtty(int pitch_hz, double level_db) {
   g_atomic_int_set(&s_rtty_pitch, CLAMP(pitch_hz, 1000, 3000));
+  g_atomic_int_set(&s_rtty_cdb, (int)lrint(CLAMP(level_db, -40.0, 0.0) * 100.0));
 }
 
 void tx_run_set_ext_source(int on) {

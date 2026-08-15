@@ -90,6 +90,7 @@ typedef struct {
   double    cw_st_db;   /* CW sidetone level (dBFS before monitor gain; -40..0)   */
   int       cw_hang;    /* CW break-in hang (ms)                                  */
   int       rtty_pitch; /* RTTY audio pair centre (Hz; RX offset + TX monitor)    */
+  double    rtty_mon_db;/* RTTY monitor level (dBFS; own trim, not the sidetone)  */
   int       tci_enable; /* TCI server on/off (F6d-2a)                             */
   int       tci_port;   /* TCI server port (ExpertSDR default 40001)              */
   int       tci_iq_rate;/* device-global IQ stream rate (F6d-2d; client-set)      */

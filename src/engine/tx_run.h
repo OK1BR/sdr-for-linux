@@ -180,7 +180,11 @@ void tx_run_set_sidetone(int pitch_hz, double level_db);
 void tx_run_rtty_send(const char *text);
 void tx_run_rtty_abort(void);
 void tx_run_rtty_progress(tx_cw_view *out);  /* HUD twin; hang_frac always 0 */
-void tx_run_set_rtty_pitch(int pitch_hz);
+/* Monitor pitch (Hz) + level (dBFS, absolute like the CW sidetone — its own
+ * trim, independent of the voice monitor gain AND of the CW sidetone level:
+ * the FSK monitor is a CONTINUOUS tone at ~2.2 kHz where the ear is most
+ * sensitive, so the comfortable level differs from keyed Morse at 700 Hz). */
+void tx_run_set_rtty(int pitch_hz, double level_db);
 
 /*
  * External TX audio source (TCI, F6d-2c). set_ext_source(1) makes the feed
