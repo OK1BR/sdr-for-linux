@@ -17,6 +17,21 @@
 > family gate — skimmer decodes our own TX, wattmeter/duty check, SDC look)
 > **and step 6** (log-for-linux, its own repo). ⛔ No RTTY on-air before the
 > live gate passes with Richard present.
+>
+> **⛔ LIVE-CAUGHT LESSON (2026-08-15 evening, first QSO attempts): the HPSDR
+> wire IQ convention is spectrally INVERTED — in BOTH directions.** The DDC
+> side was long known (tci_server conjugates the RX stream for clients);
+> the DUC side was invisible until now because WDSP-produced voice bakes
+> the inversion in and CW (Q = 0, real envelope) is immune. Our direct FSK
+> was the first asymmetric IQ on the bypass path and went out with mark
+> LOW = reversed RTTY: spectrally perfect (KiwiSDR: tones at dial ±85,
+> spacing 170), utterly undecodable (IC-705 read nothing; a mark-low
+> slicer on the off-air recording read the RYRY test, and the 100 ms
+> preamble — mark by definition — sat on dial−85). Fix: tx_run conjugates
+> at the wire boundary (Q → −Q); rtty_gen stays in TRUE convention
+> (gate-verified), the monitor consumes the TRUE samples. Verified live:
+> the IC-705 decodes us after the fix (Richard). **Any future direct-IQ
+> synthesis (PSK, future modes) MUST conjugate at the same boundary.**
 
 Requested by Richard on 2026-08-15, mid-RTTY-contest, the same morning
 `skimmer-for-linux` M7 (RTTY decode) went live-verified. Goal: a first-class

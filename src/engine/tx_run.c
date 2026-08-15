@@ -774,7 +774,20 @@ static gpointer tx_thread(gpointer u) {
           demod_monitor_absolute(1);
           demod_monitor_push(st, s_iq_block, s_iq_rate);
         }
-        for (int i = 0; i < 2 * s_iq_block; i++) { rtiq[i] *= RTTY_IQ_AMP; }
+        /* ⛔ CONJUGATE at the wire boundary: the HPSDR DUC IQ convention is
+         * spectrally INVERTED (the DDC side is too — that is why tci_server
+         * conjugates the RX stream for clients). WDSP-produced voice bakes
+         * the inversion in, and CW (Q=0, real) is immune — our direct FSK
+         * was the first asymmetric IQ on this path and transmitted mark LOW
+         * (= reversed RTTY, unreadable). Caught off-air 2026-08-15: the
+         * KiwiSDR recording's preamble sat on dial−85 and only a mark-low
+         * slicer read the RYRY test. rtty_gen stays in TRUE convention
+         * (mark = +85, gate-verified); the wire gets the conjugate, and the
+         * monitor above already consumed the TRUE samples. */
+        for (int i = 0; i < 2 * s_iq_block; i += 2) {
+          rtiq[i]     *=  RTTY_IQ_AMP;
+          rtiq[i + 1] *= -RTTY_IQ_AMP;
+        }
         s_mon_skip = 1;      /* the mixed-up FSK above monitors, not the IQ tap */
         on_tx_iq(rtiq, s_iq_block, NULL);
         s_mon_skip = 0;
