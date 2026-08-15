@@ -1060,7 +1060,7 @@ void tx_run_rtty_progress(tx_cw_view *out) {
 }
 
 void tx_run_set_rtty(int pitch_hz, double level_db) {
-  g_atomic_int_set(&s_rtty_pitch, CLAMP(pitch_hz, 1000, 3000));
+  g_atomic_int_set(&s_rtty_pitch, CLAMP(pitch_hz, 300, 3000));
   g_atomic_int_set(&s_rtty_cdb, (int)lrint(CLAMP(level_db, -40.0, 0.0) * 100.0));
 }
 

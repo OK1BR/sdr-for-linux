@@ -411,10 +411,12 @@ void demod_set_cw_pitch(int hz) {
   g_mutex_unlock(&d_lock);
 }
 
-/* RTTY audio pair centre (live; re-shifts a running RTTY RX). */
+/* RTTY audio pair centre (live; re-shifts a running RTTY RX). Floor 300:
+ * the mark tone sits at pitch−85 = 215 Hz, still clear of DC — low pitches
+ * are much easier on the ears than the classic 2125/2295 (Richard). */
 void demod_set_rtty_pitch(int hz) {
   g_mutex_lock(&d_lock);
-  d_rtty_pitch = hz < 1000 ? 1000 : (hz > 3000 ? 3000 : hz);
+  d_rtty_pitch = hz < 300 ? 300 : (hz > 3000 ? 3000 : hz);
   if (d_ready && d_mode == DEMOD_RTTY) { apply_passband(); }
   g_mutex_unlock(&d_lock);
 }

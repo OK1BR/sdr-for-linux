@@ -4042,8 +4042,8 @@ static AdwDialog *build_prefs(App *app) {
   g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP,
       "title", "RTTY", NULL));
   adw_preferences_group_add(g, pref_slider("RTTY pitch",
-      "audio pair centre · 2210 = the classic 2125/2295 · live",
-      1000, 3000, app->rtty_pitch, "%.0f Hz", G_CALLBACK(on_pref_rtty_pitch), app));
+      "audio pair centre · 2210 = the classic 2125/2295, lower = easier on the ears · live",
+      300, 3000, app->rtty_pitch, "%.0f Hz", G_CALLBACK(on_pref_rtty_pitch), app));
   adw_preferences_group_add(g, pref_slider("Monitor level",
       "absolute dBFS · continuous FSK tone, own trim next to the CW sidetone · live",
       CW_ST_DB_MIN, CW_ST_DB_MAX, app->rtty_mon_db, "%.0f dB",
@@ -4627,7 +4627,7 @@ static void start_radio(App *app) {
   app->cw_pitch      = st.cw_pitch < 200 ? 200 : (st.cw_pitch > 1200 ? 1200 : st.cw_pitch);
   app->cw_st_db      = st.cw_st_db < CW_ST_DB_MIN ? CW_ST_DB_MIN : (st.cw_st_db > CW_ST_DB_MAX ? CW_ST_DB_MAX : st.cw_st_db);
   app->cw_hang       = st.cw_hang  < 0   ? 0   : (st.cw_hang  > 1000 ? 1000 : st.cw_hang);
-  app->rtty_pitch    = st.rtty_pitch < 1000 ? RTTY_PITCH_DFLT
+  app->rtty_pitch    = st.rtty_pitch < 300 ? RTTY_PITCH_DFLT
                      : (st.rtty_pitch > 3000 ? RTTY_PITCH_DFLT : st.rtty_pitch);
   app->rtty_mon_db   = st.rtty_mon_db < CW_ST_DB_MIN ? RTTY_MON_DB_DFLT
                      : (st.rtty_mon_db > CW_ST_DB_MAX ? RTTY_MON_DB_DFLT
