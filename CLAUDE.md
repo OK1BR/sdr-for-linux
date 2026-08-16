@@ -235,6 +235,27 @@ whether parametric needs our own biquad stage in front of/instead of the
 WDSP EQ. The loved EQ mockup template in `docs/mockups/` is the UI seed;
 fits the mic-chain tuning thread (Heil PR 40 + SPL Channel One).
 
+**★ RX S-meter ballistics — zadání 2026-08-16 (Richard, contest-observed:
+"kmitá to moc rychle", unreadable).** Design the averaging; high priority,
+above the follow-ups below. Recon already done, do not re-derive: the meter
+has **no ballistics at all**. `demod_s_meter()` returns `GetRXAMeter(RXA_S_PK)`
+— the **peak** detector, raw (demod.c:393); piHPSDR's needle reads
+`RXA_S_AV` instead, as our own `SDRFL_DEBUG_LEVELS` dump already notes
+(demod.c:366). `gui.c:1645` samples it once per draw frame and
+`draw_s_meter()` paints both the bar and the `S9+20 -53 dBm` text straight
+from that sample — nothing between the detector and the pixel. The pattern
+to reuse is the TX side's, already written and measured: instant attack,
+~0.5 s decay half-life for PEP power, EMA + hold-last-valid for SWR
+(gui.c:1156-1174). Open design questions: S_AV vs S_PK as the source,
+attack/decay constants, and whether the numeric readout should be slower
+than the bar (a number that changes 60×/s is unreadable even when the bar
+is fine). **Smooth on the display side, not in `demod`** — the network head
+gets `s_dbm` from the server (`client.c:251`, `rxlvl`) and must smooth the
+same way, and nothing on a protection path may ever read a smoothed value
+(cf. the TX rule: SWR protection keeps acting on the raw fast numbers).
+Fold in the "TX display averaging design" follow-up below — one ballistics
+design for the whole family, not two.
+
 **★ Other candidates (Richard picks):** **RTTY mode (zadání 2026-08-15
 — docs/RTTY-SCOPE.md, see the status entry below)**; P1 PureSignal
 milestone (multi-RX P1 link, RX3/RX4 feedback); 10E leftovers (pa_cal
@@ -250,7 +271,8 @@ gate −30, PROC on — Richard wants to re-set these himself).
 **Older follow-ups:** off-centre pan, AGC-target vs `SDRFL_GAIN`, audio
 clock-drift smoothing, absolute dBm cal, nonlinear wattmeter cal
 (guided workflow), mic-ring drift, PS-4 nice-to-haves (pre-xiqc TX pan
-tap, SaveCorr per band, per-band ps_att), TX display averaging design.
+tap, SaveCorr per band, per-band ps_att), TX display averaging design
+(→ promoted, folded into the RX S-meter ballistics zadání above).
 
 **★ RTTY mode — IMPLEMENTED offline 2026-08-15 (same day as the zadání;
 §7 A-E confirmed by Richard; scope §8 steps 1-4 done, LIVE GATE PENDING).**
