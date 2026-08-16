@@ -1,5 +1,32 @@
 # RTTY mode — scope plan (zadání, 2026-08-15)
 
+> **⏸ DEFERRED 2026-08-16 (Richard): everything still open below is PARKED
+> until later — no RTTY contest is coming up for a long while, so there is
+> no way to verify it properly. Not a candidate for the next milestone;
+> pick it back up before the next RTTY contest.** The parked list, complete:
+>
+> - **§8 step 5 remainder (live family gate at the radio, with Richard):**
+>   (a) the decode loop — skimmer decoding around our own TX needs BOTH new
+>   binaries running at once (sdr `cc470af`: `trx` reports the real keyed
+>   state; skimmer `01c72c8`: TX-hold) and a live check that the other
+>   station's reply decodes from the 1st character after an over; at the
+>   0.36 W test drive our own leak-through sat below the skimmer threshold
+>   (T/R relay + 31 dB TX attenuators), so it needs real drive;
+>   (b) wattmeter/duty check at 5-10 W (verifies `RTTY_IQ_AMP` at 100 % duty
+>   — so far only 1 W: fwd constant, SWR 1.00);
+>   (c) SDC compatibility look at `modulations_list` with `rtty` advertised.
+> - **Dial convention — UNDECIDED (Richard's call):** we tune the FSK pair
+>   CENTRE, the world (Icom/RBN) tunes MARK → a standing 85 Hz offset.
+>   Proposal on the table: switch to dial = MARK (touches sdr + skimmer +
+>   §7 A here).
+> - **§8 step 6 (log-for-linux, its repo):** its steps 1-2 are done
+>   (`b7a76b6`, tests 10/10); remaining = the live pass F-key → FSK at the
+>   radio, and the scope's end goal — a real on-air RTTY QSO from a macro
+>   during the next RTTY contest.
+>
+> The mode itself is usable and live-proven (first QSOs 2026-08-15; the
+> IC-705 decodes us since the wire-conjugation fix 5e7bbcb).
+
 > **STATUS 2026-08-15 (same day): §8 steps 1-4 IMPLEMENTED, offline-gated.**
 > Richard confirmed §7 A-E as proposed and green-lit implementation.
 > Landed: `rtty_gen.{c,h}` + `sdrfl-rtty-test` (PASS at 48 k + 192 k, in the
@@ -15,8 +42,9 @@
 > it misses the C identifiers `DEMOD_DIGU/DEMOD_DIGL` — exactly the
 > dangerous sites. Sweep run clean. **Pending: §8 step 5** (live dummy-load
 > family gate — skimmer decodes our own TX, wattmeter/duty check, SDC look)
-> **and step 6** (log-for-linux, its own repo). ⛔ No RTTY on-air before the
-> live gate passes with Richard present.
+> **and step 6** (log-for-linux, its own repo). (The "no RTTY on-air before
+> the live gate" tripwire was lifted the same evening — Richard worked the
+> contest live himself; the remainder is now parked, see the block above.)
 >
 > **⛔ LIVE-CAUGHT LESSON (2026-08-15 evening, first QSO attempts): the HPSDR
 > wire IQ convention is spectrally INVERTED — in BOTH directions.** The DDC

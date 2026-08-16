@@ -256,12 +256,13 @@ same way, and nothing on a protection path may ever read a smoothed value
 Fold in the "TX display averaging design" follow-up below — one ballistics
 design for the whole family, not two.
 
-**★ Other candidates (Richard picks):** **RTTY mode (zadání 2026-08-15
-— docs/RTTY-SCOPE.md, see the status entry below)**; P1 PureSignal
+**★ Other candidates (Richard picks):** P1 PureSignal
 milestone (multi-RX P1 link, RX3/RX4 feedback); 10E leftovers (pa_cal
 remaining bands ~32-34, digi TX meter live check); Square SDR bring-up;
 10E PS via Thetis sequencing (TX-DESIGN §9, risky). (TX EQ folded into
-the equalizer milestone above.)
+the equalizer milestone above. RTTY leftovers DEFERRED 2026-08-16 —
+parked in docs/RTTY-SCOPE.md, see the status entry below; needs an RTTY
+contest window to verify, none coming for a long while.)
 Tonight (2026-07-13): audio-chain tuning with the Heil PR 40 + SPL
 Channel One mk3 (baseline: tube/EQ/de-esser out, gain ~55-60 dB,
 judged via SDRFL_TX_DUMP, NOT the 705 bench), plus the TX config
@@ -274,8 +275,10 @@ clock-drift smoothing, absolute dBm cal, nonlinear wattmeter cal
 tap, SaveCorr per band, per-band ps_att), TX display averaging design
 (→ promoted, folded into the RX S-meter ballistics zadání above).
 
-**★ RTTY mode — IMPLEMENTED offline 2026-08-15 (same day as the zadání;
-§7 A-E confirmed by Richard; scope §8 steps 1-4 done, LIVE GATE PENDING).**
+**★ RTTY mode — IMPLEMENTED + live-proven 2026-08-15 (same day as the
+zadání; §7 A-E confirmed by Richard; scope §8 steps 1-4 done). ⏸ The
+remainder is DEFERRED 2026-08-16 (Richard) — parked in the RTTY-SCOPE.md
+status block, revisit before the next RTTY contest.**
 `docs/RTTY-SCOPE.md`: a real new mode (`DEMOD_RTTY = 12`, mapped to DIGL
 at every WDSP boundary — SetRXAMode in demod.c, tx_passband/tx_dsp in
 tx_run) with its own `FILT_RTTY` set (default 500), and the direct-FSK
@@ -302,10 +305,13 @@ conjugates the RX stream), DUC masked (WDSP voice bakes it in, CW Q=0
 immune); our direct FSK went out mark-LOW = reversed = unreadable
 (proven off-air via a KiwiSDR recording + dual-polarity slicer). Fix
 5e7bbcb: tx_run conjugates at the wire boundary; ANY future direct-IQ
-synthesis (PSK…) must conjugate there too. IC-705 decodes us since. REMAINS: scope §8 step 5 = live dummy-load family gate
-(skimmer decodes our own TX off the TCI IQ tap, wattmeter/duty check,
-SDC compatibility look — with Richard at the radio), then step 6 =
-log-for-linux transport (its repo, scope §4). RX decoding stays in
+synthesis (PSK…) must conjugate there too. IC-705 decodes us since.
+⏸ DEFERRED (all of it, Richard 2026-08-16): the parked list lives in the
+RTTY-SCOPE.md status block — step 5 remainder (decode loop with both new
+binaries sdr cc470af + skimmer 01c72c8, wattmeter/duty at 5-10 W, SDC
+look), the dial=CENTRE vs dial=MARK decision, and step 6 (log-for-linux
+live pass + on-air macro QSO). No RTTY contest soon = no way to verify;
+not a milestone candidate until one approaches. RX decoding stays in
 skimmer-for-linux by design.
 
 ## Approach (decided with Richard)
