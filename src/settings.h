@@ -39,6 +39,7 @@ typedef struct {
   int       auto_level;/* auto-track the noise floor on the dB axis   */
   int       avg_spec;  /* spectrum-trace averaging time constant (ms) */
   int       avg_wf;    /* waterfall averaging time constant (ms)      */
+  int       avg_smeter;/* S-meter ballistics time constant (ms)       */
   int       palette;   /* colour scheme index (waterfall + spectrum)  */
   char      region[8]; /* band-plan region key: "R1" / "R2" / "R3"    */
   char      country[8];/* band-plan national overlay: "" / "CZ" / "US"*/

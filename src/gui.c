@@ -128,6 +128,12 @@ typedef struct {
   int         wf_ema_w;
   int         avg_spec_ms;   /* spectrum-trace averaging time constant (ms)        */
   int         avg_wf_ms;     /* waterfall averaging time constant (ms)             */
+  int         avg_smeter_ms; /* S-meter ballistics time constant (ms)              */
+  double      smeter_ema;    /* displayed S-meter level (dBm), display-side only   */
+  int         smeter_ema_ok;
+  gint64      smeter_prev_us;/* wall-clock EMA — the draw cadence varies           */
+  double      smeter_txt_dbm;/* numeric readout, latched slower than the bar       */
+  gint64      smeter_txt_us;
   int         palette;       /* colour-scheme index (waterfall + spectrum)         */
 
   Waterfall  *wf;
@@ -772,7 +778,30 @@ static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
  * server (network). Fill is coloured by the active palette (like spectrum/wf). */
 static void draw_s_meter(cairo_t *cr, App *app, int w) {
   const double DBM_MIN = -121.0, DBM_S9 = -73.0, DBM_MAX = -13.0;   /* S1 … S9+60 */
-  double dbm = app->frame.s_dbm;
+  /* Ballistics, display-side only (both sources — WDSP S_PK on the radio, rxlvl
+   * on the network head — are raw and flicker at frame rate): the same EMA idiom
+   * as the spectrum trace, but on wall-clock dt since the draw cadence varies.
+   * A >1 s gap (TX over, mode switch) snaps instead of animating stale decay.
+   * TCI clients keep reading the raw demod_s_meter() untouched. */
+  gint64 now = g_get_monotonic_time();
+  double raw = app->frame.s_dbm;
+  if (!app->smeter_ema_ok || now - app->smeter_prev_us > G_USEC_PER_SEC ||
+      app->avg_smeter_ms <= 0) {
+    app->smeter_ema = raw; app->smeter_ema_ok = 1;
+    app->smeter_txt_us = 0;
+  } else {
+    double f = 1.0 - exp((double)(app->smeter_prev_us - now) / 1000.0
+                         / (double)app->avg_smeter_ms);
+    app->smeter_ema += f * (raw - app->smeter_ema);
+  }
+  app->smeter_prev_us = now;
+  /* The number is latched slower than the bar — a readout changing every frame
+   * is unreadable even when the bar is calm. */
+  if (now >= app->smeter_txt_us) {
+    app->smeter_txt_dbm = app->smeter_ema;
+    app->smeter_txt_us  = now + 250000;
+  }
+  double dbm = app->smeter_ema;
   if (dbm < DBM_MIN) { dbm = DBM_MIN; }
   double span = DBM_MAX - DBM_MIN;
   double bw = METER_BW, bh = METER_BH, bx = w - bw - METER_RM, by = METER_BY;
@@ -814,7 +843,7 @@ static void draw_s_meter(cairo_t *cr, App *app, int w) {
   }
 
   char lbl[32];
-  double d = app->frame.s_dbm;
+  double d = app->smeter_txt_dbm;
   if (d <= DBM_S9) {
     int s = (int)lround((d + 127.0) / 6.0); if (s < 1) { s = 1; }
     snprintf(lbl, sizeof lbl, "S%d   %.0f dBm", s, d);
@@ -1936,6 +1965,7 @@ static void app_to_settings(const App *app, Settings *s) {
   s->auto_level = app->auto_level;
   s->avg_spec   = app->avg_spec_ms;
   s->avg_wf     = app->avg_wf_ms;
+  s->avg_smeter = app->avg_smeter_ms;
   s->palette    = app->palette;
   s->band_edges = app->show_band_edges;
   s->show_spots = app->show_spots;
@@ -3267,6 +3297,11 @@ static void on_pref_avg_wf(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   app->avg_wf_ms = (int)adw_spin_row_get_value(r);
   schedule_save(app);
 }
+static void on_pref_avg_smeter(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->avg_smeter_ms = (int)adw_spin_row_get_value(r);
+  schedule_save(app);
+}
 static void on_pref_palette(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   (void)ps; App *app = (App *)data;
   app->palette = (int)adw_combo_row_get_selected(r);
@@ -4209,6 +4244,8 @@ static AdwDialog *build_prefs(App *app) {
       0, 1000, app->avg_spec_ms, G_CALLBACK(on_pref_avg_spec), app));
   adw_preferences_group_add(g, pref_spin("Waterfall", "ms · waterfall smoothing",
       0, 1000, app->avg_wf_ms, G_CALLBACK(on_pref_avg_wf), app));
+  adw_preferences_group_add(g, pref_spin("S-meter", "ms · bar ballistics (readout updates 4×/s)",
+      0, 1000, app->avg_smeter_ms, G_CALLBACK(on_pref_avg_smeter), app));
   adw_preferences_page_add(p, g);
 
   /* Colour scheme — one palette drives both the waterfall and the spectrum. */
@@ -4537,6 +4574,7 @@ static void start_radio(App *app) {
                   .pan_high = PAN_HIGH_DEFAULT, .pan_low = PAN_LOW_DEFAULT,
                   .db_grid = 1, .db_scale = 1, .freq_grid = 1, .freq_scale = 1,
                   .filter_wf = 1, .filter_op = 60, .avg_spec = -1, .avg_wf = -1,
+                  .avg_smeter = -1,
                   .palette = 0, .band_edges = 1, .show_spots = 1, .spot_ttl = 10,
                   .tx_pa = 0, .tx_ant = 0, .tx_drive = 25.0, .tx_digi_max = 100.0,
                   .tx_tune = 10.0, .tx_swr = 3.0,
@@ -4736,6 +4774,7 @@ static void start_radio(App *app) {
   app->auto_level = st.auto_level ? 1 : 0;
   app->avg_spec_ms = (st.avg_spec < 0) ? 150 : (st.avg_spec > 2000 ? 2000 : st.avg_spec);
   app->avg_wf_ms   = (st.avg_wf   < 0) ?  40 : (st.avg_wf   > 2000 ? 2000 : st.avg_wf);
+  app->avg_smeter_ms = (st.avg_smeter < 0) ? 330 : (st.avg_smeter > 2000 ? 2000 : st.avg_smeter);
   app->palette = (st.palette < 0 || st.palette >= waterfall_palette_count()) ? 0 : st.palette;
   waterfall_set_palette(app->wf, app->palette);   /* app->wf created in main() before activation */
   waterfall_set_palette(app->tx_wf, app->palette);

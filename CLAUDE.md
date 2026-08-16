@@ -255,6 +255,17 @@ same way, and nothing on a protection path may ever read a smoothed value
 (cf. the TX rule: SWR protection keeps acting on the raw fast numbers).
 Fold in the "TX display averaging design" follow-up below — one ballistics
 design for the whole family, not two.
+**IMPLEMENTED 2026-08-16 (same day; Richard's direction: "average it like
+the spectrum"), LIVE LOOK PENDING.** Display-side only, in `draw_s_meter()`:
+a wall-clock dt EMA (the family idiom = `ema_factor_ms`-style, but on
+monotonic time since the draw cadence varies), source stays `RXA_S_PK`
+(calibration unchanged vs today; the network head's `rxlvl` is smoothed
+identically at the same spot), a >1 s gap (TX over) snaps instead of
+animating stale decay, and the numeric readout is latched at 4×/s while
+the bar runs full rate. New Averaging pref "S-meter" (ms, live, persisted
+as `avg_smeter`), default 330 ms. TCI keeps reading the raw
+`demod_s_meter()`. The TX-trace per-mode averaging TODO stays open — same
+idiom when it's designed.
 
 **★ Other candidates (Richard picks):** P1 PureSignal
 milestone (multi-RX P1 link, RX3/RX4 feedback); 10E leftovers (pa_cal

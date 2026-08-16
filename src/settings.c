@@ -76,6 +76,8 @@ int settings_load(Settings *s) {
       s->avg_spec = g_key_file_get_integer(kf, GROUP_DISPLAY, "avg_spec", NULL);
     if (g_key_file_has_key(kf, GROUP_DISPLAY, "avg_wf", NULL))
       s->avg_wf = g_key_file_get_integer(kf, GROUP_DISPLAY, "avg_wf", NULL);
+    if (g_key_file_has_key(kf, GROUP_DISPLAY, "avg_smeter", NULL))
+      s->avg_smeter = g_key_file_get_integer(kf, GROUP_DISPLAY, "avg_smeter", NULL);
     if (g_key_file_has_key(kf, GROUP_DISPLAY, "palette", NULL))
       s->palette = g_key_file_get_integer(kf, GROUP_DISPLAY, "palette", NULL);
     if (g_key_file_has_key(kf, GROUP_DISPLAY, "band_edges", NULL))
@@ -307,6 +309,7 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_DISPLAY, "auto_level", s->auto_level);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "avg_spec",   s->avg_spec);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "avg_wf",     s->avg_wf);
+  g_key_file_set_integer(kf, GROUP_DISPLAY, "avg_smeter", s->avg_smeter);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "palette",    s->palette);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "band_edges", s->band_edges);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "spots",      s->show_spots);
