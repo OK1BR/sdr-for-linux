@@ -487,6 +487,15 @@ What landed (⚠ = regression tripwire — do not undo casually):
   depth", default 10 dB — a false trigger ducks instead of amputating; 20 =
   piHPSDR hard gate). Both offline-gated in `sdrfl-txdsp-test` (depth-10 cut
   = −10.0 dB; +20 dB mic gain keeps a −46 dBFS raw / −26 meter tone OPEN).
+  ⛔ **DEXP setters are NOT no-ops on unchanged values** (unlike TXA setters):
+  `SetDEXPAttackThreshold`/`SetDEXPExpansionRatio` decalc+calc — detector → 0,
+  state → LOW. Re-pushing them from the ~20 Hz gate slot chopped **35 % of all
+  speech ~9 dB** (the issue-#1 / "gate deforms audio" bug, present ever since
+  the AMSQ→DEXP move; proven and fix-validated by replaying Richard's recorded
+  mic through the real chain — `SDRFL_TX_DUMP` + scratch `gate_replay`).
+  `tx.c gate_apply()` therefore applies ON CHANGE ONLY (cache invalidated at
+  session create), and `sdrfl-txdsp-test` carries a slot-style re-apply
+  transparency tripwire. Any future DEXP knob MUST go through the same cache.
 - **Per-mode TX passband** — `tx_passband()`: ⚠ in WDSP TXA the SIGN of the
   bandpass is the ONLY sideband selector for SSB (SetTXAMode just switches
   AM/FM modulators). LSB = (−high,−low). The fixed positive F6a passband was

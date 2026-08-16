@@ -36,6 +36,18 @@ static double    t_gate_db;       /* threshold, OPERATOR scale (post-mic-gain dB
 static double    t_gate_depth_db = 20.0;   /* below-threshold attenuation           */
 static double    t_mic_gain_db;   /* mirrors SetTXAPanelGain1, for the gate rescale */
 
+/* Last values actually pushed into the DEXP. ⛔ DEXP setters are NOT no-ops on
+ * unchanged values (unlike the TXA setters): SetDEXPAttackThreshold and
+ * SetDEXPExpansionRatio run decalc+calc_dexp, which ZEROES the detector EMA
+ * and forces the state machine to LOW (= full attenuation, then a fresh
+ * attack ramp). tx_run re-applies the gate every ~50 ms slot, so pushing
+ * unconditionally chopped ALL speech ~9 dB at ~20 Hz — the "gate deforms
+ * audio" bug (issue #1, Richard's contest complaint; proven by replaying the
+ * recorded mic with periodic setters: 35 % of speech ducked vs 1.5 % with a
+ * single apply). Apply on change ONLY. */
+static double    t_ap_ratio = -1.0, t_ap_thresh = -1.0;
+static int       t_ap_run = -1;
+
 /* Push the stored gate state into the DEXP (call with t_lock held, t_ready).
  * The DEXP runs on the RAW mic input (pre TXA panel), but the operator sets
  * the threshold in the dBFS he can SEE — the Mic meter, which WDSP taps AFTER
@@ -44,10 +56,13 @@ static double    t_mic_gain_db;   /* mirrors SetTXAPanelGain1, for the gate resc
  * semantics (TX-DESIGN §8 "operator threshold (post-mic-gain dBFS)"), which
  * silently changed when the gate moved out of TXA into the DEXP. */
 static void gate_apply(void) {
-  double depth = t_gate_depth_db < 0.0 ? 0.0 : t_gate_depth_db;
-  SetDEXPExpansionRatio(0, pow(10.0, 0.05 * depth));
-  SetDEXPAttackThreshold(0, pow(10.0, 0.05 * (t_gate_db - t_mic_gain_db)));
-  SetDEXPRun(0, t_gate_on ? 1 : 0);
+  double depth  = t_gate_depth_db < 0.0 ? 0.0 : t_gate_depth_db;
+  double ratio  = pow(10.0, 0.05 * depth);
+  double thresh = pow(10.0, 0.05 * (t_gate_db - t_mic_gain_db));
+  int    run    = t_gate_on ? 1 : 0;
+  if (ratio  != t_ap_ratio)  { SetDEXPExpansionRatio(0, ratio);   t_ap_ratio  = ratio; }
+  if (thresh != t_ap_thresh) { SetDEXPAttackThreshold(0, thresh); t_ap_thresh = thresh; }
+  if (run    != t_ap_run)    { SetDEXPRun(0, run);                t_ap_run    = run; }
 }
 
 int tx_dsp_create(int mode, double flo, double fhi, int p1, tx_iq_cb cb, void *user) {
@@ -122,6 +137,11 @@ int tx_dsp_create(int mode, double flo, double fhi, int p1, tx_iq_cb cb, void *u
     SetDEXPIOBuffers(0, t_mic, t_mic);
     SetDEXPRate(0, TX_IN_RATE);
   }
+  /* Both branches left the DEXP freshly (re)calculated — invalidate the
+   * apply-on-change cache so the first gate_apply() of the session pushes the
+   * operator state once (one benign reset at session start, none after). */
+  t_ap_ratio = t_ap_thresh = -1.0;
+  t_ap_run = -1;
   t_ready = 1;
   g_mutex_unlock(&t_lock);
   return 0;

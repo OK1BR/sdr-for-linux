@@ -58,6 +58,8 @@ static double g_gate_db = -35.0;
 static double g_gate_depth = 20.0;   /* below-threshold cut, dB */
 static double g_mic_gain = 0.0;      /* panel gain — the gate threshold is
                                         operator-scale (post-gain dBFS) */
+static int    g_gate_reapply;     /* re-push the (unchanged) gate every block,
+                                     like the live tx_run slot does */
 
 /* Peak envelope sqrt(I²+Q²) over a window — for the ALC-ceiling check. */
 static double env_peak(const double *iq, int n) {
@@ -93,6 +95,11 @@ static int run_tone_p(int mode, int p1, double amp, int blocks, int comp,
   for (int b = 0; b < blocks; b++) {
     for (int i = 0; i < 512; i++) { mic[i] = (float)(amp * sin(ph)); ph += dph; }
     tx_dsp_feed_mic(mic, 512);
+    if (g_gate_reapply) {   /* the live gate-slot pattern: same values, ~20 Hz */
+      tx_dsp_set_mic_gain(g_mic_gain);
+      tx_dsp_set_gate_depth(g_gate_depth);
+      tx_dsp_set_gate(g_gate_on, g_gate_db);
+    }
   }
   int an = p1 ? 10000 : 40000, a0 = g_np - an;   /* settled tail, past transients */
   if (a0 < 0) { a0 = g_np / 2; an = g_np - a0; }
@@ -241,6 +248,22 @@ int main(void) {
     ok("threshold rescales with mic gain (gate stays open)",
        resc > open_ * 5.0 && resc < open_ * 15.0, det);
     g_mic_gain = 0.0;
+    /* ⛔ Regression tripwire for the "gate deforms audio" bug: DEXP setters
+     * decalc+calc on EVERY call (state → LOW, detector → 0), so re-pushing
+     * unchanged values from the ~20 Hz gate slot chopped all speech ~9 dB.
+     * tx.c gate_apply must therefore apply on change only — with that, the
+     * live re-apply pattern is bit-transparent vs a single apply. */
+    double rp_, rm, rj;
+    run_tone(TXTEST_USB, 0.5, 90, 0, 0.0, &sp_, &sm, &sj, &e);   /* single apply */
+    double once = sp_ > sm ? sp_ : sm;
+    g_gate_reapply = 1;
+    run_tone(TXTEST_USB, 0.5, 90, 0, 0.0, &rp_, &rm, &rj, &e);
+    g_gate_reapply = 0;
+    double reap = rp_ > rm ? rp_ : rm;
+    snprintf(det, sizeof det, "single=%.5f reapplied=%.5f (ratio %.4f)",
+             once, reap, once > 0 ? reap / once : 0.0);
+    ok("slot-style re-apply is transparent (no state reset)",
+       fabs(reap / once - 1.0) < 0.01, det);
     g_gate_on = 0;
   }
 
