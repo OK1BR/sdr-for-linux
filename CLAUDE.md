@@ -268,6 +268,25 @@ as `avg_smeter`), default 330 ms. TCI keeps reading the raw
 `demod_s_meter()`. The TX-trace per-mode averaging TODO stays open — same
 idiom when it's designed.
 
+**★ Noise-gate saga — SOLVED + LIVE-VERIFIED 2026-08-16 (same day as the
+S-meter work; Richard: "ted je to ciste").** Two layers, both landed:
+(1) redesign 4dc9553 — one dBFS scale (threshold = Mic-METER dBFS;
+`tx.c gate_apply()` rescales the DEXP trigger by mic gain, restoring the
+AMSQ-era semantics), threshold marker on the HUD Mic bar (white=open,
+red=biting), "Gate depth" knob (default 10 dB, was hardwired 20);
+(2) ⛔ **the actual deformation bug f510fb5 — DEXP setters are NOT no-ops
+on unchanged values**: they decalc+calc (detector→0, state→LOW), and the
+~20 Hz gate slot re-pushed them → the gate reset 20×/s and chopped 35 %
+of ALL speech ~9 dB ever since the AMSQ→DEXP move (this was also the
+whole of issue #1's "monitor noisy/distorted when gate on"). Fix =
+apply-on-change cache; regression tripwire in `sdrfl-txdsp-test` (24/24).
+Proof technique worth reusing: record the real mic via `SDRFL_TX_DUMP`,
+replay it offline through the real chain (scratch `gate_replay.c`), diff
+gate-on/off envelopes per 10 ms window. Details: TX-DESIGN §8. Same day:
+TX Mic/Lev/ALC meter got the S-meter ballistics idiom (eadab5f).
+Rejected on measurement: 1-2 kHz side-chain detector filter — Richard's
+quiet speech loses more there (~20 dB) than his fan noise (14.7 dB).
+
 **★ Other candidates (Richard picks):** P1 PureSignal
 milestone (multi-RX P1 link, RX3/RX4 feedback); 10E leftovers (pa_cal
 remaining bands ~32-34, digi TX meter live check); Square SDR bring-up;
