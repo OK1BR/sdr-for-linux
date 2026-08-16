@@ -62,7 +62,11 @@ void tx_dsp_set_compressor(int on, double gain_db);
  * gaps. thresh_db is on the post-mic-gain signal (dBFS); below it the mic drops
  * 20 dB (piHPSDR DEXP expansion default), it is not a hard mute.
  */
+/* thresh_db is in Mic-METER dBFS (post-mic-gain — what the TX HUD bar shows);
+ * the engine rescales the DEXP trigger by the current mic gain internally. */
 void tx_dsp_set_gate(int on, double thresh_db);
+/* Below-threshold attenuation in dB (piHPSDR fixed 20; our default 10). */
+void tx_dsp_set_gate_depth(double depth_db);
 
 /*
  * The WDSP TX channel's mic input rate (Hz). The mic capture must deliver samples

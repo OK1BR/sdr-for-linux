@@ -31,6 +31,24 @@ static int       t_err;           /* last non-zero fexchange0 error             
 static long      t_ferr;          /* count of fexchange0 calls with error            */
 static long      t_blocks;        /* fexchange0 calls                                */
 static int       t_dexp_up;       /* create_dexp ran (WDSP dexp id 0 is per-process) */
+static int       t_gate_on;       /* stored gate state — see gate_apply()           */
+static double    t_gate_db;       /* threshold, OPERATOR scale (post-mic-gain dBFS) */
+static double    t_gate_depth_db = 20.0;   /* below-threshold attenuation           */
+static double    t_mic_gain_db;   /* mirrors SetTXAPanelGain1, for the gate rescale */
+
+/* Push the stored gate state into the DEXP (call with t_lock held, t_ready).
+ * The DEXP runs on the RAW mic input (pre TXA panel), but the operator sets
+ * the threshold in the dBFS he can SEE — the Mic meter, which WDSP taps AFTER
+ * the panel gain (TXA.c xtxa: panel → micmeter). Rescale by the mic gain so
+ * the knob and the bar agree; this also restores the documented AMSQ-era
+ * semantics (TX-DESIGN §8 "operator threshold (post-mic-gain dBFS)"), which
+ * silently changed when the gate moved out of TXA into the DEXP. */
+static void gate_apply(void) {
+  double depth = t_gate_depth_db < 0.0 ? 0.0 : t_gate_depth_db;
+  SetDEXPExpansionRatio(0, pow(10.0, 0.05 * depth));
+  SetDEXPAttackThreshold(0, pow(10.0, 0.05 * (t_gate_db - t_mic_gain_db)));
+  SetDEXPRun(0, t_gate_on ? 1 : 0);
+}
 
 int tx_dsp_create(int mode, double flo, double fhi, int p1, tx_iq_cb cb, void *user) {
   /* Rate chains verbatim piHPSDR transmitter.c:987-1010:
@@ -78,8 +96,10 @@ int tx_dsp_create(int mode, double flo, double fhi, int p1, tx_iq_cb cb, void *u
    * site). A true downward expander (attack 25 ms / release 100 ms / HOLD
    * 800 ms, hysteresis 0.75 ≈ 2.5 dB): unlike the TXA AMSQ squelch it used to
    * be (25 ms max tail, 0.9 dB hysteresis) it cannot chatter room noise onto
-   * the air. It runs before the TXA panel, so the trigger threshold is dBFS
-   * at the MIC INPUT (pre mic-gain). Buffers are interleaved complex (Q=0). */
+   * the air. It runs before the TXA panel; gate_apply() rescales the operator
+   * threshold by the mic gain so it reads in Mic-METER dBFS, and sets the
+   * operator depth (create's 20 dB is just the pre-first-apply state).
+   * Buffers are interleaved complex (Q=0). */
   if (!t_dexp_up) {
     create_dexp(0,                /* dexp id 0 (piHPSDR uses the same)          */
                 0,                /* off until tx_dsp_set_gate                  */
@@ -166,19 +186,29 @@ void tx_dsp_get_meters(double *mic_pk_db, double *alc_gain_db, double *lvlr_gain
 
 void tx_dsp_set_mic_gain(double db) {
   g_mutex_lock(&t_lock);
-  if (t_ready) { SetTXAPanelGain1(t_id, pow(10.0, 0.05 * db)); }
+  if (t_ready) {
+    SetTXAPanelGain1(t_id, pow(10.0, 0.05 * db));
+    t_mic_gain_db = db;
+    gate_apply();   /* threshold is operator-scale → re-anchor to the new gain */
+  }
   g_mutex_unlock(&t_lock);
 }
 
 void tx_dsp_set_gate(int on, double thresh_db) {
   g_mutex_lock(&t_lock);
   if (t_ready) {
-    /* DEXP trigger: linear amplitude at the mic input (PRE mic-gain — the
-     * expander runs before the TXA panel). Depth stays the fixed 20 dB
-     * expansion ratio from create (piHPSDR default dexp_exp=20); gaps drop
-     * 20 dB after the 800 ms hold, speech opens in 25 ms. */
-    SetDEXPAttackThreshold(0, pow(10.0, 0.05 * thresh_db));
-    SetDEXPRun(0, on ? 1 : 0);
+    t_gate_on = on ? 1 : 0;
+    t_gate_db = thresh_db;
+    gate_apply();
+  }
+  g_mutex_unlock(&t_lock);
+}
+
+void tx_dsp_set_gate_depth(double depth_db) {
+  g_mutex_lock(&t_lock);
+  if (t_ready) {
+    t_gate_depth_db = depth_db;
+    gate_apply();
   }
   g_mutex_unlock(&t_lock);
 }

@@ -259,6 +259,7 @@ typedef struct {
   double      comp_db;
   int         gate_on;
   double      gate_db;
+  double      gate_depth_db;
   int         cw_wpm;        /* CW keyer speed, WPM (persisted, F6d-1c)             */
   int         cw_pitch;      /* CW sidetone pitch, Hz (persisted)                   */
   double      cw_st_db;      /* CW sidetone level, dBFS (persisted)                 */
@@ -899,6 +900,19 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
   cairo_set_source_rgba(cr, 0.55, 0.95, 0.55, 0.75);          /* target-zone edge (-6 dB) */
   cairo_rectangle(cr, zx, by, 1.0, h_mic); cairo_fill(cr);
 
+  /* Noise-gate threshold marker — SAME dBFS scale as this bar (tx.c rescales
+   * the DEXP trigger by the mic gain, so what you see is what the gate
+   * compares against). White = open; red = the gate is biting right now.
+   * Set it visually: marker above the noise floor, below the quietest speech. */
+  if (app->gate_on) {
+    double th = app->gate_db != 0.0 ? app->gate_db : -45.0;
+    double tc = th < MIC_MIN ? MIC_MIN : (th > MIC_MAX ? MIC_MAX : th);
+    double gx = bx + (tc - MIC_MIN) / (MIC_MAX - MIC_MIN) * bw;
+    if (ts->mic_pk < th) { cairo_set_source_rgba(cr, 0.95, 0.25, 0.20, 0.95); }
+    else                 { cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.85); }
+    cairo_rectangle(cr, gx - 0.5, by - 2.0, 2.0, h_mic + 4.0); cairo_fill(cr);
+  }
+
   /* Leveler makeup gain (dB, green) — what PROC is ADDING right now (0..+8).
    * Riding high in speech gaps = the noise pump the gate is there to stop. */
   double ly = by + h_mic + gap;
@@ -1104,6 +1118,10 @@ static void draw_tx_digi_meter(cairo_t *cr, App *app, int w, const tx_run_status
 #define MICG_DB_MAX   30.0
 #define GATE_DB_MIN  (-60.0)   /* DEXP threshold, dBFS (−45 = validated default) */
 #define GATE_DB_MAX  (-10.0)
+#define GATE_DEPTH_MIN   3.0   /* DEXP below-threshold attenuation, dB           */
+#define GATE_DEPTH_MAX  30.0
+#define GATE_DEPTH_DFLT 10.0   /* gentler than piHPSDR's fixed 20 dB — a false
+                                  trigger ducks speech instead of amputating it  */
 #define GATE_DB_DFLT (-45.0)
 #define COMP_DB_MIN    0.0     /* PROC compression, dB (piHPSDR range)           */
 #define COMP_DB_MAX   20.0
@@ -1927,6 +1945,7 @@ static void app_to_settings(const App *app, Settings *s) {
   s->tx_comp_db = app->comp_db;
   s->tx_gate    = app->gate_on;
   s->tx_gate_db = app->gate_db;
+  s->tx_gate_depth = app->gate_depth_db;
   s->cw_wpm     = app->cw_wpm;
   s->cw_pitch   = app->cw_pitch;
   s->cw_st_db   = app->cw_st_db;
@@ -2122,6 +2141,7 @@ static void tx_push_cfg(App *app) {
   c.comp_db        = app->comp_db;
   c.gate_on        = app->gate_on;
   c.gate_db        = app->gate_db;
+  c.gate_depth_db  = app->gate_depth_db;
   for (int i = 0; i < 11; i++) { c.pa_trim[i] = app->pa_trim[i]; }
   tx_run_set_cfg(&c);
 }
@@ -3844,6 +3864,11 @@ static void on_pref_gate_db(GtkRange *r, gpointer data) {
   app->gate_db = gtk_range_get_value(r);
   tx_push_cfg(app); schedule_save(app);
 }
+static void on_pref_gate_depth(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  app->gate_depth_db = gtk_range_get_value(r);
+  tx_push_cfg(app); schedule_save(app);
+}
 static void on_pref_comp(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
   (void)ps; App *app = (App *)data;
   app->comp_on = adw_switch_row_get_active(r) ? 1 : 0;
@@ -4195,8 +4220,12 @@ static AdwDialog *build_prefs(App *app) {
       "closes speech gaps below the threshold · live",
       app->gate_on, G_CALLBACK(on_pref_gate), app));
   adw_preferences_group_add(g, pref_slider("Gate threshold",
-      "dBFS · keep BELOW your quietest speech; −45 validated (−30 chops syllables) · live",
+      "dBFS as on the Mic bar (marker shows it) · keep BELOW your quietest speech; "
+      "−45 validated (−30 chops syllables) · live",
       GATE_DB_MIN, GATE_DB_MAX, app->gate_db, "%.0f dB", G_CALLBACK(on_pref_gate_db), app));
+  adw_preferences_group_add(g, pref_slider("Gate depth",
+      "dB cut below the threshold · 10 ducks room noise gently, 20 = hard gate (piHPSDR) · live",
+      GATE_DEPTH_MIN, GATE_DEPTH_MAX, app->gate_depth_db, "%.0f dB", G_CALLBACK(on_pref_gate_depth), app));
   adw_preferences_group_add(g, pref_switch("Speech processor (PROC)",
       "WDSP COMP + auto-leveler (CESSB above 5.5 dB) — the chain's only makeup gain · live",
       app->comp_on, G_CALLBACK(on_pref_comp), app));
@@ -4584,6 +4613,7 @@ static void start_radio(App *app) {
                    * mic, PROC off, gate ON at −45 dBFS. */
                   .mic_gain = 0.0, .tx_comp = 0, .tx_comp_db = COMP_DB_DFLT,
                   .tx_gate = 1, .tx_gate_db = GATE_DB_DFLT,
+                  .tx_gate_depth = GATE_DEPTH_DFLT,
                   /* PS defaults: continuous automode + Thetis-style Auto
                    * attenuate on (Richard's call 2026-07-11 v2, after the
                    * three-way audit; piHPSDR variant = tag ps-auto-att-pihpsdr).
@@ -4670,6 +4700,8 @@ static void start_radio(App *app) {
   app->comp_db       = st.tx_comp_db < COMP_DB_MIN ? COMP_DB_MIN : (st.tx_comp_db > COMP_DB_MAX ? COMP_DB_MAX : st.tx_comp_db);
   app->gate_on       = st.tx_gate ? 1 : 0;
   app->gate_db       = st.tx_gate_db < GATE_DB_MIN ? GATE_DB_MIN : (st.tx_gate_db > GATE_DB_MAX ? GATE_DB_MAX : st.tx_gate_db);
+  app->gate_depth_db = (st.tx_gate_depth < GATE_DEPTH_MIN || st.tx_gate_depth > GATE_DEPTH_MAX)
+                       ? GATE_DEPTH_DFLT : st.tx_gate_depth;   /* 0/unset → default */
   app->cw_wpm        = st.cw_wpm   < 5   ? 5   : (st.cw_wpm   > 60   ? 60   : st.cw_wpm);
   app->cw_pitch      = st.cw_pitch < 200 ? 200 : (st.cw_pitch > 1200 ? 1200 : st.cw_pitch);
   app->cw_st_db      = st.cw_st_db < CW_ST_DB_MIN ? CW_ST_DB_MIN : (st.cw_st_db > CW_ST_DB_MAX ? CW_ST_DB_MAX : st.cw_st_db);

@@ -478,6 +478,15 @@ What landed (⚠ = regression tripwire — do not undo casually):
   BEFORE the leveler in the TXA chain — that ordering is what stops the leveler
   pumping room noise up in speech gaps. Gate depth is verified offline
   (−46 dBFS tone drops exactly 20.0 dB; above-threshold passes unity).
+  *2026-08-16 update:* the gate is now the WDSP **DEXP pre-TXA** (piHPSDR
+  create args 1:1) — still ahead of the leveler, the anti-pump ordering holds.
+  The DEXP move had silently changed the threshold to PRE-mic-gain scale;
+  `tx.c gate_apply()` restores the documented post-mic-gain semantics (the
+  knob, the HUD Mic bar and its new gate marker share one scale, re-anchored
+  on every mic-gain change), and the depth became an operator knob ("Gate
+  depth", default 10 dB — a false trigger ducks instead of amputating; 20 =
+  piHPSDR hard gate). Both offline-gated in `sdrfl-txdsp-test` (depth-10 cut
+  = −10.0 dB; +20 dB mic gain keeps a −46 dBFS raw / −26 meter tone OPEN).
 - **Per-mode TX passband** — `tx_passband()`: ⚠ in WDSP TXA the SIGN of the
   bandpass is the ONLY sideband selector for SSB (SetTXAMode just switches
   AM/FM modulators). LSB = (−high,−low). The fixed positive F6a passband was

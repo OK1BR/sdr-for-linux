@@ -56,8 +56,9 @@ typedef struct {
   int         comp_on;         /* PROC: WDSP COMP + auto-leveler (+CESSB >5.5 dB)  */
   double      comp_db;         /* PROC compression, 0-20 dB                        */
   int         gate_on;         /* DEXP noise gate                                  */
-  double      gate_db;         /* gate threshold dBFS (0 = default −45, the
-                                  live-validated value; −30 provably chopped)      */
+  double      gate_db;         /* gate threshold, Mic-METER dBFS (0 = default −45,
+                                  the live-validated value; −30 provably chopped)  */
+  double      gate_depth_db;   /* below-threshold attenuation dB (0 = default 10)  */
 } tx_run_cfg;
 
 /* Live status for the meter / UI (thread-safe snapshot). */

@@ -118,6 +118,7 @@ typedef struct {
   double comp_db;
   int    gate_on;
   double gate_db;
+  double gate_depth_db;
 } tx_cfg_i;
 
 static GThread          *s_thread;
@@ -420,10 +421,13 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
      * never pass through the mic path. Gate default −45 dBFS is the
      * live-validated floor (room noise −50..−57, softest speech −45..−40;
      * −30 provably chopped 30 % of speech time — keep the threshold BELOW
-     * the quietest speech, not between speech RMS and peaks). */
+     * the quietest speech, not between speech RMS and peaks). The threshold
+     * is Mic-METER dBFS (tx.c rescales the DEXP trigger by the mic gain, so
+     * the knob, the HUD bar and its gate marker all share one scale). */
     int voice_mic = is_voice && !g_atomic_int_get(&s_ext_src);
     tx_dsp_set_mic_gain(voice_mic ? cfg.mic_gain_db : 0.0);
     tx_dsp_set_compressor(voice_mic && cfg.comp_on, cfg.comp_db);
+    tx_dsp_set_gate_depth(cfg.gate_depth_db > 0.0 ? cfg.gate_depth_db : 10.0);
     tx_dsp_set_gate(voice_mic && cfg.gate_on,
                     cfg.gate_db != 0.0 ? cfg.gate_db : -45.0);
     tx_dsp_set_mode(wmode, flo, fhi);
@@ -513,6 +517,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
       int voice_mic = is_voice && !g_atomic_int_get(&s_ext_src);
       tx_dsp_set_mic_gain(voice_mic ? cfg.mic_gain_db : 0.0);
       tx_dsp_set_compressor(voice_mic && cfg.comp_on, cfg.comp_db);
+      tx_dsp_set_gate_depth(cfg.gate_depth_db > 0.0 ? cfg.gate_depth_db : 10.0);
       tx_dsp_set_gate(voice_mic && cfg.gate_on,
                       cfg.gate_db != 0.0 ? cfg.gate_db : -45.0);
     }
@@ -995,6 +1000,7 @@ void tx_run_set_cfg(const tx_run_cfg *cfg) {
   s_cfg.comp_db        = cfg->comp_db;
   s_cfg.gate_on        = cfg->gate_on;
   s_cfg.gate_db        = cfg->gate_db;
+  s_cfg.gate_depth_db  = cfg->gate_depth_db;
   g_strlcpy(s_cfg.country_key, cfg->country_key ? cfg->country_key : "", sizeof s_cfg.country_key);
   for (int i = 0; i < 11; i++) { s_cfg.pa_trim[i] = cfg->pa_trim[i]; }
   g_mutex_unlock(&s_cfg_lock);

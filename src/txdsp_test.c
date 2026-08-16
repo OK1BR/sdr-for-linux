@@ -55,6 +55,9 @@ static double cmag_at(const double *iq, int n, double f, double fs) {
 }
 static int    g_gate_on;          /* mic noise gate for the next run_tone */
 static double g_gate_db = -35.0;
+static double g_gate_depth = 20.0;   /* below-threshold cut, dB */
+static double g_mic_gain = 0.0;      /* panel gain — the gate threshold is
+                                        operator-scale (post-gain dBFS) */
 
 /* Peak envelope sqrt(I²+Q²) over a window — for the ALC-ceiling check. */
 static double env_peak(const double *iq, int n) {
@@ -81,6 +84,8 @@ static int run_tone_p(int mode, int p1, double amp, int blocks, int comp,
   double fhi = (mode == TXTEST_LSB) ?  -150.0 : 2850.0;
   tx_dsp_create(mode, flo, fhi, p1, on_tx_iq, NULL);
   tx_dsp_set_compressor(comp, comp_db);
+  tx_dsp_set_mic_gain(g_mic_gain);
+  tx_dsp_set_gate_depth(g_gate_depth);
   tx_dsp_set_gate(g_gate_on, g_gate_db);
   tx_dsp_run(1);
   float mic[512];
@@ -215,6 +220,27 @@ int main(void) {
     double loud = sp_ > sm ? sp_ : sm;
     snprintf(det, sizeof det, "above thr: %.4f (expect ~0.45)", loud);
     ok("above threshold passes at unity", loud > 0.40, det);
+    /* Operator gate depth (SetDEXPExpansionRatio): 10 dB cut instead of the
+     * hard 20 — the shipped GUI default. Same -46 dBFS tone, expect ~-10 dB. */
+    g_gate_depth = 10.0;
+    run_tone(TXTEST_USB, 0.005, 90, 0, 0.0, &np_, &nm, &nj, &e);
+    double soft = np_ > nm ? np_ : nm;
+    snprintf(det, sizeof det, "below thr @depth 10: %.5f vs open %.5f (%.1f dB down)",
+             soft, open_, 20.0 * log10(soft / open_));
+    ok("gate depth 10 cuts ~10 dB (not 20)", soft < open_ * 0.45 && soft > open_ * 0.20, det);
+    g_gate_depth = 20.0;
+    /* Threshold is OPERATOR scale (post-mic-gain dBFS, = the Mic bar): with
+     * +20 dB mic gain the -46 dBFS raw tone reads -26 on the meter — ABOVE the
+     * -35 threshold — so the gate must stay open (output = open baseline x10).
+     * Under the old pre-gain semantics it would have closed (-46 < -35). */
+    g_mic_gain = 20.0;
+    run_tone(TXTEST_USB, 0.005, 90, 0, 0.0, &np_, &nm, &nj, &e);
+    double resc = np_ > nm ? np_ : nm;
+    snprintf(det, sizeof det, "gain +20: %.5f vs open %.5f (%.1fx, expect ~10x)",
+             resc, open_, resc / open_);
+    ok("threshold rescales with mic gain (gate stays open)",
+       resc > open_ * 5.0 && resc < open_ * 15.0, det);
+    g_mic_gain = 0.0;
     g_gate_on = 0;
   }
 
