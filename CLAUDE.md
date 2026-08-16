@@ -255,8 +255,9 @@ same way, and nothing on a protection path may ever read a smoothed value
 (cf. the TX rule: SWR protection keeps acting on the raw fast numbers).
 Fold in the "TX display averaging design" follow-up below — one ballistics
 design for the whole family, not two.
-**IMPLEMENTED 2026-08-16 (same day; Richard's direction: "average it like
-the spectrum"), LIVE LOOK PENDING.** Display-side only, in `draw_s_meter()`:
+**✅ DONE + LIVE-VERIFIED 2026-08-16 (same day; Richard's direction:
+"average it like the spectrum"; his live verdict on the G2E: moves slower
+and smoothly now).** Display-side only, in `draw_s_meter()`:
 a wall-clock dt EMA (the family idiom = `ema_factor_ms`-style, but on
 monotonic time since the draw cadence varies), source stays `RXA_S_PK`
 (calibration unchanged vs today; the network head's `rxlvl` is smoothed
