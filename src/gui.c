@@ -134,6 +134,10 @@ typedef struct {
   gint64      smeter_prev_us;/* wall-clock EMA — the draw cadence varies           */
   double      smeter_txt_dbm;/* numeric readout, latched slower than the bar       */
   gint64      smeter_txt_us;
+  double      txm_mic, txm_lvl, txm_alc;   /* TX meter ballistics (display-only;  */
+  gint64      txm_us;                      /*  instant attack, EMA decay)         */
+  double      txm_txt_mic, txm_txt_lvl, txm_txt_alc;   /* latched readout (4×/s)  */
+  gint64      txm_txt_us;
   int         palette;       /* colour-scheme index (waterfall + spectrum)         */
 
   Waterfall  *wf;
@@ -872,9 +876,32 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
   const double h_mic = 14.0, gap = 3.0, h_lvl = 7.0, h_alc = 7.0;
   double bw = METER_BW, bx = w - bw - METER_RM, by = METER_BY;
 
+  /* Family meter ballistics (the RX S-meter idiom, Richard's contest ask):
+   * deflection rises INSTANTLY — peaks must stay honest against the target
+   * zone — and falls with the S-meter averaging constant; the numeric readout
+   * latches at 4×/s. Display-only: the WDSP meters and every protection path
+   * stay raw. A >1 s gap (between overs) snaps instead of animating decay. */
+  gint64 now = g_get_monotonic_time();
+  double raw_mic = ts->mic_pk, raw_lvl = ts->lvlr_gain, raw_alc = -ts->alc_gain;
+  if (!app->txm_us || now - app->txm_us > G_USEC_PER_SEC || app->avg_smeter_ms <= 0) {
+    app->txm_mic = raw_mic; app->txm_lvl = raw_lvl; app->txm_alc = raw_alc;
+    app->txm_txt_us = 0;
+  } else {
+    double fd = 1.0 - exp((double)(app->txm_us - now) / 1000.0
+                          / (double)app->avg_smeter_ms);
+    app->txm_mic = raw_mic >= app->txm_mic ? raw_mic : app->txm_mic + fd * (raw_mic - app->txm_mic);
+    app->txm_lvl = raw_lvl >= app->txm_lvl ? raw_lvl : app->txm_lvl + fd * (raw_lvl - app->txm_lvl);
+    app->txm_alc = raw_alc >= app->txm_alc ? raw_alc : app->txm_alc + fd * (raw_alc - app->txm_alc);
+  }
+  app->txm_us = now;
+  if (now >= app->txm_txt_us) {
+    app->txm_txt_mic = app->txm_mic; app->txm_txt_lvl = app->txm_lvl;
+    app->txm_txt_alc = app->txm_alc; app->txm_txt_us = now + 250000;
+  }
+
   /* Mic input peak (dBFS): palette gradient fill, exactly like draw_s_meter, so the
    * drive bar tracks the colour scheme (Richard's ask). */
-  double mic = ts->mic_pk;
+  double mic = app->txm_mic;
   if (mic < MIC_MIN) { mic = MIC_MIN; } else if (mic > MIC_MAX) { mic = MIC_MAX; }
   double micfill = (mic - MIC_MIN) / (MIC_MAX - MIC_MIN) * bw;
   double zx = bx + (MIC_TGT - MIC_MIN) / (MIC_MAX - MIC_MIN) * bw;
@@ -908,15 +935,15 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
     double th = app->gate_db != 0.0 ? app->gate_db : -45.0;
     double tc = th < MIC_MIN ? MIC_MIN : (th > MIC_MAX ? MIC_MAX : th);
     double gx = bx + (tc - MIC_MIN) / (MIC_MAX - MIC_MIN) * bw;
-    if (ts->mic_pk < th) { cairo_set_source_rgba(cr, 0.95, 0.25, 0.20, 0.95); }
-    else                 { cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.85); }
+    if (app->txm_mic < th) { cairo_set_source_rgba(cr, 0.95, 0.25, 0.20, 0.95); }
+    else                   { cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.85); }
     cairo_rectangle(cr, gx - 0.5, by - 2.0, 2.0, h_mic + 4.0); cairo_fill(cr);
   }
 
   /* Leveler makeup gain (dB, green) — what PROC is ADDING right now (0..+8).
    * Riding high in speech gaps = the noise pump the gate is there to stop. */
   double ly = by + h_mic + gap;
-  double lvl = ts->lvlr_gain;
+  double lvl = app->txm_lvl;
   if (lvl < 0.0) { lvl = 0.0; } else if (lvl > LVL_FS) { lvl = LVL_FS; }
   cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.5);
   cairo_rectangle(cr, bx, ly, bw, h_lvl); cairo_fill(cr);
@@ -925,7 +952,7 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
 
   /* ALC gain reduction (dB, amber). alc_gain is ≤ 0; show its magnitude. */
   double ay = ly + h_lvl + gap;
-  double alc = -ts->alc_gain;
+  double alc = app->txm_alc;
   if (alc < 0.0) { alc = 0.0; } else if (alc > ALC_FS) { alc = ALC_FS; }
   cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.5);
   cairo_rectangle(cr, bx, ay, bw, h_alc); cairo_fill(cr);
@@ -940,12 +967,12 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
   cairo_move_to(cr, bx - 32, ly + h_lvl);     cairo_show_text(cr, "Lev");
   cairo_move_to(cr, bx - 32, ay + h_alc);     cairo_show_text(cr, "ALC");
   char lbl[64];
-  if (ts->mic_pk <= MIC_MIN) {
+  if (app->txm_txt_mic <= MIC_MIN) {
     snprintf(lbl, sizeof lbl, "Mic  --   Lev +%.0f   ALC %.0f dB",
-             ts->lvlr_gain, ts->alc_gain);
+             app->txm_txt_lvl, -app->txm_txt_alc);
   } else {
     snprintf(lbl, sizeof lbl, "Mic %+.0f   Lev +%.0f   ALC %.0f dB",
-             ts->mic_pk, ts->lvlr_gain, ts->alc_gain);
+             app->txm_txt_mic, app->txm_txt_lvl, -app->txm_txt_alc);
   }
   cairo_set_font_size(cr, 15.0);
   cairo_text_extents_t ex; cairo_text_extents(cr, lbl, &ex);
