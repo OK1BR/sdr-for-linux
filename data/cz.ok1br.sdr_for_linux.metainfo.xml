@@ -35,6 +35,21 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.0" date="2026-08-17">
+      <description>
+        <p>
+          A native RTTY mode: direct-FSK transmit at 45.45 baud with
+          phase-continuous keying, its own filter presets, an FSK monitor tone
+          and macro keying over TCI. The transmit noise gate is redesigned on
+          one dBFS scale with a visible threshold marker and an adjustable
+          depth — and a long-standing bug that made the gate chop speech
+          (reported as a noisy/distorted monitor) is fixed. The RX S-meter and
+          the TX Mic/Level/ALC meters gained proper ballistics and now read
+          smoothly, the TX monitor no longer stutters at sample rates below
+          192 kHz, and the application ships a redesigned icon.
+        </p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-08-09">
       <description>
         <p>
