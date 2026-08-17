@@ -18,7 +18,7 @@ on:
 env:
   DEBIAN_FRONTEND: noninteractive
   APT_DEPS: >-
-    meson ninja-build libgtk-4-dev libadwaita-1-dev libfftw3-dev libopus-dev
+    meson ninja-build libgtk-4-dev libadwaita-1-dev libfftw3-dev
     libssl-dev zlib1g-dev libpipewire-0.3-dev libwebsockets-dev
 
 jobs:

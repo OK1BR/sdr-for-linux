@@ -16,7 +16,7 @@ add_project_arguments('-DSDRFL_VERSION="@0@"'.format(meson.project_version()),
 gnome = import('gnome')  # used in data/ for post-install icon/desktop DB refresh
 
 # --- Dependencies -----------------------------------------------------------
-# gtk4/opus come in transitively via the vendored piHPSDR headers; openssl is
+# openssl is
 # the password KDF, zlib decompresses network spectrum. As the piHPSDR engine
 # (radio link + WDSP) is imported milestone by milestone, its deps (e.g. the
 # WDSP library, portaudio/pulse) will be added here.
@@ -24,7 +24,6 @@ cc          = meson.get_compiler('c')
 gtk_dep     = dependency('gtk4', version: '>= 4.10')  # gtk_snapshot_append_scaled_texture (RENDERING.md)
 adw_dep     = dependency('libadwaita-1')  # GTK4 control surface (headerbar, prefs, rows)
 glib_dep    = dependency('glib-2.0')  # engine is GLib-only (headless), no GTK
-opus_dep    = dependency('opus')
 openssl_dep = dependency('openssl')
 zlib_dep    = dependency('zlib')
 # WDSP + libspecbleach need single-precision FFTW; rnnoise/WDSP need pthreads + libm.
@@ -52,7 +51,7 @@ engine_sources = [
 ]
 engine_deps = [glib_dep]
 
-common_deps = [gtk_dep, opus_dep, openssl_dep, zlib_dep]
+common_deps = [gtk_dep, openssl_dep, zlib_dep]
 
 # --- Vendored engine libraries ----------------------------------------------
 # Built from source we keep in-tree (never linked from an external checkout);
