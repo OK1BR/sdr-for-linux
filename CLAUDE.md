@@ -287,7 +287,23 @@ TX Mic/Lev/ALC meter got the S-meter ballistics idiom (eadab5f).
 Rejected on measurement: 1-2 kHz side-chain detector filter — Richard's
 quiet speech loses more there (~20 dB) than his fan noise (14.7 dB).
 
-**★ Other candidates (Richard picks):** P1 PureSignal
+**★ RELEASED 2026-08-17: v0.4.0 + AUR 0.4.0-1 the same day** (RTTY mode,
+the noise-gate fix for issue #1, S-meter/TX-meter ballistics, redesigned
+icon). Full checklist in one session: 8 offline gates, **radio-mode About
+walked LIVE by real clicks** in the headless lab against the G2E
+(menu → About → Troubleshooting → Debugging Information → Copy Text;
+clipboard verified; README path corrected — the "Debugging Information"
+step was missing), CI dry-run → curated notes (EN approved + CZ
+translation) → tag CI attached AppImage/.deb/.rpm → public download
+`--version` verified; AUR host key still matches the pinned one, makepkg
++ namcap clean, push 3c1917c verified by fresh clone + web. ⛔ The
+dry-run earned its keep again: **opus is NOT a dead dependency** — the
+vendored piHPSDR `client_server.h` includes `opus/opus.h`, so it is a
+build-time (header-only) dep: keep `dependency('opus')` in meson +
+makedepends in PKGBUILD, never in depends (binary doesn't link it).
+An attempted removal broke the Ubuntu container build and was reverted
+(5ed300e); the 0.2.0-2 AUR QA follow-up claiming it removable was wrong.
+Next per the agreed plan: **the EQ milestone, step 1 — WDSP EQ audit.** P1 PureSignal
 milestone (multi-RX P1 link, RX3/RX4 feedback); 10E leftovers (pa_cal
 remaining bands ~32-34, digi TX meter live check); Square SDR bring-up;
 10E PS via Thetis sequencing (TX-DESIGN §9, risky). (TX EQ folded into
