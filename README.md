@@ -188,7 +188,8 @@ and setting `GSK_RENDERER` yourself always wins. Details in
 ## Reporting a bug
 
 Open an [issue](https://github.com/OK1BR/sdr-for-linux/issues) and paste
-the debug info from the app: **menu → About → Troubleshooting → Copy**.
+the debug info from the app: **menu → About → Troubleshooting →
+Debugging Information → Copy Text**.
 It carries the app version, the GTK/libadwaita/WDSP/FFTW/PipeWire versions
 actually in use, the active renderer, the connected radio and protocol, and
 the config paths — which is most of what a diagnosis needs.
