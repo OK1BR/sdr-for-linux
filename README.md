@@ -137,7 +137,7 @@ ubiquitous platform libraries come from your distribution:
 | FFTW (single + double) | `fftw` | `libfftw3-dev` | `fftw-devel` |
 | PipeWire client | `libpipewire` | `libpipewire-0.3-dev` | `pipewire-devel` |
 | libwebsockets (TCI) | `libwebsockets` | `libwebsockets-dev` | `libwebsockets-devel` |
-| OpenSSL, zlib | `openssl zlib` | `libssl-dev zlib1g-dev` | `openssl-devel zlib-devel` |
+| Opus, OpenSSL, zlib | `opus openssl zlib` | `libopus-dev libssl-dev zlib1g-dev` | `opus-devel openssl-devel zlib-devel` |
 | Build tools | `base-devel meson` | `build-essential meson` | `gcc meson` |
 
 ```sh
