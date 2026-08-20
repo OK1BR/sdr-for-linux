@@ -306,6 +306,15 @@ An attempted removal broke the Ubuntu container build and was reverted
 Next per the agreed plan: **the EQ milestone, step 1 — WDSP EQ audit.** P1 PureSignal
 milestone (multi-RX P1 link, RX3/RX4 feedback); 10E leftovers (pa_cal
 remaining bands ~32-34, digi TX meter live check); Square SDR bring-up;
+**more radios — QUEUED here, right behind the Square SDR bring-up, and
+HARDWARE-BLOCKED** (`docs/RADIOS-SCOPE.md`, SCOPED 2026-08-20): unlock the
+ANAN G2/Saturn over the P2 path we already ship, ORION2 (7000/8000/DLE 7000)
+behind it. The seven wire gaps, the TX profile (⭐ `ps_setpk` 0.6121, NOT
+0.2899) and the XDMA path we rejected are all audited there — **resume at
+§3 step S1**, nothing before it needs research. ⛔ Two standing rules from
+that doc: no device joins any whitelist without a live test on that
+physical radio, and no volunteer is contacted before the S1/S2 code exists
+(a request with nothing to test has no value);
 10E PS via Thetis sequencing (TX-DESIGN §9, risky). (TX EQ folded into
 the equalizer milestone above. RTTY leftovers DEFERRED 2026-08-16 —
 parked in docs/RTTY-SCOPE.md, see the status entry below; needs an RTTY

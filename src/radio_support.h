@@ -7,7 +7,8 @@
  * a PA (on RX alone the missing ANT-relay bit once cost −45 dB, c4b9243 —
  * on TX the same class of mistake burns hardware). Blocked ≠ forgotten:
  * each new radio gets its own bring-up + live test in a later version
- * (next candidate: Square SDR).
+ * (next candidate: Square SDR; the ANAN G2/Saturn — and ORION2 behind it —
+ * is audited and staged in docs/RADIOS-SCOPE.md, still hardware-blocked).
  *
  * Both gates use this predicate: the startup picker (row greyed out) and
  * the connect path in gui.c (covers SDRFL_RADIO_IP and "Add by IP").
