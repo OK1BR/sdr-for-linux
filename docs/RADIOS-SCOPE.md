@@ -9,6 +9,34 @@ document exists so the next bring-up starts from an audit instead of from
 scratch, and so the hardware question can be asked with a concrete plan
 attached.
 
+## ⭐⭐ PRIORITY (Richard, 2026-08-21) — this is now the front of the queue
+
+Richard's decision, verbatim in intent: **first unlock the ANAN G2 for that
+man, and only then answer him that he can try to test it.** So the order in
+§3 is not just a ladder, it is a schedule: **S1 → S2 → S3 ship before anyone
+writes into `OK1BR/sdr-for-linux#1`.**
+
+This does **not** relax the whitelist policy in `src/radio_support.h`. It
+schedules the work that earns the unlock. Everything the ⛔ note in §5 says
+still holds — the volunteer is contacted with a build, a probe and an
+expected output, never with a thank-you note and a question mark.
+
+⛔ **RX ONLY. TX (S4/S5) is not in this batch and the TX whitelist stays
+shut.** W1IZZ is remote; §3 already records that S4/S5 need the radio in the
+room with a dummy load and an operator watching, and §2 lists exactly which
+numbers would be wrong if guessed — `ps_setpk` 0.6121 vs 0.2899 and the
+ANAN-7000 wattmeter constants. A remote volunteer must not key an
+uncalibrated `[tx-saturn]`. What he *can* be asked for is RX: discovery,
+tuning, the band-pass relays, and the three headless probes.
+
+⛔ **Implementation does not happen from the `work` session.** Richard,
+2026-08-21: this must be done by the proper project agent. This block is a
+handover note and a priority marker — it is not a licence to write code.
+
+**Definition of done for the reply to `#1`:** a build W1IZZ can install, a
+named probe to run, and the output we expect back. Until all three exist,
+the issue stays open and unanswered on purpose.
+
 Source of truth for every piHPSDR line reference below: the pinned tree
 `/home/rfa/.local/opt/pihpsdr` @ `974acba`, read first-hand on 2026-08-20
 (`np.c` = `new_protocol.c`). Our own line references are current as of
