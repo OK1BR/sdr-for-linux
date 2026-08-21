@@ -306,23 +306,41 @@ An attempted removal broke the Ubuntu container build and was reverted
 Next per the agreed plan: **the EQ milestone, step 1 — WDSP EQ audit.** P1 PureSignal
 milestone (multi-RX P1 link, RX3/RX4 feedback); 10E leftovers (pa_cal
 remaining bands ~32-34, digi TX meter live check); Square SDR bring-up;
-**★ ANAN G2 / Saturn RX — S1-S3 DONE 2026-08-21** (branch `g2-rx-bringup`,
-merged through a **PR**, not a direct push — deliberate, see below):
-`radio_supported()` now accepts `NEW_DEVICE_SATURN` for **RX ONLY**, the
+**★ ANAN G2 / Saturn — S1-S5 DONE 2026-08-21, RX + TX + PureSignal**
+(branch `g2-rx-bringup`, merged through a **PR**, not a direct push —
+deliberate, see below). Richard's call, same day, after the RX-only batch:
+*"odemkni správně i TX, přesně podle piHPSDR… ať nám může otestovat celou
+cestu"*. ⛔ **Unlocked ≠ verified**: not one byte of this has touched a real
+G2, so the wattmeter/PA/PS numbers are piHPSDR starting values and every
+announcement must say so. What makes it defensible: the TX audit found
+nothing left to get wrong from here — `p2_build_transmit_specific()` has no
+device branch and neither does upstream's, the keyed HP bytes are the G2E's,
+upstream puts SATURN in the same class in every TX branch (incl. `rxant +=
+100` for the PS feedback path), and the per-model numbers all come from
+piHPSDR. Plus the radio starts SAFE: `[tx-saturn]` holds no calibration →
+PA off, ANT1, 1 W, pa_cal 53 dB (under-drives), so the first keying IS the
+dry-key step; out-of-band gate, SWR alarm and forced 31 dB attenuators are
+model-independent and stay armed. The live half of TX-SAFETY is **delegated,
+not waived** — the dummy-load walk-in is written out step by step in
+RADIOS-SCOPE §7 for the operator with the radio. PS is on
+(`ps_setpk` **0.6121**, not 0.2899 — the 10E lockout is an OLD-firmware
+sequencing bug, while piHPSDR/Thetis both run PS on this class; piHPSDR's
+8.5 dB offset has no counterpart here, we auto-attenuate Thetis-style) and
+defaults to OFF. On the RX side:
+`radio_supported()` accepts `NEW_DEVICE_SATURN`, the
 two wire gaps are implemented (general `[59]=0x03` = Alex 0+1, `n_adc=2`
 → also the PS pseudo-ADC index; DDC2 + the band-pass knees already
 branched on SATURN), and everything is pinned by a new offline gate
-`sdrfl-p2dev-test` (107 checks, in CI) that ALSO asserts the G2E/10E
-packets are unchanged. ⛔ `radio_tx_supported()` / `radio_ps_supported()`
-untouched → TX runtime never starts, the three no-TX guarantees hold by
-construction. `radio_tx_profile()` gained a `saturn` entry anyway, NOT to
-transmit: without it a Saturn session would write TX-cal keys into the
-G2E's `[tx]` group (`settings_save`) — `[tx-saturn]` isolates it and
-pre-stages the audited piHPSDR numbers (PA_100W, ANAN-7000 wattmeter
-branch, ⭐ `ps_setpk` 0.6121). ⛔ **This is the ONE sanctioned exception
-to "live test before whitelist"** (Richard 2026-08-21, RADIOS-SCOPE
-§PRIORITY) — we own no G2; RX is what a remote operator can safely test,
-TX is not. ⛔ **G4 from the scope was WRONG and is withdrawn**: our footer
+`sdrfl-p2dev-test` (**163 checks**, in CI) that also covers the keyed
+Saturn packets, the whitelists themselves and the per-model TX profile,
+and asserts the G2E/10E RX packets are byte-identical (by enumerating
+every non-zero byte, not by sampling). `[tx-saturn]` is its own config
+group so a Saturn session can never overwrite the G2E's `[tx]`
+(`settings_save` writes TX-cal keys into the connected radio's group).
+⛔ **This is the ONE sanctioned exception to "live test before
+whitelist"** (Richard 2026-08-21, RADIOS-SCOPE §PRIORITY) — we own no G2;
+it is written down in the `radio_support.h` header with the conditions
+that must stay true. ⛔ **G4 from the scope was WRONG and is withdrawn**: our footer
 "Att" is the ADC step attenuator (HP byte 1443), which the Saturn HAS
 (`have_rx_att = 1`, radio.c:1359-1366); only the ALEX 0/10/20/30 dB bank
 is missing and we never had that control. Still owed: the first live pass

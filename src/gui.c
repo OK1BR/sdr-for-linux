@@ -4901,7 +4901,7 @@ static void start_radio(App *app) {
   if (!radio_supported(dev)) {
     fprintf(stderr, "radio '%s' at %s (device %d) is NOT SUPPORTED YET — every model "
             "must be brought up and live-tested first; this build supports the "
-            "ANAN G2E, ANAN 10E/100B, Hermes Lite 2 (RX) and ANAN G2/Saturn (RX)\n",
+            "ANAN G2E, ANAN 10E/100B, ANAN G2/Saturn and Hermes Lite 2\n",
             dev->name, inet_ntoa(dev->network.address.sin_addr), dev->device);
     return;
   }

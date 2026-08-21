@@ -4,20 +4,27 @@ Companion to `docs/P2-RX-SCOPE.md` (the P2 link this rides on),
 `docs/P1-SCOPE.md` (how a second radio family was brought up) and
 `docs/TX-SAFETY.md` (what TX costs before it may be enabled).
 
-**Status: SCOPED 2026-08-20; S1-S3 IMPLEMENTED 2026-08-21** on branch
+**Status: SCOPED 2026-08-20; S1-S5 IMPLEMENTED 2026-08-21** on branch
 `g2-rx-bringup` (PR into `main`), still with **no G2 on hand**. The ANAN G2 /
-Saturn is now connectable for **RX only**; TX and PureSignal stay locked. The
-per-device wire bytes come from piHPSDR and are pinned by the offline gate
-`sdrfl-p2dev-test` (107 checks) — that gate is the whole of the evidence until
-someone with the radio runs the probes. What is done, and what is not:
+Saturn is enabled for **RX, TX and PureSignal** — Richard's call the same day:
+unlock it properly, exactly as piHPSDR has it, so the remote operator can walk
+the whole path inside issue #1. Every per-device value comes from piHPSDR and
+is pinned by the offline gate `sdrfl-p2dev-test` (163 checks); that gate is the
+whole of the evidence until someone with the radio keys it. What is done, and
+what emphatically is not:
 
 | | |
 |---|---|
 | S1 device profile + picker | ✅ was already there (`discovery_p2.c:353-356` names it "Saturn/G2") |
 | S2 wire conditionals (G1 Alex 0+1, G2 n_adc, DDC2, band-pass) | ✅ code + offline gate; ⏳ the three headless probes need the radio |
-| S3 whitelist += SATURN (RX only) | ✅ connect whitelist only; ⏳ live tuning + filter relays unconfirmed |
+| S3 whitelist += SATURN | ✅ connect + TX + PS; ⏳ live tuning + filter relays unconfirmed |
 | G4 "drop the Att control" | ❌ **withdrawn — it was a misreading**, see §1 |
-| S4 / S5 (TX, PureSignal) | ⛔ untouched, and not remotely testable |
+| S4 TX | 🟡 **unlocked from the audit, checklist DELEGATED** — `[tx-saturn]` starts PA off + 1 W + no stored PA cal, so the first keying is the dry-key step; the live half of `docs/TX-SAFETY.md` must be walked by the operator (§7) |
+| S5 PureSignal | 🟡 unlocked with `ps_setpk` **0.6121**; defaults to OFF, to be switched on only after S4 passes |
+
+⛔ **"Unlocked" is not "verified".** Until §7 comes back from a real G2, this
+model's wattmeter calibration, PA calibration and PS feedback scaling are
+piHPSDR's starting values, not measurements. Say so wherever it is announced.
 
 Everything below is the audit the implementation was taken from; it stays as
 written so the next person can re-check our bytes against upstream.
@@ -34,13 +41,26 @@ schedules the work that earns the unlock. Everything the ⛔ note in §5 says
 still holds — the volunteer is contacted with a build, a probe and an
 expected output, never with a thank-you note and a question mark.
 
-⛔ **RX ONLY. TX (S4/S5) is not in this batch and the TX whitelist stays
-shut.** W1IZZ is remote; §3 already records that S4/S5 need the radio in the
-room with a dummy load and an operator watching, and §2 lists exactly which
-numbers would be wrong if guessed — `ps_setpk` 0.6121 vs 0.2899 and the
-ANAN-7000 wattmeter constants. A remote volunteer must not key an
-uncalibrated `[tx-saturn]`. What he *can* be asked for is RX: discovery,
-tuning, the band-pass relays, and the three headless probes.
+~~⛔ **RX ONLY. TX (S4/S5) is not in this batch and the TX whitelist stays
+shut.**~~ **SUPERSEDED the same day (Richard, 2026-08-21): "odemkni správně i
+TX, přesně podle toho, jak to mají u piHPSDR… aby nám mohl v rámci toho issue
+otestovat celou cestu."** TX and PureSignal are unlocked too. The concern that
+produced the RX-only rule was raised and answered, so record both halves:
+
+* **What changed the balance:** the TX audit found nothing left to get wrong
+  from here. `p2_build_transmit_specific()` has no device branch and neither
+  does upstream's builder; the keyed HP bytes are the G2E's, and upstream puts
+  the Saturn in the same class in every TX branch (including `rxant += 100`
+  for the PS feedback path). The per-model numbers — PA_100W, the ANAN-7000
+  wattmeter branch, `ps_setpk` 0.6121 — are §2's, now in `radio_tx_profile()`.
+* **What did NOT change:** a remote volunteer still must not key an
+  uncalibrated PA blind. So the safety moved from "refuse" to "start safe and
+  say so": `[tx-saturn]` has no stored calibration → PA off, ANT1, 1 W,
+  pa_calibration 53 dB (the under-driving direction), and the first keying IS
+  the dry-key step. The out-of-band gate, the SWR alarm and the forced 31 dB
+  attenuators are model-independent and stay armed. §7 spells out the dummy
+  load walk-in he must do, and every announcement must say the wattmeter is
+  uncalibrated on this model.
 
 ⛔ **Implementation does not happen from the `work` session.** Richard,
 2026-08-21: this must be done by the proper project agent. This block is a
@@ -124,13 +144,17 @@ this section):
 - **Config group** `"tx-saturn"` — per the existing rule that PA
   calibration is per radio and must never leak between models.
 
-**Implemented 2026-08-21 (with TX still locked):** all of the above now sits
-in `radio_tx_profile()` as the `saturn` entry. That is deliberate and is *not*
-a TX unlock — `radio_tx_supported()` refuses the Saturn, so nothing reads
-these numbers to key the radio. The entry exists because `settings_save()`
-writes TX-cal keys into the connected radio's config group: without it a
-Saturn RX session would fall through to the G2E profile and overwrite `[tx]`,
-the live-calibrated G2E section. Config isolation first, TX later.
+**Implemented 2026-08-21:** all of the above sits in `radio_tx_profile()` as
+the `saturn` entry, and TX is unlocked (see §PRIORITY). Two things that entry
+buys beyond the numbers themselves: `settings_save()` writes TX-cal keys into
+the connected radio's config group, so `[tx-saturn]` stops a Saturn session
+from overwriting `[tx]` (the live-calibrated G2E section) — and because that
+group starts empty, a first connect comes up PA off, ANT1, 1 W with
+pa_calibration at the conservative 53 dB default.
+
+⛔ The one number worth repeating: **`ps_setpk` 0.6121, not 0.2899.** It is
+asserted by `sdrfl-p2dev-test` precisely because nobody here can notice it
+being wrong.
 
 ## 3. Bring-up gates (same ladder as P1/P2, nothing skipped)
 
@@ -139,12 +163,13 @@ the live-calibrated G2E section. Config isolation first, TX later.
 | S1 ✅ | Device profile + picker: name the row, keep it refused until S2 passes | picker shows "Saturn/G2", still greyed |
 | S2 ✅/⏳ | RX: G1+G2 conditionals, then the three headless probes | code + `sdrfl-p2dev-test` done here; `sdrfl-rxprobe` / `sdrfl-panprobe` / `sdrfl-audioprobe` still owed by whoever has the radio |
 | S3 ✅/⏳ | GUI: connect whitelist += SATURN (RX only), ~~Att control dropped (G4)~~, band-pass class confirmed on air | whitelist done (RX only, TX/PS refused); live tuning + filter relays still unconfirmed |
-| S4 | ⛔ TX: full `docs/TX-SAFETY.md` checklist into a dummy load on that physical radio, `[tx-saturn]` starting at PA off + 1 W | dry-key → 1 W → walk-in, per TX-DESIGN §7/§8 |
-| S5 | PureSignal with `ps_setpk = 0.6121` + the 8.5 dB offset | PS gates from `docs/PS-SCOPE.md` |
+| S4 🟡 | TX: `[tx-saturn]` starting at PA off + 1 W; the code half is done and gated offline, the **live half of `docs/TX-SAFETY.md` is delegated** | dry-key → 1 W → walk-in, per TX-DESIGN §7/§8 — by the operator who has the radio (§7) |
+| S5 🟡 | PureSignal with `ps_setpk = 0.6121` (the 8.5 dB offset has no counterpart here — we auto-attenuate Thetis-style instead) | PS gates from `docs/PS-SCOPE.md`, after S4 |
 
-S4 and S5 require the radio to be **in the room with a dummy load and an
-operator watching**. They are not remote-testable, and no amount of
-volunteer goodwill changes that.
+S4 and S5 still require the radio to be **in the room with a dummy load and an
+operator watching** — that has not changed, only *who* the operator is. We
+ship the code and the checklist; the person with the G2 walks it. Until he
+does, the model is "unlocked, unproven" and must be described that way.
 
 ## 4. The XDMA / on-radio path — deliberately out of scope
 
@@ -190,9 +215,11 @@ and the DLE 7000 (ORION2-class) for the follow-on.
 
 ## 7. First live confirmation on a real G2 — the exact ask
 
-S2/S3 shipped without a live gate, so this is what turns "should work" into
-"works". Written down here so the request to whoever has the radio carries a
-command and an expected output, never a question mark.
+S1-S5 shipped without a single live gate, so this is what turns "should work"
+into "works". Written down here so the request to whoever has the radio
+carries a command and an expected output, never a question mark. **Do the RX
+half first and completely** — if the receiver is not right, nothing about the
+transmitter's numbers can be trusted either.
 
 ⛔ **The probes are dev-tree binaries** (`install : false` in `meson.build`) —
 a release AppImage/.deb carries only the GUI. So either the tester builds from
@@ -233,3 +260,39 @@ that is a whitelist bug, not a feature.
 
 Sample rates worth one pass each: 192 k and 1536 k (the P2 maximum) — the
 n_adc/DDC2 change touches the RX-specific packet both carry.
+
+### ⛔ Then, and only then, the TX half — into a DUMMY LOAD
+
+Same ladder we walked on the G2E, the 10E and the HL2, in this order. Nothing
+here may be skipped or reordered, and the first four steps do not put a signal
+on an antenna. The radio starts PA off / ANT1 / 1 W / no stored PA calibration
+on purpose, so step 1 is safe by construction.
+
+1. **Dry key.** PA still disabled in *Preferences → TX*. Key (MOX or CW) and
+   confirm: the app shows TX, the RX mutes, no power is produced, unkeying
+   returns to RX cleanly. This proves the T/R sequencing without RF.
+2. **1 W into the dummy load.** Enable the PA, leave drive at 1 W, key on a
+   quiet part of a band the load is rated for. Expect a *small* forward
+   reading and SWR near 1.0. ⚠️ The wattmeter constants are piHPSDR's
+   ANAN-7000 values, never measured on this radio — treat the number as
+   indicative and trust an external meter over ours.
+3. **PA calibration walk-in, per band.** Raise the requested power in steps,
+   comparing against an external meter, and adjust *PA calibration* for that
+   band until they agree. Expect the G2's number to land in the 38.8-70 dB
+   window (our G2E sits at 38.8-ish; a 100 W-class chain is the same family).
+   Work up gradually — never jump to full power on the first key of a band.
+4. **SWR behaviour.** With a deliberate mismatch (or simply by watching the
+   reverse reading), confirm the alarm fires and drive drops to zero. If the
+   protection does NOT act, stop and report — that is a bug, not a quirk.
+5. **CW and voice** through the load, then on air at modest power. Listen on a
+   second receiver: clean envelope, no backwave, no key clicks.
+6. **PureSignal LAST**, once 1-5 are clean. It is off by default. Turn it on,
+   key a two-tone or voice over and watch the PS line in the footer: the
+   feedback level should settle into the 129-181 window and report
+   "correcting". `ps_setpk` is preset to 0.6121 — the Saturn-specific value —
+   so if the feedback looks wildly wrong, report the number rather than
+   fighting it.
+
+What to send back: which steps passed, the per-band PA-calibration numbers you
+ended up with, our reading vs the external meter at 5/10/50/100 W, and
+anything the app claimed that the hardware disagreed with.

@@ -3,8 +3,10 @@
  * docs/RADIOS-SCOPE.md).
  *
  * The ANAN G2 (Saturn) bring-up cannot be tested on hardware here — we own a
- * G2E, not a G2. This gate is therefore the ONLY executable verification of the
- * per-device wire differences, and it asserts two things:
+ * G2E, not a G2, and that model is unlocked for RX *and* TX on an audit alone
+ * (the sanctioned exception in src/radio_support.h). This gate is therefore
+ * the only executable verification the model gets before a real operator keys
+ * it, and it asserts:
  *
  *   1. SATURN / ORION2 get the bytes piHPSDR @974acba sends them:
  *        general[59] = 0x03   two Alex boards enabled   (np.c:693-697)
@@ -12,6 +14,13 @@
  *        rxspec[7]   = 0x04   the RX DDC is DDC2        (np.c:1627-1631)
  *        HP  [9..12] AND [17..20] carry the RX phase    (np.c:816-835)
  *        HP  alex0 band-PASS knees (the "g2class" table, np.c:1044-1069)
+ *   1b. The keyed Saturn packets: MOX, drive, the Alex TX words (BPF | the
+ *       right LPF bank | ANT relay | TX relay), both step attenuators forced
+ *       to 31 dB, general[59] STILL 0x03 while transmitting (the TX LPF sits
+ *       on Alex 1 on this class), the off-band drive kill and the park packet.
+ *   1c. The whitelists themselves (who may connect / key / run PureSignal)
+ *       and the Saturn's per-model TX profile — including that it keeps its
+ *       own [tx-saturn] config group so it cannot overwrite the G2E's [tx].
  *   2. The two P2 radios we DO support are byte-identical to before this
  *      change. Not by sampling: for each device it ENUMERATES every byte the
  *      RX build may set (General, RX-specific, High-Priority) and asserts that
@@ -28,8 +37,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "discovered.h"   /* NEW_DEVICE_G1 / _HERMES2 / _SATURN / _ORION2 */
+#include "discovered.h"     /* NEW_DEVICE_G1 / _HERMES2 / _SATURN / _ORION2 */
 #include "protocol2.h"
+#include "radio_support.h"  /* the whitelists + per-model TX profile under test */
 
 static int g_checks = 0;
 static int g_fail = 0;
@@ -174,10 +184,48 @@ int main(void) {
     }
   }
 
-  /* ---- PureSignal feedback pair: DDC1 <- pseudo-ADC n_adc ----------------
-   * ⛔ PS stays LOCKED OUT for the Saturn (radio_ps_supported), and its
-   * ps_setpk differs (0.6121). This only pins the byte so a future PS
-   * milestone starts from the right wire, per np.c:1663. */
+  /* ---- Saturn TX: the keyed packets ------------------------------------
+   * ⛔ The G2 is TX-unlocked without a live test here (radio_support.h header),
+   * so these bytes are the only pre-flight the TX path gets on this model.
+   * Values by hand from piHPSDR (alex.h + np.c:1244-1266), 40 m / ANT1 /
+   * drive 200: alex0 TX = BPF 40/30 m 0x10 | ALEX_60_40_LPF 0x00200000
+   * (7.1 MHz is in the >5 M..8 M bank!) | ALEX_TX_ANTENNA_1 0x01000000 |
+   * ALEX_TX_RELAY 0x08000000; alex1 is the TX-case word, so no BPF.
+   * G7 confirmed while writing this: for the G1/ORION2/SATURN class upstream
+   * skips the "RX uses the TX LPF" branch entirely (np.c:1224-1226), which is
+   * what our builder does by always taking the LPF from tx_freq. */
+  printf("\n[Saturn TX] keyed High-Priority + General (device %d)\n", NEW_DEVICE_SATURN);
+  {
+    const long long F40 = 7100000LL;
+    p2_tx_state tx; memset(&tx, 0, sizeof tx);
+    tx.mox = 1; tx.pa_enabled = 1; tx.in_band = 1; tx.drive = 200;
+    tx.tx_freq = F40; tx.antenna = 0;
+    p2_build_high_priority(buf, NEW_DEVICE_SATURN, F40, 1, &tx, NULL);
+    chk("hp[4] run + MOX",                buf[4], 0x03);
+    chk("hp[345] drive",                  buf[345], 200);
+    chk("hp[329..332] DUC phase",         be32(buf + 329), 0x0ECAAAAAu);
+    chk("hp alex0 TX = BPF|LPF|ANT1|RLY", be32(buf + 1432), 0x09200010u);
+    chk("hp alex1 TX = LPF|ANT1|RELAY",   be32(buf + 1428), 0x09200000u);
+    chk("hp[1442] ADC1 att = 31 (TX+PA)", buf[1442], 31);
+    chk("hp[1443] ADC0 att = 31 (TX+PA)", buf[1443], 31);
+    /* ⛔ The General packet must STILL enable both Alex boards while keyed —
+     * the TX LPF sits on Alex 1 on this class, so a 0x01 here would key into
+     * an unswitched filter board. */
+    p2_build_general(buf, NEW_DEVICE_SATURN, 1);
+    chk("general[58] PA enable = 1",       buf[58], 0x01);
+    chk("general[59] STILL Alex 0+1 on TX", buf[59], 0x03);
+    /* Off-band kill and the park packet are device-independent, but assert
+     * them here too: this radio is unlocked sight-unseen. */
+    p2_tx_state txo = tx; txo.in_band = 0;
+    p2_build_high_priority(buf, NEW_DEVICE_SATURN, F40, 1, &txo, NULL);
+    chk("hp off-band: drive forced 0",    buf[345], 0);
+    chk("hp off-band: still keyed",       buf[4], 0x03);
+    p2_build_high_priority(buf, NEW_DEVICE_SATURN, F40, 0, &tx, NULL);
+    chk("hp park cannot carry MOX",       buf[4], 0x00);
+    chk("hp park: alex0 released",        be32(buf + 1432), 0);
+  }
+
+  /* ---- PureSignal feedback pair: DDC1 <- pseudo-ADC n_adc --------------- */
   printf("\n[PureSignal feedback pair] rxspec[23] = TX-DAC pseudo-ADC index\n");
   {
     p2_ps_state ps; memset(&ps, 0, sizeof ps);
@@ -188,6 +236,60 @@ int main(void) {
     p2_build_receive_specific(buf, NEW_DEVICE_SATURN, 192000, &ps, 1);
     chk("Saturn DDC1 <- ADC2 (n_adc = 2)", buf[23], 2);
     chk("Saturn rxspec[4] still n_adc = 2", buf[4], 2);
+  }
+
+  /* ---- whitelists + per-model TX profile (src/radio_support.h) -----------
+   * A tripwire, not a tautology: these are the values a wrong edit would
+   * silently change — an unlisted radio slipping into a whitelist, or the
+   * Saturn losing its own config group and writing into the G2E's [tx]. */
+  printf("\n[whitelists] radio_support.h — who may connect, key, and run PS\n");
+  {
+    DISCOVERED d;
+    struct { int proto, dev; int conn, tx, ps; const char *name; } w[] = {
+      { NEW_PROTOCOL,      NEW_DEVICE_G1,       1, 1, 1, "ANAN G2E" },
+      { NEW_PROTOCOL,      NEW_DEVICE_HERMES2,  1, 1, 0, "ANAN 10E (PS wedges fw 10.3)" },
+      { NEW_PROTOCOL,      NEW_DEVICE_SATURN,   1, 1, 1, "ANAN G2 / Saturn" },
+      { NEW_PROTOCOL,      NEW_DEVICE_ORION2,   0, 0, 0, "ORION2 — NOT unlocked" },
+      { NEW_PROTOCOL,      NEW_DEVICE_ORION,    0, 0, 0, "Orion — NOT unlocked" },
+      { ORIGINAL_PROTOCOL, DEVICE_HERMES_LITE2, 1, 1, 1, "Hermes Lite 2 (P1)" },
+      { ORIGINAL_PROTOCOL, DEVICE_HERMES,       0, 0, 0, "Hermes (P1) — NOT unlocked" },
+    };
+    for (unsigned i = 0; i < sizeof(w) / sizeof(w[0]); i++) {
+      char lbl[80];
+      memset(&d, 0, sizeof d);
+      d.protocol = w[i].proto; d.device = w[i].dev;
+      snprintf(lbl, sizeof lbl, "%s: connect", w[i].name);
+      chk(lbl, radio_supported(&d) ? 1 : 0, w[i].conn);
+      snprintf(lbl, sizeof lbl, "%s: TX", w[i].name);
+      chk(lbl, radio_tx_supported(&d) ? 1 : 0, w[i].tx);
+      snprintf(lbl, sizeof lbl, "%s: PureSignal", w[i].name);
+      chk(lbl, radio_ps_supported(&d) ? 1 : 0, w[i].ps);
+    }
+    chk("NULL device refused (connect)", radio_supported(NULL) ? 1 : 0, 0);
+    chk("NULL device refused (TX)",      radio_tx_supported(NULL) ? 1 : 0, 0);
+  }
+
+  printf("\n[TX profile] Saturn per-model numbers vs piHPSDR\n");
+  {
+    DISCOVERED d; memset(&d, 0, sizeof d);
+    d.protocol = NEW_PROTOCOL; d.device = NEW_DEVICE_SATURN;
+    const radio_tx_profile_t *p = radio_tx_profile(&d);
+    chk("PA rating 100 W (radio.c:1306)",     (long)(p->pa_watts + 0.5), 100);
+    chk("pa_cal floor 38.8 (band.c:571)",     (long)(p->pacal_min * 10 + 0.5), 388);
+    chk("wattmeter c1 = 5.0  (tx.c:667)",     (long)(p->m_c1 * 100 + 0.5), 500);
+    chk("wattmeter c2 = 0.12 (ANAN-7000)",    (long)(p->m_c2 * 100 + 0.5), 12);
+    chk("reverse HF 0.15",                    (long)(p->m_rc2_hf * 100 + 0.5), 15);
+    chk("reverse 6 m 0.70",                   (long)(p->m_rc2_6m * 100 + 0.5), 70);
+    chk("fwd offset 32",                      p->m_fwd_off, 32);
+    chk("rev offset 28",                      p->m_rev_off, 28);
+    chk("⭐ ps_setpk 0.6121 (NOT 0.2899)",    (long)(p->ps_setpk * 10000 + 0.5), 6121);
+    chk("config group is its own",            strcmp(p->cfg_group, "tx-saturn") == 0, 1);
+    /* ⛔ The leak this guards: a Saturn session must never write TX-cal keys
+     * into the G2E's live-calibrated [tx] group. */
+    d.device = NEW_DEVICE_G1;
+    chk("G2E still owns [tx]", strcmp(radio_tx_profile(&d)->cfg_group, "tx") == 0, 1);
+    chk("G2E ps_setpk still 0.2899",
+        (long)(radio_tx_profile(&d)->ps_setpk * 10000 + 0.5), 2899);
   }
 
   printf("\n=== %d checks, %d failures ===\n", g_checks, g_fail);

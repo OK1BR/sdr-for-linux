@@ -169,7 +169,7 @@ executable('sdrfl-txprobe',
 # is the only executable check the G2 bring-up has — we own no G2. NO radio.
 executable('sdrfl-p2dev-test',
   ['src/p2dev_test.c'] + engine_sources,
-  include_directories : [vendor_inc, engine_inc],
+  include_directories : [vendor_inc, src_inc, engine_inc],
   dependencies : engine_deps + [m_dep],
   install : false,
 )
