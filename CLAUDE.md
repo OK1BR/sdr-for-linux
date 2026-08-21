@@ -287,6 +287,23 @@ TX Mic/Lev/ALC meter got the S-meter ballistics idiom (eadab5f).
 Rejected on measurement: 1-2 kHz side-chain detector filter — Richard's
 quiet speech loses more there (~20 dB) than his fan noise (14.7 dB).
 
+**★ RELEASED 2026-08-21: v0.4.1 — the ANAN G2 (Saturn) release.** Cut for
+W1IZZ to test (issue #1) but published as a normal release, Richard's call —
+which also settles the question the plan left open: a plain version tag means
+the **AUR bump applies**, no pre-release suffix dodge. Checklist walked:
+version bumped in meson.build + the AppStream `<releases>` block (appstreamcli
+validates), 10 offline gates, CI **dry-run first** (green: deb install-tested
+in ubuntu:24.04, rpm in fedora:40), curated notes EN + CZ approved by Richard
+BEFORE `gh release create`, tag build attached all three artifacts, and the
+public AppImage was downloaded and reports 0.4.1. ⛔ The notes lead with
+"unlocked, unproven — first transmission into a dummy load" per the
+RADIOS-SCOPE rule; the same text is in the metainfo, which is what a software
+centre shows. Live regression evidence for the release: Richard keyed the G2E
+through TUNE dry-key → TUNE 58 W → MOX → PS (auto-att 18→21 dB, state 4
+CORRECTING, fdbk 156, getpk 0.292), SWR 1.10-1.12, clean unkey. About takes
+its version from the same SDRFL_VERSION macro as `--version` (gui.c:4399/4432
+vs 5091) — not re-clicked this pass, the dialog itself was walked at 0.4.0.
+
 **★ RELEASED 2026-08-17: v0.4.0 + AUR 0.4.0-1 the same day** (RTTY mode,
 the noise-gate fix for issue #1, S-meter/TX-meter ballistics, redesigned
 icon). Full checklist in one session: 8 offline gates, **radio-mode About
