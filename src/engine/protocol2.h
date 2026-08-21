@@ -220,7 +220,7 @@ typedef struct {
  * arguments (pa_enabled=0, tx=NULL, cw=NULL); the TX arguments are exercised only
  * by sdrfl-txprobe.
  */
-int p2_build_general(unsigned char *buf, int pa_enabled);
+int p2_build_general(unsigned char *buf, int device, int pa_enabled);
 int p2_build_receive_specific(unsigned char *buf, int device, int sample_rate,
                               const p2_ps_state *ps, int xmit);
 int p2_build_high_priority(unsigned char *buf, int device, long long rx_freq_hz,

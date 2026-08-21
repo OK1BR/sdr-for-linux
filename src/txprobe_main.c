@@ -58,10 +58,10 @@ int main(void) {
 
   /* ---- General: PA-enable byte 58 -------------------------------------- */
   printf("[General] PA-enable (byte 58):\n");
-  p2_build_general(buf, 1);
+  p2_build_general(buf, dev, 1);
   chk("general[58] pa_enabled=1", buf[58], 0x01);
   chk("general[59] Alex0 enable", buf[59], 0x01);
-  p2_build_general(buf, 0);
+  p2_build_general(buf, dev, 0);
   chk("general[58] pa_enabled=0 (live)", buf[58], 0x00);
 
   /* ---- HP OFF (tx=NULL): the no-TX guarantee -------------------------- */

@@ -38,7 +38,7 @@ jobs:
         run: |
           for g in sdrfl-wdsp-smoke sdrfl-txprobe sdrfl-txgate-test \
                    sdrfl-txdsp-test sdrfl-swr-test sdrfl-tci-test \
-                   sdrfl-cw-test sdrfl-rtty-test; do
+                   sdrfl-cw-test sdrfl-rtty-test sdrfl-p2dev-test; do
             echo "── $g"
             ./build/$g
           done
