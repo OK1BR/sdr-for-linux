@@ -35,6 +35,22 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.1" date="2026-08-21">
+      <description>
+        <p>
+          Support for the Apache Labs ANAN G2 (Saturn) over HPSDR Protocol 2 —
+          receive, transmit and PureSignal. This model is enabled from an audit
+          of the piHPSDR sources rather than from a test on the hardware, which
+          nobody involved owns: the wire bytes, the wattmeter constants and the
+          PureSignal peak value all come from upstream and are checked by an
+          offline test, but they have never been confirmed against a real G2.
+          It starts safe — power amplifier off, one watt, no stored calibration
+          — so the first transmission belongs into a dummy load. Reports from
+          G2 owners are very welcome. Nothing changes for the ANAN G2E, the
+          ANAN 10E/100B or the Hermes Lite 2.
+        </p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-08-17">
       <description>
         <p>
