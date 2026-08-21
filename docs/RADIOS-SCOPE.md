@@ -271,6 +271,11 @@ on purpose, so step 1 is safe by construction.
 1. **Dry key.** PA still disabled in *Preferences → TX*. Key (MOX or CW) and
    confirm: the app shows TX, the RX mutes, no power is produced, unkeying
    returns to RX cleanly. This proves the T/R sequencing without RF.
+   ⚠️ One unknown to watch here: our TX chain is clocked by the radio's own
+   mic stream (P2 port 1026). We know the G2E sends it; nobody has checked a
+   G2. If the app goes into TX but no audio/IQ flows, look in the terminal for
+   `no radio mic clock` and report that line — it is a known failure mode with
+   a known fix, not a mystery.
 2. **1 W into the dummy load.** Enable the PA, leave drive at 1 W, key on a
    quiet part of a band the load is rated for. Expect a *small* forward
    reading and SWR near 1.0. ⚠️ The wattmeter constants are piHPSDR's
