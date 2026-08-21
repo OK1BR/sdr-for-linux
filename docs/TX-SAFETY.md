@@ -38,6 +38,16 @@ the status bit is ignored (today's behavior, bit-for-bit).
 
 ## Checklist to port before enabling TX (piHPSDR references)
 
+> ⛔ **One model is an exception to the "live half" of this checklist:** the
+> ANAN G2 (Saturn), unlocked 2026-08-21 from an audit alone because we own no
+> G2. The *code* half below is satisfied for it exactly as for the other
+> radios (and pinned by `sdrfl-p2dev-test`); the *bench* half — dry key, 1 W,
+> PA-calibration walk-in, SWR into a dummy load — is **delegated to the
+> operator who has the radio**, written out in `docs/RADIOS-SCOPE.md` §7. That
+> exception is recorded with its conditions in the `src/radio_support.h`
+> header. It does not weaken anything here for any other model, and until §7
+> comes back the G2 is "unlocked, unproven".
+
 - [ ] **PA gating**: general[58] PA-enable tied to a user setting AND per-band
       `disablePA` (band.c); ALEX_TX_RELAY in alex0/alex1 only when PA enabled
       (new_protocol.c:1019-1032). Drive forced 0 when PA disabled.

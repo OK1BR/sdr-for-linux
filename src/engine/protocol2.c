@@ -158,15 +158,39 @@ static int ddc_for_device(int device) {
   return 0;
 }
 
+/*
+ * Number of ADCs the RX-specific packet declares (byte [4]).
+ *
+ * piHPSDR sets n_adc per model in radio.c:1541-1587: 1 for the Hermes class
+ * (ATLAS, HERMES, HERMES2, HERMES_LITE, G1 — the ANAN G2E is here), and the
+ * `default:` branch gives 2 to everything beyond it (ANGELIA/ORION/ORION2/
+ * SATURN). The same value picks the TX-DAC pseudo-ADC index for PureSignal
+ * (np.c:1663: DDC1 <- "ADC number n_adc").
+ */
+static int n_adc_for_device(int device) {
+  switch (device) {
+    case NEW_DEVICE_ATLAS:
+    case NEW_DEVICE_HERMES:
+    case NEW_DEVICE_HERMES2:
+    case NEW_DEVICE_HERMES_LITE:
+    case NEW_DEVICE_HERMES_LITE2:
+    case NEW_DEVICE_G1:
+      return 1;
+    default:
+      return 2;   /* ANGELIA / ORION / ORION2 / SATURN (ANAN G2, 7000, 8000) */
+  }
+}
+
 /* ---- outgoing packet builders (no socket; hexdump-testable) -------------- */
 
-/* General packet — np.c:662-716. Phase-word mode + HW timer + Alex-0 enable
- * ([59]=0x01 — G2E has one Alex; ORION2/SATURN would need 0x03). Byte [58] is the
+/* General packet — np.c:662-716. Phase-word mode + HW timer + Alex enable
+ * ([59]: 0x01 = Alex 0 only on the G2E/Hermes class, 0x03 = Alex 0 AND 1 on
+ * ORION2/SATURN, which carry two filter boards — np.c:693-697). Byte [58] is the
  * firmware PA-enable (np.c:679-685): piHPSDR sends 1 when its "PA enable" setting
  * is on AND the TX band's disablePA is clear. The LIVE engine hardcodes
  * pa_enabled=0 here (send_general) — one of the three no-TX guarantees
  * (docs/TX-SAFETY.md); only sdrfl-txprobe passes 1, offline, to verify the byte. */
-int p2_build_general(unsigned char *buf, int pa_enabled) {
+int p2_build_general(unsigned char *buf, int device, int pa_enabled) {
   memset(buf, 0, GENERAL_LEN);
   buf[0] = (general_sequence >> 24) & 0xFF;
   buf[1] = (general_sequence >> 16) & 0xFF;
@@ -175,13 +199,18 @@ int p2_build_general(unsigned char *buf, int pa_enabled) {
   buf[37] = 0x08;  // phase word (not frequency)
   buf[38] = 0x01;  // enable hardware timer
   buf[58] = pa_enabled ? 0x01 : 0x00;  // PA enable (np.c:684). LIVE = 0 (no-TX guarantee)
-  buf[59] = 0x01;  // enable Alex 0 — the G2E's filter board is ALEX (np.c:696);
-                   // without this the RX band-pass relays never engage → no signal
+  /* Alex enable — without it the RX band-pass relays never engage → no signal.
+   * ⛔ G1 gap (docs/RADIOS-SCOPE.md §1): Saturn/ORION2 have TWO Alex boards and
+   * need both enabled; sending 0x01 there leaves the second board dead. */
+  buf[59] = (device == NEW_DEVICE_ORION2 || device == NEW_DEVICE_SATURN)
+            ? 0x03    // enable Alex 0 and 1 (np.c:693-695)
+            : 0x01;   // enable Alex 0 — G2E/Hermes class (np.c:696)
   return GENERAL_LEN;
 }
 
-/* RX-specific packet — np.c:1609-1711, single-RX subset. n_adc=1; dither/random
- * off; enable one DDC; program its ADC(=0), sample-rate (kHz, BE) and 24 b/s.
+/* RX-specific packet — np.c:1609-1711, single-RX subset. n_adc per device (⛔ G2
+ * gap, docs/RADIOS-SCOPE.md §1: 1 on the G2E/Hermes class, 2 on Saturn/ORION2);
+ * dither/random off; enable one DDC; program its ADC(=0), rate (kHz, BE), 24 b/s.
  *
  * PureSignal (PS-1): with `ps->enabled && xmit`, the PS feedback pair replaces
  * the normal RX DDC config (np.c:1649-1668) — on the G2E the PS pair *is* the
@@ -191,13 +220,14 @@ int p2_build_general(unsigned char *buf, int pa_enabled) {
  * byte-identical to today's packet. */
 int p2_build_receive_specific(unsigned char *buf, int device, int sample_rate,
                               const p2_ps_state *ps, int xmit) {
-  int ddc = ddc_for_device(device);
+  int ddc   = ddc_for_device(device);
+  int n_adc = n_adc_for_device(device);
   memset(buf, 0, RX_SPECIFIC_LEN);
   buf[0] = (rx_specific_sequence >> 24) & 0xFF;
   buf[1] = (rx_specific_sequence >> 16) & 0xFF;
   buf[2] = (rx_specific_sequence >>  8) & 0xFF;
   buf[3] = (rx_specific_sequence      ) & 0xFF;
-  buf[4] = 1;                        // n_adc
+  buf[4] = (unsigned char)n_adc;     // n_adc (np.c:1621, radio.c:1541-1587)
   buf[5] = 0;                        // dither  (adc[0..1])
   buf[6] = 0;                        // random  (adc[0..1])
   buf[7] |= (1 << ddc);              // DDC enable bitmap
@@ -224,8 +254,8 @@ int p2_build_receive_specific(unsigned char *buf, int device, int sample_rate,
 
   if (ps && ps->enabled && xmit) {
     /* PS feedback pair (np.c:1649-1668): DDC0 ← ADC0 = analog (coupler) RX
-     * feedback; DDC1 ← "ADC number n_adc" = 1 on the G2E = the TX-DAC loopback
-     * pseudo-ADC. Both FIXED 192 kHz / 24-bit regardless of the RX rate.
+     * feedback; DDC1 ← "ADC number n_adc" = the TX-DAC loopback pseudo-ADC
+     * (1 on the G2E, 2 on a two-ADC radio like the Saturn). Both FIXED 192 kHz / 24-bit regardless of the RX rate.
      * [1363] = 0x02 = "DDC1 synchronized into DDC0" → one interleaved stream
      * on DDC0's port; enable bitmap is exactly DDC0 (piHPSDR sends 0x01 in
      * non-duplex PS TX). Overwrites the generic single-DDC block above. */
@@ -233,7 +263,7 @@ int p2_build_receive_specific(unsigned char *buf, int device, int sample_rate,
     buf[17]   = 0;                   // DDC0 ← ADC0 (rx feedback)
     buf[18]   = 0;  buf[19] = 192;   // DDC0 rate = 192 kHz, fixed
     buf[22]   = 24;
-    buf[23]   = 1;                   // DDC1 ← pseudo-ADC n_adc = 1 (TX DAC)
+    buf[23]   = (unsigned char)n_adc;  // DDC1 ← pseudo-ADC n_adc (TX DAC, np.c:1663)
     buf[24]   = 0;  buf[25] = 192;   // DDC1 rate = 192 kHz, fixed
     buf[26]   = 24;
     buf[1363] = 0x02;                // sync bitmap: DDC1 → DDC0
@@ -645,7 +675,7 @@ static void send_general(void) {
   g_mutex_lock(&tx_state_lock);
   int pa = cfg_tx_on ? cfg_tx.pa_enabled : 0;   /* PA-enable only from a live TX state */
   g_mutex_unlock(&tx_state_lock);
-  int len = p2_build_general(buf, pa);
+  int len = p2_build_general(buf, cfg_device, pa);
   send_packet(buf, len, &base_addr, base_len, "general");
   general_sequence++;
 }

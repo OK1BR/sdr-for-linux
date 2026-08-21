@@ -91,7 +91,7 @@ int main(void) {
     unsigned char buf[1500];
     int dev = NEW_DEVICE_G1;
     printf("sdrfl-rxprobe DRYRUN: device=G2E(%d) freq=%lld Hz rate=%d Hz\n\n", dev, freq, rate);
-    hexdump("General [37]=08 [38]=01", buf, p2_build_general(buf, 0), 48);
+    hexdump("General [37]=08 [38]=01", buf, p2_build_general(buf, dev, 0), 48);
     hexdump("RX-specific [4]=n_adc [7]=DDC-en [17]=adc [18/19]=rate/1k [22]=24",
             buf, p2_build_receive_specific(buf, dev, rate, NULL, 0), 48);
     hexdump("High-Priority [4]=run [9..12]=DDC0 phase",

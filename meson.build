@@ -163,6 +163,17 @@ executable('sdrfl-txprobe',
   install : false,
 )
 
+# Offline per-device Protocol-2 byte gate (S2, docs/RADIOS-SCOPE.md). Asserts the
+# Saturn/ORION2 wire differences (Alex 0+1 enable, n_adc, DDC2, band-pass knees)
+# against piHPSDR AND that the live-tested G2E / 10E packets are unchanged. This
+# is the only executable check the G2 bring-up has — we own no G2. NO radio.
+executable('sdrfl-p2dev-test',
+  ['src/p2dev_test.c'] + engine_sources,
+  include_directories : [vendor_inc, src_inc, engine_inc],
+  dependencies : engine_deps + [m_dep],
+  install : false,
+)
+
 # Offline Protocol-1 TX byte-layout gate (T1, docs/P1-TX-SCOPE.md): the P1 twin
 # of sdrfl-txprobe — asserts the C&C frames + TX IQ payload against piHPSDR and
 # that the OFF state is byte-identical to the live RX build. NO radio, NO socket.
