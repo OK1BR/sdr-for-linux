@@ -12,9 +12,12 @@
  *        rxspec[7]   = 0x04   the RX DDC is DDC2        (np.c:1627-1631)
  *        HP  [9..12] AND [17..20] carry the RX phase    (np.c:816-835)
  *        HP  alex0 band-PASS knees (the "g2class" table, np.c:1044-1069)
- *   2. The three radios we DO support are byte-identical to before this
- *      change — the real regression risk of the Saturn work is the G2E, the
- *      ANAN 10E and (P1, untouched here) the HL2, not the radio we cannot try.
+ *   2. The two P2 radios we DO support are byte-identical to before this
+ *      change. Not by sampling: for each device it ENUMERATES every byte the
+ *      RX build may set (General, RX-specific, High-Priority) and asserts that
+ *      everything else in the 1444-byte packet is zero. The real regression
+ *      risk of the Saturn work is the G2E and the ANAN 10E, not the radio we
+ *      cannot try. (The P1/HL2 path is untouched here — sdrfl-p1txprobe.)
  *
  * NO radio, NO socket — pure buffer construction. Exit 0 = every check passes.
  *
@@ -90,6 +93,14 @@ static void device_pass(const char *label, int dev, int alex_en, int n_adc,
 
   /* ---- RX-specific ------------------------------------------------------ */
   p2_build_receive_specific(buf, dev, 192000, NULL, 0);
+  {
+    /* Enumerate EVERY byte the RX build may set, so "unchanged" is literal:
+     * anything outside this list must be zero. */
+    const int allow[] = { 4, 5, 6, 7, 17 + ddc * 6, 18 + ddc * 6,
+                          19 + ddc * 6, 20 + ddc * 6, 21 + ddc * 6, 22 + ddc * 6 };
+    only_these_nonzero("rxspec: no byte outside the DDC block",
+                       buf, 1444, allow, (int)(sizeof allow / sizeof allow[0]));
+  }
   chk("rxspec[4] n_adc",                buf[4], n_adc);
   chk("rxspec[5] dither off",           buf[5], 0);
   chk("rxspec[6] random off",           buf[6], 0);
@@ -109,6 +120,17 @@ static void device_pass(const char *label, int dev, int alex_en, int n_adc,
   chk("hp alex0 40 m knee + ANT1",      be32(buf + 1432), alex0_40m | 0x01200000u);
   chk("hp alex1 = LPF|ANT1 (no relay)", be32(buf + 1428), 0x01200000u);
   chk("hp[1443] ADC0 attenuator",       buf[1443], 0);
+  {
+    /* Same enumeration for the High-Priority packet: run bit, the DDC0 phase,
+     * the real DDC slot, and the two Alex words — nothing else. */
+    int allow[24], n = 0;   /* 1 run + 4 DDC0 + 4 DDC-slot + 4 + 4 alex = 17 */
+    allow[n++] = 4;
+    for (int i = 0; i < 4; i++) { allow[n++] = 9 + i; }
+    for (int i = 0; i < 4; i++) { allow[n++] = 9 + ddc * 4 + i; }
+    for (int i = 0; i < 4; i++) { allow[n++] = 1428 + i; }
+    for (int i = 0; i < 4; i++) { allow[n++] = 1432 + i; }
+    only_these_nonzero("hp: no byte outside run/phase/alex", buf, 1444, allow, n);
+  }
 
   /* Park packet (run=0): both Alex words zero → antenna relay released. */
   p2_build_high_priority(buf, dev, F40, 0, NULL, NULL);
