@@ -306,15 +306,33 @@ An attempted removal broke the Ubuntu container build and was reverted
 Next per the agreed plan: **the EQ milestone, step 1 — WDSP EQ audit.** P1 PureSignal
 milestone (multi-RX P1 link, RX3/RX4 feedback); 10E leftovers (pa_cal
 remaining bands ~32-34, digi TX meter live check); Square SDR bring-up;
-**more radios — QUEUED here, right behind the Square SDR bring-up, and
-HARDWARE-BLOCKED** (`docs/RADIOS-SCOPE.md`, SCOPED 2026-08-20): unlock the
-ANAN G2/Saturn over the P2 path we already ship, ORION2 (7000/8000/DLE 7000)
-behind it. The seven wire gaps, the TX profile (⭐ `ps_setpk` 0.6121, NOT
-0.2899) and the XDMA path we rejected are all audited there — **resume at
-§3 step S1**, nothing before it needs research. ⛔ Two standing rules from
-that doc: no device joins any whitelist without a live test on that
-physical radio, and no volunteer is contacted before the S1/S2 code exists
-(a request with nothing to test has no value);
+**★ ANAN G2 / Saturn RX — S1-S3 DONE 2026-08-21** (branch `g2-rx-bringup`,
+merged through a **PR**, not a direct push — deliberate, see below):
+`radio_supported()` now accepts `NEW_DEVICE_SATURN` for **RX ONLY**, the
+two wire gaps are implemented (general `[59]=0x03` = Alex 0+1, `n_adc=2`
+→ also the PS pseudo-ADC index; DDC2 + the band-pass knees already
+branched on SATURN), and everything is pinned by a new offline gate
+`sdrfl-p2dev-test` (107 checks, in CI) that ALSO asserts the G2E/10E
+packets are unchanged. ⛔ `radio_tx_supported()` / `radio_ps_supported()`
+untouched → TX runtime never starts, the three no-TX guarantees hold by
+construction. `radio_tx_profile()` gained a `saturn` entry anyway, NOT to
+transmit: without it a Saturn session would write TX-cal keys into the
+G2E's `[tx]` group (`settings_save`) — `[tx-saturn]` isolates it and
+pre-stages the audited piHPSDR numbers (PA_100W, ANAN-7000 wattmeter
+branch, ⭐ `ps_setpk` 0.6121). ⛔ **This is the ONE sanctioned exception
+to "live test before whitelist"** (Richard 2026-08-21, RADIOS-SCOPE
+§PRIORITY) — we own no G2; RX is what a remote operator can safely test,
+TX is not. ⛔ **G4 from the scope was WRONG and is withdrawn**: our footer
+"Att" is the ADC step attenuator (HP byte 1443), which the Saturn HAS
+(`have_rx_att = 1`, radio.c:1359-1366); only the ALEX 0/10/20/30 dB bank
+is missing and we never had that control. Still owed: the first live pass
+on a real G2 — the exact commands + expected outputs are RADIOS-SCOPE §7,
+and ⚠️ the probes are `install : false`, so a release artifact carries only
+the GUI. Behind it: ORION2 (7000/8000/DLE 7000) is now a whitelist + live
+test away (its wire bytes ride along, gated in the same test).
+⛔ Standing rule from that doc, unchanged: no volunteer is contacted before
+there is something concrete to test (a request with nothing to test has no
+value);
 10E PS via Thetis sequencing (TX-DESIGN §9, risky). (TX EQ folded into
 the equalizer milestone above. RTTY leftovers DEFERRED 2026-08-16 —
 parked in docs/RTTY-SCOPE.md, see the status entry below; needs an RTTY

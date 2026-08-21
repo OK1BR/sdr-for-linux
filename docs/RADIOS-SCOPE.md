@@ -4,10 +4,23 @@ Companion to `docs/P2-RX-SCOPE.md` (the P2 link this rides on),
 `docs/P1-SCOPE.md` (how a second radio family was brought up) and
 `docs/TX-SAFETY.md` (what TX costs before it may be enabled).
 
-**Status: SCOPED 2026-08-20 — no code written, no radio on hand.** This
-document exists so the next bring-up starts from an audit instead of from
-scratch, and so the hardware question can be asked with a concrete plan
-attached.
+**Status: SCOPED 2026-08-20; S1-S3 IMPLEMENTED 2026-08-21** on branch
+`g2-rx-bringup` (PR into `main`), still with **no G2 on hand**. The ANAN G2 /
+Saturn is now connectable for **RX only**; TX and PureSignal stay locked. The
+per-device wire bytes come from piHPSDR and are pinned by the offline gate
+`sdrfl-p2dev-test` (107 checks) — that gate is the whole of the evidence until
+someone with the radio runs the probes. What is done, and what is not:
+
+| | |
+|---|---|
+| S1 device profile + picker | ✅ was already there (`discovery_p2.c:353-356` names it "Saturn/G2") |
+| S2 wire conditionals (G1 Alex 0+1, G2 n_adc, DDC2, band-pass) | ✅ code + offline gate; ⏳ the three headless probes need the radio |
+| S3 whitelist += SATURN (RX only) | ✅ connect whitelist only; ⏳ live tuning + filter relays unconfirmed |
+| G4 "drop the Att control" | ❌ **withdrawn — it was a misreading**, see §1 |
+| S4 / S5 (TX, PureSignal) | ⛔ untouched, and not remotely testable |
+
+Everything below is the audit the implementation was taken from; it stays as
+written so the next person can re-check our bytes against upstream.
 
 ## ⭐⭐ PRIORITY (Richard, 2026-08-21) — this is now the front of the queue
 
@@ -32,6 +45,7 @@ tuning, the band-pass relays, and the three headless probes.
 ⛔ **Implementation does not happen from the `work` session.** Richard,
 2026-08-21: this must be done by the proper project agent. This block is a
 handover note and a priority marker — it is not a licence to write code.
+(Done 2026-08-21 by the project agent on `g2-rx-bringup`.)
 
 **Definition of done for the reply to `#1`:** a build W1IZZ can install, a
 named probe to run, and the output we expect back. Until all three exist,
@@ -75,13 +89,15 @@ almost every branch cited below. One bring-up, two families in reach.
 | G1 | **Alex 0+1 enable.** Saturn/ORION2 need general byte `[59] = 0x03`; a G2E has one Alex board and needs `0x01`. | `protocol2.c:178` hardcodes `0x01` (the comment already flags this) | np.c:693-697 |
 | G2 | **Two ADCs.** G2E is `n_adc = 1`; Saturn falls through to the `default:` branch and is `n_adc = 2`. | `protocol2.c:200` hardcodes `buf[4] = 1` | `radio.c`:1564-1584 |
 | G3 | **ADC1 band-pass word.** Saturn/ORION2 program band-pass filters for ADC0 *and* ADC1, the second in `alex1`. | we only build `alex0` (`protocol2.c:341-365`) | np.c:1073-1120 |
-| G4 | **No Alex attenuators.** ANAN-7000/8000 and Saturn have none — the footer Att control must go away on this class (the way the HL2 got an LNA slider instead). | Att is unconditional today | np.c:993 |
+| G4 | ❌ **WITHDRAWN 2026-08-21 — this row was wrong.** True statement: the Saturn has no *ALEX* attenuator (the 0/10/20/30 dB relay bank in the alex0 word, np.c:991-1010, gated on `have_alex_att`). But our footer "Att" is the **ADC step attenuator** (0-31 dB, HP byte 1443) — and piHPSDR sets `have_rx_att = 1` for `NEW_DEVICE_SATURN` (radio.c:1359-1366), exactly as for the G2E. The control stays; dropping it would have been a regression on a radio we cannot test. We never had an ALEX-attenuator control to remove. | Att (step attenuator) is correct as-is | radio.c:1359-1366, np.c:991 |
 | G5 | **XVTR relay + speaker-amp mute** live in high-priority byte 1400 for ORION2/Saturn only. | not built | np.c:939-966 |
 | G6 | **RX antenna encoding** — this class adds 100 to `rxant`, and the "new PA board" +1000 path must stay off. | G2E already takes the +100 path | np.c:1288-1300 |
 | G7 | **TX LPF is not used on RX** for G1/ORION2/SATURN (the RX signal goes through band-pass, not the TX low-pass). | matches our G2E behaviour | np.c:1224-1232 |
 
-None of G1-G7 is deep work. G1/G2 are one conditional each; G3 only
-matters once RX2 exists; G4-G5 are GUI-level.
+None of G1-G7 is deep work. G1/G2 are one conditional each **and are now
+implemented** (`protocol2.c`, `n_adc_for_device()` + the `[59]` branch, gated
+by `sdrfl-p2dev-test`); G3 only matters once RX2 exists; G4 turned out to be a
+misreading (above); G5 is GUI/HP-level and still open.
 
 ## 2. TX profile for the G2/Saturn — ⛔ do not guess these
 
@@ -108,13 +124,21 @@ this section):
 - **Config group** `"tx-saturn"` — per the existing rule that PA
   calibration is per radio and must never leak between models.
 
+**Implemented 2026-08-21 (with TX still locked):** all of the above now sits
+in `radio_tx_profile()` as the `saturn` entry. That is deliberate and is *not*
+a TX unlock — `radio_tx_supported()` refuses the Saturn, so nothing reads
+these numbers to key the radio. The entry exists because `settings_save()`
+writes TX-cal keys into the connected radio's config group: without it a
+Saturn RX session would fall through to the G2E profile and overwrite `[tx]`,
+the live-calibrated G2E section. Config isolation first, TX later.
+
 ## 3. Bring-up gates (same ladder as P1/P2, nothing skipped)
 
 | Step | Content | Gate |
 |---|---|---|
-| S1 | Device profile + picker: name the row, keep it refused until S2 passes | picker shows "Saturn/G2", still greyed |
-| S2 | RX: G1+G2 conditionals, then the three headless probes | `sdrfl-rxprobe` / `sdrfl-panprobe` / `sdrfl-audioprobe` live on the radio |
-| S3 | GUI: connect whitelist += SATURN (RX only), Att control dropped (G4), band-pass class confirmed on air | live tuning + filter relays confirmed by the operator |
+| S1 ✅ | Device profile + picker: name the row, keep it refused until S2 passes | picker shows "Saturn/G2", still greyed |
+| S2 ✅/⏳ | RX: G1+G2 conditionals, then the three headless probes | code + `sdrfl-p2dev-test` done here; `sdrfl-rxprobe` / `sdrfl-panprobe` / `sdrfl-audioprobe` still owed by whoever has the radio |
+| S3 ✅/⏳ | GUI: connect whitelist += SATURN (RX only), ~~Att control dropped (G4)~~, band-pass class confirmed on air | whitelist done (RX only, TX/PS refused); live tuning + filter relays still unconfirmed |
 | S4 | ⛔ TX: full `docs/TX-SAFETY.md` checklist into a dummy load on that physical radio, `[tx-saturn]` starting at PA off + 1 W | dry-key → 1 W → walk-in, per TX-DESIGN §7/§8 |
 | S5 | PureSignal with `ps_setpk = 0.6121` + the 8.5 dB offset | PS gates from `docs/PS-SCOPE.md` |
 
@@ -163,3 +187,49 @@ and the DLE 7000 (ORION2-class) for the follow-on.
 - Older P1 boards (HL1, Metis, Hermes) — the P1 link exists since
   `docs/P1-SCOPE.md`, so these are a whitelist + profile question too, but
   they are old hardware with no volunteer attached.
+
+## 7. First live confirmation on a real G2 — the exact ask
+
+S2/S3 shipped without a live gate, so this is what turns "should work" into
+"works". Written down here so the request to whoever has the radio carries a
+command and an expected output, never a question mark.
+
+⛔ **The probes are dev-tree binaries** (`install : false` in `meson.build`) —
+a release AppImage/.deb carries only the GUI. So either the tester builds from
+source, or the first pass is GUI-only (which is still worth having: discovery,
+picker row, tuning, band relays audible). Decide per tester; do not send a
+probe name that their download does not contain.
+
+From a source build (`meson setup build && meson compile -C build`), radio at
+`<IP>`, on a band with signals — 40 m at night, 20 m by day:
+
+```sh
+# 1. discovery — must NAME the radio, not just find an address
+./build/sdrfl-discover
+#    expect: "Saturn/G2" ... Protocol 2 ... status 2 (idle)
+
+# 2. RX IQ — the G1/G2 wire conditionals in one number
+SDRFL_RADIO_IP=<IP> SDRFL_FREQ=7100000 SDRFL_RATE=192000 SDRFL_SECS=5   ./build/sdrfl-rxprobe
+#    expect: "effective rate ~192000 Hz" and "IQ RMS" WELL above 0
+#    ⛔ rate right but RMS ~0 / -90 dBFS = the link is fine and the RF path is
+#       not: that is the Alex-enable ([59]=0x03) or antenna-relay class of bug,
+#       exactly the "deaf RX" signature we hit on the G2E (c4b9243)
+
+# 3. panadapter — the analyzer end to end
+SDRFL_RADIO_IP=<IP> SDRFL_FREQ=7100000 RENDER_OUT=/tmp/pan.png   ./build/sdrfl-panprobe
+#    expect: dBm floor around -120..-100 with peaks above it; /tmp/pan.png
+#            shows a noise floor with signals, not a flat line
+
+# 4. audio
+SDRFL_RADIO_IP=<IP> SDRFL_FREQ=7100000 SDRFL_RATE=192000 SDRFL_MODE=cw   ./build/sdrfl-audioprobe
+#    expect: audible signals, no dropout messages
+```
+
+Then the GUI (`./build/sdr-for-linux`): the picker row must read **"RX only"**
+(not "Not supported yet"), tuning across bands must click the band-pass relays
+audibly, and **no TX control may be usable** — a toast says TX has not been
+brought up for this model. If a TX control CAN be operated, stop and report:
+that is a whitelist bug, not a feature.
+
+Sample rates worth one pass each: 192 k and 1536 k (the P2 maximum) — the
+n_adc/DDC2 change touches the RX-specific packet both carry.
