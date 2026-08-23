@@ -2961,9 +2961,9 @@ static GtkWidget *build_controls(App *app) {
 
   /* Band buttons — jump the VFO. */
   static const struct { const char *l; int f; } bands[] = {
-    {"160", 1840000}, {"80", 3600000}, {"40", 7074000}, {"20", 14074000},
-    {"17", 18100000}, {"15", 21074000}, {"12", 24915000}, {"10", 28074000},
-    {"6", 50313000},
+    {"160", 1840000}, {"80", 3600000}, {"60", 5357000}, {"40", 7074000},
+    {"30", 10136000}, {"20", 14074000}, {"17", 18100000}, {"15", 21074000},
+    {"12", 24915000}, {"10", 28074000}, {"6", 50313000},
   };
   GtkWidget *bandbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_add_css_class(bandbox, "linked");

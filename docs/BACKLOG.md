@@ -112,7 +112,7 @@ the tester but not a fix.
 report, not a measurement.
 
 ### SDR-2 — No band buttons for 60 m and 30 m
-- **Type:** bug · **Severity:** medium · **Status:** open
+- **Type:** bug · **Severity:** medium · **Status:** done (2026-08-23)
 - **Source:** W1IZZ, GitHub `gh#3`, 2026-08-22 — **not answered yet**
 
 The tester found no way to switch to 60 m or 30 m, so he could not power-
@@ -120,6 +120,17 @@ calibrate them either. **Confirmed in the code:** the band button list at
 `gui.c:2963` is 160/80/40/20/17/15/12/10/6, while `bandplan.c:58` and
 `bandplan.c:60` both know 60 m and 30 m, with segments and regional limits.
 The bands exist everywhere except in the row of buttons.
+
+**Resolution (2026-08-23):** the two entries added to the header-bar band list
+(`{"60", 5357000}`, `{"30", 10136000}`, the `BANDS[].dflt` frequencies), nothing
+else needed changing. Checked headless (broadway + isolated config): all eleven
+buttons lay out, nothing clipped. Side effect worth knowing: the window's
+**minimum width grows from 1618 to 1704 px** (two more 43 px buttons) — on a
+1680 px-wide screen the window no longer fits unscrolled; a compact band row or
+an overflow is a design call for later, not done here. Not clicked on a live
+radio (the click path is the shared `on_band_clicked()`). Reviewer note for a
+follow-up item: 60 m defaults to LSB by the `< 10 MHz` rule in `gui.c`, while
+piHPSDR's 60 m bandstack is USB/CWU and 5357 kHz is the FT8 (USB) dial.
 
 ### SDR-3 — GtkImage baseline warnings flood stderr, non-deterministically
 - **Type:** bug · **Severity:** low · **Status:** open (diagnose first)
