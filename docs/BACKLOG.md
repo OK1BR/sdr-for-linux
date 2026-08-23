@@ -214,6 +214,17 @@ against the G2E (TX-DESIGN §10):** at most ONE `DUC sequence errors: N (+1)`
 line within ~1 s of `p2: started`, never a second one, never one later; the
 baseline's N settles the origin. Not verified on the radio yet.
 
+### SDR-7 — 60 m defaults to LSB; the band is USB/CWU
+- **Type:** bug · **Severity:** low · **Status:** open
+- **Source:** review of SDR-2, 2026-08-23
+
+The per-band default mode comes from the `< 10 MHz → LSB` rule at the band
+table init in `gui.c` (`band_mode` seed), so the first press of the new 60 m
+button lands in LSB. piHPSDR's 60 m bandstack entries are USB/CWU
+(`band.c`), and 5357 kHz is the FT8 (USB) dial. A default change alone would
+not fix a config that already persists `60m=…/0/…` (0 = LSB) — decide how to
+treat an already-saved LSB on 60 m (migrate once, or only change the seed).
+
 ## Deferred
 
 ### SDR-5 — ANAN 10E reports a 169.254.x.x address
