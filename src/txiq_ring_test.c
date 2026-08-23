@@ -27,6 +27,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -296,6 +297,61 @@ int main(void) {
     p2_rx_stop();
     p2_txiq_ring_debug(&live, NULL, NULL, NULL);
     chk("after live producer: gate closed (live)", live, 0);
+  }
+
+  /* ---- 6. inbound: the DUC seq-error tripwire is G2E-only (SDR-8) -------
+   * The fake radio sends a High-Priority *status* packet from 127.0.0.1:1025
+   * (the listener dispatches by source port) to the host's data socket,
+   * learned from the source address of a DUC packet. Bytes 32-35 carry
+   * 0x01020304. On the G2E (NEW_DEVICE_G1) the parser must take it as the
+   * counter; on the Saturn (NEW_DEVICE_SATURN) those bytes are p2app FIFO
+   * telemetry (OutHighPriority.c, protocol V4.3) and must be ignored —
+   * W1IZZ's G2 printed ~5 garbage "DUC sequence errors" lines a second. */
+  {
+    printf("[6] inbound HP status: seq-error counter parsed on G2E only\n");
+    int hp = socket(AF_INET, SOCK_DGRAM, 0);
+    setsockopt(hp, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes);
+    struct sockaddr_in ha; memset(&ha, 0, sizeof ha);
+    ha.sin_family = AF_INET; ha.sin_port = htons(1025);
+    ha.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(hp, (struct sockaddr *)&ha, sizeof ha) < 0) {
+      perror("bind 127.0.0.1:1025"); return 2;
+    }
+    unsigned char status[60]; memset(status, 0, sizeof status);
+    status[32] = 0x01; status[33] = 0x02; status[34] = 0x03; status[35] = 0x04;
+
+    for (int pass = 0; pass < 2; pass++) {
+      dev.device = pass == 0 ? NEW_DEVICE_G1 : NEW_DEVICE_SATURN;
+      const char *who = pass == 0 ? "G2E" : "Saturn";
+      if (p2_rx_start(&dev, 14000000, 192000, on_iq, NULL) != 0) {
+        printf("  FAIL  p2_rx_start (%s) failed\n", who); return 2;
+      }
+      /* one DUC packet → the source address tells us the host's port */
+      emit_seq(5000 + pass);
+      struct sockaddr_in host; socklen_t hl = sizeof host;
+      unsigned char buf[1500];
+      struct pollfd pf = { radio, POLLIN, 0 };
+      int got = poll(&pf, 1, 500) > 0 &&
+                recvfrom(radio, buf, sizeof buf, 0, (struct sockaddr *)&host, &hl) == 1444;
+      char label[96];
+      snprintf(label, sizeof label, "inbound %s: learned the host port from a DUC packet", who);
+      chk(label, got, 1);
+      int have = -1; unsigned last = 0;
+      if (got) {
+        sendto(hp, status, sizeof status, 0, (struct sockaddr *)&host, hl);
+        g_usleep(150000);                       /* listener thread parses it */
+        p2_seqerr_debug(&have, &last);
+      }
+      snprintf(label, sizeof label, "inbound %s: counter %s", who,
+               pass == 0 ? "parsed (have=1)" : "IGNORED (have=0)");
+      chk(label, have, pass == 0 ? 1 : 0);
+      if (pass == 0) {
+        chk("inbound G2E: counter value = bytes 32-35 (0x01020304)", (long)last, 0x01020304L);
+      }
+      p2_rx_stop();
+    }
+    close(hp);
+    dev.device = NEW_DEVICE_G1;
   }
 
   close(radio);

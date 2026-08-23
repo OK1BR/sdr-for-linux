@@ -649,6 +649,11 @@ void p2_txiq_ring_debug(int *live, int *queued, int *prelink, int *sent) {
   if (sent)    { *sent    = g_atomic_int_get(&txiq_sent); }
 }
 
+/* Offline-test view of the DUC sequence-error tripwire (SDR-8): whether a
+ * status packet has been parsed for the counter on this link, and the last
+ * value seen. Listener-thread statics read unlocked — test-only snapshot. */
+void p2_seqerr_debug(int *have, unsigned *last);
+
 static gpointer txiq_thread(gpointer data) {
   (void)data;
   double fifo = 0.0;                    /* samples we are ahead of the DUC */
@@ -1007,6 +1012,11 @@ static void decode_ps_iq(const unsigned char *buffer, int len) {
 static unsigned last_seqerr;   /* DUC seq-error counter, last value seen (listener) */
 static int      have_seqerr;   /* 0 until the first status packet of THIS link      */
 
+void p2_seqerr_debug(int *have, unsigned *last) {
+  if (have) { *have = have_seqerr; }
+  if (last) { *last = last_seqerr; }
+}
+
 static void parse_high_priority_status(const unsigned char *buf, int len) {
   if (len < 60) { return; }               /* need through the analog words + byte 59 */
 
@@ -1073,8 +1083,20 @@ static void parse_high_priority_status(const unsigned char *buf, int len) {
    * on a live log. Pre-fix the log showed "2 (+1)" once per start on every
    * run (YO DX HF 2026-08-22/23, CONTEST-NOTES-2026-08-22 §N2); the live
    * check for this fix is therefore: no SECOND line, and no line at all
-   * later in the run. */
-  if (len > 35) {
+   * later in the run.
+   *
+   * ⛔ G2E ONLY (SDR-8, 2026-08-23). The counter at bytes 32-35 is a C10
+   * gateware feature; on the ANAN G2 / Saturn the p2app firmware puts
+   * "protocol V4.3" FIFO telemetry there instead — byte 30 FIFO-overflow bits,
+   * 31-32 DDC FIFO depth, 33-34 mic FIFO depth, 35-36 DUC FIFO depth, 37-38
+   * speaker FIFO depth, 39-42 ADC peak holds (laurencebarker/Saturn
+   * sw_projects/P2_app/OutHighPriority.c, wr_be_u16(UDPBuffer+31..41)), so
+   * reading them as a u32 counter printed ~5 garbage "DUC sequence errors"
+   * lines per second on W1IZZ's G2 (gh#3 probe logs). piHPSDR reads none of
+   * these bytes. Other P2 gateware (Hermes-class 10E) is undocumented here →
+   * the parse is enabled for the G2E alone until another model's bytes 32-35
+   * are shown to be that counter. */
+  if (len > 35 && cfg_device == NEW_DEVICE_G1) {
     unsigned se = ((unsigned)buf[32] << 24) | ((unsigned)buf[33] << 16) |
                   ((unsigned)buf[34] << 8) | (unsigned)buf[35];
     if (!have_seqerr) {

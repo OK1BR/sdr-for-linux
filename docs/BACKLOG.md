@@ -225,6 +225,26 @@ button lands in LSB. piHPSDR's 60 m bandstack entries are USB/CWU
 not fix a config that already persists `60m=…/0/…` (0 = LSB) — decide how to
 treat an already-saved LSB on 60 m (migrate once, or only change the seed).
 
+### SDR-8 — "p2: DUC sequence errors" spam on the ANAN G2 (bytes 32-35 are not a counter there)
+- **Type:** bug · **Severity:** low · **Status:** done (2026-08-23)
+- **Source:** W1IZZ's probe logs in `gh#3` (both ODT sets), found while evaluating SDR-6
+
+Every one of his probe runs printed ~5 lines a second like `p2: DUC sequence
+errors: 570431232 (+553588224)` — 32-bit garbage, changing every status
+packet. Root cause, from the primary source (laurencebarker/Saturn
+`sw_projects/P2_app/OutHighPriority.c`, "protocol V4.3"): on the Saturn the
+High-Priority status bytes 30-42 carry FIFO telemetry — byte 30 overflow
+bits, 31-32 DDC FIFO depth, 33-34 mic FIFO depth, 35-36 DUC FIFO depth,
+37-38 speaker FIFO depth, 39-42 ADC peak holds. The sequence-error counter at
+bytes 32-35 is a C10 (G2E) gateware feature and piHPSDR reads none of these
+bytes. **Fix:** the parser (and the SDR-4 baseline line) is enabled for
+`NEW_DEVICE_G1` only; pinned by phase 6 of `sdrfl-txiq-ring-test` (a fake
+HP-status packet from 127.0.0.1:1025 — G2E parses 0x01020304, Saturn ignores;
+46 checks; mutation-checked: without the gate the Saturn case fails). Other P2
+gateware (10E) stays unparsed until its bytes 32-35 are shown to be that
+counter. Idea for later: read the Saturn's V4.3 FIFO words as real telemetry
+(DUC FIFO depth + overflow bits = a better tripwire than the G2E's counter).
+
 ## Deferred
 
 ### SDR-5 — ANAN 10E reports a 169.254.x.x address

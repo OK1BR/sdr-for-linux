@@ -310,6 +310,12 @@ void p2_txiq_ring_stats_take(int *drops);
  */
 void p2_txiq_ring_debug(int *live, int *queued, int *prelink, int *sent);
 
+/* Offline-test view of the DUC sequence-error tripwire (SDR-8): `have` = a
+ * status packet has been parsed for the counter on this link (G2E only — on
+ * the Saturn bytes 32-35 are p2app FIFO telemetry and are never parsed as
+ * the counter), `last` = the last counter value seen. Either may be NULL. */
+void p2_seqerr_debug(int *have, unsigned *last);
+
 /*
  * N2 (2026-07-12): the radio's continuous mic stream (port 1026, 48 kHz) is
  * the TX chain's sample clock — Thetis/piHPSDR parity, same master clock as
