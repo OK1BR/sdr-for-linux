@@ -26,7 +26,7 @@ in per-topic documents: `P2-RX-SCOPE.md`, `P1-SCOPE.md`, `P1-TX-SCOPE.md`,
 
 ```
 ### SDR-N — one-line title
-- **Type:** bug | idea | debt · **Severity:** high | medium | low · **Status:** open | doing | done | deferred
+- **Type:** bug | idea | debt | task · **Severity:** high | medium | low · **Status:** open | doing | done | deferred
 - **Source:** who/where/when
 - **Detail:** pointer to the full write-up
 Short statement of the problem and where in the code it lives.
@@ -37,6 +37,58 @@ that leaves the machine wrong; `medium` = gets in the operator's way;
 `low` = cosmetic or log noise.
 
 ---
+
+## Open — tasks
+
+### SDR-6 — Evaluate W1IZZ's G2 test results and close out the bring-up
+- **Type:** task · **Severity:** high · **Status:** open
+- **Source:** W1IZZ, GitHub `gh#3` ("G2 testing"), 2026-08-22
+- **Detail:** `docs/RADIOS-SCOPE.md` (S2–S5 status table and its ⛔ note)
+
+This is the return `RADIOS-SCOPE.md` has been waiting for. The G2 / Saturn was
+unlocked for RX, TX and PureSignal on 2026-08-21 **with no G2 on hand**: every
+per-device value came from piHPSDR and is pinned only by the offline gate
+`sdrfl-p2dev-test`. The document says it plainly — *"Unlocked is not verified.
+Until §7 comes back from a real G2, this model's wattmeter calibration, PA
+calibration and PS feedback scaling are piHPSDR's starting values, not
+measurements."* W1IZZ walked that path and sent the results back. Nobody has
+gone through them yet.
+
+What he supplied in `gh#3`:
+
+- **`sdr-linux-RX probes.odt`** — the headless probe set, run into a **dummy
+  load**. He then noticed the instructions expect an antenna, so this set may
+  not be usable as-is; deciding that is part of this item.
+- **`Probes with antenna connected.odt`** — the same probes re-run with an
+  antenna on RX1.
+- **Power calibration settings** and a screenshot of the running app.
+
+What he reports in prose, each of which needs turning into a verdict rather
+than being taken on trust: power calibration completed without trouble, the
+readings within 1–2 W of an LP-100A on a dummy load; SWR matching external
+equipment; PureSignal "appeared to be working correctly"; a DX contact made
+barefoot with a good signal report and audio called good. Two things came back
+as defects and are already tracked separately — **SDR-1** (supply voltage) and
+**SDR-2** (no 60 m / 30 m buttons).
+
+The work:
+
+1. Read both probe documents against the expected output in
+   `docs/P2-RX-SCOPE.md` and `docs/ENGINE-IMPORT.md` — sample count, rate and
+   RMS — and decide whether the dummy-load set counts for anything.
+2. Settle the ⏳ rows in the S2–S5 table: the three headless probes, live
+   tuning and filter relays, the live half of `docs/TX-SAFETY.md` §7, and
+   whether S5 PureSignal may come off its default-OFF.
+3. Decide what his measurements say about the piHPSDR-derived constants —
+   wattmeter, PA calibration, `ps_setpk` 0.6121 — and whether the ⛔ note in
+   `RADIOS-SCOPE.md` can come down or must stay.
+4. Then answer him in the issue, with the verdict and with whatever the next
+   step is. Per the standing rule in `RADIOS-SCOPE.md` §5, a volunteer is
+   contacted with a build, a probe and an expected output — never with a
+   thank-you note and a question mark.
+
+Until this is done the G2 stays "unlocked, not verified", and that wording has
+to be used wherever the radio is announced.
 
 ## Open — bugs
 
@@ -123,6 +175,8 @@ hardware):
 
 Both radios are physically here, so bring-up on real hardware is possible.
 
-Ahead of all of it: **SDR-1 and SDR-2 are an outside tester's findings on
-hardware we do not have.** That is the scarce resource in this project, and the
-issue has been sitting unanswered since 2026-08-22.
+Ahead of all of it: **`gh#3` is an outside tester's whole run on hardware we do
+not have.** That is the scarce resource in this project — SDR-6 turns it into a
+verdict, SDR-1 and SDR-2 are the two defects it already surfaced, and none of
+the three has been answered since 2026-08-22. The G2 cannot be called supported
+until SDR-6 is closed.
