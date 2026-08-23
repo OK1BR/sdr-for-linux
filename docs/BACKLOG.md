@@ -41,7 +41,7 @@ that leaves the machine wrong; `medium` = gets in the operator's way;
 ## Open — tasks
 
 ### SDR-6 — Evaluate W1IZZ's G2 test results and close out the bring-up
-- **Type:** task · **Severity:** high · **Status:** evaluated 2026-08-23 — steps 1–3 done; step 4 (the answer in `gh#3`) waits until Richard has tried the fixes himself on the G2E and a release carries them — no reply before that (Richard, 2026-08-23)
+- **Type:** task · **Severity:** high · **Status:** evaluated 2026-08-23; fixes tried by Richard on the G2E the same evening and released as **v0.4.2**; step 4 (the answer in `gh#3`) drafted against v0.4.2, awaiting Richard's approval to post
 - **Source:** W1IZZ, GitHub `gh#3` ("G2 testing"), 2026-08-22
 - **Detail:** `docs/RADIOS-SCOPE.md` (S2–S5 status table and its ⛔ note)
 

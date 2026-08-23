@@ -287,6 +287,30 @@ TX Mic/Lev/ALC meter got the S-meter ballistics idiom (eadab5f).
 Rejected on measurement: 1-2 kHz side-chain detector filter — Richard's
 quiet speech loses more there (~20 dB) than his fan noise (14.7 dB).
 
+**★ RELEASED 2026-08-23: v0.4.2 — the ANAN G2 first-test maintenance
+release.** Same-day turnaround on W1IZZ's gh#3 run: SDR-1 (per-model supply
+voltage; Saturn = HP-status bytes 57-58 × 0.02553 per piHPSDR + Thetis, still
+unconfirmed on a G2), SDR-2 (60/30 m buttons), SDR-4 (TX-IQ ring gated on the
+live link + baseline line; ⛔ the live-healthy signature is now *at most one*
+`DUC sequence errors: N (+1)` right after `p2: started` — the radio itself
+counts 1 at run=1 before our first packet — and NEVER a line later), SDR-8
+(the seq-error parser is G2E-only: Saturn bytes 30-42 are p2app "V4.3" FIFO
+telemetry), SDR-3 (GtkImage INT_MIN warnings = GTK/Pango NaN baseline,
+docs only), SDR-6 (his results evaluated → RADIOS-SCOPE §7.1; G2 status
+"first live pass by an external tester, not calibrated by us"). Checklist
+walked: 11 offline gates, CI dry-run, headless About = 0.4.2, Richard's live
+pass on the G2E with the release tree (2.8 h, 85 FT8/FT4 overs, SWR 1.0–1.2,
+one lost RX UDP packet in ~50 M), notes EN+CZ approved, tag CI attached all
+three artifacts, public AppImage reports 0.4.2, PKGBUILD 0.4.2-1 makepkg-
+built + namcap clean (AUR host key unchanged). ⛔ Lessons: (1) **never ask an
+outside tester to try anything before Richard has tried it himself and a
+release carries it** — a `main` tip is not a build to hand out; (2) the
+headless broadway + headless-Chrome recipe (memory
+`headless-gui-broadway-smoke`) is the cheap GUI smoke — isolate
+XDG_CONFIG_HOME or the app rewrites the real config.ini at exit. New low
+items from the pass: SDR-7 (60 m defaults to LSB), SDR-9 (over-stats "mic
+drops" after TUNE).
+
 **★ RELEASED 2026-08-21: v0.4.1 — the ANAN G2 (Saturn) release.** Cut for
 W1IZZ to test (issue #1) but published as a normal release, Richard's call —
 which also settles the question the plan left open: a plain version tag means
