@@ -150,7 +150,7 @@ follow-up item: 60 m defaults to LSB by the `< 10 MHz` rule in `gui.c`, while
 piHPSDR's 60 m bandstack is USB/CWU and 5357 kHz is the FT8 (USB) dial.
 
 ### SDR-3 — GtkImage baseline warnings flood stderr, non-deterministically
-- **Type:** bug · **Severity:** low · **Status:** open (diagnose first)
+- **Type:** bug · **Severity:** low · **Status:** done — diagnosed, upstream GTK/Pango, no code change (2026-08-23)
 - **Source:** stderr of the YO DX HF runs, 2026-08-22 / 23
 - **Detail:** `docs/CONTEST-NOTES-2026-08-22.md` §N1
 
@@ -164,6 +164,24 @@ deterministic across runs. **Do not fix blind:** first a backtrace under `gdb`
 with `G_DEBUG=fatal-warnings`, which also settles whether the cause is ours or
 a GTK 4.22 regression. The full write-up lives in the skimmer's notes
 (`skimmer-for-linux/docs/CONTEST-NOTES-2026-08-22.md` §N2).
+
+**Resolution (2026-08-23, `CONTEST-NOTES-2026-08-22.md` "N1 — rozbor"):** the
+numbers above were off — it is 64 warnings, all reporting a baseline of
+`-2147483648` (INT_MIN, not −1), from 32 GtkImage addresses twice each, in ONE
+70 ms burst mid-run; day 2 has none. That value is the signature of GTK's own
+`gtk_image_measure()` (4.22.4 `gtkimage.c`: baseline = size ×
+ascent/(ascent+descent) from Pango metrics — zero metrics → NaN → INT_MIN,
+caught by `gtksizerequest.c`, clamped, nothing visible). Reproduced
+byte-identically with an empty fontset, both in a standalone program and in
+our binary; a control run with normal fonts and the same dialogs emits zero;
+our CSS cannot cause it (nonexistent family substitutes, only `font-size: 0`
+zeroes metrics and we never set it); we create no GtkImage ourselves; upstream
+GNOME/gtk#5926 reports the same text from a stale fontconfig cache and the
+code is unchanged in GTK main. Conclusion: transient font-metrics failure
+inside GTK/Pango, cosmetic, not ours — no code change. Reopen recipe if it
+recurs: `G_DEBUG=fatal-warnings gdb -batch -ex run -ex bt --args
+./build/sdr-for-linux` for a backtrace of the first occurrence. The sister
+note in skimmer-for-linux still carries the old numbers (separate repo).
 
 ### SDR-4 — `p2: DUC sequence errors: 2` at every stream start
 - **Type:** bug · **Severity:** low · **Status:** done in code (2026-08-23) — hardened + instrumented, live signature pending
