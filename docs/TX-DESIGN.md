@@ -676,11 +676,45 @@ the FIFO can never fill during RX, and `IQ_Tx_data = FPGA_PTT ? data : 0`
 (Hermes.v:1021) plus MOX-off/drive-0 makes RF from zeros impossible. What it
 buys: no key-down FIFO-empty transient, and the radio's DUC sequence-error
 counter (HP status bytes 32-35) is now a TRUE lost-packet tripwire — during
-overs and across key edges it stays at zero (live: R5-R10). The constant +2
-right after app start is expected and harmless: first packet vs the radio's
-stale `last_sequence_number` (survives run toggles, byte_to_48bits.v:128) +
-the p2 restart to the configured rate (ring reset). ⚠ Any growth AFTER
-stream start = real wire loss — investigate immediately.
+overs and across key edges it stays at zero (live: R5-R10). ⚠ Any growth
+AFTER stream start = real wire loss — investigate immediately.
+
+*Stream-start signature — revised 2026-08-23 (SDR-4, BACKLOG).* The July
+text here said "a constant +2 right after app start is expected: first packet
+vs the stale `last_sequence_number` + the p2 restart to the configured rate
+(ring reset)". The second half was a guess — the GUI never restarted p2 at
+start (checked in the July tree: one `p2_rx_start` call, the in-app restart
+exec's the binary). What the code DID do: the TX-IQ producer (tx_run's feed
+thread, started by gui.c BEFORE `p2_rx_start`, and continuous on P2 since N3)
+wrote into the paced-sender ring from the moment the data socket existed,
+filled it during the ~310 ms start handshake, and `p2_rx_start` then zeroed
+head/tail UNDER that live producer — an SPSC torn-state hazard (a producer
+that read `h` before the reset publishes `h+1` after it → stale slots with old
+sequence numbers replayed to the radio) plus pre-link ring-full drops counted
+as over statistics. Both are closed: `p2_tx_iq_socket_emit()` refuses packets
+(counted separately as "pre-link", printed once in the `p2: started` line)
+unless the paced sender exists (`txiq_live`, set after the consumer thread is
+created and cleared first thing in `p2_rx_stop`), so head/tail are only ever
+reset while no producer can be inside the ring; offline gate
+`sdrfl-txiq-ring-test` (loopback "radio" on 127.0.0.1:1029, incl. a stop/start
+in one process). Honest caveat: by timing, the ring was FULL at reset in every
+normal start (160 ms to fill vs 310 ms of handshake), and a full ring has no
+torn window — so this race was real but narrow, and it does NOT by itself
+explain a *deterministic* "2 (+1)" on every run. What remains after the fix
+is exactly ONE discontinuity per link start, the unavoidable one: the first
+DUC packet vs the gateware's stale `last_sequence_number` (survives run
+toggles, byte_to_48bits.v:128) → +1, ~10 ms after `p2: started`. Whether
+that +1 is *printed* depends on whether the radio's first status packet of the
+session was seen before or after that first DUC packet, which is live-only
+knowledge — the listener now prints a baseline line once per link start,
+`p2: DUC sequence-error counter at link start: N (before|after the first DUC
+packet)`, to settle it. **Healthy signature = at most ONE
+`p2: DUC sequence errors: N (+1)` line, only within ~1 s of `p2: started`,
+and never anything later; a second line at start, or any line during the
+run, is real wire loss.** ⏳ Live verification pending (no radio in the SDR-4
+session): the next live run's stderr must show the new baseline line and
+either no `DUC sequence errors` line or exactly one `(+1)` at start — and the
+baseline's "before/after" + N tells where the pre-fix "2" came from.
 
 **Mic-clock pacing is self-healing now.** The one-shot permanent fallback
 (N2 v2) is gone: on timeout the feed falls back to the local timer AND

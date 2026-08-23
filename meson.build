@@ -174,6 +174,19 @@ executable('sdrfl-p2dev-test',
   install : false,
 )
 
+# Offline Protocol-2 TX-IQ ring link-gate test (SDR-4, docs/TX-DESIGN.md §10):
+# the emitter must refuse packets while no paced sender exists, never replay a
+# pre-link or previous-link slot, and carry post-link packets in order — incl.
+# across a stop/start in one process. The "radio" is a UDP socket on
+# 127.0.0.1:1029 owned by the test; p2_rx_start is pointed at loopback. NO
+# discovery, NO real radio.
+executable('sdrfl-txiq-ring-test',
+  ['src/txiq_ring_test.c'] + engine_sources,
+  include_directories : [vendor_inc, src_inc, engine_inc],
+  dependencies : engine_deps + [m_dep],
+  install : false,
+)
+
 # Offline Protocol-1 TX byte-layout gate (T1, docs/P1-TX-SCOPE.md): the P1 twin
 # of sdrfl-txprobe — asserts the C&C frames + TX IQ payload against piHPSDR and
 # that the OFF state is byte-identical to the live RX build. NO radio, NO socket.

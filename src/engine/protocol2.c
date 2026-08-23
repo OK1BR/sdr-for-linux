@@ -576,19 +576,54 @@ void p2_tx_iq_framer_push(p2_tx_iq_framer *f, const double *iq, int n_pairs) {
  * 192 ksps, and while we are >1250 samples ahead sleep ~1 ms per packet.
  * SPSC: producer = the TX feed thread (via the framer emit callback),
  * consumer = the p2-txiq thread. Sequence numbers are already inside the
- * framed packets (assigned in push order), so pacing preserves them. */
+ * framed packets (assigned in push order), so pacing preserves them.
+ *
+ * ⛔ Link gating (SDR-4, 2026-08-23). The producer runs from tx_run_start —
+ * BEFORE p2_rx_start (gui.c starts the TX runtime first so WDSP OpenChannel
+ * cannot race the live RX channel) and, on P2, continuously (N3 zero stream,
+ * 800 pkt/s). The consumer only exists between p2_rx_start and p2_rx_stop.
+ * Without a gate the producer filled the ring during the ~310 ms start
+ * handshake and p2_rx_start then zeroed head/tail UNDER that live producer —
+ * a torn SPSC state (a producer that read h before the reset publishes h+1
+ * after it → the consumer replays stale slots with old sequence numbers) and
+ * pre-link ring-full drops mis-filed into the per-over stats. `txiq_live` is
+ * the gate: the producer touches the ring ONLY while it is 1, and it is 1
+ * exactly while the consumer thread exists. Race-freedom of the reset:
+ *   (a) first start — no emit has ever passed the gate, the ring is untouched;
+ *   (b) restart in one process — live has been 0 since the previous
+ *       p2_rx_stop cleared it (before joining the consumer), through that
+ *       stop's ≥200 ms FPGA rest + drain + close and the next start's socket
+ *       setup + ~310 ms handshake, before the reset runs; an emit that passed
+ *       the gate is a memcpy + one atomic store (µs) and cannot straddle it;
+ *   (c) the app additionally joins the producer (tx_run_stop) before it ever
+ *       calls p2_rx_stop, so there is no producer at all across a stop.
+ * So by the time head/tail are reset no producer can be inside the ring, and
+ * the reset happens-before the consumer starts (thread creation). Pre-link
+ * emits are counted in `txiq_prelink` (never in `txiq_drops`, which the unkey
+ * over-stats line reports as audio lost on the wire). The framer's sequence
+ * counter is deliberately NOT touched: it keeps counting through the dropped
+ * pre-link packets, and the first packet the radio sees is therefore checked
+ * against the gateware's stale last_sequence_number — one unavoidable +1 per
+ * link start (see the HP-status parser). */
 #define TXIQ_RING_PKTS 128             /* 1444-B packets ≈ 160 ms @ 192 k */
 static unsigned char    txiq_ring[TXIQ_RING_PKTS][1444];
 static volatile guint   txiq_head;     /* producer index (feed thread)    */
 static volatile guint   txiq_tail;     /* consumer index (txiq thread)    */
 static volatile gint    txiq_drops;    /* ring-full drops (over stats)    */
+static volatile gint    txiq_prelink;  /* emits refused while !txiq_live  */
+static volatile gint    txiq_live;     /* 1 = consumer thread exists       */
+static volatile gint    txiq_sent;     /* packets handed to sendto (link)  */
 static GMutex           txiq_lock;     /* wake-up only — data is SPSC     */
 static GCond            txiq_cond;
 static GThread         *txiq_tid;
 
 void p2_tx_iq_socket_emit(const unsigned char *pkt, int len, void *user) {
   (void)user;
-  if (data_socket < 0 || len != 1444) { return; }
+  if (len != 1444) { return; }
+  if (!g_atomic_int_get(&txiq_live) || data_socket < 0) {
+    g_atomic_int_inc(&txiq_prelink);   /* no link: never touch the ring */
+    return;
+  }
   guint h = txiq_head, t = txiq_tail;
   if (h - t >= TXIQ_RING_PKTS) { g_atomic_int_inc(&txiq_drops); return; }
   memcpy(txiq_ring[h % TXIQ_RING_PKTS], pkt, 1444);
@@ -601,6 +636,17 @@ void p2_tx_iq_socket_emit(const unsigned char *pkt, int len, void *user) {
 /* Read-and-clear the ring-full drop counter (the unkey over-stats line). */
 void p2_txiq_ring_stats_take(int *drops) {
   *drops = g_atomic_int_exchange(&txiq_drops, 0);
+}
+
+/* Offline-test / diagnostics view of the TX-IQ ring gate (sdrfl-txiq-ring-test).
+ * Non-destructive; every field is a plain atomic snapshot. */
+void p2_txiq_ring_debug(int *live, int *queued, int *prelink, int *sent) {
+  guint h = (guint)g_atomic_int_get((volatile gint *)&txiq_head);
+  guint t = (guint)g_atomic_int_get((volatile gint *)&txiq_tail);
+  if (live)    { *live    = g_atomic_int_get(&txiq_live); }
+  if (queued)  { *queued  = (int)(h - t); }
+  if (prelink) { *prelink = g_atomic_int_get(&txiq_prelink); }
+  if (sent)    { *sent    = g_atomic_int_get(&txiq_sent); }
 }
 
 static gpointer txiq_thread(gpointer data) {
@@ -651,6 +697,7 @@ static gpointer txiq_thread(gpointer data) {
     sendto(data_socket, txiq_ring[txiq_tail % TXIQ_RING_PKTS], 1444, 0,
            (struct sockaddr *)&a, base_len);
     txiq_tail++;
+    g_atomic_int_inc(&txiq_sent);       /* link-start forensics (HP parser) */
     fifo += 240.0;                      /* samples in the packet just sent */
   }
 
@@ -957,6 +1004,9 @@ static void decode_ps_iq(const unsigned char *buffer, int len) {
  * plus the protocol's "Supply volts" slot @49-50 for the debug dump). The
  * fwd/rev/exciter power words (14-15/22-23/6-7) read ~0 outside TX.
  * Nothing here is ever echoed back to the radio. */
+static unsigned last_seqerr;   /* DUC seq-error counter, last value seen (listener) */
+static int      have_seqerr;   /* 0 until the first status packet of THIS link      */
+
 static void parse_high_priority_status(const unsigned char *buf, int len) {
   if (len < 60) { return; }               /* need through the analog words + byte 59 */
 
@@ -1005,12 +1055,32 @@ static void parse_high_priority_status(const unsigned char *buf, int len) {
    * (G2E) gateware's byte_to_48bits bumps it on every sequence-number
    * mismatch on the DUC port (lost/reordered host packet), CC_encoder RAM
    * word 28 → packet bytes 32-35. Cumulative per run; print on change —
-   * any growth during an over = TX IQ lost on the wire = audible grit. */
+   * any growth during an over = TX IQ lost on the wire = audible grit.
+   *
+   * Expected signature since the TX-IQ ring is gated on the live link
+   * (SDR-4, 2026-08-23): exactly ONE discontinuity per link start remains —
+   * the first DUC packet (sent ~10 ms after "p2: started", when the paced
+   * sender thread comes up) is checked against the gateware's STALE
+   * last_sequence_number (it survives run toggles, byte_to_48bits.v:128) and
+   * costs +1; every packet after it is contiguous. Whether that +1 is PRINTED
+   * depends on the radio, not on us: if a status packet was observed before
+   * the first DUC packet went out, it prints once as "N (+1)" right after
+   * "p2: started" and is then silent; if the first status packet arrives
+   * after it, the +1 is already in the baseline and nothing prints. Healthy
+   * = at most that one line within ~1 s of "p2: started" and NEVER anything
+   * later. The baseline line below (once per link start, with "before/after
+   * the first DUC packet") is the instrument that tells the two cases apart
+   * on a live log. Pre-fix the log showed "2 (+1)" once per start on every
+   * run (YO DX HF 2026-08-22/23, CONTEST-NOTES-2026-08-22 §N2); the live
+   * check for this fix is therefore: no SECOND line, and no line at all
+   * later in the run. */
   if (len > 35) {
-    static unsigned last_seqerr; static int have_seqerr;
     unsigned se = ((unsigned)buf[32] << 24) | ((unsigned)buf[33] << 16) |
                   ((unsigned)buf[34] << 8) | (unsigned)buf[35];
-    if (have_seqerr && se != last_seqerr) {
+    if (!have_seqerr) {
+      t_print("p2: DUC sequence-error counter at link start: %u (%s the first DUC packet)\n",
+              se, g_atomic_int_get(&txiq_sent) ? "after" : "before");
+    } else if (se != last_seqerr) {
       t_print("p2: DUC sequence errors: %u (+%u)\n", se, se - last_seqerr);
     }
     last_seqerr = se;
@@ -1339,6 +1409,11 @@ int p2_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
   kick_pending = 0;
   g_mutex_unlock(&kick_lock);
   memset((void *)ddc_sequence, 0, sizeof(ddc_sequence));
+  have_seqerr = 0;                       /* DUC seq-error baseline is per link   */
+  last_seqerr = 0;
+  g_atomic_int_set(&txiq_sent, 0);       /* before the listener exists: the first
+                                          * status packet's before/after marker
+                                          * must not see a previous link's count */
 
   p2running = 1;
   listener_tid = g_thread_new("p2-listener", listener_thread, NULL);
@@ -1350,17 +1425,30 @@ int p2_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
   send_high_priority(1);    usleep(100000);
 
   timer_tid = g_thread_new("p2-timer", timer_thread, NULL);
+  /* TX-IQ ring: the gate (`txiq_live`) is still 0 here — it has been 0 since
+   * the previous p2_rx_stop (or since program start), so no producer is inside
+   * the ring and the reset below is SPSC-safe (see the gate comment at the
+   * ring). Order: reset → create the consumer → open the gate, so the first
+   * packet that enters the ring already has a consumer and the reset
+   * happens-before both. */
   txiq_head = txiq_tail = 0;
   txiq_drops = 0;
   txiq_tid = g_thread_new("p2-txiq", txiq_thread, NULL);
+  int prelink = g_atomic_int_exchange(&txiq_prelink, 0);
+  g_atomic_int_set(&txiq_live, 1);
 
-  t_print("p2: started dev=%d ddc=%d @ %lld Hz, %d Hz sample rate\n",
-          cfg_device, cfg_ddc, freq_hz, sample_rate);
+  t_print("p2: started dev=%d ddc=%d @ %lld Hz, %d Hz sample rate"
+          " (TX-IQ ring armed; %d pre-link packets discarded)\n",
+          cfg_device, cfg_ddc, freq_hz, sample_rate, prelink);
   return 0;
 }
 
 void p2_rx_stop(void) {
   if (data_socket < 0) { return; }
+  g_atomic_int_set(&txiq_live, 0);  /* close the TX-IQ ring gate FIRST: no new
+                                     * producer write can start after this, and
+                                     * the consumer below is joined before the
+                                     * socket closes */
   p2running = 0;
   g_mutex_lock(&kick_lock);   /* wake the timer out of its tick wait (no sends: */
   kick_pending = 1;           /* the kick path re-checks p2running)             */

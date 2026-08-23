@@ -301,6 +301,16 @@ void p2_tx_iq_socket_emit(const unsigned char *pkt, int len, void *user);
 void p2_txiq_ring_stats_take(int *drops);
 
 /*
+ * Non-destructive snapshot of the TX-IQ ring gate (SDR-4): `live` = the
+ * paced sender exists (p2_rx_start..p2_rx_stop) and the emitter may touch the
+ * ring; `queued` = packets in the ring not yet sent; `prelink` = emits refused
+ * while the gate was closed since the last link start (never counted as ring
+ * drops); `sent` = packets handed to sendto since this link started. For the
+ * offline sdrfl-txiq-ring-test and diagnostics; any argument may be NULL.
+ */
+void p2_txiq_ring_debug(int *live, int *queued, int *prelink, int *sent);
+
+/*
  * N2 (2026-07-12): the radio's continuous mic stream (port 1026, 48 kHz) is
  * the TX chain's sample clock — Thetis/piHPSDR parity, same master clock as
  * the DUC, so host production can never drift against the radio. The tx_run

@@ -166,7 +166,7 @@ a GTK 4.22 regression. The full write-up lives in the skimmer's notes
 (`skimmer-for-linux/docs/CONTEST-NOTES-2026-08-22.md` §N2).
 
 ### SDR-4 — `p2: DUC sequence errors: 2` at every stream start
-- **Type:** bug · **Severity:** low · **Status:** open
+- **Type:** bug · **Severity:** low · **Status:** done in code (2026-08-23) — hardened + instrumented, live signature pending
 - **Source:** stderr of the YO DX HF runs, 2026-08-22 / 23
 - **Detail:** `docs/CONTEST-NOTES-2026-08-22.md` §N2 (day-2 section)
 
@@ -175,6 +175,26 @@ for the rest of the run — and identical on two independent days. Operationally
 invisible, but reproducible enough to stop calling it start-up noise. Worth a
 look at whether the first DUC sequence numbers are dropped during ramp-up, next
 time the P2 TX path is open anyway.
+
+**Resolution (2026-08-23):** the code did have a start-up hole — `gui.c` starts
+the TX runtime before `p2_rx_start`, the feed thread emits the continuous zero
+DUC stream from that moment into the paced-sender ring, and `p2_rx_start`
+zeroed the ring's head/tail under that live producer (SPSC torn-state hazard;
+pre-link packets discarded). Closed with a `txiq_live` gate in `protocol2.c`
+(the emitter refuses packets — counted as "pre-link" — unless the paced sender
+exists; the ring is only reset while no producer can be inside it), pinned by
+a new offline gate `sdrfl-txiq-ring-test` (loopback "radio" on 127.0.0.1:1029,
+41 checks, in CI). Honest caveat from the analysis: by timing the ring was
+full at reset in every normal start and a full ring has no torn window, so the
+race alone does NOT explain a deterministic "2 (+1)" — one discontinuity per
+link start is unavoidable (first DUC packet vs the gateware's stale
+`last_sequence_number`), and where the pre-fix "already 1 at first
+observation" came from is live-only knowledge. So the listener now prints a
+baseline once per link start (`p2: DUC sequence-error counter at link start:
+N (before|after the first DUC packet)`). **Live criterion for the next run
+against the G2E (TX-DESIGN §10):** at most ONE `DUC sequence errors: N (+1)`
+line within ~1 s of `p2: started`, never a second one, never one later; the
+baseline's N settles the origin. Not verified on the radio yet.
 
 ## Deferred
 
