@@ -15,10 +15,12 @@
     </p>
     <p>
       Includes a TCI server (ExpertSDR3-compatible) for skimmers, loggers and
-      digimode software. Three radios are verified on real hardware — the
-      Apache Labs ANAN G2E, the ANAN 10E/100B and the Hermes Lite 2 (all
-      RX + TX). Untested models are refused by a safety whitelist, because a
-      wrong relay or filter bit can physically damage a transmitter.
+      digimode software. Three radios are verified on real hardware by the
+      author — the Apache Labs ANAN G2E, the ANAN 10E/100B and the Hermes
+      Lite 2 (all RX + TX) — and the ANAN G2 (Saturn) had its first live pass
+      from an external tester. Untested models are refused by a safety
+      whitelist, because a wrong relay or filter bit can physically damage a
+      transmitter.
     </p>
   </description>
   <developer id="cz.ok1br">

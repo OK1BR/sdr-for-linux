@@ -41,7 +41,7 @@ that leaves the machine wrong; `medium` = gets in the operator's way;
 ## Open — tasks
 
 ### SDR-6 — Evaluate W1IZZ's G2 test results and close out the bring-up
-- **Type:** task · **Severity:** high · **Status:** open
+- **Type:** task · **Severity:** high · **Status:** evaluated 2026-08-23 — steps 1–3 done, step 4 (the answer in `gh#3`) drafted, waiting for Richard's approval before posting
 - **Source:** W1IZZ, GitHub `gh#3` ("G2 testing"), 2026-08-22
 - **Detail:** `docs/RADIOS-SCOPE.md` (S2–S5 status table and its ⛔ note)
 
@@ -89,6 +89,29 @@ The work:
 
 Until this is done the G2 stays "unlocked, not verified", and that wording has
 to be used wherever the radio is announced.
+
+**Evaluation (2026-08-23) — full write-up in `docs/RADIOS-SCOPE.md` §7.1:**
+1. Both probe documents read against §7. All three probes clean in both sets;
+   the dummy-load set IS usable — it is the no-antenna baseline: the antenna
+   lifts the rxprobe RMS 12 dB (−101.5 → −89.6 dBFS) and the panprobe raw
+   floor 6 dB (−149.4 → −143.4 dB) with signals 24 dB above it, so the RX
+   path is through (a −45 dB relay fault would leave the floor at the
+   dummy-load value). The G2 sends the mic clock (750 pkt/s). §7's "−90 dBFS
+   = deaf" heuristic is retired in favour of the floor comparison.
+2. S2 ✅, S3 ✅ (tuning/relays by use), S4 🟢 (PA cal per band vs LP-100A
+   43–53 dB, wattmeter ±1–2 W, SWR tracks, voice QSO; dry-key/SWR-trip/CW not
+   reported), S5 stays 🟡 (works by impression, no numbers) and default-OFF
+   like every model.
+3. Constants: the ANAN-7000 wattmeter branch holds to ±1–2 W at his levels;
+   PA-cal defaults (53 dB) under-drove as designed; `ps_setpk` 0.6121 is
+   "does not misbehave" only. The ⛔ note is reworded, not removed: "tested
+   by one external operator, not calibrated by us".
+   Defects found and fixed the same day: SDR-1, SDR-2, SDR-8. README,
+   CLAUDE.md and the metainfo description updated to the new status.
+4. The reply: verdict + the three fixes + a concrete next ask (a `main`
+   build; one `SDRFL_DEBUG_LEVELS=1` telemetry line next to his PSU reading,
+   the PS footer numbers during a two-tone, 30/60 m PA cal, confirmation the
+   log spam is gone). **Not posted** — outward, needs Richard's OK.
 
 ## Open — bugs
 
@@ -273,7 +296,8 @@ hardware):
 Both radios are physically here, so bring-up on real hardware is possible.
 
 Ahead of all of it: **`gh#3` is an outside tester's whole run on hardware we do
-not have.** That is the scarce resource in this project — SDR-6 turns it into a
-verdict, SDR-1 and SDR-2 are the two defects it already surfaced, and none of
-the three has been answered since 2026-08-22. The G2 cannot be called supported
-until SDR-6 is closed.
+not have.** That is the scarce resource in this project — SDR-6 turned it into
+a verdict on 2026-08-23, SDR-1/SDR-2/SDR-8 are the defects it surfaced (all
+fixed in `main`), and the reply to him is drafted and waits for approval. The
+G2's status is "first live pass done by an external tester, not calibrated by
+us" until his next round comes back.

@@ -5,26 +5,35 @@ Companion to `docs/P2-RX-SCOPE.md` (the P2 link this rides on),
 `docs/TX-SAFETY.md` (what TX costs before it may be enabled).
 
 **Status: SCOPED 2026-08-20; S1-S5 IMPLEMENTED 2026-08-21** on branch
-`g2-rx-bringup` (PR into `main`), still with **no G2 on hand**. The ANAN G2 /
-Saturn is enabled for **RX, TX and PureSignal** — Richard's call the same day:
-unlock it properly, exactly as piHPSDR has it, so the remote operator can walk
-the whole path inside issue #1. Every per-device value comes from piHPSDR and
-is pinned by the offline gate `sdrfl-p2dev-test` (174 checks); that gate is the
-whole of the evidence until someone with the radio keys it. What is done, and
-what emphatically is not:
+`g2-rx-bringup` (merged via PR #2, released as v0.4.1), with **no G2 on
+hand**. The ANAN G2 / Saturn is enabled for **RX, TX and PureSignal** —
+Richard's call the same day: unlock it properly, exactly as piHPSDR has it, so
+the remote operator can walk the whole path inside issue #1. Every per-device
+value comes from piHPSDR and is pinned by the offline gate `sdrfl-p2dev-test`
+(174 checks). **§7 CAME BACK on 2026-08-22 — W1IZZ (gh#3) ran the probe set
+twice (dummy load, then antenna) and walked the TX half on his G2; evaluated
+2026-08-23 (BACKLOG SDR-6), details in §7.1.** What is done, and what still
+is not:
 
 | | |
 |---|---|
-| S1 device profile + picker | ✅ was already there (`discovery_p2.c:353-356` names it "Saturn/G2") |
-| S2 wire conditionals (G1 Alex 0+1, G2 n_adc, DDC2, band-pass) | ✅ code + offline gate; ⏳ the three headless probes need the radio |
-| S3 whitelist += SATURN | ✅ connect + TX + PS; ⏳ live tuning + filter relays unconfirmed |
+| S1 device profile + picker | ✅ was already there (`discovery_p2.c:353-356` names it "Saturn/G2"); **live: discovery prints `Saturn/G2 device=10 (4RX) software_version=27(.46) status=2`** |
+| S2 wire conditionals (G1 Alex 0+1, G2 n_adc, DDC2, band-pass) | ✅ code + offline gate; ✅ **the three headless probes came back clean (§7.1)** — rxprobe 192.9 kHz effective, panprobe raw floor −143.4 dB with antenna vs −149.4 on the dummy load (antenna noise 6 dB above the ADC floor = the RX path is through, not the −45 dB relay class), audioprobe audible with no errors |
+| S3 whitelist += SATURN | ✅ connect + TX + PS; ✅ **live tuning and band relays confirmed indirectly** — he tuned, calibrated nine bands and made a voice QSO (per-band PA calibration only works if the LPF relays follow the band); an explicit "relays click" report was not asked for and did not come |
 | G4 "drop the Att control" | ❌ **withdrawn — it was a misreading**, see §1 |
-| S4 TX | 🟡 **unlocked from the audit, checklist DELEGATED** — `[tx-saturn]` starts PA off + 1 W + no stored PA cal, so the first keying is the dry-key step; the live half of `docs/TX-SAFETY.md` must be walked by the operator (§7) |
-| S5 PureSignal | 🟡 unlocked with `ps_setpk` **0.6121**; defaults to OFF, to be switched on only after S4 passes |
+| S4 TX | 🟢 **live-walked by the tester** — PA calibrated per band against an LP-100A into a dummy load (his numbers 43.0–53.0 dB, see §7.1), our wattmeter reading within 1–2 W of the LP-100A, SWR "tracked well" against external equipment, a DX voice QSO barefoot with a good audio report. **Not reported:** the dry-key step as such, the SWR-alarm trip test (§7 step 4), CW. |
+| S5 PureSignal | 🟡 "appeared to be working correctly" — no footer numbers (feedback level / state / auto-att) came back, so `ps_setpk` 0.6121 is confirmed only as "does not misbehave". Stays default-OFF like on every model. |
 
-⛔ **"Unlocked" is not "verified".** Until §7 comes back from a real G2, this
-model's wattmeter calibration, PA calibration and PS feedback scaling are
-piHPSDR's starting values, not measurements. Say so wherever it is announced.
+⛔ **"Unlocked" → "first live pass done, not yet measured by us."** Since
+2026-08-22 the RX path, the per-band PA calibration, the wattmeter (±1–2 W
+against an LP-100A at the levels he ran) and SWR tracking are confirmed by an
+external tester on a real G2; PureSignal only by his impression. What is still
+piHPSDR's starting value with no measurement behind it: the wattmeter outside
+his report, the PS feedback scaling, and the reverse-power side. Say "tested by
+one external operator, not calibrated by us" wherever the radio is announced.
+The supply-voltage readout was wrong on the G2 (SDR-1, fixed 2026-08-23 from
+piHPSDR + Thetis, awaiting his confirmation) and the status parser spammed his
+log (SDR-8, fixed the same day).
 
 Everything below is the audit the implementation was taken from; it stays as
 written so the next person can re-check our bytes against upstream.
@@ -161,9 +170,9 @@ being wrong.
 | Step | Content | Gate |
 |---|---|---|
 | S1 ✅ | Device profile + picker: name the row, keep it refused until S2 passes | picker shows "Saturn/G2", still greyed |
-| S2 ✅/⏳ | RX: G1+G2 conditionals, then the three headless probes | code + `sdrfl-p2dev-test` done here; `sdrfl-rxprobe` / `sdrfl-panprobe` / `sdrfl-audioprobe` still owed by whoever has the radio |
-| S3 ✅/⏳ | GUI: connect whitelist += SATURN (RX only), ~~Att control dropped (G4)~~, band-pass class confirmed on air | whitelist done (RX only, TX/PS refused); live tuning + filter relays still unconfirmed |
-| S4 🟡 | TX: `[tx-saturn]` starting at PA off + 1 W; the code half is done and gated offline, the **live half of `docs/TX-SAFETY.md` is delegated** | dry-key → 1 W → walk-in, per TX-DESIGN §7/§8 — by the operator who has the radio (§7) |
+| S2 ✅ | RX: G1+G2 conditionals, then the three headless probes | code + `sdrfl-p2dev-test` done here; `sdrfl-rxprobe` / `sdrfl-panprobe` / `sdrfl-audioprobe` **came back from W1IZZ 2026-08-22 (§7.1) — all three clean** |
+| S3 ✅ | GUI: connect whitelist += SATURN, ~~Att control dropped (G4)~~, band-pass class confirmed on air | whitelist done; tuning + band relays confirmed by use (nine bands calibrated, voice QSO) — no explicit relay-click report |
+| S4 🟢 | TX: `[tx-saturn]` starting at PA off + 1 W; the code half is done and gated offline, the **live half of `docs/TX-SAFETY.md` was walked by the tester** | PA cal per band vs LP-100A, wattmeter ±1–2 W, SWR tracks, voice QSO (§7.1); dry-key / SWR-trip / CW not reported |
 | S5 🟡 | PureSignal with `ps_setpk = 0.6121` (the 8.5 dB offset has no counterpart here — we auto-attenuate Thetis-style instead) | PS gates from `docs/PS-SCOPE.md`, after S4 |
 
 S4 and S5 still require the radio to be **in the room with a dummy load and an
@@ -301,3 +310,54 @@ on purpose, so step 1 is safe by construction.
 What to send back: which steps passed, the per-band PA-calibration numbers you
 ended up with, our reading vs the external meter at 5/10/50/100 W, and
 anything the app claimed that the hardware disagreed with.
+
+### 7.1 What came back — W1IZZ, ANAN G2, 2026-08-22 (gh#3), evaluated 2026-08-23
+
+Source-built 0.4.1 (`sdr-for-linux-0.4.1/build`), radio `Saturn/G2 device=10
+(4RX) software_version=27(.46)` at 10.0.0.199, host 10.0.0.83 (Linux, iMac).
+Two probe sets: first into a **dummy load**, then re-run with an **antenna on
+RX1**; both at the probes' defaults (14.100 MHz, he did not set
+`SDRFL_RADIO_IP`/`SDRFL_FREQ` — the probes tried 192.168.1.247 first, then
+found his radio by broadcast). Then the GUI: PA calibration per band against
+an **LP-100A** into the dummy load, SWR checked against external equipment,
+PureSignal switched on, a DX voice QSO barefoot.
+
+| probe | expected (§7) | dummy load | antenna | verdict |
+|---|---|---|---|---|
+| `sdrfl-discover` | names "Saturn/G2", P2, status 2 | ✅ `Saturn/G2 P2 dev=10 … fw=27 status=2 0.000-61.440 MHz` | same | ✅ named, idle |
+| `sdrfl-rxprobe` 192 k | rate ~192000, RMS well above 0 | 193012 Hz, RMS −101.5 dBFS | 192892 Hz, RMS **−89.6 dBFS** | ✅ link fine; antenna lifts the RMS 12 dB above the dummy load. ⚠ §7's "−90 dBFS = deaf" heuristic was written from the G2E's −59 dBFS on a busy evening band — the absolute RMS depends on band activity; the panprobe floor comparison below is the proper deaf-RX test |
+| `sdrfl-panprobe` 192 k, 40 frames | floor −120..−100 dBm, peaks above it | raw floor(p20) −149.4 dB, peak −137.2 (+12) | raw floor **−143.4 dB**, peak −119.1 (+24) | ✅ the antenna raises the noise floor 6 dB above the ADC floor and signals stand 24 dB above it — a −45 dB relay-class fault would leave the floor at the dummy-load value. Rough cross-check only (different analyzer set-ups — the GUI vs the probe): the G2E's GUI at 1536 k reports soffset 18.1 → raw floor −133.1, which is ≈ −142 dB at the 192 k bin width (−9 dB for 8× narrower bins) — same order as his −143.4, i.e. nothing like a 45 dB deficit |
+| `sdrfl-audioprobe` 768 k USB | audible, no dropouts | peak 0.009, queued 15–21 ms, ferr=0 | peak **0.02–0.07**, queued 17–21 ms, ferr=0 | ✅ audio path runs 10 s clean; mic stream (port 1026) DETECTED at 750 pkt/s on both runs — the G2 **does** send the mic clock (§7 step 1's open question is closed) |
+
+So the dummy-load set is usable after all: it is the "RX with nothing on the
+antenna" baseline that makes the antenna set readable.
+
+**TX (his prose + the screenshot in gh#3):** per-band PA calibration ended at
+160 m 47.4 · 80 m 49.4 · 60 m 46.6 · 40 m 50.0 · **30 m 53.0 (untouched
+default — he had no 30 m button, SDR-2)** · 20 m 50.2 · 17 m 49.7 · 15 m 48.2
+· 12 m 44.8 · 10 m 45.4 · 6 m 43.0 dB — all inside the 38.8–70 window, below
+the 53 dB start (i.e. the default under-drove, as designed), and with the
+usual roll-off towards the high bands. "Power readings within 1–2 W of the
+LP-100A" — the ANAN-7000 wattmeter branch (c1 5.0, c2 0.12, fwd offset 32)
+holds on this radio at the levels he ran (unknown which; barefoot ≤ 100 W).
+"SWR also tracked well" against his external equipment. PureSignal "appeared
+to be working correctly" — no numbers. A DX contact barefoot, good signal and
+audio report (voice). Screenshot: 20 m USB, Filter 2.7k, PS **lit**, S5 −99 dBm
+noise floor, drive 100 W / tune 40 W, ANT 1, **Supply 0.10 V** (SDR-1).
+
+**Defects the run surfaced, all ours, all fixed 2026-08-23:** SDR-1 (supply
+readout: Saturn's supply is HP-status bytes 57-58 × 0.02553, not the G2E's
+55-56 — unverified on his radio until he reads back `SDRFL_DEBUG_LEVELS=1`),
+SDR-2 (no 60 m / 30 m buttons), SDR-8 (his logs carry ~5 garbage
+`p2: DUC sequence errors` lines a second — Saturn bytes 32-35 are p2app FIFO
+telemetry, now parsed on the G2E only). Noted, not fixed: the probes default
+to our LAN IP 192.168.1.247 before falling back to broadcast (cosmetic; a
+tester following §7 sets `SDRFL_RADIO_IP`).
+
+**What the next round should ask for** (a build from `main` after
+2026-08-23, or the next release): one `p2 telemetry:` line from
+`SDRFL_DEBUG_LEVELS=1 ./build/sdr-for-linux` next to his PSU's voltage
+(expected raw_adc0 ≈ 540 at 13.8 V → footer ≈ 13.8 V); the footer PS line
+during a two-tone (feedback level, state, auto-att) so 0.6121 gets a number;
+the 30 m (and 60 m) PA calibration now that the buttons exist; and a
+confirmation that the `DUC sequence errors` lines are gone from his terminal.

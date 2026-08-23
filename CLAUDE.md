@@ -360,10 +360,18 @@ it is written down in the `radio_support.h` header with the conditions
 that must stay true. ⛔ **G4 from the scope was WRONG and is withdrawn**: our footer
 "Att" is the ADC step attenuator (HP byte 1443), which the Saturn HAS
 (`have_rx_att = 1`, radio.c:1359-1366); only the ALEX 0/10/20/30 dB bank
-is missing and we never had that control. Still owed: the first live pass
-on a real G2 — the exact commands + expected outputs are RADIOS-SCOPE §7,
-and ⚠️ the probes are `install : false`, so a release artifact carries only
-the GUI. Behind it: ORION2 (7000/8000/DLE 7000) is now a whitelist + live
+is missing and we never had that control. ~~Still owed: the first live pass
+on a real G2~~ — **CAME BACK 2026-08-22 (W1IZZ, gh#3) and was evaluated
+2026-08-23 (BACKLOG SDR-6, RADIOS-SCOPE §7.1)**: all three RX probes clean
+(dummy load + antenna; the antenna lifts the panprobe floor 6 dB above the
+ADC floor = RX path through), per-band PA cal vs an LP-100A (43–53 dB), our
+wattmeter ±1–2 W, SWR tracks, voice QSO, PS "appears to work" (no numbers).
+His run surfaced SDR-1 (supply = Saturn bytes 57-58 × 0.02553, fixed,
+awaiting his read-back), SDR-2 (60/30 m buttons, fixed) and SDR-8 (our
+G2E-only seq-error parser spammed his log with p2app FIFO telemetry, fixed).
+Wording from now on: "tested by one external operator, not calibrated by
+us". ⚠️ the probes are `install : false`, so a release artifact carries only
+the GUI — he built from source. Behind it: ORION2 (7000/8000/DLE 7000) is now a whitelist + live
 test away (its wire bytes ride along, gated in the same test).
 ⛔ Standing rule from that doc, unchanged: no volunteer is contacted before
 there is something concrete to test (a request with nothing to test has no
