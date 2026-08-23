@@ -21,6 +21,9 @@
  *   1c. The whitelists themselves (who may connect / key / run PureSignal)
  *       and the Saturn's per-model TX profile — including that it keeps its
  *       own [tx-saturn] config group so it cannot overwrite the G2E's [tx].
+ *   1d. The per-model supply-voltage profile (SDR-1): which HP-status word
+ *       the footer reads and at what V/count — G2E unchanged (55-56, live
+ *       anchor), SATURN/ORION2 = ADC0 (57-58) × 0.02553, others hidden.
  *   2. The two P2 radios we DO support are byte-identical to before this
  *      change. Not by sampling: for each device it ENUMERATES every byte the
  *      RX build may set (General, RX-specific, High-Priority) and asserts that
@@ -290,6 +293,48 @@ int main(void) {
     chk("G2E still owns [tx]", strcmp(radio_tx_profile(&d)->cfg_group, "tx") == 0, 1);
     chk("G2E ps_setpk still 0.2899",
         (long)(radio_tx_profile(&d)->ps_setpk * 10000 + 0.5), 2899);
+  }
+
+  /* ---- supply-voltage profile (SDR-1, gh#3) ------------------------------
+   * Which HP-status word the footer "Supply" reads, and at what scale, per
+   * model. The tripwire: the G2E must keep its live-measured anchor (bytes
+   * 55-56 × 13.46/797.5 — unchanged behaviour), SATURN and ORION2 read
+   * ADC0 (bytes 57-58) at 5/4095 × 23/1.1 = 0.025530 V/count (piHPSDR
+   * rx_panadapter.c:913-923 + Thetis convertToVolts(getUserADC0()) —
+   * unverified on hardware, ≈540 counts at 13.8 V), and every model without
+   * a documented source is HIDDEN (the 0.10 V bug was an extrapolation). */
+  printf("\n[supply voltage] radio_supply_profile — source word + V/count per model\n");
+  {
+    DISCOVERED d; memset(&d, 0, sizeof d);
+    const radio_supply_profile_t *sp;
+
+    d.protocol = NEW_PROTOCOL; d.device = NEW_DEVICE_G1;
+    sp = radio_supply_profile(&d);
+    chk("G2E source = ADC1 (bytes 55-56)",      sp->source, SUPPLY_SRC_ADC1);
+    chk("G2E scale = 13.46/797.5 (×1e6)",       (long)(sp->v_per_count * 1e6 + 0.5),
+                                                (long)(13.46 / 797.5 * 1e6 + 0.5));
+
+    d.device = NEW_DEVICE_SATURN;
+    sp = radio_supply_profile(&d);
+    chk("Saturn source = ADC0 (bytes 57-58)",   sp->source, SUPPLY_SRC_ADC0);
+    chk("Saturn scale 0.025530 V/count (×1e6)", (long)(sp->v_per_count * 1e6 + 0.5), 25530);
+    chk("Saturn 13.8 V ≈ 540 counts (trunc)",   (long)(13.8 / sp->v_per_count), 540);
+
+    d.device = NEW_DEVICE_ORION2;
+    sp = radio_supply_profile(&d);
+    chk("ORION2 source = ADC0 (same as Saturn)", sp->source, SUPPLY_SRC_ADC0);
+    chk("ORION2 scale 0.025530 (×1e6)",         (long)(sp->v_per_count * 1e6 + 0.5), 25530);
+
+    d.device = NEW_DEVICE_HERMES2;
+    sp = radio_supply_profile(&d);
+    chk("ANAN 10E: no source → hidden",          sp->source, SUPPLY_SRC_NONE);
+    chk("ANAN 10E: scale 0",                     (long)(sp->v_per_count * 1e6 + 0.5), 0);
+
+    d.protocol = ORIGINAL_PROTOCOL; d.device = DEVICE_HERMES_LITE2;
+    sp = radio_supply_profile(&d);
+    chk("HL2 (P1): no source → hidden",          sp->source, SUPPLY_SRC_NONE);
+
+    chk("NULL device → hidden",                  radio_supply_profile(NULL)->source, SUPPLY_SRC_NONE);
   }
 
   printf("\n=== %d checks, %d failures ===\n", g_checks, g_fail);

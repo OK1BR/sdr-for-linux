@@ -76,6 +76,7 @@ static volatile gint tlm_adc0_ovl = 0;   /* latched, read-and-cleared */
 static volatile gint tlm_adc1_ovl = 0;
 static volatile gint tlm_raw_adc0 = 0;
 static volatile gint tlm_raw_adc1 = 0;
+static volatile gint tlm_raw_supply = 0;   /* bytes 49-50, debug dump only */
 /* TX power sensors (F3) — 16-value moving averages of the ALEX coupler words.
  * The exposed values are read by the GUI via atomics; the *_acc accumulators are
  * touched only by the listener thread (single writer, no atomics needed). */
@@ -825,6 +826,7 @@ void p2_get_telemetry(p2_telemetry *out) {
   out->valid    = g_atomic_int_get(&tlm_valid);
   out->raw_adc0 = g_atomic_int_get(&tlm_raw_adc0);
   out->raw_adc1 = g_atomic_int_get(&tlm_raw_adc1);
+  out->raw_supply = g_atomic_int_get(&tlm_raw_supply);
   out->fwd_raw     = g_atomic_int_get(&tlm_fwd);
   out->rev_raw     = g_atomic_int_get(&tlm_rev);
   out->exciter_raw = g_atomic_int_get(&tlm_exciter);
@@ -950,10 +952,10 @@ static void decode_ps_iq(const unsigned char *buffer, int len) {
 
 /* Decode the radio's High-Priority *status* packet (port 1025) — the RX-useful
  * subset of np.c process_high_priority @ 974acba. We take only what makes sense
- * on RX: the ADC-overload flags (byte 5) and the two raw analog words the
- * firmware fills continuously (ADC0 @57-58 = "PA voltage for others" per
- * hpsdrsim, ADC1 @55-56). The fwd/rev/exciter power words (14-15/22-23/6-7)
- * read ~0 outside TX, so we deliberately ignore them until the TX milestone.
+ * on RX: the ADC-overload flags (byte 5) and the raw analog words the firmware
+ * fills continuously (ADC0 @57-58 = "User ADC0", ADC1 @55-56 = "User ADC1",
+ * plus the protocol's "Supply volts" slot @49-50 for the debug dump). The
+ * fwd/rev/exciter power words (14-15/22-23/6-7) read ~0 outside TX.
  * Nothing here is ever echoed back to the radio. */
 static void parse_high_priority_status(const unsigned char *buf, int len) {
   if (len < 60) { return; }               /* need through the analog words + byte 59 */
@@ -1015,9 +1017,13 @@ static void parse_high_priority_status(const unsigned char *buf, int len) {
     have_seqerr = 1;
   }
 
-  /* raw analog words (np.c:2661-2664), big-endian 16-bit. Uncalibrated: the
-   * raw->volts scale is model-specific and NOT known for the G2E (neither
-   * piHPSDR nor Thetis calibrate it) — surface raw, calibrate live later. */
+  /* raw analog words (np.c:2661-2664), big-endian 16-bit. Which one IS the
+   * supply voltage, and at what scale, is per model — radio_supply_profile()
+   * in radio_support.h (G2E: 55-56 live-measured; SATURN/ORION2: 57-58 per
+   * piHPSDR + Thetis; others: no documented source). Bytes 49-50 are the
+   * protocol's "Supply volts" slot (Thetis network.c:738, saturnmain.c:785) —
+   * parsed for the SDRFL_DEBUG_LEVELS dump only, no reference displays it. */
+  g_atomic_int_set(&tlm_raw_supply, ((buf[49] & 0xFF) << 8) | (buf[50] & 0xFF));
   g_atomic_int_set(&tlm_raw_adc1, ((buf[55] & 0xFF) << 8) | (buf[56] & 0xFF));
   g_atomic_int_set(&tlm_raw_adc0, ((buf[57] & 0xFF) << 8) | (buf[58] & 0xFF));
 
@@ -1045,11 +1051,12 @@ static void parse_high_priority_status(const unsigned char *buf, int len) {
   if (dbg) {
     static int n = 0;
     if ((n++ % 20) == 0) {
-      t_print("p2 telemetry: ADC ovl0=%d ovl1=%d  raw_adc0=%d raw_adc1=%d  "
-              "fwd=%d rev=%d exc=%d\n",
+      t_print("p2 telemetry: ADC ovl0=%d ovl1=%d  raw_supply[49-50]=%d "
+              "raw_adc1[55-56]=%d raw_adc0[57-58]=%d  fwd=%d rev=%d exc=%d\n",
               (buf[5] & 0x01), (buf[5] & 0x02) >> 1,
-              ((buf[57] & 0xFF) << 8) | (buf[58] & 0xFF),
+              ((buf[49] & 0xFF) << 8) | (buf[50] & 0xFF),
               ((buf[55] & 0xFF) << 8) | (buf[56] & 0xFF),
+              ((buf[57] & 0xFF) << 8) | (buf[58] & 0xFF),
               g_atomic_int_get(&tlm_fwd), g_atomic_int_get(&tlm_rev),
               g_atomic_int_get(&tlm_exciter));
     }
@@ -1312,6 +1319,7 @@ int p2_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
   g_atomic_int_set(&tlm_adc1_ovl, 0);
   g_atomic_int_set(&tlm_raw_adc0, 0);
   g_atomic_int_set(&tlm_raw_adc1, 0);
+  g_atomic_int_set(&tlm_raw_supply, 0);
   g_atomic_int_set(&tlm_fwd, 0);
   g_atomic_int_set(&tlm_rev, 0);
   g_atomic_int_set(&tlm_exciter, 0);

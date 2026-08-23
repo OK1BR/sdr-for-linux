@@ -93,7 +93,7 @@ to be used wherever the radio is announced.
 ## Open — bugs
 
 ### SDR-1 — Supply voltage reads wrong on an ANAN G2
-- **Type:** bug · **Severity:** high · **Status:** open
+- **Type:** bug · **Severity:** high · **Status:** done in code (2026-08-23) — G2 mapping unverified on hardware
 - **Source:** W1IZZ, GitHub `gh#3` ("G2 testing"), 2026-08-22 — **not answered yet**
 
 An external tester running an ANAN **G2** reports the supply voltage displayed
@@ -110,6 +110,23 @@ the tester but not a fix.
 
 **Unverified** — no G2 hardware here; this is inference from the code and the
 report, not a measurement.
+
+**Resolution (2026-08-23):** not a scale problem but a *source-word* problem.
+W1IZZ's "0.10 V" means HP-status bytes 55-56 sit at ~6 counts on a G2 — that
+word is the supply only on the G2E (measured live, 13.46 V at 797.5). Both
+references agree where the Saturn's supply is: piHPSDR `rx_panadapter.c`
+(SATURN/ORION2: `0.02553 × ADC0`, ADC0 = bytes 57-58) and Thetis
+`convertToVolts(getUserADC0())` = adc0/4095 × 5 V × 23/1.1. New
+`radio_supply_profile()` in `radio_support.h` (source word + V/count per model,
+pinned by `sdrfl-p2dev-test`, now 174 checks): G2E unchanged (55-56 ×
+13.46/797.5); SATURN + ORION2 = 57-58 × 0.025530; every model without a
+documented source (10E/Hermes class, HL2) **hides** the footer readout instead
+of extrapolating — note that the ANAN 10E therefore no longer shows a Supply
+number. `SDRFL_DEBUG_LEVELS` now dumps all three raw words (49-50 "supply
+volts" slot, 55-56, 57-58) so a tester can settle a model against a meter.
+**Still unverified on a real G2** — expected ≈540 counts at 13.8 V; the
+confirmation belongs in the SDR-6 answer (ask W1IZZ for one
+`SDRFL_DEBUG_LEVELS=1` line next to his PSU reading).
 
 ### SDR-2 — No band buttons for 60 m and 30 m
 - **Type:** bug · **Severity:** medium · **Status:** done (2026-08-23)

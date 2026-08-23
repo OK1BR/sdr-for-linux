@@ -62,9 +62,17 @@ typedef struct {
   int valid;          /* 1 once at least one status packet has been parsed     */
   int adc0_overload;  /* ADC0 clipped since the last poll (latched, read+clear) */
   int adc1_overload;  /* ADC1 clipped since the last poll (latched, read+clear) */
-  int raw_adc0;       /* raw AIN word ADC0 (bytes 57-58) — "PA voltage" per     */
-                      /* hpsdrsim; UNCALIBRATED for the G2E (needs a live scale) */
-  int raw_adc1;       /* raw AIN word ADC1 (bytes 55-56), uncalibrated          */
+  int raw_adc0;       /* raw AIN word ADC0 (bytes 57-58) — "User ADC0"/AIN3;   */
+                      /* = the supply voltage on SATURN/ORION2 (piHPSDR         */
+                      /* rx_panadapter.c:913-923, Thetis getUserADC0) — scale   */
+                      /* per model in radio_supply_profile()                    */
+  int raw_adc1;       /* raw AIN word ADC1 (bytes 55-56) — "User ADC1"/AIN4;   */
+                      /* = the supply voltage on the G2E (live-measured scale)   */
+  int raw_supply;     /* raw word bytes 49-50 — the protocol's "Supply volts"   */
+                      /* slot (Thetis network.c:738, piHPSDR saturnmain.c:785). */
+                      /* Neither reference DISPLAYS it; surfaced for the        */
+                      /* SDRFL_DEBUG_LEVELS dump so a tester can report all     */
+                      /* three words against a meter (SDR-1). Not used in GUI.  */
   /* TX power sensors (F3, np.c:2652-2667). 16-value moving average of the raw
    * ALEX coupler words; ~0 on RX (no TX). Convert to watts/SWR via tx_meter.c. */
   int fwd_raw;        /* ALEX forward-power word (bytes 14-15), averaged        */

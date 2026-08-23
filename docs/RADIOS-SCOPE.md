@@ -9,7 +9,7 @@ Companion to `docs/P2-RX-SCOPE.md` (the P2 link this rides on),
 Saturn is enabled for **RX, TX and PureSignal** — Richard's call the same day:
 unlock it properly, exactly as piHPSDR has it, so the remote operator can walk
 the whole path inside issue #1. Every per-device value comes from piHPSDR and
-is pinned by the offline gate `sdrfl-p2dev-test` (163 checks); that gate is the
+is pinned by the offline gate `sdrfl-p2dev-test` (174 checks); that gate is the
 whole of the evidence until someone with the radio keys it. What is done, and
 what emphatically is not:
 

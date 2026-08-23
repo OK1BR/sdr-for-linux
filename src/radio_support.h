@@ -236,4 +236,81 @@ static inline const radio_tx_profile_t *radio_tx_profile(const DISCOVERED *d) {
   return &g2e;
 }
 
+/*
+ * Per-model SUPPLY-VOLTAGE profile (SDR-1, gh#3): which word of the P2
+ * High-Priority *status* packet carries the PA supply voltage, and the
+ * volts-per-count scale. The footer "Supply" readout used to hard-wire
+ * "bytes 55-56 × 13.46/797.5" for every radio — anchored live on the G2E,
+ * wrong elsewhere: W1IZZ's ANAN G2 (Saturn) showed "0.10 V", i.e. bytes
+ * 55-56 sit at ~6 counts on that board. A number from an unknown word is
+ * worse than no number, so models without a documented source HIDE the
+ * readout instead of extrapolating.
+ *
+ * The three raw words in the status packet (all big-endian u16):
+ *   bytes 49-50  "Supply volts" slot of the protocol — Thetis network.c:738
+ *                (ReadBufp[45-46]; ReadBufp[i] = packet byte i+4, cf.
+ *                ReadBufp[0] = PTT = packet byte 4) and piHPSDR
+ *                saturnmain.c:785-787 (GetAnalogueIn(5) "supply voltage").
+ *                Surfaced as p2_telemetry.raw_supply for the debug dump only
+ *                — NEITHER reference software displays it.
+ *   bytes 55-56  "User ADC1" / AIN4 — piHPSDR new_protocol.c:2661-2662 →
+ *                ADC1; Thetis network.c:746 user_adc1; saturnmain.c:791-793.
+ *   bytes 57-58  "User ADC0" / AIN3 — piHPSDR new_protocol.c:2663-2664 →
+ *                ADC0; Thetis network.c:747 user_adc0; saturnmain.c:788-790.
+ *
+ * Per model:
+ *  - G2E (NEW_DEVICE_G1): source = bytes 55-56 (adc1), scale 13.46/797.5 V
+ *    per count — MEASURED live on Richard's G2E (gateware 110.5): 13.46 V on
+ *    the Microset while the radio reported raw 797.5. Numerically within
+ *    0.2 % of piHPSDR's G1 formula 0.0168498 (= 3.3/4095 × 23/1.1,
+ *    rx_panadapter.c:894-909), which upstream applies to ADC0 (bytes 57-58)
+ *    — but on the G2E those bytes read ~0 on RX and the live value is in
+ *    55-56. Kept EXACTLY as it behaved before this profile existed.
+ *  - SATURN (ANAN G2) and ORION2 (ANAN 7000/8000): source = bytes 57-58
+ *    (adc0), scale 5.0/4095 × (22+1)/1.1 = 0.025530 V per count. Both
+ *    references agree: piHPSDR rx_panadapter.c:913-923 "v = 0.02553 * ADC0"
+ *    for DEVICE_ORION2 / NEW_DEVICE_ORION2 / NEW_DEVICE_SATURN, with ADC0
+ *    parsed from bytes 57-58 (new_protocol.c:2663-2669); Thetis
+ *    console.cs:24740 + 24861-24866 shows
+ *    convertToVolts(getUserADC0()) = adc0/4095 × 5.0 × (23/1.1) for every
+ *    HasVolts model (clsHardwareSpecific.cs:245-253: 7000D, 8000D, G2E, G2,
+ *    G2_1K). ⛔ UNVERIFIED ON HARDWARE — we own no G2/ORION2; expected
+ *    ≈ 540 counts at 13.8 V (13.8 / 0.02553). The first tester's
+ *    SDRFL_DEBUG_LEVELS dump (raw_supply / raw_adc1 / raw_adc0) is what
+ *    confirms or corrects this.
+ *  - Everything else (HERMES2 = ANAN 10E/100B, Hermes Lite 2, unknown):
+ *    NO documented source. Thetis HasVolts is FALSE for the Hermes class
+ *    and piHPSDR's switch has no branch for it (rx_panadapter.c:927-929
+ *    default: flag = 0) — neither shows a supply voltage there, so neither
+ *    do we (the footer slot is hidden).
+ *
+ * SDRFL_VOLT_CAL (gui.c) still overrides the SCALE (V per count) for a live
+ * re-trim; it never changes the source word.
+ */
+typedef enum {
+  SUPPLY_SRC_NONE = 0,   /* no documented source → readout hidden          */
+  SUPPLY_SRC_ADC1 = 1,   /* HP-status bytes 55-56 (p2_telemetry.raw_adc1)  */
+  SUPPLY_SRC_ADC0 = 2,   /* HP-status bytes 57-58 (p2_telemetry.raw_adc0)  */
+} supply_src_t;
+
+typedef struct {
+  supply_src_t source;        /* which status word carries the supply       */
+  double       v_per_count;   /* volts per raw count (0 when source = NONE) */
+} radio_supply_profile_t;
+
+static inline const radio_supply_profile_t *radio_supply_profile(const DISCOVERED *d) {
+  static const radio_supply_profile_t g2e = {      /* live-measured, unchanged */
+    SUPPLY_SRC_ADC1, 13.46 / 797.5
+  };
+  static const radio_supply_profile_t saturn = {   /* piHPSDR + Thetis; unverified */
+    SUPPLY_SRC_ADC0, (5.0 / 4095.0) * ((22.0 + 1.0) / 1.1)
+  };
+  static const radio_supply_profile_t none = { SUPPLY_SRC_NONE, 0.0 };
+  if (d != NULL && d->protocol == NEW_PROTOCOL) {
+    if (d->device == NEW_DEVICE_G1) { return &g2e; }
+    if (d->device == NEW_DEVICE_SATURN || d->device == NEW_DEVICE_ORION2) { return &saturn; }
+  }
+  return &none;
+}
+
 #endif

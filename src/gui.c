@@ -165,6 +165,10 @@ typedef struct {
   gint64      ovl0_until;    /* ADC0-overload badge lit until (monotonic µs)   */
   gint64      ovl1_until;    /* ADC1-overload badge lit until (monotonic µs)   */
   int         tlm_valid;     /* HP-status telemetry seen at least once          */
+  int         supply_src;    /* SUPPLY_SRC_* — which HP-status word carries the
+                                supply on the connected model (radio_supply_
+                                profile); NONE = readout hidden (SDR-1)          */
+  double      supply_vpc;    /* volts per raw count for that model              */
   double      supply_v;      /* supply voltage (V), EMA-smoothed; 0 = unknown   */
   GtkWidget  *volt_label;    /* footer supply-voltage readout                   */
   double      volt_shown;    /* last value pushed to volt_label (markup throttle)*/
@@ -399,11 +403,14 @@ static void band_apply(App *app) {
   tx_push_cfg(app);
 }
 
-/* Supply-voltage calibration: V = k * raw_adc1. No G2E divider is documented, so
- * k is anchored empirically — Richard's Microset measured 13.46 V while the G2E
- * reported raw_adc1 ~= 797.5 (bytes 55-56). SDRFL_VOLT_CAL overrides k (V per
- * count) for a precise re-trim without a rebuild. */
-#define SUPPLY_V_PER_COUNT (13.46 / 797.5)
+/* Supply-voltage calibration: V = k * raw word, and BOTH the word and k are per
+ * model — radio_supply_profile() in radio_support.h (SDR-1, gh#3: the old
+ * hard-wired "bytes 55-56 × 13.46/797.5" was the G2E's live-measured anchor —
+ * Richard's Microset read 13.46 V at raw 797.5 — and showed "0.10 V" on an
+ * ANAN G2, whose supply sits in bytes 57-58 at 0.02553 V/count per piHPSDR +
+ * Thetis). Models without a documented source hide the readout. SDRFL_VOLT_CAL
+ * still overrides k (V per count) for a precise re-trim without a rebuild; it
+ * never changes the source word. */
 #define SUPPLY_V_EMA 0.1   /* smooths the ±1-count (~±0.017 V) raw jitter */
 
 /* How long an ADC-overload badge stays lit after a clip (µs). A clip may span
@@ -1823,13 +1830,19 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
           if (t.adc1_overload) { app->ovl1_until = now + ADC_OVL_HOLD_US; }
         }
         app->tlm_valid = t.valid;
-        if (t.valid && t.raw_adc1 > 0) {
-          static double kcal = -1.0;
-          if (kcal < 0.0) {
+        /* Per-model source word (radio_supply_profile, set in start_radio):
+         * G2E = raw_adc1 (55-56), SATURN/ORION2 = raw_adc0 (57-58), NONE =
+         * no documented source → never touch the label (slot hidden). */
+        int raw = (app->supply_src == SUPPLY_SRC_ADC1) ? t.raw_adc1
+                : (app->supply_src == SUPPLY_SRC_ADC0) ? t.raw_adc0 : 0;
+        if (t.valid && raw > 0 && app->supply_vpc > 0.0) {
+          static double kenv = -1.0;   /* SDRFL_VOLT_CAL (V per count), parsed once; 0 = unset */
+          if (kenv < 0.0) {
             const char *e = getenv("SDRFL_VOLT_CAL");
-            kcal = (e && *e) ? atof(e) : SUPPLY_V_PER_COUNT;
+            kenv = (e && *e) ? atof(e) : 0.0;
+            if (kenv < 0.0) { kenv = 0.0; }
           }
-          double v = t.raw_adc1 * kcal;
+          double v = raw * (kenv > 0.0 ? kenv : app->supply_vpc);
           app->supply_v = (app->supply_v > 0.0)
                           ? app->supply_v + SUPPLY_V_EMA * (v - app->supply_v) : v;
           update_volt_label(app);
@@ -3180,10 +3193,19 @@ static GtkWidget *build_bottom_controls(App *app) {
   gtk_widget_set_hexpand(spacer, TRUE);
   gtk_box_append(GTK_BOX(bar), spacer);
 
-  /* Supply-voltage readout, right-aligned — telemetry lives on the footer. */
+  /* Supply-voltage readout, right-aligned — telemetry lives on the footer.
+   * (P1/HL2 reuses the slot for the die temperature.) A P2 model with NO
+   * documented supply source (radio_supply_profile → NONE: 10E/Hermes class)
+   * gets the whole slot hidden rather than a number from an unknown word —
+   * that was the G2 "0.10 V" bug (SDR-1). No radio known (start failed) =
+   * slot stays "—" as before. */
   app->volt_label = gtk_label_new("—");
   gtk_widget_add_css_class(app->volt_label, "span");
-  gtk_box_append(GTK_BOX(bar), labeled(app->proto_p1 ? "Temp" : "Supply", app->volt_label));
+  GtkWidget *vslot = labeled(app->proto_p1 ? "Temp" : "Supply", app->volt_label);
+  if (!app->proto_p1 && app->radio_dev_ok && app->supply_src == SUPPLY_SRC_NONE) {
+    gtk_widget_set_visible(vslot, FALSE);
+  }
+  gtk_box_append(GTK_BOX(bar), vslot);
   return bar;
 }
 
@@ -4936,6 +4958,16 @@ static void start_radio(App *app) {
     app->ps_allowed  = radio_ps_supported(dev);
     app->radio_dev   = *dev;          /* the P1 PS toggle restarts the link */
     app->radio_dev_ok = 1;
+    /* Supply-voltage source word + scale for THIS model (SDR-1). */
+    {
+      const radio_supply_profile_t *sp = radio_supply_profile(dev);
+      app->supply_src = sp->source;
+      app->supply_vpc = sp->v_per_count;
+      if (sp->source == SUPPLY_SRC_NONE) {
+        printf("supply-voltage readout: no documented source for '%s' (device %d) — hidden\n",
+               dev->name, dev->device);
+      }
+    }
     g_strlcpy(app->tx_group, prof->cfg_group, sizeof app->tx_group);
     if (strcmp(prof->cfg_group, "tx") != 0) {
       st.tx_pa = 0; st.tx_ant = 0;

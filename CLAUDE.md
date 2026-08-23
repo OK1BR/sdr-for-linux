@@ -348,7 +348,7 @@ defaults to OFF. On the RX side:
 two wire gaps are implemented (general `[59]=0x03` = Alex 0+1, `n_adc=2`
 → also the PS pseudo-ADC index; DDC2 + the band-pass knees already
 branched on SATURN), and everything is pinned by a new offline gate
-`sdrfl-p2dev-test` (**163 checks**, in CI) that also covers the keyed
+`sdrfl-p2dev-test` (**174 checks**, in CI) that also covers the keyed
 Saturn packets, the whitelists themselves and the per-model TX profile,
 and asserts the G2E/10E RX packets are byte-identical (by enumerating
 every non-zero byte, not by sampling). `[tx-saturn]` is its own config
