@@ -41,7 +41,7 @@ that leaves the machine wrong; `medium` = gets in the operator's way;
 ## Open — tasks
 
 ### SDR-6 — Evaluate W1IZZ's G2 test results and close out the bring-up
-- **Type:** task · **Severity:** high · **Status:** evaluated 2026-08-23 — steps 1–3 done, step 4 (the answer in `gh#3`) drafted, waiting for Richard's approval before posting
+- **Type:** task · **Severity:** high · **Status:** evaluated 2026-08-23 — steps 1–3 done; step 4 (the answer in `gh#3`) waits until Richard has tried the fixes himself on the G2E and a release carries them — no reply before that (Richard, 2026-08-23)
 - **Source:** W1IZZ, GitHub `gh#3` ("G2 testing"), 2026-08-22
 - **Detail:** `docs/RADIOS-SCOPE.md` (S2–S5 status table and its ⛔ note)
 
@@ -108,10 +108,13 @@ to be used wherever the radio is announced.
    by one external operator, not calibrated by us".
    Defects found and fixed the same day: SDR-1, SDR-2, SDR-8. README,
    CLAUDE.md and the metainfo description updated to the new status.
-4. The reply: verdict + the three fixes + a concrete next ask (a `main`
-   build; one `SDRFL_DEBUG_LEVELS=1` telemetry line next to his PSU reading,
-   the PS footer numbers during a two-tone, 30/60 m PA cal, confirmation the
-   log spam is gone). **Not posted** — outward, needs Richard's OK.
+4. The reply: verdict + the three fixes + a concrete next ask (one
+   `SDRFL_DEBUG_LEVELS=1` telemetry line next to his PSU reading, the PS
+   footer numbers during a two-tone, 30/60 m PA cal, confirmation the log
+   spam is gone). **Not posted, and not before its time** (Richard,
+   2026-08-23): first Richard tries the fixes on the G2E himself, then a
+   release carries them, and only then is there something he can be asked
+   to test — a `main` tip is not a build to hand out.
 
 ## Open — bugs
 
@@ -298,6 +301,7 @@ Both radios are physically here, so bring-up on real hardware is possible.
 Ahead of all of it: **`gh#3` is an outside tester's whole run on hardware we do
 not have.** That is the scarce resource in this project — SDR-6 turned it into
 a verdict on 2026-08-23, SDR-1/SDR-2/SDR-8 are the defects it surfaced (all
-fixed in `main`), and the reply to him is drafted and waits for approval. The
+fixed in `main`, not yet tried by Richard, not yet released), and the reply to
+him waits for both of those. The
 G2's status is "first live pass done by an external tester, not calibrated by
 us" until his next round comes back.
