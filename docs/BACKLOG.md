@@ -41,7 +41,7 @@ that leaves the machine wrong; `medium` = gets in the operator's way;
 ## Open — tasks
 
 ### SDR-6 — Evaluate W1IZZ's G2 test results and close out the bring-up
-- **Type:** task · **Severity:** high · **Status:** evaluated 2026-08-23; fixes tried by Richard on the G2E the same evening and released as **v0.4.2**; step 4 (the answer in `gh#3`) drafted against v0.4.2, awaiting Richard's approval to post
+- **Type:** task · **Severity:** high · **Status:** done (2026-08-23) — evaluated, fixes tried by Richard on the G2E, released as **v0.4.2**, and the answer posted to `gh#3` with Richard's approval (issuecomment-5388178274); the issue stays open for his next round (supply read-back, PS numbers, 30/60 m cal)
 - **Source:** W1IZZ, GitHub `gh#3` ("G2 testing"), 2026-08-22
 - **Detail:** `docs/RADIOS-SCOPE.md` (S2–S5 status table and its ⛔ note)
 
@@ -312,7 +312,7 @@ Both radios are physically here, so bring-up on real hardware is possible.
 Ahead of all of it: **`gh#3` is an outside tester's whole run on hardware we do
 not have.** That is the scarce resource in this project — SDR-6 turned it into
 a verdict on 2026-08-23, SDR-1/SDR-2/SDR-8 are the defects it surfaced (all
-fixed in `main`, not yet tried by Richard, not yet released), and the reply to
-him waits for both of those. The
+fixed, tried by Richard on the G2E and released as v0.4.2 the same day), and
+the reply is posted (issuecomment-5388178274). The
 G2's status is "first live pass done by an external tester, not calibrated by
 us" until his next round comes back.
