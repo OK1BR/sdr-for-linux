@@ -1,5 +1,5 @@
 project('sdr-for-linux', 'c',
-  version : '0.4.1',
+  version : '0.4.2',
   license : 'GPL-3.0-or-later',
   default_options : [
     'c_std=c11',

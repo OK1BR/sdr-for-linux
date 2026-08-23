@@ -37,6 +37,27 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.2" date="2026-08-23">
+      <description>
+        <p>
+          A maintenance release built from the first ANAN G2 (Saturn) test
+          report. The three things that run found are fixed: the supply
+          voltage read 0.10 V on the G2 (the Saturn carries it in a different
+          status word — now per model, from piHPSDR and Thetis, still to be
+          confirmed on a G2), there were no band buttons for 60 m and 30 m,
+          and the terminal filled with "DUC sequence errors" lines on the G2
+          (those status bytes are FIFO telemetry there; the counter is read on
+          the G2E only). For everyone: the transmit-IQ stream start is
+          hardened (no stale packets when the link comes up, live-verified on
+          the G2E), the ANAN 10E no longer shows a supply-voltage number that
+          had no documented source, and the window's minimum width grows by
+          two band buttons. The G2 goes from "unlocked, unproven" to "first
+          live pass done by an external tester — receive probes, per-band PA
+          calibration against an external meter, SWR, a voice QSO — not yet
+          calibrated by us".
+        </p>
+      </description>
+    </release>
     <release version="0.4.1" date="2026-08-21">
       <description>
         <p>

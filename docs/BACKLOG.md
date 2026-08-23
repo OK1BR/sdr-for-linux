@@ -271,6 +271,17 @@ gateware (10E) stays unparsed until its bytes 32-35 are shown to be that
 counter. Idea for later: read the Saturn's V4.3 FIFO words as real telemetry
 (DUC FIFO depth + overflow bits = a better tripwire than the G2E's counter).
 
+### SDR-9 — "tx: over stats — mic drops=…" printed after TUNE overs
+- **Type:** bug · **Severity:** low · **Status:** open
+- **Source:** live test of the 2026-08-23 fixes on the G2E (log `/var/tmp/sdrfl-test-2026-08-23/sdr.err`)
+
+With the mic capture open (voice mode) a TUNE over does not consume the mic
+ring (TUNE is a tone), so the ring overflows and the unkey over-stats line
+reports tens of thousands of "mic drops" — a number meant to flag lost speech.
+Four TUNE overs in that session printed 57 856–88 320; every MOX over printed
+nothing (clean). Suppress the mic counters for overs that never read the mic
+(TUNE, two-tone, CW, digi), or clear the ring stats at key-down of those.
+
 ## Deferred
 
 ### SDR-5 — ANAN 10E reports a 169.254.x.x address
