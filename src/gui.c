@@ -3228,6 +3228,7 @@ static GtkWidget *build_bottom_controls(App *app) {
   if (!app->proto_p1 && app->radio_dev_ok && app->supply_src == SUPPLY_SRC_NONE) {
     gtk_widget_set_visible(vslot, FALSE);
   }
+  gtk_widget_set_margin_end(vslot, 8);   /* keep the readout off the window edge */
   gtk_box_append(GTK_BOX(bar), vslot);
   return bar;
 }
