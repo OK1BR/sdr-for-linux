@@ -22,18 +22,19 @@ is not:
 | S3 whitelist += SATURN | ✅ connect + TX + PS; ✅ **live tuning and band relays confirmed indirectly** — he tuned, calibrated nine bands and made a voice QSO (per-band PA calibration only works if the LPF relays follow the band); an explicit "relays click" report was not asked for and did not come |
 | G4 "drop the Att control" | ❌ **withdrawn — it was a misreading**, see §1 |
 | S4 TX | 🟢 **live-walked by the tester** — PA calibrated per band against an LP-100A into a dummy load (his numbers 43.0–53.0 dB, see §7.1), our wattmeter reading within 1–2 W of the LP-100A, SWR "tracked well" against external equipment, a DX voice QSO barefoot with a good audio report. **Not reported:** the dry-key step as such, the SWR-alarm trip test (§7 step 4), CW. |
-| S5 PureSignal | 🟡 "appeared to be working correctly" — no footer numbers (feedback level / state / auto-att) came back, so `ps_setpk` 0.6121 is confirmed only as "does not misbehave". Stays default-OFF like on every model. |
+| S5 PureSignal | 🟢 round 2 (§7.2, v0.4.2, 2026-08-24): two-tone into the dummy load reads **feedback 151** (inside the 129–181 window), auto-att 14 dB, state "correcting" — the first numeric PS confirmation on a real G2. Stays default-OFF like on every model. |
 
 ⛔ **"Unlocked" → "first live pass done, not yet measured by us."** Since
 2026-08-22 the RX path, the per-band PA calibration, the wattmeter (±1–2 W
 against an LP-100A at the levels he ran) and SWR tracking are confirmed by an
-external tester on a real G2; PureSignal only by his impression. What is still
-piHPSDR's starting value with no measurement behind it: the wattmeter outside
-his report, the PS feedback scaling, and the reverse-power side. Say "tested by
-one external operator, not calibrated by us" wherever the radio is announced.
-The supply-voltage readout was wrong on the G2 (SDR-1, fixed 2026-08-23 from
-piHPSDR + Thetis, awaiting his confirmation) and the status parser spammed his
-log (SDR-8, fixed the same day).
+external tester on a real G2; PureSignal since round 2 (§7.2) also by footer
+numbers (feedback in-window, correcting). What is still piHPSDR's starting
+value with no measurement behind it: the wattmeter outside his report and the
+reverse-power side. Say "tested by one external operator, not calibrated by
+us" wherever the radio is announced. The supply-voltage readout was wrong on
+the G2 (SDR-1, fixed 2026-08-23 from piHPSDR + Thetis, confirmed by his
+round-2 read-back — raw 544 ≈ 13.9 V) and the status parser spammed his log
+(SDR-8, fixed the same day, confirmed gone in round 2).
 
 Everything below is the audit the implementation was taken from; it stays as
 written so the next person can re-check our bytes against upstream.
@@ -361,3 +362,26 @@ tester following §7 sets `SDRFL_RADIO_IP`).
 during a two-tone (feedback level, state, auto-att) so 0.6121 gets a number;
 the 30 m (and 60 m) PA calibration now that the buttons exist; and a
 confirmation that the `DUC sequence errors` lines are gone from his terminal.
+
+### 7.2 Round 2 — W1IZZ on v0.4.2, 2026-08-24 (gh#3)
+
+He ran the whole ask, on the released 0.4.2:
+
+1. **Supply (SDR-1):** `p2 telemetry: … raw_supply[49-50]=1595
+   raw_adc1[55-56]=12 raw_adc0[57-58]=544 …` — 544 × 0.02553 = **13.89 V**,
+   right at the ≈540-counts-at-13.8-V expectation, and 55-56 sitting at 12
+   counts is the direct proof the old G2E word carries nothing on a Saturn.
+   He did not write down the PSU's own reading, so the scale is confirmed
+   against the nominal expectation, not against a meter. His follow-up
+   complaint — the readout is "very noisy", wants averaging and 0.1 V
+   resolution — is BACKLOG **SDR-11** (with the green-text note).
+2. **SDR-8:** "Sequence errors are gone" — confirmed live on the G2.
+3. **PureSignal, two-tone into the dummy load:** feedback **151**
+   (inside the 129–181 window), attenuation **14 dB**, state
+   "correcting" — the first *numeric* PS confirmation on a real G2;
+   `ps_setpk 0.6121` now has a live data point behind it.
+4. **PA calibration on the new buttons (SDR-2):** 30 m **50.4 dB**
+   (was the untouched 53.0 default), 60 m **50.0 dB** — both inside the
+   window, in line with his neighbouring bands.
+
+Still unreported from §7: the dry-key step as such, an SWR-alarm trip, CW.

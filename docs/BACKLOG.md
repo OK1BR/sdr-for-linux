@@ -119,8 +119,8 @@ to be used wherever the radio is announced.
 ## Open — bugs
 
 ### SDR-1 — Supply voltage reads wrong on an ANAN G2
-- **Type:** bug · **Severity:** high · **Status:** done in code (2026-08-23) — G2 mapping unverified on hardware
-- **Source:** W1IZZ, GitHub `gh#3` ("G2 testing"), 2026-08-22 — **not answered yet**
+- **Type:** bug · **Severity:** high · **Status:** done (2026-08-24) — G2 mapping confirmed by W1IZZ's v0.4.2 read-back (raw 544 ≈ expected 540 at a nominal 13.8 V; he did not state his PSU's actual reading)
+- **Source:** W1IZZ, GitHub `gh#3` ("G2 testing"), 2026-08-22 — answered 2026-08-23 (issuecomment-5388178274)
 
 An external tester running an ANAN **G2** reports the supply voltage displayed
 as roughly a tenth of a volt. Everything else in his run checked out (power
@@ -150,13 +150,20 @@ documented source (10E/Hermes class, HL2) **hides** the footer readout instead
 of extrapolating — note that the ANAN 10E therefore no longer shows a Supply
 number. `SDRFL_DEBUG_LEVELS` now dumps all three raw words (49-50 "supply
 volts" slot, 55-56, 57-58) so a tester can settle a model against a meter.
-**Still unverified on a real G2** — expected ≈540 counts at 13.8 V; the
+~~**Still unverified on a real G2** — expected ≈540 counts at 13.8 V; the
 confirmation belongs in the SDR-6 answer (ask W1IZZ for one
-`SDRFL_DEBUG_LEVELS=1` line next to his PSU reading).
+`SDRFL_DEBUG_LEVELS=1` line next to his PSU reading).~~
+**Round 2 (2026-08-24, gh#3):** W1IZZ's v0.4.2 telemetry line reads
+`raw_supply[49-50]=1595 raw_adc1[55-56]=12 raw_adc0[57-58]=544` — 544 ×
+0.02553 = 13.89 V, within the expected ≈540 @ 13.8 V, and bytes 55-56 at 12
+counts confirm the old G2E word really is dead on a Saturn. He did not write
+down his PSU's actual voltage, so the V/count scale is confirmed only against
+the nominal expectation, not against a meter; his remaining complaint is the
+readout's flicker, which is SDR-11.
 
 ### SDR-2 — No band buttons for 60 m and 30 m
-- **Type:** bug · **Severity:** medium · **Status:** done (2026-08-23)
-- **Source:** W1IZZ, GitHub `gh#3`, 2026-08-22 — **not answered yet**
+- **Type:** bug · **Severity:** medium · **Status:** done (2026-08-23) — used live by W1IZZ 2026-08-24: he PA-calibrated 30 m (50.4 dB) and 60 m (50.0 dB) through the new buttons
+- **Source:** W1IZZ, GitHub `gh#3`, 2026-08-22 — answered 2026-08-23 (issuecomment-5388178274)
 
 The tester found no way to switch to 60 m or 30 m, so he could not power-
 calibrate them either. **Confirmed in the code:** the band button list at
@@ -252,7 +259,7 @@ not fix a config that already persists `60m=…/0/…` (0 = LSB) — decide how 
 treat an already-saved LSB on 60 m (migrate once, or only change the seed).
 
 ### SDR-8 — "p2: DUC sequence errors" spam on the ANAN G2 (bytes 32-35 are not a counter there)
-- **Type:** bug · **Severity:** low · **Status:** done (2026-08-23)
+- **Type:** bug · **Severity:** low · **Status:** done (2026-08-23) — confirmed live on the G2 by W1IZZ 2026-08-24 ("Sequence errors are gone")
 - **Source:** W1IZZ's probe logs in `gh#3` (both ODT sets), found while evaluating SDR-6
 
 Every one of his probe runs printed ~5 lines a second like `p2: DUC sequence
@@ -281,6 +288,26 @@ reports tens of thousands of "mic drops" — a number meant to flag lost speech.
 Four TUNE overs in that session printed 57 856–88 320; every MOX over printed
 nothing (clean). Suppress the mic counters for overs that never read the mic
 (TUNE, two-tone, CW, digi), or clear the ring stats at key-down of those.
+
+### SDR-11 — Footer supply readout: noisy last digit, and the green is unreadable in some themes
+- **Type:** bug · **Severity:** low · **Status:** done in code (2026-08-25) — built, not yet seen on a live radio
+- **Source:** W1IZZ, `gh#3` round 2 (2026-08-24: "very noisy … maybe some
+  averaging and resolution to a tenth of a volt", "don't care for the green
+  text"); green removal decided by Richard 2026-08-25 (in-band value should be
+  ordinary foreground text like the neighbouring labels — a fixed `#8cf08c` can
+  be illegible on a light theme)
+
+Two display-only defects in the same footer slot. (1) The supply EMA was a
+fixed 0.1 factor **per frame** — its time constant changed with FPS — and the
+label printed hundredths, updating on every 0.01 V change, so the ±1-2-count
+raw jitter (±0.03-0.05 V on a Saturn) danced in the last digit. Now the
+S-meter idiom: wall-clock EMA (`SUPPLY_AVG_MS` 1500), snap on first sample or
+a >1 s gap, label rounded to **0.1 V** and repainted only when that rounded
+value changes. (2) The in-band state of both footer readouts (Supply, and the
+HL2 die-temperature label) dropped its fixed green and now inherits the theme
+foreground; amber/warn and red/fault colours stay. Protection paths are
+untouched — the HL2 thermal trip reads raw telemetry in the engine
+(`tx_run.c` → `p1_get_tx_meters`), never the GUI's smoothed copy.
 
 ## Open — ideas
 
