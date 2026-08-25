@@ -170,8 +170,9 @@ typedef struct {
                                 profile); NONE = readout hidden (SDR-1)          */
   double      supply_vpc;    /* volts per raw count for that model              */
   double      supply_v;      /* supply voltage (V), EMA-smoothed; 0 = unknown   */
+  gint64      supply_prev_us;/* last supply sample (monotonic) — EMA dt + gap snap */
   GtkWidget  *volt_label;    /* footer supply-voltage readout                   */
-  double      volt_shown;    /* last value pushed to volt_label (markup throttle)*/
+  double      volt_shown;    /* value on volt_label, rounded to 0.1 V (throttle) */
   double      temp_c;        /* P1/HL2 die temperature (°C), EMA; 0 = unknown   */
   double      temp_shown;    /* last value pushed to volt_label (P1 reuses it)  */
   double      pan_high, pan_low;              /* visible dB window (dBm)          */
@@ -411,7 +412,9 @@ static void band_apply(App *app) {
  * Thetis). Models without a documented source hide the readout. SDRFL_VOLT_CAL
  * still overrides k (V per count) for a precise re-trim without a rebuild; it
  * never changes the source word. */
-#define SUPPLY_V_EMA 0.1   /* smooths the ±1-count (~±0.017 V) raw jitter */
+#define SUPPLY_V_EMA 0.1     /* per-frame factor, HL2 die-temperature label */
+#define SUPPLY_AVG_MS 1500   /* supply readout EMA time constant (wall-clock —
+                              * gh#3 round 2: ±1-2 raw counts flicker the label) */
 
 /* How long an ADC-overload badge stays lit after a clip (µs). A clip may span
  * just one 50 ms status packet — hold it so it's visible at any frame rate. */
@@ -1843,8 +1846,18 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
             if (kenv < 0.0) { kenv = 0.0; }
           }
           double v = raw * (kenv > 0.0 ? kenv : app->supply_vpc);
-          app->supply_v = (app->supply_v > 0.0)
-                          ? app->supply_v + SUPPLY_V_EMA * (v - app->supply_v) : v;
+          /* Wall-clock EMA (the S-meter idiom): the poll cadence is the frame
+           * rate, so a per-frame factor would change the time constant with
+           * FPS. A >1 s gap (reconnect) snaps. Display-side only — nothing
+           * protective reads supply_v. */
+          if (app->supply_v <= 0.0 || now - app->supply_prev_us > G_USEC_PER_SEC) {
+            app->supply_v = v;
+          } else {
+            double f = 1.0 - exp((double)(app->supply_prev_us - now) / 1000.0
+                                 / (double)SUPPLY_AVG_MS);
+            app->supply_v += f * (v - app->supply_v);
+          }
+          app->supply_prev_us = now;
           update_volt_label(app);
         }
       }
@@ -3005,25 +3018,31 @@ static void update_span_label(App *app) {
   gtk_label_set_text(GTK_LABEL(app->span_label), buf);
 }
 
-/* Footer supply-voltage readout: green in-band, amber on a mild excursion, red
- * on a fault. Throttled to ~0.01 V changes so it doesn't relayout every frame. */
+/* Footer supply-voltage readout: theme foreground in-band (a fixed green was
+ * unreadable in some themes — gh#3 round 2), amber on a mild excursion, red on
+ * a fault. Shown at 0.1 V; the label updates only when that rounded value
+ * changes. */
 static void update_volt_label(App *app) {
   if (!app->volt_label || app->supply_v <= 0.0) { return; }
-  double v = app->supply_v;
-  if (app->volt_shown > 0.0 && fabs(v - app->volt_shown) < 0.01) { return; }
+  double v = round(app->supply_v * 10.0) / 10.0;
+  if (v == app->volt_shown) { return; }
   app->volt_shown = v;
   const char *col = (v < 12.0 || v > 15.0) ? "#f2413d"    /* fault */
                   : (v < 12.8 || v > 14.5) ? "#fbb724"    /* warn  */
-                  :                          "#8cf08c";   /* ok    */
+                  :                          NULL;        /* ok    */
   char m[96];
-  snprintf(m, sizeof m, "<span foreground='%s'><b>%.2f V</b></span>", col, v);
+  if (col) {
+    snprintf(m, sizeof m, "<span foreground='%s'><b>%.1f V</b></span>", col, v);
+  } else {
+    snprintf(m, sizeof m, "<b>%.1f V</b>", v);
+  }
   gtk_label_set_markup(GTK_LABEL(app->volt_label), m);
 }
 
 /* P1/HL2 twin: the footer slot shows the AD9866 die temperature instead of a
  * supply voltage (the HL2 reports temperature in the EP6 addr-1 status slot;
  * no voltage telemetry exists). Thresholds: the HL2 community treats ≳55 °C
- * as fan territory — green < 45, amber 45-55, red above. */
+ * as fan territory — theme foreground < 45, amber 45-55, red above. */
 static void update_temp_label(App *app) {
   if (!app->volt_label || app->temp_c == 0.0) { return; }
   double c = app->temp_c;
@@ -3031,9 +3050,13 @@ static void update_temp_label(App *app) {
   app->temp_shown = c;
   const char *col = (c > 55.0) ? "#f2413d"    /* hot — add a fan  */
                   : (c > 45.0) ? "#fbb724"    /* warm             */
-                  :              "#8cf08c";   /* ok               */
+                  :              NULL;        /* ok               */
   char m[96];
-  snprintf(m, sizeof m, "<span foreground='%s'><b>%.1f °C</b></span>", col, c);
+  if (col) {
+    snprintf(m, sizeof m, "<span foreground='%s'><b>%.1f °C</b></span>", col, c);
+  } else {
+    snprintf(m, sizeof m, "<b>%.1f °C</b>", c);
+  }
   gtk_label_set_markup(GTK_LABEL(app->volt_label), m);
 }
 
