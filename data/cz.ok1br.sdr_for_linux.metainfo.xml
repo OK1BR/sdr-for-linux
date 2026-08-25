@@ -37,6 +37,23 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.5.0" date="2026-08-25">
+      <description>
+        <p>
+          The ANAN G2 (Saturn) graduates to "live-tested": an external
+          operator (W1IZZ) completed two test rounds on his radio — receive
+          probes, per-band PA calibration against an external wattmeter,
+          SWR tracking, a voice QSO, PureSignal correcting with its feedback
+          inside the target window, and the per-model supply-voltage readout
+          confirmed. Still not calibrated by the project itself. From his
+          feedback, the footer supply readout is reworked: a wall-clock
+          exponential average with 0.1 V resolution replaces the flickering
+          hundredths, and the in-band value now follows the theme foreground
+          (the fixed green was unreadable on light themes) with a small
+          margin off the window edge.
+        </p>
+      </description>
+    </release>
     <release version="0.4.2" date="2026-08-23">
       <description>
         <p>
