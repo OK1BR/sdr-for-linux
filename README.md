@@ -73,7 +73,7 @@ radio picker rather than left to luck.
 | Apache Labs **ANAN G2E** | HPSDR Protocol 2 | ✅ supported, developed & verified on this radio |
 | Apache Labs **ANAN 10E / 100B** (Hermes) | HPSDR Protocol 2 | ✅ supported — RX + TX live-verified (fw 10.3); per-radio PA calibration & 10 W scale. **PureSignal disabled**: the old Hermes firmware locks up on the P2 feedback-DDC switch mid-TX (power-cycle recovery); details in `docs/TX-DESIGN.md` §9 |
 | **Hermes Lite 2** | HPSDR Protocol 1 | ✅ supported — **RX + TX + PureSignal live-verified** (gw 73.2): panadapter, audio, LNA gain (−12..+48 dB), N2ADR filter-board band switching, die temperature + 60 °C thermal TX trip, ADC-overload badge, TCI/SDC skimming, 5 W PA with per-band calibration (20 m calibrated, other bands under-drive until walked in), CW/voice, PureSignal over P1 (RX3/RX4 feedback; PS needs a sample rate ≤ 192 kHz). Rates 48–384 kHz, 0–38.4 MHz |
-| Apache Labs **ANAN G2** (Saturn) | HPSDR Protocol 2 | 🟢 **RX + TX + PureSignal — first live pass done by an external tester (W1IZZ, 2026-08-22, issue #3): RX probes clean, per-band PA calibration against an LP-100A with our wattmeter within 1–2 W, SWR tracking, a voice QSO; PureSignal reported working.** We still do not own a G2: the per-device values (two Alex boards, two ADCs, DDC2, ANAN-7000 band-pass knees and wattmeter constants, `ps_setpk` 0.6121) come from piHPSDR, pinned by an offline byte gate, and are confirmed by one operator's run, not calibrated by us. It starts safe — PA off, ANT1, 1 W, no stored PA calibration — so ⛔ **your first transmission still belongs into a dummy load**: dry key, then 1 W, then walk the calibration up per band while watching the SWR (his numbers landed at 43–53 dB). Step-by-step in `docs/RADIOS-SCOPE.md` §7 (§7.1 = what his run showed); the supply-voltage readout for this model is fixed in 0.4.2 and awaits his confirmation |
+| Apache Labs **ANAN G2** (Saturn) | HPSDR Protocol 2 | 🟢 **RX + TX + PureSignal — live-tested by an external operator (W1IZZ, issue #3, two rounds, 2026-08-22/24): RX probes clean, per-band PA calibration against an LP-100A with our wattmeter within 1–2 W, SWR tracking, a voice QSO; PureSignal correcting with the feedback inside its target window; the per-model supply readout confirmed on his radio.** We still do not own a G2: the per-device values (two Alex boards, two ADCs, DDC2, ANAN-7000 band-pass knees and wattmeter constants, `ps_setpk` 0.6121) come from piHPSDR, pinned by an offline byte gate, and are confirmed by one operator's runs, not calibrated by us. It starts safe — PA off, ANT1, 1 W, no stored PA calibration — so ⛔ **your first transmission still belongs into a dummy load**: dry key, then 1 W, then walk the calibration up per band while watching the SWR (his numbers landed at 43–53 dB). Step-by-step in `docs/RADIOS-SCOPE.md` §7 (§7.1–7.2 = what his runs showed) |
 | Other ANAN / Hermes P2 boards (ORION2: 7000/8000/DLE 7000) | Protocol 2 | ⛔ blocked until tested — the Saturn work above already carries their wire bytes, so this is mostly a whitelist + live test away; open an issue if you can lend hardware + a dummy load |
 | Older P1 boards (HL1, Metis…) | Protocol 1 | ⛔ blocked until tested |
 
@@ -175,9 +175,9 @@ and setting `GSK_RENDERER` yourself always wins. Details in
 ## Known limitations
 
 - **Radios: ANAN G2E, ANAN 10E/100B, Hermes Lite 2 (all live-verified here),
-  ANAN G2/Saturn (enabled from an audit; first live pass by an external
-  tester 2026-08-22, not calibrated by us)** — whitelist, see above; one RX
-  (RX2 planned)
+  ANAN G2/Saturn (enabled from an audit; live-tested by an external operator
+  in two rounds, 2026-08, not calibrated by us)** — whitelist, see above; one
+  RX (RX2 planned)
 - No FM yet, no built-in CAT (use tciadapter, see above)
 - Audio flows through the PC only — the radio's own phones/mic jacks are
   not wired up
@@ -221,6 +221,10 @@ scope, band plans.
   engine this project builds on.
 - **WDSP** — Warren Pratt (NR0V) — the DSP library.
 - **Thetis** — the PureSignal auto-attenuate behaviour follows its design.
+- **Dr. Lawrence W. Gray (W1IZZ)** — live-tested and helped debug the ANAN
+  G2/Saturn support on his radio (issue #3): RX probes, per-band PA
+  calibration against an LP-100A, PureSignal numbers, and the fixes his two
+  test rounds surfaced.
 - Vendored: **rnnoise** (Xiph.Org/Mozilla), **libspecbleach** (Luciano Dato).
 
 ## License
