@@ -282,6 +282,79 @@ Four TUNE overs in that session printed 57 856–88 320; every MOX over printed
 nothing (clean). Suppress the mic counters for overs that never read the mic
 (TUNE, two-tone, CW, digi), or clear the ring stats at key-down of those.
 
+## Open — ideas
+
+### SDR-10 — A radio-trained neural NR in the existing NR slot (NR5)
+- **Type:** idea · **Severity:** — · **Status:** deferred — a possible direction for later, not queued and not scheduled
+- **Source:** own research, 2026-08-25
+
+The NR selector already has the shape this would need. `demod_set_nr()`
+(`src/engine/demod.c:458`) cycles off / ANR (LMS) / NR2 (EMNR spectral) / NR3
+(RNNoise) / NR4 (libspecbleach), the button in `gui.c:2758` cycles `% 5` and
+`gui.c:4720` persists it. Both neural-ish entries are vendored under `vendor/`
+and credited in the about dialog. Adding an NR5 is not new plumbing; it is one
+more run flag and one more processor in a chain that was designed to hold
+several.
+
+**What makes it worth considering at all.** NR3 is RNNoise — trained on human
+speech in ordinary noise, which is not what comes out of an HF receiver. The
+one project in amateur radio that addresses this directly is **RM Noise**,
+whose stated advantage is that its network was trained on radio traffic
+specifically, SSB and CW, rather than on office speech (their claim, via
+oeradio.at; not measured here). That is the whole delta: same slot in the
+chain, a model that has heard the signal it is being asked to clean.
+
+**Why it cannot simply be adopted.** Checked in RM Noise's own documentation:
+the client sends the receiver's audio to *their servers*, which denoise it and
+send it back; it is Windows 10/11 only, there is no Linux client, the model is
+server-side and not downloadable, and an account is required with the callsign
+as the username. Every one of those is disqualifying here — this app does not
+send what the operator is listening to anywhere, and a core RX feature cannot
+depend on someone else's server being up. So the idea is not "integrate RM
+Noise", it is "the thing RM Noise does is missing on Linux and nobody has
+built it locally".
+
+**The nearest local starting point** is DeepFilterNet2/3, which Intel publishes
+in OpenVINO IR form and ships in its Audacity plugin set. It is still a speech
+model, so it inherits exactly the mismatch above — it would be a step sideways
+from NR3 unless retrained. Whether a radio-trained model could be produced at
+all (corpus of off-air recordings, labelled how?) is the real question behind
+this item, and it is a much bigger piece of work than wiring a processor in.
+
+Open questions, roughly in the order they would kill or shape it:
+
+1. **Does it damage CW?** Every model named here is a speech enhancer. A CW
+   tone is not speech, and a network that has learned to preserve formants may
+   attenuate or warp a steady tone. NR3/NR4 already have this exposure; a
+   stronger model has more of it. Any such NR must be judged separately on
+   CW and on SSB.
+2. **Monitor path only.** Whatever this produces is *altered* audio — a
+   generative model can invent something that was not transmitted. It may
+   feed the operator's ears and never a decoder or anything that gets logged
+   or spotted. That boundary is the design constraint, not a detail.
+3. **Latency budget.** The chain is block-based at the demod rate; a
+   frame-based network adds its own algorithmic delay on top. Break-in CW
+   listening sets the ceiling, and it is low.
+4. **Interaction with what is already running.** NB (ANB/SNBA), ANF and the
+   existing NR stages are in the same path. A learned denoiser downstream of
+   a spectral one may fight it.
+5. **Where it runs.** The dev machine has an Intel NPU (Core Ultra 7 265,
+   `vpu_37xx`) reachable through OpenVINO, attractive because it is a few
+   watts and leaves CPU and GPU alone — but **nothing has been compiled or
+   measured**, and neither the IR conversion nor operator coverage on that
+   generation has been tried. CPU is the baseline. Anything NPU-specific
+   stays optional: a build without it must still produce the same app, minus
+   this one NR position.
+6. **Vendoring and licence.** NR3/NR4 are vendored under `vendor/` with
+   credits; a new model would have to fit the same pattern, and model weights
+   have their own licensing that is not the same question as code licensing.
+
+Nothing here is on a milestone and nothing about it is decided. If it is ever
+picked up, the first step is offline and cheap: run an existing model over
+recorded off-air audio — SSB and CW separately — and A/B it against NR2, NR3
+and NR4 on the same recording, which is the same corpus discipline
+`CONTRIBUTING.md` already asks of outside patches.
+
 ## Deferred
 
 ### SDR-5 — ANAN 10E reports a 169.254.x.x address
