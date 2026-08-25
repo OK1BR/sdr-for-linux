@@ -287,6 +287,38 @@ TX Mic/Lev/ALC meter got the S-meter ballistics idiom (eadab5f).
 Rejected on measurement: 1-2 kHz side-chain detector filter — Richard's
 quiet speech loses more there (~20 dB) than his fan noise (14.7 dB).
 
+**★ RELEASED 2026-08-25: v0.5.0 — the G2-tested release.** Same-day
+turnaround on W1IZZ's round 2 (gh#3, evaluated in RADIOS-SCOPE §7.2): his
+run confirmed SDR-1 (raw 544 → 13.9 V; no PSU reference reading), SDR-8
+gone, **PureSignal with numbers** (feedback 151 in the 129–181 window,
+auto-att 14 dB, correcting → S5 🟢) and 30 m 50.4 / 60 m 50.0 dB on the
+new buttons; his two display notes became **SDR-11** (supply readout:
+wall-clock EMA 1500 ms + 0.1 V resolution + theme-foreground instead of
+the fixed green + 8 px edge margin — live-verified on the G2E the same
+day incl. the light theme, forced per-instance via
+`ADW_DEBUG_COLOR_SCHEME=prefer-light` in the broadway lab; the G2E's
+13.45 V sits exactly on the 0.1 V rounding boundary and holds).
+G2 status → **"live-tested by an external operator"** (README hardware
+row + a Credits entry for Dr. Lawrence W. Gray, W1IZZ). Checklist walked:
+11 offline gates, CI dry-run first, headless About = 0.5.0 (⛔ run under
+`dbus-run-session` — Richard's desktop instance owned the D-Bus name),
+notes EN+CZ approved before `gh release create`, tag CI attached all
+three artifacts, public AppImage reports 0.5.0, AUR 0.5.0-1 pushed with
+consent (398805c, fresh clone + webget verified), reply to Larry posted
+with consent (issuecomment-5414226078; round 3 = optional §7 leftovers:
+dry-key, SWR-trip, CW), `~/.local` refreshed. ⛔ Lessons: (1) **release
+titles are plain "SDR for Linux X.Y.Z"** — no dash subtitles (Richard's
+explicit call; every older title normalized the same day, incl. skimmer
+v0.3.0; AUR commit = `upgpkg: sdr-for-linux X.Y.Z`, no `-1`); (2) in the
+AUR clone always **`makepkg -C`** — a stale `src/build` from 0.4.1 put a
+0.4.1 binary into the first local 0.5.0-1 test build (caught by running
+`--version` on the packaged binary, which is now a checklist step);
+(3) **GitHub-bound text is never hard-wrapped** (GFM renders every
+newline as a break — Richard's call, same day): the 0.5.0 notes + reply
+were re-flowed in place and every older release body swept retroactively
+(paragraph = one line; older issue comments and the sibling repos were
+already clean).
+
 **★ RELEASED 2026-08-23: v0.4.2 — the ANAN G2 first-test maintenance
 release.** Same-day turnaround on W1IZZ's gh#3 run: SDR-1 (per-model supply
 voltage; Saturn = HP-status bytes 57-58 × 0.02553 per piHPSDR + Thetis, still
