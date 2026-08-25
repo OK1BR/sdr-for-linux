@@ -290,7 +290,7 @@ nothing (clean). Suppress the mic counters for overs that never read the mic
 (TUNE, two-tone, CW, digi), or clear the ring stats at key-down of those.
 
 ### SDR-11 — Footer supply readout: noisy last digit, and the green is unreadable in some themes
-- **Type:** bug · **Severity:** low · **Status:** done in code (2026-08-25) — built, not yet seen on a live radio
+- **Type:** bug · **Severity:** low · **Status:** done (2026-08-25) — live-verified on the G2E the same day (headless broadway lab against the real radio): the value held a pixel-identical "13,5 V" in theme-foreground white across 5 screenshots over ~20 s while the raw word jittered 797/798, and 13.45 V is the worst case — it sits exactly on a 0.1 V rounding boundary. No Pango/GTK warnings from the new markup. The HL2 die-temperature half (same one-line pattern) is not live-verified.
 - **Source:** W1IZZ, `gh#3` round 2 (2026-08-24: "very noisy … maybe some
   averaging and resolution to a tenth of a volt", "don't care for the green
   text"); green removal decided by Richard 2026-08-25 (in-band value should be
