@@ -45,6 +45,15 @@ static int      d_rate;            /* IQ input rate (blocks/s = d_rate/1024) */
 static double   d_vol_db;          /* AF volume in dB (panel gain source)    */
 static int      d_dbg;             /* SDRFL_DEBUG_LEVELS: 1 Hz meter dump    */
 static int      d_mute_target;     /* g_atomic: 1 = want RX muted (RX-on-TX)  */
+static int      d_vol_mute;        /* g_atomic: 1 = AF volume at the range floor
+                                      → hard-mute the sink output. The panel gain
+                                      alone bottoms out at 0.01 linear, which is
+                                      still audible under AGC; the mute must NOT
+                                      go through SetRXAPanelGain1(0) or the
+                                      volume-independent TCI tap below would go
+                                      silent too. */
+#define D_VOL_MUTE_DB (-39.95)     /* floor threshold: GUI slider min is -40;
+                                      TCI MUTE sends -60 and lands here too */
 static double   d_mute_gain = 1.0; /* applied output gain, ramped → target (feed thread) */
 #define D_FADE_STEP (1.0 / 960.0)  /* ~20 ms mute/unmute fade at 48 kHz (no click) */
 static int      d_dbg_blocks;      /* fexchange0 calls since last dump       */
@@ -192,6 +201,7 @@ int demod_create(int id, int in_rate, int mode, double flo, double fhi, double v
   d_gain = (g && *g) ? atof(g) : 1.0;
   d_rate = in_rate;
   d_vol_db = volume;
+  g_atomic_int_set(&d_vol_mute, volume <= D_VOL_MUTE_DB);
   d_dbg = getenv("SDRFL_DEBUG_LEVELS") != NULL;
   d_dbg_blocks = 0;
   d_dbg_pk = 0.0;
@@ -236,7 +246,8 @@ void demod_feed(const double *iq, int n_pairs) {
         if (err != 0) { d_err = err; d_ferr++; }
         /* RX-on-TX mute: ramp a gain toward 0 (muted) / 1 (open) so the sink never
          * sees a step → no click. The WDSP demod keeps running underneath. */
-        double mgoal = g_atomic_int_get(&d_mute_target) ? 0.0 : 1.0;
+        double mgoal = (g_atomic_int_get(&d_mute_target) ||
+                        g_atomic_int_get(&d_vol_mute)) ? 0.0 : 1.0;
         for (int k = 0; k < d_output; k++) {
           double rl = d_audio[k * 2];             /* raw WDSP out L (I)            */
           double rr = d_audio[k * 2 + 1];         /* raw WDSP out R (Q; == L unless binaural) */
@@ -432,6 +443,7 @@ void demod_set_gain(double gain) {
 void demod_set_volume(double db) {
   g_mutex_lock(&d_lock);
   d_vol_db = db;
+  g_atomic_int_set(&d_vol_mute, db <= D_VOL_MUTE_DB);
   if (d_ready) { SetRXAPanelGain1(d_id, pow(10.0, 0.05 * db)); }  /* AF gain dB → linear */
   g_mutex_unlock(&d_lock);
 }

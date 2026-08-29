@@ -70,7 +70,11 @@ void demod_set_anf(int on);
 /* Binaural stereo audio: 0 = mono (L=R), 1 = binaural (L=I, R=Q). Live. */
 void demod_set_binaural(int on);
 
-/* Set the AF volume (dB, 0..-40) live on the running channel (thread-safe). */
+/* Set the AF volume (dB, 0..-40) live on the running channel (thread-safe).
+ * At the range floor (≤ −40 dB, e.g. the GUI slider minimum or TCI MUTE's −60)
+ * the sink output is hard-muted (true silence, click-free ramp) — the panel
+ * gain alone would still leave AGC-levelled audio faintly audible. The 48 kHz
+ * TCI tap keeps flowing regardless (decoding is volume-independent). */
 void demod_set_volume(double db);
 
 /* Mute the RX audio output (silence to the sink) — used to silence the receiver
