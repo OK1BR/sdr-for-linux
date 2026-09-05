@@ -126,9 +126,10 @@ static _Atomic int      s_iq_in_rate;     /* engine rate seen by the pusher   */
  * words of every IQ Stream header: h[8] = DDC centre (Hz) of the block's
  * FIRST frame, h[9] = frame offset at which the centre changed inside the
  * block (0 = it did not), h[10] = the centre from that frame on. The
- * boundary is the DDC-ring sample index at the moment the frequency changed
- * (the P2 High-Priority kick has just left) plus the radio's DDC→P2 latency
- * (SDRFL_DDC_LAT_MS, default 2.5 ms), mapped through the client's resampler
+ * boundary is the DDC-rate frame index the capture clock (see s_clock_lock)
+ * gives for the moment the frequency changed (the P2 High-Priority kick has
+ * just left) plus the radio's own DDC→wire latency (SDRFL_DDC_LAT_MS,
+ * default 1.0 ms), mapped through the client's resampler
  * ratio. Unstamped clients get byte-identical blocks to before (ExpertSDR
  * leaves the words zero; SDC/CW Skimmer never read them — unverified, hence
  * opt-in). Why: the dds label rides the control channel and lands ±1 IQ
@@ -146,6 +147,20 @@ static double           s_ddc_lat_ms = -1.0;     /* < 0 = read the env once     
 static _Atomic uint64_t s_iq_total;              /* DDC-rate frames ever ringed   */
 static uint64_t         s_pump_total;            /* frames the pump consumed      */
 static void stamp_note_freq(long long hz);
+/* Sample clock: capture time of DDC frame idx ≈ idx / rate + off, with off the
+ * LEAST-DELAYED push of the last two seconds (the listener had no backlog
+ * then). The push runs on the listener thread AFTER analyzer_feed's FFT, so
+ * packets queue in the socket while it works and "frames ringed so far" at
+ * the moment of a retune trails the capture clock by a varying backlog —
+ * measured live 2026-09-05 as stamps landing 1–2 rows (10–20 ms) EARLY with
+ * a spread. Placing the boundary by TIME through this clock removes both the
+ * backlog and its jitter; what is left is the radio's own DDC→wire pipeline
+ * (SDRFL_DDC_LAT_MS). Two one-second buckets so a clock drift between the
+ * radio and CLOCK_MONOTONIC (tens of ppm) never accumulates. */
+static GMutex   s_clock_lock;
+static gint64   s_clock_bucket = -1;             /* second of s_clock_cur         */
+static double   s_clock_cur, s_clock_prev;       /* min off in this / last second */
+static int      s_clock_have_prev, s_clock_valid;
 static double           s_iq_chunk[2 * IQ_CHUNK]; /* shared resampler input   */
 /* ExpertSDR's IQ orientation is the complex CONJUGATE of the HPSDR DDC
  * feed — live-verified 2026-07-10: SDC/CW Skimmer showed a mirrored
@@ -1211,6 +1226,29 @@ void tci_server_iq_push(const double *iq, int n_pairs, int rate) {
   atomic_fetch_add_explicit(&s_iq_total, (uint64_t)(h - atomic_load_explicit(&iq_head, memory_order_relaxed)),
                             memory_order_relaxed);
   atomic_store_explicit(&iq_head, h, memory_order_release);
+  /* sample clock (see s_clock_lock): this push's offset, min per second */
+  {
+    const gint64 now = g_get_monotonic_time();
+    const double off = (double)now * 1e-6 -
+                       (double)atomic_load_explicit(&s_iq_total, memory_order_relaxed) / (double)rate;
+    const gint64 bucket = now / G_USEC_PER_SEC;
+    g_mutex_lock(&s_clock_lock);
+    if (s_clock_valid && off > s_clock_cur + 0.2) {
+      /* the stream paused (restart, rate change, a 200 ms stall): the old
+       * offsets describe nothing any more — start over from this push; a
+       * burst that follows a stall lowers `cur` back within the burst */
+      s_clock_bucket = -1; s_clock_have_prev = 0;
+    }
+    if (bucket != s_clock_bucket) {
+      if (s_clock_bucket >= 0) { s_clock_prev = s_clock_cur; s_clock_have_prev = 1; }
+      s_clock_bucket = bucket;
+      s_clock_cur    = off;
+    } else if (off < s_clock_cur) {
+      s_clock_cur = off;
+    }
+    s_clock_valid = 1;
+    g_mutex_unlock(&s_clock_lock);
+  }
   /* lws_service BLOCKS until a socket event — kick it like the audio path
    * does, or the stream only flushes when unrelated traffic (a dds
    * broadcast) happens to wake the loop. Found live with SDC: the IQ
@@ -1259,6 +1297,9 @@ int tci_server_start(int port, const TciOps *ops) {
   g_mutex_lock(&s_stamp_lock);
   s_stamp_n = 0; s_stamp_last_hz = 0;
   g_mutex_unlock(&s_stamp_lock);
+  g_mutex_lock(&s_clock_lock);
+  s_clock_bucket = -1; s_clock_have_prev = 0; s_clock_valid = 0;
+  g_mutex_unlock(&s_clock_lock);
   atomic_store(&iq_tail, 0u);
   atomic_store(&s_iq_in_rate, 0);
   s_iq_conj = g_getenv("SDRFL_TCI_IQ_RAW") == NULL;
@@ -1341,13 +1382,21 @@ static void stamp_note_freq(long long hz) {
   g_mutex_lock(&s_stamp_lock);
   if (s_ddc_lat_ms < 0) {
     const char *e = getenv("SDRFL_DDC_LAT_MS");
-    s_ddc_lat_ms = (e && *e) ? g_ascii_strtod(e, NULL) : 2.5;
-    if (s_ddc_lat_ms < 0 || s_ddc_lat_ms > 100) { s_ddc_lat_ms = 2.5; }
+    s_ddc_lat_ms = (e && *e) ? g_ascii_strtod(e, NULL) : 1.0;
+    if (s_ddc_lat_ms < 0 || s_ddc_lat_ms > 100) { s_ddc_lat_ms = 1.0; }
   }
   if (hz > 0 && hz != s_stamp_last_hz) {
     const int rate = atomic_load_explicit(&s_iq_in_rate, memory_order_relaxed);
-    const double idx = (double)atomic_load_explicit(&s_iq_total, memory_order_relaxed) +
-                       s_ddc_lat_ms * 1e-3 * (rate > 0 ? rate : 0);
+    /* frames ringed so far + latency: the fallback before the clock is up */
+    double idx = (double)atomic_load_explicit(&s_iq_total, memory_order_relaxed) +
+                 s_ddc_lat_ms * 1e-3 * (rate > 0 ? rate : 0);
+    g_mutex_lock(&s_clock_lock);
+    if (s_clock_valid && rate > 0) {
+      const double off = s_clock_have_prev ? MIN(s_clock_cur, s_clock_prev) : s_clock_cur;
+      const double t   = (double)g_get_monotonic_time() * 1e-6;
+      idx = (t - off + s_ddc_lat_ms * 1e-3) * (double)rate;   /* by capture TIME */
+    }
+    g_mutex_unlock(&s_clock_lock);
     s_stamp[s_stamp_n % STAMP_EVENTS] = (StampEv){ idx, hz };
     s_stamp_n++;
     s_stamp_last_hz = hz;

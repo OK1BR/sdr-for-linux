@@ -228,7 +228,7 @@ platform-library category — do not vendor).
   which the centre changed inside the block (0 = it did not), `h[10]` = the
   centre from that frame on. The boundary is the DDC-ring sample index at
   the moment of the change (the P2 High-Priority kick has just left) plus
-  the radio's DDC→P2 latency (`SDRFL_DDC_LAT_MS`, default 2.5 ms), mapped
+  the radio's own DDC→wire latency (`SDRFL_DDC_LAT_MS`, default 1.0 ms) — placed by the server's capture clock (least-delayed push of the last two seconds), not by the frames ringed so far, so the listener's socket backlog cannot shift it — mapped
   through the client's resampler ratio; two changes in one block report the
   first offset with the final centre. Off by default and off for every
   client that never asks — SDC / CW Skimmer see byte-identical blocks

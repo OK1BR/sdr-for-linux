@@ -235,6 +235,23 @@ static int cond_chrono(void) {
 }
 static int cond_bc(void)      { return rx_contains("vfo:0,0,7020000;") && rx_contains("modulation:0,cw;"); }
 
+/* Stamp-section pusher: 1920 frames of silence per 10 ms of REAL time, as
+ * the P2 listener would (it never pauses), so the server's capture clock
+ * holds through the whole section. */
+static volatile gint pusher_run;
+static gpointer pusher_thread(gpointer data) {
+  (void)data;
+  static double zz[2 * 1920];
+  gint64 next = g_get_monotonic_time();
+  while (g_atomic_int_get(&pusher_run)) {
+    tci_server_iq_push(zz, 1920, 192000);
+    next += 10 * 1000;
+    const gint64 wait = next - g_get_monotonic_time();
+    if (wait > 0) { g_usleep((gulong)wait); }
+  }
+  return NULL;
+}
+
 int main(void) {
   printf("=== TCI server gate (offline) ===\n");
   c_rx = g_string_new(NULL);
@@ -459,34 +476,33 @@ int main(void) {
   /* ---- IQ centre stamps (family extension for skimmer-for-linux M8): a
    * client that sent iq_stamp:1 gets the DDC centre of the block's first
    * frame in h[8]; a retune INSIDE a block puts the frame offset in h[9] and
-   * the new centre in h[10] — the DDC-ring index at the moment of the change
-   * (+ SDRFL_DDC_LAT_MS) mapped through the ÷4 decimation. Unstamped clients
-   * keep all-zero reserved words. */
+   * the new centre in h[10] — placed by the server's capture clock (built
+   * from the pushes) + SDRFL_DDC_LAT_MS, mapped through the ÷4 decimation.
+   * Unstamped clients keep all-zero reserved words. The stream must RUN
+   * continuously through all of it (the listener never pauses live): a
+   * pusher thread feeds 1920 frames of silence every 10 ms of real time. */
   {
     const size_t blk = 64 + 2048 * 2 * sizeof(float);
-    static double zz[2 * 1920];
-    /* push 10 ms chunks of silence until c_bin holds ≥ n blocks (≤ 5 s) */
-    #define PUSH_UNTIL_BLOCKS(n) do { \
+    #define CLEAR_BIN() do { g_mutex_lock(&c_lock); g_byte_array_set_size(c_bin, 0); g_mutex_unlock(&c_lock); } while (0)
+    /* wait (pumping the client) until c_bin holds ≥ n blocks, ≤ 5 s */
+    #define WAIT_BLOCKS(n) do { \
       int ok_ = 0; \
-      for (int ms_ = 0; ms_ < 5000 && !ok_; ms_ += 10) { \
-        tci_server_iq_push(zz, 1920, 192000); \
+      for (int ms_ = 0; ms_ < 5000 && !ok_; ms_ += 5) { \
         while (g_main_context_iteration(NULL, FALSE)) {} \
         g_mutex_lock(&c_lock); ok_ = c_bin->len >= (n) * blk; g_mutex_unlock(&c_lock); \
-        g_usleep(10 * 1000); \
+        g_usleep(5 * 1000); \
       } } while (0)
-    #define CLEAR_BIN() do { g_mutex_lock(&c_lock); g_byte_array_set_size(c_bin, 0); g_mutex_unlock(&c_lock); } while (0)
-    memset(zz, 0, sizeof zz);
     const long long f0 = S.freq;
-    /* the IQ section above ended with iq_stop — subscribe again */
+    /* the IQ section above ended with iq_stop — subscribe again, then stream */
     client_send("iq_start:0;");
-    int got_start = 0;
-    for (int ms = 0; ms < 2000 && !got_start; ms += 10) {
+    for (int ms = 0; ms < 2000 && !rx_contains("iq_stop:0;iq_start:0;"); ms += 10) {
       while (g_main_context_iteration(NULL, FALSE)) {}
-      got_start = rx_contains("iq_start:0;iq_stop:0;iq_start:0;") || rx_contains("iq_stop:0;iq_start:0;");
       g_usleep(10 * 1000);
     }
+    g_atomic_int_set(&pusher_run, 1);
+    GThread *pt = g_thread_new("iq-pusher", pusher_thread, NULL);
     /* 1. not opted in: reserved words zero (and a block DID arrive) */
-    CLEAR_BIN(); PUSH_UNTIL_BLOCKS(1);
+    CLEAR_BIN(); WAIT_BLOCKS(1);
     guint32 h0[16] = { 0 }; int have0 = 0;
     g_mutex_lock(&c_lock);
     if (c_bin->len >= blk) { memcpy(h0, c_bin->data, sizeof h0); have0 = 1; }
@@ -501,26 +517,33 @@ int main(void) {
       g_usleep(10 * 1000);
     }
     check("stamps: iq_stamp:1 echoes back", got_echo);
-    CLEAR_BIN(); PUSH_UNTIL_BLOCKS(2);
-    have0 = 0;
+    /* blocks already queued for the socket when the flag flipped are still
+     * unstamped: the first stamped block must come within four, and every
+     * block after it is stamped with the centre and no boundary */
+    CLEAR_BIN(); WAIT_BLOCKS(6);
+    int on_first = -1, on_bad = 0, on_n = 0;
     g_mutex_lock(&c_lock);
-    if (c_bin->len >= 2 * blk) { memcpy(h0, c_bin->data + blk, sizeof h0); have0 = 1; }
+    on_n = (int)(c_bin->len / blk);
+    for (int b = 0; b < on_n; b++) {
+      guint32 hh[16]; memcpy(hh, c_bin->data + (size_t)b * blk, sizeof hh);
+      if (on_first < 0) { if (hh[8] != 0) { on_first = b; } }
+      if (on_first >= 0 && (hh[8] != (guint32)f0 || hh[9] != 0 || hh[10] != 0)) { on_bad++; }
+    }
     g_mutex_unlock(&c_lock);
-    check("stamps: h[8] = the centre of the block's first frame, h[9] = 0",
-          have0 && h0[8] == (guint32)f0 && h0[9] == 0 && h0[10] == 0);
+    check("stamps: h[8] = the centre of the block's first frame, h[9] = 0 (from within four blocks on)",
+          on_first >= 0 && on_first <= 3 && on_bad == 0);
     /* 3. a retune over TCI mid-stream: exactly one block carries the
      * boundary (offset inside the block, new centre in h[10]) — or, if the
      * boundary fell on a block edge, the first block simply starts on the
-     * new centre — and every block after it starts on the new centre */
+     * new centre — and every block after it starts on the new centre. The
+     * boundary must land within the first two blocks (≤ 85 ms): the capture
+     * clock places it at the moment of the command + 1 ms. */
     CLEAR_BIN();
     const long long f1 = f0 + 5000;
     char cmd[64]; g_snprintf(cmd, sizeof cmd, "vfo:0,0,%lld;", f1);
     client_send(cmd);
-    for (int ms = 0; ms < 2000 && S.freq != f1; ms += 10) {
-      while (g_main_context_iteration(NULL, FALSE)) {}
-      g_usleep(10 * 1000);
-    }
-    PUSH_UNTIL_BLOCKS(4);
+    WAIT_BLOCKS(4);
+    check("stamps: the TCI retune reached the stub (S.freq)", S.freq == f1);
     int nblk = 0, first_new = -1, boundary_blk = -1, bad_after = 0, off = -1; guint32 hz1 = 0;
     g_mutex_lock(&c_lock);
     nblk = (int)(c_bin->len / blk);
@@ -542,18 +565,28 @@ int main(void) {
     check("stamps: every block after the retune starts on the new centre", first_new >= 0 && bad_after == 0);
     /* 4. opt out again: zeros */
     client_send("iq_stamp:0;");
-    g_usleep(200 * 1000);
-    while (g_main_context_iteration(NULL, FALSE)) {}
-    CLEAR_BIN(); PUSH_UNTIL_BLOCKS(2);
-    have0 = 0;
+    for (int ms = 0; ms < 2000 && !rx_contains("iq_stamp:0;"); ms += 10) {
+      while (g_main_context_iteration(NULL, FALSE)) {}
+      g_usleep(10 * 1000);
+    }
+    CLEAR_BIN(); WAIT_BLOCKS(6);
+    int off_first = -1, off_bad = 0, off_n = 0;
     g_mutex_lock(&c_lock);
-    if (c_bin->len >= 2 * blk) { memcpy(h0, c_bin->data + blk, sizeof h0); have0 = 1; }
+    off_n = (int)(c_bin->len / blk);
+    for (int b = 0; b < off_n; b++) {
+      guint32 hh[16]; memcpy(hh, c_bin->data + (size_t)b * blk, sizeof hh);
+      if (off_first < 0) { if (hh[8] == 0) { off_first = b; } }
+      if (off_first >= 0 && (hh[8] != 0 || hh[9] != 0 || hh[10] != 0)) { off_bad++; }
+    }
     g_mutex_unlock(&c_lock);
-    check("stamps: iq_stamp:0 turns them off again", have0 && h0[8] == 0 && h0[9] == 0 && h0[10] == 0);
+    check("stamps: iq_stamp:0 turns them off again (zeros from within four blocks on)",
+          off_first >= 0 && off_first <= 3 && off_bad == 0);
+    g_atomic_int_set(&pusher_run, 0);
+    g_thread_join(pt);
     client_send("iq_stop:0;");                /* leave the stream as we found it */
     g_usleep(200 * 1000);
     while (g_main_context_iteration(NULL, FALSE)) {}
-    #undef PUSH_UNTIL_BLOCKS
+    #undef WAIT_BLOCKS
     #undef CLEAR_BIN
   }
 
