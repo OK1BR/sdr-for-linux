@@ -119,7 +119,7 @@ to be used wherever the radio is announced.
 ## Open — bugs
 
 ### SDR-13 — Came up at "RX 1 Hz" after a restart, not at the last tuned frequency
-- **Type:** bug · **Severity:** medium · **Status:** open
+- **Type:** bug · **Severity:** medium · **Status:** open — not reproduced; code read 2026-09-06, persistence path clean, working hypothesis = operator state (see below); reproduce at the NEXT planned restart
 - **Source:** Richard's desk, 2026-09-05 21:27 — the SDR was stopped (SIGTERM, clean `p2: stopped`) and relaunched from `build/` for the capture-clock stamp (98c57de); the log's first line read `Using ANAN G2E … RX 1 Hz`
 - **Detail:** this entry; the skimmer session write-up (skimmer-for-linux `docs/SCOPE.md`, M8 evening state)
 
@@ -133,6 +133,31 @@ the save is debounced and the final GUI tuning before SIGTERM never landed,
 or a value ≤ some floor is refused on load. Read `schedule_save` / the
 keyfile load in `gui.c` before guessing. Reproduce: tune over TCI, tune by
 hand, SIGTERM, relaunch, compare.
+
+**Reading 2026-09-06 (no code touched, no reproduction yet):** the persistence
+path has no hole to fall through. Every tuning path — wheel, drag, click-tune,
+band button, tune-step snap and the TCI `vfo:` handler `tci_set_freq` — ends in
+`schedule_save` (debounced 1 s); `main()` runs an unconditional
+`settings_save` after `g_application_run` returns, BEFORE `tci_server_stop` /
+`p2_rx_stop`, and the 21:27 predecessor's log carries both `tci: server
+stopped` and `p2: stopped (clean …)`, so the exit save ran; `app_to_settings`
+copies `app->freq` verbatim; `settings_save` writes through
+`g_key_file_save_to_file` (atomic temp + rename) and logs a `g_warning` on
+failure — none in the log; `settings_load` takes the saved `freq` as is, no
+floor, no refusal. The relaunched instance printed `RX 1 Hz` from that value.
+What the code DOES do: every GUI tuning path clamps `if (nf < 1) nf = 1` — so
+**1 Hz is exactly the state a drag or wheel sweep below zero lands in**, and
+Richard had been sweeping the DC line at ~1 Hz around 21:00 (the waterfall
+look). His last frequency before the SIGTERM is not recoverable: the skimmer's
+`SKIM_WF_DEBUG` probe logs bin steps, not absolute Hz, and the SDR prints the
+frequency only at start. Asked 2026-09-06, Richard does not remember and
+noticed no fault. **Working hypothesis: the app faithfully restored where the
+radio actually stood.** Not closed — a reading is not a measurement. Recipe,
+to run at the next restart that is planned anyway (the live radio is not
+stopped for this): note the frequency on screen, tune once over TCI
+(`vfo:0,0,<hz>`), tune once by hand, wait > 1 s, SIGTERM, relaunch, compare the
+`Using … RX <hz>` line and `[radio] freq` in `config.ini` with the last value
+set. Reopen with a cause if they differ; close as operator state if they match.
 
 ### SDR-1 — Supply voltage reads wrong on an ANAN G2
 - **Type:** bug · **Severity:** high · **Status:** done (2026-08-24) — G2 mapping confirmed by W1IZZ's v0.4.2 read-back (raw 544 ≈ expected 540 at a nominal 13.8 V; he did not state his PSU's actual reading)
