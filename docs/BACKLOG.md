@@ -382,6 +382,36 @@ recorded off-air audio — SSB and CW separately — and A/B it against NR2, NR3
 and NR4 on the same recording, which is the same corpus discipline
 `CONTRIBUTING.md` already asks of outside patches.
 
+### SDR-12 — VFO B + split with a TCI backend (`vfo:0,1,…`, `split_enable`), for pileup click-to-TX
+- **Type:** idea · **Severity:** — · **Status:** deferred (not designed; opened so the skimmer's SKM-4 has somewhere to point)
+- **Source:** skimmer-for-linux `SKM-4` — Roy Andre Løntjern, LB0EI, 2026-08-29:
+  in a split pileup he clicks where the DX was just listening and moves his
+  **TX** frequency there while RX stays on the DX. Filed here 2026-09-05 when
+  the skimmer's waterfall (M8) was started.
+- **Detail:** skimmer-for-linux `docs/SCOPE.md` M8 and `docs/BACKLOG.md` SKM-4
+
+What the skimmer needs from the radio side is a TX frequency it can address
+over TCI while the RX frequency stays put — ExpertSDR's shape is VFO B on
+channel 1 plus `split_enable`. Read in this tree 2026-09-05, nothing of it
+exists yet:
+
+- `src/tci_server.c`, the `vfo`/`dds` handler: `vfo:rx,ch,f` takes the
+  frequency from the argument index alone and **ignores the channel** — any
+  channel sets the single frequency, and the echo is always `vfo:0,0,…`.
+- `split_enable`, `rit_enable/offset`, `xit_enable/offset` sit in the
+  backend-less state table (accepted, stored, echoed — the compat echo layer
+  from F6d-2b), so a client that sets split gets a confirming broadcast and
+  no split.
+- The GUI and the engine have no VFO B and no split at all (`grep -i split
+  src/gui.c src/engine/*.h` finds only the drive-level and DDC senses of the
+  word).
+
+So this is a radio feature first — a second VFO in the engine/GUI (TX on B
+while RX on A, or XIT as the minimal form), then the TCI backend for
+`vfo:0,1,f` and `split_enable`. Until it exists the skimmer's click can only
+tune the one VFO, which is what its station rows already do. Nothing is
+promised; the item exists so the two backlogs point at each other.
+
 ## Deferred
 
 ### SDR-5 — ANAN 10E reports a 169.254.x.x address
