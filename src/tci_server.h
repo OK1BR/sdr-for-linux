@@ -111,6 +111,14 @@ int  tci_server_get_iq_rate(void);
  * (rx_clicked_on_spot + the legacy clicked_on_spot). */
 void tci_server_spot_clicked(const char *callsign, long long hz);
 
+/* The GUI (or a TCI client) just retuned: broadcast the new dds/vfo NOW
+ * instead of at the reporter's next 500 ms tick. A skimmer drawing a
+ * waterfall in absolute frequency labels every IQ block with the centre it
+ * knows; half a second of stale centre while the knob turns tore its picture
+ * (skimmer-for-linux M8, 2026-09-05). Main thread only; a no-op while the
+ * server is off. */
+void tci_server_freq_changed(void);
+
 /* TX pacing clock (F6d-2c): emit a TX_CHRONO frame asking the TX-owner client
  * for nsamples of TX audio. Wire to tx_run_set_ext_notify; called from the TX
  * feed thread. */

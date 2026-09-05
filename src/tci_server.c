@@ -1254,6 +1254,11 @@ void tci_server_stop(void) {
 
 int tci_server_running(void) { return s_run; }
 
+void tci_server_freq_changed(void) {
+  if (!s_run) { return; }
+  tci_reporter(NULL);           /* diffs state: only what changed goes out    */
+}
+
 void tci_server_spot_clicked(const char *callsign, long long hz) {
   if (!s_run || !callsign) { return; }
   /* receiver 0, channel 0 (A); plus the legacy spelling for older clients */

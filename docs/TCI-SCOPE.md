@@ -84,7 +84,12 @@ platform-library category — do not vendor).
   the piHPSDR LWS pattern (chat/superchat/tci subprotocols, 1 ms service loop,
   per-client queues, commands g_idle_add-dispatched to the GTK main loop, a
   500 ms reporter broadcasts state diffs so GUI-side changes reach clients
-  without instrumenting the GUI). Ops table in gui.c reuses the on-screen
+  without instrumenting the GUI — with ONE instrumented exception since
+  2026-09-05: `engine_set_frequency` calls `tci_server_freq_changed()`, which
+  runs the reporter at once, so dds/vfo/tx_frequency go out on every tuning
+  step instead of up to 500 ms later. The skimmer's waterfall labels each IQ
+  block with the centre it knows; the stale half-second tore its picture
+  while the knob turned). Ops table in gui.c reuses the on-screen
   control paths — TRX/TUNE toggle the real MOX/TUNE buttons (→ tx_gate),
   cw_macros → tx_run_cw_send **only in a CW mode** (queued text must never
   key later as a surprise), `trx:0,true,tci` (TCI audio source) is refused

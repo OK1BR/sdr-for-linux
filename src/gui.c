@@ -2289,6 +2289,9 @@ static void tx_pan_autofit(App *app) {
  * shares (both setters are thread-safe atomics picked up by the sender). */
 static void engine_set_frequency(const App *app, long long f) {
   if (app->proto_p1) { p1_set_frequency(f); } else { p2_set_frequency(f); }
+  /* Every tuning path sets app->freq BEFORE calling here, so the TCI
+   * reporter reads the new value: tell the clients now, not in 500 ms. */
+  tci_server_freq_changed();
 }
 
 static gboolean on_scroll(GtkEventControllerScroll *ctl, double dx, double dy, gpointer data) {
