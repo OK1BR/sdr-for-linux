@@ -74,6 +74,13 @@ typedef struct {
   double     *iq_out;        /* resampler output (heap while subscribed)     */
   float       iq_blk[2 * 2048];  /* IQ frames accumulated for one block      */
   int         iq_fill;       /* frames in iq_blk                             */
+  /* IQ centre stamps (family extension, see stamp_note_freq) */
+  int         iq_stamp;      /* iq_stamp:1 — the client wants them           */
+  unsigned    stamp_seen;    /* label events consumed (ring position)        */
+  long long   stamp_cur;     /* centre in effect at the frame being filled   */
+  long long   stamp_hz0;     /* centre at the block's first frame            */
+  int         stamp_off;     /* frame at which the centre changed, 0 = none  */
+  long long   stamp_hz1;     /* centre from stamp_off on                     */
 } Client;
 
 static Client              s_cli[TCI_MAX_CLIENTS];
@@ -114,6 +121,31 @@ static double           iq_ring[2 * IQ_RING];
 static _Atomic unsigned iq_head, iq_tail;
 static _Atomic int      s_iq_active;      /* # of iq_start'ed clients         */
 static _Atomic int      s_iq_in_rate;     /* engine rate seen by the pusher   */
+/* IQ centre stamps — family extension for skimmer-for-linux (M8 waterfall).
+ * A client that sent `iq_stamp:1;` gets, in the otherwise-zero reserved
+ * words of every IQ Stream header: h[8] = DDC centre (Hz) of the block's
+ * FIRST frame, h[9] = frame offset at which the centre changed inside the
+ * block (0 = it did not), h[10] = the centre from that frame on. The
+ * boundary is the DDC-ring sample index at the moment the frequency changed
+ * (the P2 High-Priority kick has just left) plus the radio's DDC→P2 latency
+ * (SDRFL_DDC_LAT_MS, default 2.5 ms), mapped through the client's resampler
+ * ratio. Unstamped clients get byte-identical blocks to before (ExpertSDR
+ * leaves the words zero; SDC/CW Skimmer never read them — unverified, hence
+ * opt-in). Why: the dds label rides the control channel and lands ±1 IQ
+ * block away from the samples it describes, so a waterfall drawn in
+ * absolute frequency put whole rows one tuning step off (skimmer live,
+ * 2026-09-05 — spikes both ways on every wheel notch). Two changes inside
+ * one block report the FIRST offset with the FINAL centre (approximation). */
+#define STAMP_EVENTS 64
+typedef struct { double in_idx; long long hz; } StampEv;
+static StampEv          s_stamp[STAMP_EVENTS];   /* ring, guarded by s_stamp_lock */
+static unsigned         s_stamp_n;               /* events ever written           */
+static long long        s_stamp_last_hz;
+static GMutex           s_stamp_lock;
+static double           s_ddc_lat_ms = -1.0;     /* < 0 = read the env once       */
+static _Atomic uint64_t s_iq_total;              /* DDC-rate frames ever ringed   */
+static uint64_t         s_pump_total;            /* frames the pump consumed      */
+static void stamp_note_freq(long long hz);
 static double           s_iq_chunk[2 * IQ_CHUNK]; /* shared resampler input   */
 /* ExpertSDR's IQ orientation is the complex CONJUGATE of the HPSDR DDC
  * feed — live-verified 2026-07-10: SDC/CW Skimmer showed a mirrored
@@ -417,7 +449,7 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
     int fidx = isvfo ? 2 : 1;               /* vfo:rx,ch,f / dds:rx,f        */
     if (ac > fidx && av[fidx][0]) {
       long long f = g_ascii_strtoll(av[fidx], NULL, 10);
-      if (f > 0) { s_ops.set_freq(f); }
+      if (f > 0) { s_ops.set_freq(f); stamp_note_freq(s_ops.get_freq()); }
       tci_broadcastf("dds:0,%lld;", s_ops.get_freq());
       tci_broadcastf("vfo:0,0,%lld;", s_ops.get_freq());
     } else if (isvfo) {
@@ -429,7 +461,7 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
     /* No CTUN yet: IF stays 0; an IF set retunes by the offset instead. */
     if (ac > 2 && av[2][0]) {
       long long off = g_ascii_strtoll(av[2], NULL, 10);
-      if (off != 0) { s_ops.set_freq(s_ops.get_freq() + off); }
+      if (off != 0) { s_ops.set_freq(s_ops.get_freq() + off); stamp_note_freq(s_ops.get_freq()); }
       tci_broadcastf("vfo:0,0,%lld;", s_ops.get_freq());
     }
     tci_sendf(c, "if:0,0,0;");
@@ -714,9 +746,22 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
     g_mutex_lock(&s_lock);
     if (!c->iq_sub) { c->iq_sub = 1; atomic_fetch_add(&s_iq_active, 1); }
     c->iq_fill = 0;
+    g_mutex_lock(&s_stamp_lock);              /* stamps start from NOW       */
+    c->stamp_seen = s_stamp_n;
+    g_mutex_unlock(&s_stamp_lock);
+    c->stamp_cur = c->stamp_hz0 = s_ops.get_freq();
+    c->stamp_off = 0; c->stamp_hz1 = 0;
     g_mutex_unlock(&s_lock);
     fprintf(stderr, "tci: iq_start — %d Hz float32\n", c->iq_rate);
     tci_sendf(c, "iq_start:0;");
+  } else if (strcmp(name, "iq_stamp") == 0) {
+    /* family extension: centre stamps in the IQ Stream header (see s_stamp) */
+    if (ac > 0 && av[0][0]) {
+      g_mutex_lock(&s_lock);
+      c->iq_stamp = atoi(av[0]) != 0;
+      g_mutex_unlock(&s_lock);
+    }
+    tci_sendf(c, "iq_stamp:%d;", c->iq_stamp);
   } else if (strcmp(name, "iq_stop") == 0) {
     if (ac > 0 && av[0][0] && atoi(av[0]) != 0) { return; }
     g_mutex_lock(&s_lock);
@@ -1028,6 +1073,11 @@ static void iq_emit(Client *c) {
   h[5] = (uint32_t)(frames * 2);  /* length: scalar sample count             */
   h[6] = TCI_IQ_STREAM;
   h[7] = 2;                       /* I + Q                                   */
+  if (c->iq_stamp) {              /* family extension — see s_stamp          */
+    h[8]  = (uint32_t)c->stamp_hz0;
+    h[9]  = (uint32_t)c->stamp_off;
+    h[10] = (uint32_t)c->stamp_hz1;
+  }
   memcpy(blk + TCI_HDR_U32S * 4, c->iq_blk, (size_t)frames * 2 * sizeof(float));
   cli_send_msg(c, 1, blk, len);
   g_free(blk);
@@ -1050,6 +1100,14 @@ static void iq_pump(void) {
       s_iq_chunk[2 * i + 1] = iq_ring[2 * idx + 1];
     }
     atomic_store_explicit(&iq_tail, t + IQ_CHUNK, memory_order_release);
+    const double chunk_base = (double)s_pump_total;   /* DDC-rate index of frame 0 */
+    s_pump_total += IQ_CHUNK;
+    /* snapshot the label events once per chunk */
+    StampEv  ev[STAMP_EVENTS]; unsigned ev_n;
+    g_mutex_lock(&s_stamp_lock);
+    memcpy(ev, s_stamp, sizeof ev);
+    ev_n = s_stamp_n;
+    g_mutex_unlock(&s_stamp_lock);
 
     g_mutex_lock(&s_lock);
     for (int ci = 0; ci < TCI_MAX_CLIENTS; ci++) {
@@ -1070,7 +1128,24 @@ static void iq_pump(void) {
         n_out = xresample(c->iq_rs);
         src = c->iq_out;
       }
+      /* output frame i was made from DDC-rate index chunk_base + i·ratio
+       * (the resampler's group delay, ~1 ms, is ignored on purpose) */
+      const double ratio = n_out > 0 ? (double)IQ_CHUNK / (double)n_out : 1.0;
+      if (ev_n - c->stamp_seen > STAMP_EVENTS) { c->stamp_seen = ev_n - STAMP_EVENTS; }
       for (int i = 0; i < n_out; i++) {
+        if (c->iq_fill == 0) {                 /* a block begins             */
+          c->stamp_hz0 = c->stamp_cur; c->stamp_off = 0; c->stamp_hz1 = 0;
+        }
+        const double in_idx = chunk_base + (double)i * ratio;
+        while (c->stamp_seen != ev_n && ev[c->stamp_seen % STAMP_EVENTS].in_idx <= in_idx) {
+          c->stamp_cur = ev[c->stamp_seen % STAMP_EVENTS].hz;
+          c->stamp_seen++;
+          if (c->iq_fill == 0) { c->stamp_hz0 = c->stamp_cur; }
+          else {
+            if (c->stamp_off == 0) { c->stamp_off = c->iq_fill; }
+            c->stamp_hz1 = c->stamp_cur;
+          }
+        }
         float fi = (float)src[2 * i], fq = (float)src[2 * i + 1];
         if (s_iq_conj) { fq = -fq; }
         c->iq_blk[2 * c->iq_fill]     = fi;
@@ -1133,6 +1208,8 @@ void tci_server_iq_push(const double *iq, int n_pairs, int rate) {
     iq_ring[2 * idx + 1] = iq[2 * i + 1];
     h++;
   }
+  atomic_fetch_add_explicit(&s_iq_total, (uint64_t)(h - atomic_load_explicit(&iq_head, memory_order_relaxed)),
+                            memory_order_relaxed);
   atomic_store_explicit(&iq_head, h, memory_order_release);
   /* lws_service BLOCKS until a socket event — kick it like the audio path
    * does, or the stream only flushes when unrelated traffic (a dds
@@ -1177,6 +1254,11 @@ int tci_server_start(int port, const TciOps *ops) {
   atomic_store(&au_tail, 0u);
   atomic_store(&s_iq_active, 0);
   atomic_store(&iq_head, 0u);
+  atomic_store(&s_iq_total, 0);
+  s_pump_total = 0;
+  g_mutex_lock(&s_stamp_lock);
+  s_stamp_n = 0; s_stamp_last_hz = 0;
+  g_mutex_unlock(&s_stamp_lock);
   atomic_store(&iq_tail, 0u);
   atomic_store(&s_iq_in_rate, 0);
   s_iq_conj = g_getenv("SDRFL_TCI_IQ_RAW") == NULL;
@@ -1254,8 +1336,28 @@ void tci_server_stop(void) {
 
 int tci_server_running(void) { return s_run; }
 
+/* Record a centre change at the DDC-ring index its samples will carry. */
+static void stamp_note_freq(long long hz) {
+  g_mutex_lock(&s_stamp_lock);
+  if (s_ddc_lat_ms < 0) {
+    const char *e = getenv("SDRFL_DDC_LAT_MS");
+    s_ddc_lat_ms = (e && *e) ? g_ascii_strtod(e, NULL) : 2.5;
+    if (s_ddc_lat_ms < 0 || s_ddc_lat_ms > 100) { s_ddc_lat_ms = 2.5; }
+  }
+  if (hz > 0 && hz != s_stamp_last_hz) {
+    const int rate = atomic_load_explicit(&s_iq_in_rate, memory_order_relaxed);
+    const double idx = (double)atomic_load_explicit(&s_iq_total, memory_order_relaxed) +
+                       s_ddc_lat_ms * 1e-3 * (rate > 0 ? rate : 0);
+    s_stamp[s_stamp_n % STAMP_EVENTS] = (StampEv){ idx, hz };
+    s_stamp_n++;
+    s_stamp_last_hz = hz;
+  }
+  g_mutex_unlock(&s_stamp_lock);
+}
+
 void tci_server_freq_changed(void) {
   if (!s_run) { return; }
+  stamp_note_freq(s_ops.get_freq());
   tci_reporter(NULL);           /* diffs state: only what changed goes out    */
 }
 

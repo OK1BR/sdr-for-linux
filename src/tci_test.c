@@ -456,6 +456,107 @@ int main(void) {
     check("accepted iq_samplerate sticks as the device default", sticky);
   }
 
+  /* ---- IQ centre stamps (family extension for skimmer-for-linux M8): a
+   * client that sent iq_stamp:1 gets the DDC centre of the block's first
+   * frame in h[8]; a retune INSIDE a block puts the frame offset in h[9] and
+   * the new centre in h[10] — the DDC-ring index at the moment of the change
+   * (+ SDRFL_DDC_LAT_MS) mapped through the ÷4 decimation. Unstamped clients
+   * keep all-zero reserved words. */
+  {
+    const size_t blk = 64 + 2048 * 2 * sizeof(float);
+    static double zz[2 * 1920];
+    /* push 10 ms chunks of silence until c_bin holds ≥ n blocks (≤ 5 s) */
+    #define PUSH_UNTIL_BLOCKS(n) do { \
+      int ok_ = 0; \
+      for (int ms_ = 0; ms_ < 5000 && !ok_; ms_ += 10) { \
+        tci_server_iq_push(zz, 1920, 192000); \
+        while (g_main_context_iteration(NULL, FALSE)) {} \
+        g_mutex_lock(&c_lock); ok_ = c_bin->len >= (n) * blk; g_mutex_unlock(&c_lock); \
+        g_usleep(10 * 1000); \
+      } } while (0)
+    #define CLEAR_BIN() do { g_mutex_lock(&c_lock); g_byte_array_set_size(c_bin, 0); g_mutex_unlock(&c_lock); } while (0)
+    memset(zz, 0, sizeof zz);
+    const long long f0 = S.freq;
+    /* the IQ section above ended with iq_stop — subscribe again */
+    client_send("iq_start:0;");
+    int got_start = 0;
+    for (int ms = 0; ms < 2000 && !got_start; ms += 10) {
+      while (g_main_context_iteration(NULL, FALSE)) {}
+      got_start = rx_contains("iq_start:0;iq_stop:0;iq_start:0;") || rx_contains("iq_stop:0;iq_start:0;");
+      g_usleep(10 * 1000);
+    }
+    /* 1. not opted in: reserved words zero (and a block DID arrive) */
+    CLEAR_BIN(); PUSH_UNTIL_BLOCKS(1);
+    guint32 h0[16] = { 0 }; int have0 = 0;
+    g_mutex_lock(&c_lock);
+    if (c_bin->len >= blk) { memcpy(h0, c_bin->data, sizeof h0); have0 = 1; }
+    g_mutex_unlock(&c_lock);
+    check("stamps: an unstamped client's reserved words are zero", have0 && h0[8] == 0 && h0[9] == 0 && h0[10] == 0);
+    /* 2. opt in: the next block carries the current centre, no boundary */
+    client_send("iq_stamp:1;");
+    int got_echo = 0;
+    for (int ms = 0; ms < 2000 && !got_echo; ms += 10) {
+      while (g_main_context_iteration(NULL, FALSE)) {}
+      got_echo = rx_contains("iq_stamp:1;");
+      g_usleep(10 * 1000);
+    }
+    check("stamps: iq_stamp:1 echoes back", got_echo);
+    CLEAR_BIN(); PUSH_UNTIL_BLOCKS(2);
+    have0 = 0;
+    g_mutex_lock(&c_lock);
+    if (c_bin->len >= 2 * blk) { memcpy(h0, c_bin->data + blk, sizeof h0); have0 = 1; }
+    g_mutex_unlock(&c_lock);
+    check("stamps: h[8] = the centre of the block's first frame, h[9] = 0",
+          have0 && h0[8] == (guint32)f0 && h0[9] == 0 && h0[10] == 0);
+    /* 3. a retune over TCI mid-stream: exactly one block carries the
+     * boundary (offset inside the block, new centre in h[10]) — or, if the
+     * boundary fell on a block edge, the first block simply starts on the
+     * new centre — and every block after it starts on the new centre */
+    CLEAR_BIN();
+    const long long f1 = f0 + 5000;
+    char cmd[64]; g_snprintf(cmd, sizeof cmd, "vfo:0,0,%lld;", f1);
+    client_send(cmd);
+    for (int ms = 0; ms < 2000 && S.freq != f1; ms += 10) {
+      while (g_main_context_iteration(NULL, FALSE)) {}
+      g_usleep(10 * 1000);
+    }
+    PUSH_UNTIL_BLOCKS(4);
+    int nblk = 0, first_new = -1, boundary_blk = -1, bad_after = 0, off = -1; guint32 hz1 = 0;
+    g_mutex_lock(&c_lock);
+    nblk = (int)(c_bin->len / blk);
+    for (int b = 0; b < nblk; b++) {
+      guint32 hh[16]; memcpy(hh, c_bin->data + (size_t)b * blk, sizeof hh);
+      if (first_new < 0 && (hh[8] == (guint32)f1 || hh[9] != 0)) {
+        first_new = b;
+        if (hh[9] != 0) { boundary_blk = b; off = (int)hh[9]; hz1 = hh[10]; }
+      } else if (first_new >= 0 && b > first_new) {
+        if (hh[8] != (guint32)f1 || hh[9] != 0) { bad_after++; }
+      }
+    }
+    g_mutex_unlock(&c_lock);
+    printf("  note  retune: %d blocks, first on the new centre = #%d, boundary block = #%d (offset %d, h[10] %u)\n",
+           nblk, first_new, boundary_blk, off, hz1);
+    check("stamps: a retune shows up within the first two blocks", first_new >= 0 && first_new <= 1);
+    check("stamps: a mid-block boundary carries 0 < h[9] < 2048 and h[10] = the new centre",
+          boundary_blk < 0 || (off > 0 && off < 2048 && hz1 == (guint32)f1));
+    check("stamps: every block after the retune starts on the new centre", first_new >= 0 && bad_after == 0);
+    /* 4. opt out again: zeros */
+    client_send("iq_stamp:0;");
+    g_usleep(200 * 1000);
+    while (g_main_context_iteration(NULL, FALSE)) {}
+    CLEAR_BIN(); PUSH_UNTIL_BLOCKS(2);
+    have0 = 0;
+    g_mutex_lock(&c_lock);
+    if (c_bin->len >= 2 * blk) { memcpy(h0, c_bin->data + blk, sizeof h0); have0 = 1; }
+    g_mutex_unlock(&c_lock);
+    check("stamps: iq_stamp:0 turns them off again", have0 && h0[8] == 0 && h0[9] == 0 && h0[10] == 0);
+    client_send("iq_stop:0;");                /* leave the stream as we found it */
+    g_usleep(200 * 1000);
+    while (g_main_context_iteration(NULL, FALSE)) {}
+    #undef PUSH_UNTIL_BLOCKS
+    #undef CLEAR_BIN
+  }
+
   /* ---- DX spots (F6d-2e): client pushes a spot (SDC skimmer style), the
    * ops table receives it; a panadapter click broadcasts back. */
   client_send("spot:LZ2PP,CW,14010840,4278255615,test;spot_delete:LZ2PP;spot_clear;");
