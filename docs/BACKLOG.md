@@ -118,6 +118,22 @@ to be used wherever the radio is announced.
 
 ## Open — bugs
 
+### SDR-13 — Came up at "RX 1 Hz" after a restart, not at the last tuned frequency
+- **Type:** bug · **Severity:** medium · **Status:** open
+- **Source:** Richard's desk, 2026-09-05 21:27 — the SDR was stopped (SIGTERM, clean `p2: stopped`) and relaunched from `build/` for the capture-clock stamp (98c57de); the log's first line read `Using ANAN G2E … RX 1 Hz`
+- **Detail:** this entry; the skimmer session write-up (skimmer-for-linux `docs/SCOPE.md`, M8 evening state)
+
+Observation only, cause not yet read from the code. Some 40 minutes before the
+restart a TCI client had tuned the radio to 4 Hz by mistake (then restored it
+over TCI to 3 520 497 Hz); Richard tuned by hand for a long while after that,
+at ~1 Hz around 21:00 and elsewhere later. On relaunch the persisted
+frequency was 1 Hz. Either the TCI `vfo:` path (`tci_set_freq` →
+`schedule_save`) or the GUI tuning path failed to persist the LAST value, or
+the save is debounced and the final GUI tuning before SIGTERM never landed,
+or a value ≤ some floor is refused on load. Read `schedule_save` / the
+keyfile load in `gui.c` before guessing. Reproduce: tune over TCI, tune by
+hand, SIGTERM, relaunch, compare.
+
 ### SDR-1 — Supply voltage reads wrong on an ANAN G2
 - **Type:** bug · **Severity:** high · **Status:** done (2026-08-24) — G2 mapping confirmed by W1IZZ's v0.4.2 read-back (raw 544 ≈ expected 540 at a nominal 13.8 V; he did not state his PSU's actual reading)
 - **Source:** W1IZZ, GitHub `gh#3` ("G2 testing"), 2026-08-22 — answered 2026-08-23 (issuecomment-5388178274)
