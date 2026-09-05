@@ -13,7 +13,8 @@
  * the single keepalive-timer thread, so there is no send-side concurrency and
  * we need no per-packet mutexes. A TX-state change (p2_set_tx_state) does not
  * send either — it only kicks the timer awake so IT applies the change
- * immediately (see kick_cond). The listener thread decodes IQ inline (one low
+ * immediately (see kick_cond); a frequency change (p2_set_frequency) kicks it
+ * for ONE High-Priority packet (see freq_kick_pending). The listener thread decodes IQ inline (one low
  * -rate DDC → cheap) and hands it straight to the callback, so we also skip
  * upstream's per-DDC ring buffers + semaphores.
  */
@@ -138,6 +139,17 @@ static void       *cfg_ps_cb_user;
 static GMutex      kick_lock;
 static GCond       kick_cond;
 static int         kick_pending;
+/* Frequency kick: p2_set_frequency() raises this when the DDC frequency
+ * CHANGES and the timer thread wakes early to send ONE High-Priority packet
+ * (the frequency rides there) — nothing else, and WITHOUT advancing the
+ * keepalive cadence: piHPSDR's rx_frequency_changed() likewise calls only
+ * schedule_high_priority() (receiver.c, dl1ycf master, read 2026-09-05), and
+ * at wheel/drag rates (100–250 steps/s) re-sending the RX/TX-specific packets
+ * per step would flood the radio. Before this the frequency waited for the
+ * next 100 ms tick — a TCI client drawing a waterfall in absolute frequency
+ * measured its IQ arriving 3–11 rows (32–117 ms) behind the dds label it had
+ * already been sent (skimmer-for-linux, live 2026-09-05). */
+static int         freq_kick_pending;
 static int       cfg_sample_rate;
 static int       cfg_ddc;        /* DDC index for this device (0 for G2E) */
 static p2_iq_cb  cfg_cb;
@@ -801,14 +813,22 @@ static void send_high_priority(int run) {
 }
 
 /*
- * Re-tune the running DDC. Only stores the new frequency; the keepalive timer
- * pushes it in the next High-Priority packet (<=100 ms), so all wire sends stay
- * on the single timer thread and rapid tuning coalesces into ~10 retunes/s.
+ * Re-tune the running DDC. Stores the new frequency and, if it changed, kicks
+ * the keepalive timer for an immediate High-Priority packet, so the DDC follows
+ * every tuning step within a millisecond or two instead of at the next 100 ms
+ * tick. All wire sends stay on the single timer thread.
  */
 void p2_set_frequency(long long freq_hz) {
   g_mutex_lock(&freq_lock);
+  const int changed = cfg_freq != freq_hz;
   cfg_freq = freq_hz;
   g_mutex_unlock(&freq_lock);
+  if (changed) {
+    g_mutex_lock(&kick_lock);
+    freq_kick_pending = 1;
+    g_cond_signal(&kick_cond);
+    g_mutex_unlock(&kick_lock);
+  }
 }
 
 /* Set the ADC0 step attenuator (0-31 dB); 0 = max sensitivity. Stored atomically;
@@ -1294,23 +1314,33 @@ void p2_mic_clock_flush(void) {
  * also drops PA-enable right away instead of at the next 800 ms General. Runs
  * on the timer thread only — the single-sender invariant holds. */
 static void timer_wait_or_kick(void) {
-  gint64 deadline = g_get_monotonic_time() + 100000;
-  g_mutex_lock(&kick_lock);
-  while (!kick_pending) {
-    if (!g_cond_wait_until(&kick_cond, &kick_lock, deadline)) { break; }  /* tick */
-  }
-  int kicked = kick_pending;
-  kick_pending = 0;
-  g_mutex_unlock(&kick_lock);
+  const gint64 deadline = g_get_monotonic_time() + 100000;
+  for (;;) {
+    g_mutex_lock(&kick_lock);
+    while (!kick_pending && !freq_kick_pending) {
+      if (!g_cond_wait_until(&kick_cond, &kick_lock, deadline)) { break; }  /* tick */
+    }
+    const int kicked = kick_pending, fkick = freq_kick_pending;
+    kick_pending = freq_kick_pending = 0;
+    g_mutex_unlock(&kick_lock);
 
-  if (kicked && p2running) {
-    send_general();
-    /* The DDC enable rides in the RX-specific packet (N1: disabled while
-     * keyed), so a key/unkey edge must re-send it immediately — piHPSDR
-     * schedules receive_specific on every mox change too (radio.c:2405-2406). */
-    send_receive_specific();
-    send_transmit_specific();
-    send_high_priority(1);
+    if (kicked && p2running) {
+      send_general();
+      /* The DDC enable rides in the RX-specific packet (N1: disabled while
+       * keyed), so a key/unkey edge must re-send it immediately — piHPSDR
+       * schedules receive_specific on every mox change too (radio.c:2405-2406). */
+      send_receive_specific();
+      send_transmit_specific();
+      send_high_priority(1);
+      return;                                 /* a TX edge advances the cycle */
+    }
+    if (fkick && p2running) {
+      send_high_priority(1);                  /* the new frequency, now       */
+      continue;                               /* …and keep waiting for the
+                                               * SAME tick: a knob turning
+                                               * must not spin the cadence   */
+    }
+    return;                                   /* the 100 ms tick              */
   }
 }
 

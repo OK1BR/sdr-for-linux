@@ -72,7 +72,7 @@ Then: controls, then RX2, then TX/PureSignal.
 The GTK4 window is a live **libadwaita** control surface (framework decision +
 mockups: `docs/mockups/`). Done this session, all live-verified on the ANAN G2E:
 - **Tuning:** scroll-wheel (Ctrl 10 Hz / Shift 1 kHz / else 100 Hz) + left-drag
-  pan → `p2_set_frequency()` (stores freq; keepalive timer sends it ≤100 ms, so
+  pan → `p2_set_frequency()` (stores freq + kicks the keepalive timer for one immediate HP packet since 2026-09-05; before that the timer sent it ≤100 ms later, so
   no send-side concurrency). Model A: VFO = DDC centre = span centre.
 - **Mode:** segmented USB/LSB/CWL/CWU/AM toggles + keys u/l/c/a (kept in sync) →
   `demod_set_mode()`.

@@ -30,6 +30,7 @@
 #include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -116,6 +117,33 @@ static void expect_silence(int sock, const char *what, int ms) {
 }
 
 static void on_iq(const double *iq, int n, void *u) { (void)iq; (void)n; (void)u; }
+
+/* A loopback listener for one of the host→radio control ports (1024..1027). */
+static int udp_bind(int port) {
+  int s = socket(AF_INET, SOCK_DGRAM, 0);
+  int yes = 1;
+  setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes);
+  struct sockaddr_in a; memset(&a, 0, sizeof a);
+  a.sin_family = AF_INET; a.sin_port = htons((uint16_t)port);
+  a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if (bind(s, (struct sockaddr *)&a, sizeof a) < 0) { perror("bind loopback control port"); exit(2); }
+  return s;
+}
+
+/* Read everything waiting on `s`; returns the count, keeps the DDC0 phase
+ * word (HP bytes 9..12) of the LAST packet in *phase when asked. */
+static int drain(int s, uint32_t *phase) {
+  unsigned char buf[2048]; int n = 0;
+  for (;;) {
+    ssize_t r = recv(s, buf, sizeof buf, MSG_DONTWAIT);
+    if (r < 0) { break; }
+    n++;
+    if (phase && r >= 13) {
+      *phase = ((uint32_t)buf[9] << 24) | ((uint32_t)buf[10] << 16) | ((uint32_t)buf[11] << 8) | buf[12];
+    }
+  }
+  return n;
+}
 
 /* Phase 5 producer: the shape of tx_run's feed thread — emits continuously
  * (~1 kHz here) with a running sequence, before/during/after the link. */
@@ -355,6 +383,65 @@ int main(void) {
   }
 
   close(radio);
+  /* ---- 7. frequency kick: the DDC follows a retune NOW, and HP-only -----
+   * p2_set_frequency() used to store the frequency for the next 100 ms
+   * keepalive tick — a TCI client drawing in absolute frequency measured its
+   * IQ arriving 32–117 ms behind the dds label, quantised (skimmer-for-linux
+   * live, 2026-09-05). Now a CHANGE kicks the timer for ONE High-Priority
+   * packet: ten retunes 15 ms apart must each reach the wire within 30 ms
+   * (old code: uniform 0–100 ms, P(all ten ≤ 30 ms) ≈ 6e-6); the kick must
+   * send nothing else — no RX-/TX-specific per step, a knob turning at
+   * 250 steps/s would flood the radio — and must not spin the cadence; a
+   * retune to the SAME frequency does not kick at all. */
+  {
+    printf("[7] frequency kick: HP within 30 ms, HP only, cadence untouched\n");
+    int hpsock = udp_bind(1027), txsock = udp_bind(1026), gensock = udp_bind(1024),
+        rxsock = udp_bind(1025);
+    dev.device = NEW_DEVICE_G1;
+    if (p2_rx_start(&dev, 14000000, 192000, on_iq, NULL) != 0) {
+      printf("  FAIL  p2_rx_start (kick) failed\n"); return 2;
+    }
+    g_usleep(350000);                           /* start burst + first ticks  */
+    uint32_t phase = 0;
+    drain(hpsock, &phase); drain(txsock, NULL); drain(gensock, NULL); drain(rxsock, NULL);
+    int fast = 0, rxspec = 0, txspec = 0;
+    gint64 worst_us = 0;
+    for (int i = 0; i < 10; i++) {
+      const gint64 t0 = g_get_monotonic_time();
+      p2_set_frequency(14000000 + 1000LL * (i + 1));
+      int got = 0;
+      while (g_get_monotonic_time() - t0 < 30000) {
+        struct pollfd pf = { hpsock, POLLIN, 0 };
+        if (poll(&pf, 1, 2) > 0) {
+          uint32_t ph = phase;
+          drain(hpsock, &ph);
+          if (ph != phase) { phase = ph; got = 1; break; }
+        }
+      }
+      const gint64 dt = g_get_monotonic_time() - t0;
+      if (dt > worst_us) { worst_us = dt; }
+      fast += got;
+      g_usleep(15000);
+      rxspec += drain(rxsock, NULL);
+      txspec += drain(txsock, NULL);
+    }
+    printf("  note  slowest retune → wire: %.1f ms\n", worst_us / 1000.0);
+    chk("kick: 10 of 10 retunes on the wire within 30 ms", fast, 10);
+    chk("kick: RX-specific during the ten retunes = cadence only (≤ 4)", rxspec <= 4, 1);
+    chk("kick: TX-specific during the ten retunes = cadence only (≤ 4)", txspec <= 4, 1);
+    /* the same frequency ten more times: no kick, HP stays at the 100 ms
+     * cadence (3 in 300 ms; a kicking build would send 13) */
+    drain(hpsock, NULL);
+    const gint64 t1 = g_get_monotonic_time();
+    for (int i = 0; i < 10; i++) { p2_set_frequency(14010000); g_usleep(15000); }
+    while (g_get_monotonic_time() - t1 < 300000) { g_usleep(10000); }
+    const int same = drain(hpsock, NULL);
+    printf("  note  HP packets in 300 ms of unchanged retunes: %d\n", same);
+    chk("kick: an unchanged frequency does not kick (HP ≤ 5 in 300 ms)", same <= 5, 1);
+    p2_rx_stop();
+    close(hpsock); close(txsock); close(gensock); close(rxsock);
+  }
+
   printf("sdrfl-txiq-ring-test: %d checks, %d failed — %s\n",
          g_checks, g_fail, g_fail ? "FAIL" : "PASS");
   return g_fail ? 1 : 0;
