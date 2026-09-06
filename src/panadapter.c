@@ -41,8 +41,9 @@ static double pan_grid_step(void) {
   return 100.0;
 }
 
-/* Format Hz as a grouped string, e.g. 14250000 -> "14 250 000". */
-static void format_hz(long long hz, char *buf, size_t n) {
+/* Format Hz as a grouped string, e.g. 14250000 -> "14 250 000". Public: the
+ * GUI's VFO card prints the same number the readout here used to. */
+void panadapter_format_hz(long long hz, char *buf, size_t n) {
   int neg = hz < 0;
   unsigned long long v = neg ? (unsigned long long)(-hz) : (unsigned long long)hz;
   char tmp[32];
@@ -188,11 +189,16 @@ static void draw_spectrum(cairo_t *cr, const float *dbm, int n, int w, int h,
 
 static void draw_center_line(cairo_t *cr, int w, int h, double vfo_frac) {
   if (vfo_frac < 0.0 || vfo_frac > 1.0) { return; }   /* VFO panned off-screen */
-  double x = vfo_frac * w;
-  cairo_set_source_rgba(cr, 1.0, 0.78, 0.25, 0.45);
-  cairo_set_line_width(cr, 1.0);
-  cairo_move_to(cr, x + 0.5, 0);
-  cairo_line_to(cr, x + 0.5, h);
+  double x = floor(vfo_frac * w) + 0.5;   /* pixel-centre snap: ONE column, never
+                                             a 2-px antialiased smear when the VFO
+                                             lands between columns (panned / odd w) */
+  /* RED = the exact tuned frequency (Richard 2026-09-06; the earlier amber was
+   * indistinct and, in select mode, confusable with the amber filter ghost).
+   * Hairline: 0.75 px at 55 % reads as a thin, calm line on a 1× display. */
+  cairo_set_source_rgba(cr, 1.0, 0.25, 0.20, 0.55);
+  cairo_set_line_width(cr, 0.75);
+  cairo_move_to(cr, x, 0);
+  cairo_line_to(cr, x, h);
   cairo_stroke(cr);
 }
 
@@ -219,7 +225,7 @@ static void draw_readouts(cairo_t *cr, const ClientFrame *f, int w, const char *
   cairo_set_font_size(cr, 32.0);
   long long freq = (f->vfo_a_ctun_freq && f->vfo_a_ctun_freq != f->vfo_a_freq)
                      ? f->vfo_a_ctun_freq : f->vfo_a_freq;
-  format_hz(freq, buf, sizeof(buf));
+  panadapter_format_hz(freq, buf, sizeof(buf));
   cairo_text_extents(cr, buf, &eb);
   cairo_set_source_rgba(cr, 0.93, 0.96, 1.0, 0.96);
   cairo_move_to(cr, 44, 60);

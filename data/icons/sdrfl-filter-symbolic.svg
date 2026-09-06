@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SDR for Linux: filter (bandpass) symbolic icon — a solid passband trapezoid,
+     the shape the spectrum and the filter dialog draw. Single-colour: GTK
+     recolours -symbolic icons. Solid on purpose: an outline + carrier tick was
+     illegible at 16 px (Richard 2026-09-06). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <path fill="#2e3436" d="M1 14 L5.5 3 H10.5 L15 14 Z"/>
+</svg>

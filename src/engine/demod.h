@@ -129,4 +129,9 @@ int    demod_last_error(void);
 /* Signal-strength S-meter of the tuned signal (dBm), read from WDSP. */
 double demod_s_meter(void);
 
+/* AGC meters (dB), display only: `gain` = the gain the AGC is applying right
+ * now (piHPSDR's "Gain" reading = -RXA_AGC_GAIN), `out` = RXA_AGC_AV, the
+ * levelled output. -200 when the channel is not up. */
+void   demod_agc_meters(double *gain_db, double *out_db);
+
 #endif /* SDRFL_ENGINE_DEMOD_H */

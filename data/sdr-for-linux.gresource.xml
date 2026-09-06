@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <!-- App-private symbolic icons; gui.c adds /cz/ok1br/sdr_for_linux/icons to
+       the icon theme's resource path, so they resolve installed or not. -->
+  <gresource prefix="/cz/ok1br/sdr_for_linux/icons/scalable/actions">
+    <file alias="sdrfl-filter-symbolic.svg">icons/sdrfl-filter-symbolic.svg</file>
+    <file alias="sdrfl-agc-symbolic.svg">icons/sdrfl-agc-symbolic.svg</file>
+  </gresource>
+</gresources>

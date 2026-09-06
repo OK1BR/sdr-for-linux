@@ -406,6 +406,13 @@ double demod_s_meter(void) {
   return GetRXAMeter(d_id, RXA_S_PK);   /* tuned-signal strength, dBm (like piHPSDR) */
 }
 
+void demod_agc_meters(double *gain_db, double *out_db) {
+  if (!d_ready) { if (gain_db) { *gain_db = -200.0; } if (out_db) { *out_db = -200.0; } return; }
+  if (gain_db) { *gain_db = -GetRXAMeter(d_id, RXA_AGC_GAIN); }   /* same sign convention as
+                                                                    the SDRFL_DEBUG_LEVELS dump */
+  if (out_db)  { *out_db  =  GetRXAMeter(d_id, RXA_AGC_AV); }
+}
+
 void demod_set_mode(int mode, double flo, double fhi) {
   g_mutex_lock(&d_lock);
   d_mode = mode; d_flo = flo; d_fhi = fhi;

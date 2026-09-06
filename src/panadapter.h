@@ -72,6 +72,9 @@ void panadapter_set_readout(int on);
  * first draw or while the readout is suppressed. */
 void panadapter_readout_extent(double *x1, double *y1);
 
+/* Format Hz as a grouped string, e.g. 14250000 -> "14 250 000". */
+void panadapter_format_hz(long long hz, char *buf, size_t n);
+
 /* Width (px) of the left dB-scale gutter — the grab zone for vertical
  * pan/zoom. The GUI hit-tests against this so the affordance matches the draw. */
 #define PANADAPTER_GUTTER_W 46

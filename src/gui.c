@@ -160,8 +160,32 @@ typedef struct {
   int         drag_pan;      /* shift+drag is panning the view (not tuning)        */
   double      drag_base_pan; /* pan captured at drag-begin (for shift+drag)        */
   double      flo, fhi;      /* current passband (Hz, rel. centre) — for drawing */
+  double      card_x0, card_y0, card_x1, card_y1; /* VFO card rect of the last draw
+                                (radio mode; 0 = not drawn) — spots dodge it,
+                                clicks/drags inside it are swallowed          */
+  int         drag_dead;     /* drag began inside the VFO card: ignore it      */
   GtkWidget  *filter_dd;     /* filter dropdown (repopulated per mode)         */
   GtkWidget  *agc_dd;        /* AGC dropdown (synced on per-mode-group restore) */
+  AdwDialog  *filt_dlg;      /* filter dialog while open (NULL when closed)         */
+  GtkWidget  *filt_graph;    /* its passband graph (GtkDrawingArea)               */
+  GtkWidget  *filt_btn[12];  /* NPRESET presets + Var1 + Var2 toggles             */
+  GtkWidget  *filt_low_row;  /* AdwSpinRow: low edge (Hz)                         */
+  GtkWidget  *filt_high_row; /* AdwSpinRow: high edge (Hz)                        */
+  GtkWidget  *filt_mode_lbl; /* popover title: the mode                           */
+  int         filt_syncing;  /* popover widgets being set from state → ignore signals */
+  int         filt_drag;     /* graph drag: 0 none, 1 low edge, 2 high edge, 3 shift */
+  int         filt_drag_lo, filt_drag_hi;   /* passband at graph drag-begin (Hz)   */
+  double      card_filt_y0, card_filt_y1;   /* the card's mode·filter·AGC row (y)  */
+  double      card_filt_x0, card_filt_x1;   /* … the filter text (x) → filter dialog */
+  double      card_agc_x0,  card_agc_x1;    /* … the AGC text (x) → AGC dialog      */
+  AdwDialog  *agc_dlg;       /* AGC dialog while open (NULL when closed)             */
+  GtkWidget  *agc_btn[5];    /* character toggles, index = demod AGC mode 0..4       */
+  GtkWidget  *agc_gain_row;  /* AdwSpinRow: AGC-T (dB)                               */
+  GtkWidget  *agc_meter;     /* live gain bar (GtkDrawingArea)                       */
+  GtkWidget  *agc_caption;   /* hang/decay constants of the chosen character         */
+  guint       agc_tick;      /* meter refresh source while the dialog is open        */
+  int         agc_syncing;   /* dialog widgets being set from state → ignore signals */
+  GtkWidget  *agct_scale;    /* footer AGC-T slider (synced from the dialog)         */
   gint64      ovl0_until;    /* ADC0-overload badge lit until (monotonic µs)   */
   gint64      ovl1_until;    /* ADC1-overload badge lit until (monotonic µs)   */
   int         tlm_valid;     /* HP-status telemetry seen at least once          */
@@ -608,6 +632,35 @@ static void filter_lohi(App *app, int mode, int idx, int *lo, int *hi) {
   }
 }
 
+/* Short mode label for a DEMOD_* id (the control-strip button text). */
+static const char *mode_label(int mode) {
+  switch (mode) {
+  case DEMOD_LSB:  return "LSB";  case DEMOD_USB:  return "USB";
+  case DEMOD_CWL:  return "CWL";  case DEMOD_CWU:  return "CWU";
+  case DEMOD_AM:   return "AM";   case DEMOD_DIGU: return "DIGU";
+  case DEMOD_DIGL: return "DIGL"; case DEMOD_RTTY: return "RTTY";
+  default:         return "?";
+  }
+}
+
+/* AGC character label for a demod AGC mode (0=off … 4=fast), the dropdown's words. */
+static const char *agc_label(int agc) {
+  static const char *const names[] = { "Off", "Long", "Slow", "Med", "Fast" };
+  return (agc >= 0 && agc < 5) ? names[agc] : "?";
+}
+
+/* Passband width in the preset-name style ("2.9k", "500"): the preset's own
+ * name when a preset is selected, else derived from the Var edges. */
+static void filter_width_label(App *app, char *buf, size_t n) {
+  if (app->filter_idx >= 0 && app->filter_idx < NPRESET) {
+    int nf, dfl; const FilterPreset *ft = mode_filters(app->mode, &nf, &dfl);
+    if (app->filter_idx < nf) { g_strlcpy(buf, ft[app->filter_idx].name, n); return; }
+  }
+  double wd = app->fhi - app->flo;
+  if (wd >= 1000.0) { snprintf(buf, n, "%.1fk", wd / 1000.0); }
+  else              { snprintf(buf, n, "%d", (int)lrint(wd)); }
+}
+
 /* Parse a mode name (USB/LSB/CWU/CWL/AM) to a DEMOD_* id; -1 if unknown/NULL. */
 static int mode_from_name(const char *m) {
   if      (m && !strcasecmp(m, "usb"))  return DEMOD_USB;
@@ -740,6 +793,35 @@ static int spot_cmp_hz(const void *a, const void *b) {
   long long d = ((const struct spot *)a)->hz - ((const struct spot *)b)->hz;
   return d < 0 ? -1 : (d > 0 ? 1 : 0);
 }
+/* VFO card (Richard's layout, 2026-09-06, mockup v4): the frequency readout,
+ * mode · passband · AGC, the NR/NB/ANF/BIN indicators and the S-meter in one
+ * panel next to the VFO line — where the eye already is — instead of the old
+ * top-left readout + top-right meter. Sits CARD_GAP left of the VFO line, under
+ * the ruler; mirrors to the right of the line when panned so far that it would
+ * leave the left edge. Radio mode, RX display only. */
+#define CARD_W    400.0
+#define CARD_H    186.0
+#define CARD_TOP   28.0
+#define CARD_GAP   20.0
+static void card_rect(App *app, int w, double *x0, double *y0, double *x1, double *y1) {
+  double cx = vfo_x(app, w);
+  /* Side = AWAY from the passband (Richard 2026-09-06: in LSB the card must
+   * flip to the other side or it covers the filter): USB-family passbands
+   * lie right of the line → card left; LSB-family (fhi <= 0) → card right;
+   * straddling modes (CW/AM/RTTY) take the side with the smaller extent.
+   * Then the screen-edge rule: no room on the chosen side → the other one. */
+  int right = app->fhi > app->flo &&
+              (app->fhi <= 0.0 || (app->flo < 0.0 && -app->flo > app->fhi));
+  double left = right ? cx + CARD_GAP : cx - CARD_GAP - CARD_W;
+  if (!right && left < 4.0)                 { left = cx + CARD_GAP; }
+  else if (right && left + CARD_W > w - 4.0) { left = cx - CARD_GAP - CARD_W; }
+  *x0 = left; *x1 = left + CARD_W; *y0 = CARD_TOP; *y1 = CARD_TOP + CARD_H;
+}
+static int in_card(const App *app, double x, double y) {
+  return app->card_x1 > app->card_x0 &&
+         x >= app->card_x0 && x <= app->card_x1 && y >= app->card_y0 && y <= app->card_y1;
+}
+
 static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
   if (!app->show_spots || app->nspots <= 0 || w < 2 || app->rate <= 0 || app->zoom <= 0.0) { return; }
   gint64 now = g_get_monotonic_time();
@@ -762,13 +844,18 @@ static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
   double right_hz  = left_hz + span;
   double rowend[3] = { -1e9, -1e9, -1e9 };
   const double y0 = 32.0, rh = 17.0;           /* label rows under the ruler */
-  /* HUD exclusion zones: the VFO readout's measured extent (left) and the
-   * S-meter block incl. its dBm line (right). Labels overlapping either in x
-   * stack below the block instead of colliding with it. */
-  double ro_x1, ro_y1;
-  panadapter_readout_extent(&ro_x1, &ro_y1);
-  const double sm_x0 = (double)w - METER_RM - METER_BW - 40.0; /* tick overhang */
-  const double sm_y1 = METER_BY + METER_BH + 26.0;             /* dBm line bottom */
+  /* HUD exclusion zones. Radio mode: the VFO card (labels overlapping it in x
+   * stack below it). Server mode: the panadapter's own readout extent (left)
+   * and the top-right S-meter block incl. its dBm line. */
+  double ro_x1 = 0.0, ro_y1 = 0.0, sm_x0 = 1e9, sm_y1 = 0.0;
+  double cd_x0 = 0.0, cd_x1 = -1.0, cd_y1 = 0.0;
+  if (app->radio_mode) {
+    double cy0; card_rect(app, w, &cd_x0, &cy0, &cd_x1, &cd_y1);
+  } else {
+    panadapter_readout_extent(&ro_x1, &ro_y1);
+    sm_x0 = (double)w - METER_RM - METER_BW - 40.0;   /* tick overhang */
+    sm_y1 = METER_BY + METER_BH + 26.0;               /* dBm line bottom */
+  }
   cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
   cairo_set_font_size(cr, 13.0);
   cairo_set_line_width(cr, 1.0);
@@ -794,6 +881,9 @@ static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
     if (x + te.width + 6.0 >= sm_x0) {
       base = fmax(base, sm_y1 + 13.0);         /* under the S-meter */
     }
+    if (cd_x1 > cd_x0 && x + te.width + 6.0 >= cd_x0 - 6.0 && x - 3.0 <= cd_x1 + 6.0) {
+      base = fmax(base, cd_y1 + 13.0);         /* under the VFO card */
+    }
     double ly = base + (row < 0 ? 0 : row) * rh;
     if (row >= 0) {                            /* label fits in a free row */
       rowend[row] = x + te.width + 8.0;
@@ -813,13 +903,15 @@ static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
 /* Graphical S-meter, top-right of the panadapter. S1..S9 (6 dB/unit, S9 = -73
  * dBm on HF) then +dB over S9. dBm comes from the WDSP meter (radio) or the
  * server (network). Fill is coloured by the active palette (like spectrum/wf). */
-static void draw_s_meter(cairo_t *cr, App *app, int w) {
-  const double DBM_MIN = -121.0, DBM_S9 = -73.0, DBM_MAX = -13.0;   /* S1 … S9+60 */
-  /* Ballistics, display-side only (both sources — WDSP S_PK on the radio, rxlvl
-   * on the network head — are raw and flicker at frame rate): the same EMA idiom
-   * as the spectrum trace, but on wall-clock dt since the draw cadence varies.
-   * A >1 s gap (TX over, mode switch) snaps instead of animating stale decay.
-   * TCI clients keep reading the raw demod_s_meter() untouched. */
+/* S-meter ballistics, display-side only (both sources — WDSP S_PK on the radio,
+ * rxlvl on the network head — are raw and flicker at frame rate): the same EMA
+ * idiom as the spectrum trace, but on wall-clock dt since the draw cadence
+ * varies. A >1 s gap (TX over, mode switch) snaps instead of animating stale
+ * decay. The number is latched slower than the bar — a readout changing every
+ * frame is unreadable even when the bar is calm. TCI clients keep reading the
+ * raw demod_s_meter() untouched. Returns the bar level (dBm, clamped). */
+static double s_meter_tick(App *app) {
+  const double DBM_MIN = -121.0;
   gint64 now = g_get_monotonic_time();
   double raw = app->frame.s_dbm;
   if (!app->smeter_ema_ok || now - app->smeter_prev_us > G_USEC_PER_SEC ||
@@ -832,29 +924,37 @@ static void draw_s_meter(cairo_t *cr, App *app, int w) {
     app->smeter_ema += f * (raw - app->smeter_ema);
   }
   app->smeter_prev_us = now;
-  /* The number is latched slower than the bar — a readout changing every frame
-   * is unreadable even when the bar is calm. */
   if (now >= app->smeter_txt_us) {
     app->smeter_txt_dbm = app->smeter_ema;
     app->smeter_txt_us  = now + 250000;
   }
   double dbm = app->smeter_ema;
   if (dbm < DBM_MIN) { dbm = DBM_MIN; }
+  return dbm;
+}
+
+/* Paint the S-meter at (bx, by), bw wide, bh tall: palette-gradient fill (the
+ * family colour scheme, Mono lifted toward white), S1…S9/+20/+40/+60 ticks +
+ * labels above the bar, the latched "S6   -93 dBm" reading right-aligned
+ * under it. Geometry-agnostic so the VFO card and the legacy top-right block
+ * (server mode) draw the SAME meter. */
+static void s_meter_paint(cairo_t *cr, App *app, double dbm, double bx, double by,
+                          double bw, double bh, double lbl_fs, double rd_fs) {
+  const double DBM_MIN = -121.0, DBM_S9 = -73.0, DBM_MAX = -13.0;   /* S1 … S9+60 */
   double span = DBM_MAX - DBM_MIN;
-  double bw = METER_BW, bh = METER_BH, bx = w - bw - METER_RM, by = METER_BY;
   double fillw = (dbm - DBM_MIN) / span * bw;
   if (fillw > bw) { fillw = bw; }
   cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.5);           /* track */
   cairo_rectangle(cr, bx, by, bw, bh); cairo_fill(cr);
   /* Fill coloured by the active palette (same scheme as the spectrum + waterfall):
-   * a horizontal gradient over the whole bar, painted up to the current level. */
-  /* The monochrome palettes have a near-black low end, too dark to read as a
+   * a horizontal gradient over the whole bar, painted up to the current level.
+   * The monochrome palettes have a near-black low end, too dark to read as a
    * meter fill, so lift them toward white; the colour palettes read fine as-is. */
   const char *pname = waterfall_palette_name(app->palette);
   double k = (pname && g_str_has_prefix(pname, "Mono")) ? 0.20 : 0.0;
   cairo_pattern_t *grad = cairo_pattern_create_linear(bx, 0, bx + bw, 0);
-  for (int s = 0; s <= 12; s++) {
-    double t = s / 12.0, r, g, b;
+  for (int i = 0; i <= 12; i++) {
+    double t = i / 12.0, r, g, b;
     waterfall_palette_rgb(t, &r, &g, &b);
     r += (1.0 - r) * k; g += (1.0 - g) * k; b += (1.0 - b) * k;
     cairo_pattern_add_color_stop_rgba(grad, t, r, g, b, 0.92);
@@ -867,30 +967,134 @@ static void draw_s_meter(cairo_t *cr, App *app, int w) {
   cairo_pattern_destroy(grad);
 
   cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-  cairo_set_font_size(cr, 15.0);
+  cairo_set_font_size(cr, lbl_fs);
   const struct { double dbm; const char *l; } mk[] = {
     {-121,"1"},{-109,"3"},{-97,"5"},{-85,"7"},{-73,"9"},{-53,"+20"},{-33,"+40"},{-13,"+60"},
   };
+  cairo_set_line_width(cr, 1.0);
   for (int i = 0; i < 8; i++) {
     double mx = bx + (mk[i].dbm - DBM_MIN) / span * bw;
     cairo_set_source_rgba(cr, 0.7, 0.75, 0.85, 0.6);
     cairo_move_to(cr, mx + 0.5, by - 4); cairo_line_to(cr, mx + 0.5, by); cairo_stroke(cr);
     cairo_text_extents_t ex; cairo_text_extents(cr, mk[i].l, &ex);
-    cairo_move_to(cr, mx - ex.width / 2, by - 7); cairo_show_text(cr, mk[i].l);
+    double lx = mx - ex.width / 2;
+    if (lx < bx) { lx = bx; }
+    if (lx + ex.width > bx + bw) { lx = bx + bw - ex.width; }
+    cairo_move_to(cr, lx, by - 7); cairo_show_text(cr, mk[i].l);
   }
 
   char lbl[32];
   double d = app->smeter_txt_dbm;
   if (d <= DBM_S9) {
-    int s = (int)lround((d + 127.0) / 6.0); if (s < 1) { s = 1; }
-    snprintf(lbl, sizeof lbl, "S%d   %.0f dBm", s, d);
+    int sv = (int)lround((d + 127.0) / 6.0); if (sv < 1) { sv = 1; }
+    snprintf(lbl, sizeof lbl, "S%d   %.0f dBm", sv, d);
   } else {
     snprintf(lbl, sizeof lbl, "S9+%d   %.0f dBm", (int)(lround((d - DBM_S9) / 10.0) * 10), d);
   }
-  cairo_set_font_size(cr, 19.0);
+  cairo_set_font_size(cr, rd_fs);
   cairo_text_extents_t ex; cairo_text_extents(cr, lbl, &ex);
   cairo_set_source_rgba(cr, 0.82, 0.92, 0.78, 0.95);
-  cairo_move_to(cr, bx + bw - ex.width, by + bh + 22); cairo_show_text(cr, lbl);
+  cairo_move_to(cr, bx + bw - ex.x_advance, by + bh + 22); cairo_show_text(cr, lbl);
+}
+
+/* Legacy top-right S-meter block (server mode; radio mode has it in the card). */
+static void draw_s_meter(cairo_t *cr, App *app, int w) {
+  double dbm = s_meter_tick(app);
+  s_meter_paint(cr, app, dbm, w - METER_BW - METER_RM, METER_BY, METER_BW, METER_BH, 15.0, 19.0);
+}
+
+/* The VFO card itself (see card_rect for the placement rule). */
+static void draw_vfo_card(cairo_t *cr, App *app, int w, const char *bandinfo) {
+  double x0, y0, x1, y1;
+  card_rect(app, w, &x0, &y0, &x1, &y1);
+  app->card_x0 = x0; app->card_y0 = y0; app->card_x1 = x1; app->card_y1 = y1;
+  const double r = 6.0, cw = x1 - x0, ch = y1 - y0;
+  cairo_new_sub_path(cr);
+  cairo_arc(cr, x1 - r, y0 + r, r, -G_PI / 2, 0);
+  cairo_arc(cr, x1 - r, y1 - r, r, 0, G_PI / 2);
+  cairo_arc(cr, x0 + r, y1 - r, r, G_PI / 2, G_PI);
+  cairo_arc(cr, x0 + r, y0 + r, r, G_PI, 3 * G_PI / 2);
+  cairo_close_path(cr);
+  cairo_set_source_rgba(cr, 0.04, 0.06, 0.09, 0.82); cairo_fill_preserve(cr);
+  cairo_set_source_rgba(cr, 0.55, 0.85, 1.0, 0.35); cairo_set_line_width(cr, 1.0); cairo_stroke(cr);
+
+  /* Frequency — the same value the panadapter readout used to print (CTUN if
+   * it differs from the dial), same font and size, so nothing changes but the place. */
+  const ClientFrame *f = &app->frame;
+  long long freq = (f->vfo_a_ctun_freq && f->vfo_a_ctun_freq != f->vfo_a_freq)
+                     ? f->vfo_a_ctun_freq : f->vfo_a_freq;
+  char buf[64];
+  panadapter_format_hz(freq, buf, sizeof buf);
+  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+  cairo_set_font_size(cr, 32.0);
+  cairo_set_source_rgba(cr, 0.93, 0.96, 1.0, 0.96);
+  cairo_move_to(cr, x0 + 14, y0 + 40); cairo_show_text(cr, buf);
+
+  char sub[80];
+  if (bandinfo && *bandinfo) { snprintf(sub, sizeof sub, "Hz  ·  VFO A  ·  %s", bandinfo); }
+  else                       { snprintf(sub, sizeof sub, "Hz  ·  VFO A"); }
+  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_set_font_size(cr, 15.0);
+  cairo_set_source_rgba(cr, 0.62, 0.72, 0.85, 0.9);
+  cairo_move_to(cr, x0 + 14, y0 + 62); cairo_show_text(cr, sub);
+
+  /* mode · passband lo…hi (width) · AGC — the passband is what the blue edges
+   * draw, Hz relative to the carrier; Var edges dragged live update it too. */
+  char wl[16], pb[48], line[96];
+  filter_width_label(app, wl, sizeof wl);
+  int lo = (int)lrint(app->flo), hi = (int)lrint(app->fhi);
+  if (lo >= 0 && hi >= 0) { snprintf(pb, sizeof pb, "%d–%d Hz (%s)", lo, hi, wl); }
+  else                    { snprintf(pb, sizeof pb, "%+d…%+d Hz (%s)", lo, hi, wl); }
+  cairo_set_font_size(cr, 15.0);
+  cairo_set_source_rgba(cr, 0.55, 0.85, 1.0, 0.95);
+  {   /* drawn in pieces so the filter and AGC texts know their x extents:
+       * they are click targets (filter dialog / AGC dialog, hand cursor). */
+    char agct[24]; snprintf(agct, sizeof agct, "AGC %s", agc_label(app->agc));
+    const char *sep = "  ·  ";
+    cairo_text_extents_t e;
+    double x = x0 + 14;
+    cairo_move_to(cr, x, y0 + 86); cairo_show_text(cr, mode_label(app->mode));
+    cairo_text_extents(cr, mode_label(app->mode), &e); x += e.x_advance;
+    cairo_move_to(cr, x, y0 + 86); cairo_show_text(cr, sep);
+    cairo_text_extents(cr, sep, &e); x += e.x_advance;
+    app->card_filt_x0 = x;
+    cairo_move_to(cr, x, y0 + 86); cairo_show_text(cr, pb);
+    cairo_text_extents(cr, pb, &e); x += e.x_advance;
+    app->card_filt_x1 = x;
+    cairo_move_to(cr, x, y0 + 86); cairo_show_text(cr, sep);
+    cairo_text_extents(cr, sep, &e); x += e.x_advance;
+    app->card_agc_x0 = x;
+    cairo_move_to(cr, x, y0 + 86); cairo_show_text(cr, agct);
+    cairo_text_extents(cr, agct, &e); x += e.x_advance;
+    app->card_agc_x1 = x;
+    (void)line;
+  }
+  app->card_filt_y0 = y0 + 70; app->card_filt_y1 = y0 + 92;   /* the row's y band */
+
+  /* Indicators: lit when active, dimmed otherwise; NR2…/NB2 carry their suffix
+   * like the buttons do. */
+  cairo_set_font_size(cr, 14.0);
+  {
+    char nr[8], nb[8];
+    snprintf(nr, sizeof nr, "NR%c", (app->nr >= 2 && app->nr <= 9) ? (char)('0' + app->nr) : '\0');
+    snprintf(nb, sizeof nb, "NB%c", (app->nb >= 2 && app->nb <= 9) ? (char)('0' + app->nb) : '\0');
+    const struct { const char *l; int on; } ind[] = {
+      { nr, app->nr > 0 }, { nb, app->nb > 0 }, { "ANF", app->anf }, { "BIN", app->binaural },
+    };
+    double x = x0 + 14;
+    for (int i = 0; i < 4; i++) {
+      if (ind[i].on) { cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.95); }
+      else           { cairo_set_source_rgba(cr, 0.62, 0.72, 0.85, 0.35); }
+      cairo_move_to(cr, x, y0 + 108); cairo_show_text(cr, ind[i].l);
+      cairo_text_extents_t te; cairo_text_extents(cr, ind[i].l, &te);
+      x += te.x_advance + 22;
+    }
+  }
+
+  /* S-meter, same ballistics + palette fill as ever, just inside the card. */
+  double dbm = s_meter_tick(app);
+  s_meter_paint(cr, app, dbm, x0 + 14, y0 + 136, cw - 28, 10.0, 11.0, 17.0);
+  (void)ch;
 }
 
 /* TX level meter — top-right of the TX panadapter, in the SAME geometry as the RX
@@ -1388,7 +1592,9 @@ static void draw_upper(cairo_t *cr, int w, int ph, App *app) {
   cairo_rectangle(cr, 0, 0, w, ph);
   cairo_clip(cr);
   gint64 tpan = g_get_monotonic_time();
+  if (app->radio_mode) { panadapter_set_readout(0); }   /* the VFO card replaces it */
   panadapter_draw(cr, w, ph, &app->frame, smoothed, low, span, NULL, bname, vfo_x(app, w) / w);
+  panadapter_set_readout(1);
   prof_add(PROF_PAN, tpan);
   if (app->radio_mode && (app->show_freq_grid || app->show_freq_scale)) {
     draw_freq_scale(cr, app, w, ph);
@@ -1427,10 +1633,16 @@ static void draw_upper(cairo_t *cr, int w, int ph, App *app) {
     cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, op * 0.22);   /* ghost fill  */
     cairo_rectangle(cr, gx0, 0, gx1 - gx0, ph);
     cairo_fill(cr);
-    cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, op * 0.95);   /* ghost edges + aim line */
+    cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, op * 0.95);   /* ghost edges (amber = the filter) */
     cairo_set_line_width(cr, 1.0);
     cairo_move_to(cr, gx0, 0); cairo_line_to(cr, gx0, ph);
     cairo_move_to(cr, gx1, 0); cairo_line_to(cr, gx1, ph);
+    cairo_stroke(cr);
+    cairo_set_source_rgba(cr, 1.0, 0.25, 0.20, 0.55);        /* aim line: RED = the frequency
+                                                                 a click lands on, same as
+                                                                 the VFO line — not amber, or
+                                                                 it reads as a filter edge */
+    cairo_set_line_width(cr, 0.75);
     cairo_move_to(cr, gxc, 0); cairo_line_to(cr, gxc, ph);
     cairo_stroke(cr);
   }
@@ -1457,7 +1669,8 @@ static void draw_upper(cairo_t *cr, int w, int ph, App *app) {
     cairo_show_text(cr, txt);
   }
 
-  draw_s_meter(cr, app, w);
+  if (app->radio_mode) { draw_vfo_card(cr, app, w, bname); }   /* readout + meter + state */
+  else                 { draw_s_meter(cr, app, w); app->card_x1 = app->card_x0 = 0.0; }
 
   /* Separator over the waterfall's top edge (the GPU texture sits under us). */
   cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.55);
@@ -1487,9 +1700,11 @@ static void draw_wf_overlays(cairo_t *cr, int w, int h, int ph, App *app) {
     cairo_rectangle(cr, x0, ph, x1 - x0, h - ph);
     cairo_fill(cr);
     cairo_set_line_width(cr, 1.0);
-    cairo_set_source_rgba(cr, 1.0, 0.78, 0.25, 0.45);        /* amber VFO centre — matches panadapter.c */
+    cairo_set_source_rgba(cr, 1.0, 0.25, 0.20, 0.55);        /* red VFO centre — matches panadapter.c */
+    cairo_set_line_width(cr, 0.75);
     cairo_move_to(cr, xc, ph); cairo_line_to(cr, xc, h);
     cairo_stroke(cr);
+    cairo_set_line_width(cr, 1.0);
     cairo_set_source_rgba(cr, 0.55, 0.85, 1.0, op * 0.95);   /* both edges — SAME as the spectrum */
     cairo_move_to(cr, x0, ph); cairo_line_to(cr, x0, h);
     cairo_move_to(cr, x1, ph); cairo_line_to(cr, x1, h);
@@ -1508,10 +1723,13 @@ static void draw_wf_overlays(cairo_t *cr, int w, int h, int ph, App *app) {
     cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, op * 0.22);   /* ghost fill  */
     cairo_rectangle(cr, gx0, ph, gx1 - gx0, h - ph);
     cairo_fill(cr);
-    cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, op * 0.95);   /* ghost edges + aim line */
+    cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, op * 0.95);   /* ghost edges (amber = the filter) */
     cairo_set_line_width(cr, 1.0);
     cairo_move_to(cr, gx0, ph); cairo_line_to(cr, gx0, h);
     cairo_move_to(cr, gx1, ph); cairo_line_to(cr, gx1, h);
+    cairo_stroke(cr);
+    cairo_set_source_rgba(cr, 1.0, 0.25, 0.20, 0.55);        /* aim line: red, like the VFO line */
+    cairo_set_line_width(cr, 0.75);
     cairo_move_to(cr, gxc, ph); cairo_line_to(cr, gxc, h);
     cairo_stroke(cr);
   }
@@ -2338,10 +2556,10 @@ static gboolean on_scroll(GtkEventControllerScroll *ctl, double dx, double dy, g
   return TRUE;
 }
 
-/* Which Var passband edge is near screen-x? 0 none, 1 low, 2 high. Only Var
+/* Which passband edge is near screen-x? 0 none, 1 low, 2 high. Any filter
  * filters (idx >= NPRESET) are draggable. */
 static int edge_hit(App *app, double x) {
-  if (app->filter_idx < NPRESET || app->fhi <= app->flo) { return 0; }
+  if (app->fhi <= app->flo || app->tx_display) { return 0; }
   int w = gtk_widget_get_width(app->area);
   if (w < 1) { return 0; }
   double hzpp = (double)app->rate / app->zoom / w;
@@ -2354,12 +2572,19 @@ static int edge_hit(App *app, double x) {
 /* Left-drag grabs the spectrum and pans the DDC centre (Model A) — UNLESS it
  * started in the dB gutter (slides the level window) or on a Var passband edge
  * (drags that edge). Both pans are absolute from drag-begin (no drift). */
+static void on_filter_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data);  /* below */
+static void filter_apply_var_edges(App *app, int lo, int hi);                    /* below */
+static void filter_dialog_open(App *app);                                       /* below */
+static void agc_dialog_open(App *app);                                          /* below */
+static void agc_widgets_sync(App *app);                                         /* below */
 static void on_drag_begin(GtkGestureDrag *g, double x, double y, gpointer data) {
   App *app = (App *)data;
   GdkModifierType mods = gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(g));
   app->drag_gutter = in_gutter(app, x, y);
   app->drag_edge = 0;
   app->drag_pan = 0;
+  app->drag_dead = !app->tx_display && in_card(app, x, y);   /* began on the VFO card */
+  if (app->drag_dead) { return; }
   if (app->drag_gutter) {
     app->drag_base_high = pan_win_high(app);
     app->drag_base_low  = pan_win_low(app);
@@ -2368,6 +2593,13 @@ static void on_drag_begin(GtkGestureDrag *g, double x, double y, gpointer data) 
     app->drag_base_pan = app->pan;
   } else if (!app->select_mode && (app->drag_edge = edge_hit(app, x))) {
     app->drag_begin_x = x;               /* edge follows the cursor */
+    /* Any filter's edges drag (Richard 2026-09-06): grabbing a PRESET's edge
+     * turns the selection into Var1 seeded with that preset's edges — the
+     * preset itself stays untouched, the dropdown follows, and the drag then
+     * edits Var1 exactly as before. Var1/Var2 already selected: unchanged. */
+    if (app->filter_idx < NPRESET) {
+      filter_apply_var_edges(app, (int)lrint(app->flo), (int)lrint(app->fhi));
+    }
   } else {
     app->drag_base_freq = app->freq;
   }
@@ -2377,6 +2609,7 @@ static void on_drag_update(GtkGestureDrag *g, double off_x, double off_y, gpoint
   (void)g;
   App *app = (App *)data;
   if (!app->radio_mode) { return; }
+  if (app->drag_dead) { return; }
 
   if (app->drag_gutter) {                 /* vertical: slide the dB window */
     if (!app->tx_display && app->auto_level) { return; }  /* RX auto-floor: no manual pan (TX is always manual) */
@@ -2404,25 +2637,16 @@ static void on_drag_update(GtkGestureDrag *g, double off_x, double off_y, gpoint
     return;
   }
 
-  if (app->drag_edge) {                   /* drag a Var passband edge */
+  if (app->drag_edge) {                   /* drag a passband edge (Var1/Var2 by now) */
     int w = gtk_widget_get_width(app->area);
     if (w < 1) { return; }
     double hzpp = (double)app->rate / app->zoom / w;
     int f = (int)lround((app->drag_begin_x + off_x - vfo_x(app, w)) * hzpp);
-    int v = (app->filter_idx - NPRESET) & 1;
     const int MINW = 50;                  /* keep a minimum passband width */
-    if (app->drag_edge == 1) {            /* low edge */
-      if (f > app->fhi - MINW) { f = app->fhi - MINW; }
-      if (f < -20000) { f = -20000; }
-      app->flo = f; app->var_low[app->mode][v] = f;
-    } else {                              /* high edge */
-      if (f < app->flo + MINW) { f = app->flo + MINW; }
-      if (f > 20000) { f = 20000; }
-      app->fhi = f; app->var_high[app->mode][v] = f;
-    }
-    demod_set_passband(app->flo, app->fhi);
-    schedule_save(app);
-    gtk_widget_queue_draw(app->area);
+    int lo = (int)lrint(app->flo), hi = (int)lrint(app->fhi);
+    if (app->drag_edge == 1) { lo = f; if (lo > hi - MINW) { lo = hi - MINW; } }
+    else                     { hi = f; if (hi < lo + MINW) { hi = lo + MINW; } }
+    filter_apply_var_edges(app, lo, hi);  /* one path: spectrum, popover, spin rows */
     return;
   }
 
@@ -2446,14 +2670,23 @@ static void on_motion(GtkEventControllerMotion *m, double x, double y, gpointer 
   App *app = (App *)data;
   app->ptr_x = x;
   app->ptr_y = y;
-  if (app->select_mode) { gtk_widget_queue_draw(app->area); return; }
-  /* Show a resize cursor over a draggable Var passband edge. */
-  static int over = -1;
-  int e = (!in_gutter(app, x, y) && edge_hit(app, x)) ? 1 : 0;
-  if (e != over) {
-    over = e;
-    gtk_widget_set_cursor_from_name(app->area, e ? "ew-resize" : NULL);
+  /* Cursor tells what a click/drag would do here: a hand over the VFO card's
+   * filter row (it opens the filter dialog — Richard 2026-09-06: "nobody will
+   * know otherwise"), a resize arrow over a draggable passband edge. */
+  const char *cur = NULL;
+  if (!app->tx_display && in_card(app, x, y)) {
+    if (y >= app->card_filt_y0 && y <= app->card_filt_y1 &&
+        ((x >= app->card_filt_x0 - 4 && x <= app->card_filt_x1 + 4) ||
+         (x >= app->card_agc_x0 - 4  && x <= app->card_agc_x1 + 4))) { cur = "pointer"; }
+  } else if (!app->select_mode && !in_gutter(app, x, y) && edge_hit(app, x)) {
+    cur = "ew-resize";
   }
+  static const char *over = NULL;            /* string literals: pointer compare is enough */
+  if (cur != over) {
+    over = cur;
+    gtk_widget_set_cursor_from_name(app->area, cur);
+  }
+  if (app->select_mode) { gtk_widget_queue_draw(app->area); }
 }
 
 /* Recenter the span on the frequency under x (Model A: not CTUN — the whole
@@ -2477,6 +2710,13 @@ static void on_pressed(GtkGestureClick *g, int n_press, double x, double y, gpoi
   (void)g;
   App *app = (App *)data;
   if (!app->radio_mode) { return; }
+  if (!app->tx_display && in_card(app, x, y)) {              /* the card is not tunable area */
+    if (n_press == 1 && y >= app->card_filt_y0 && y <= app->card_filt_y1) {
+      if (x >= app->card_filt_x0 - 4 && x <= app->card_filt_x1 + 4) { filter_dialog_open(app); }
+      else if (x >= app->card_agc_x0 - 4 && x <= app->card_agc_x1 + 4) { agc_dialog_open(app); }
+    }
+    return;
+  }
   if (n_press == 2 && in_gutter(app, x, y)) {
     if (app->tx_display) { tx_pan_autofit(app); schedule_save(app); gtk_widget_queue_draw(app->area); }
     else                 { pan_autofit(app); }
@@ -2630,20 +2870,334 @@ static gboolean on_key(GtkEventControllerKey *ctl, guint keyval, guint keycode,
 
 /* ---- control-strip callbacks (wired to the engine) ----------------------- */
 
-/* Filter dropdown → apply the selected preset's passband live. */
-static void on_filter_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data) {
-  (void)ps;
-  App *app = (App *)data;
+
+/* ============================================================================
+ * Filter state — ONE path for every editor: the strip's dropdown, the
+ * spectrum edge drag, and the popover (graph, presets, spin rows). Each
+ * editor calls filter_select() or filter_apply_var_edges(); those push the
+ * passband to WDSP, persist, and re-sync every other editor (with their
+ * signals blocked), so nothing can disagree about what the filter is.
+ * ========================================================================== */
+static void filter_widgets_sync(App *app);   /* popover ← state (below) */
+
+static void filter_dd_sync(App *app) {
+  if (!app->filter_dd) { return; }
+  g_signal_handlers_block_by_func(app->filter_dd, (gpointer)on_filter_changed, app);
+  gtk_drop_down_set_selected(GTK_DROP_DOWN(app->filter_dd), (guint)app->filter_idx);
+  g_signal_handlers_unblock_by_func(app->filter_dd, (gpointer)on_filter_changed, app);
+}
+
+/* Select a preset (idx < NPRESET) or Var1/Var2 (NPRESET, NPRESET+1) for the mode. */
+static void filter_select(App *app, int idx) {
   int nf, dfl;
   mode_filters(app->mode, &nf, &dfl);
-  guint idx = gtk_drop_down_get_selected(dd);
-  if ((int)idx >= nf + 2) { return; }          /* presets + Var1 + Var2 */
-  app->filter_idx = (int)idx;
-  app->filter_by_mode[app->mode] = (int)idx;   /* remember it for this mode */
-  int lo, hi; filter_lohi(app, app->mode, (int)idx, &lo, &hi);
+  if (idx < 0 || idx >= nf + 2) { return; }
+  app->filter_idx = idx;
+  app->filter_by_mode[app->mode] = idx;        /* remember it for this mode */
+  int lo, hi; filter_lohi(app, app->mode, idx, &lo, &hi);
   app->flo = lo; app->fhi = hi;
   demod_set_passband(app->flo, app->fhi);
-  schedule_save(app);                        /* persist the chosen filter */
+  filter_dd_sync(app);
+  filter_widgets_sync(app);
+  schedule_save(app);
+  if (app->area) { gtk_widget_queue_draw(app->area); }
+}
+
+/* Set explicit edges. A PRESET being edited becomes Var1 (Richard 2026-09-06:
+ * any filter's edges drag; the preset itself stays untouched); Var1/Var2 edit
+ * in place. Clamped to ±20 kHz and a 50 Hz minimum width. */
+static void filter_apply_var_edges(App *app, int lo, int hi) {
+  const int MINW = 50;
+  if (lo < -20000) { lo = -20000; }
+  if (hi >  20000) { hi =  20000; }
+  if (hi < lo + MINW) { hi = lo + MINW; }
+  if (app->filter_idx < NPRESET) {
+    app->filter_idx = NPRESET;                 /* → Var1 */
+    app->filter_by_mode[app->mode] = app->filter_idx;
+  }
+  int v = (app->filter_idx - NPRESET) & 1;
+  app->var_low[app->mode][v] = lo; app->var_high[app->mode][v] = hi;
+  app->flo = lo; app->fhi = hi;
+  demod_set_passband(app->flo, app->fhi);
+  filter_dd_sync(app);
+  filter_widgets_sync(app);
+  schedule_save(app);
+  if (app->area) { gtk_widget_queue_draw(app->area); }
+}
+
+/* ---- Filter dialog (SDR-14 step 2, filter part) ----------------------------
+ * A GTK4/libadwaita dialog in the style of Preferences (Richard 2026-09-06:
+ * "not in Preferences — its own icon next to the menu"), also opened by a
+ * click on the VFO card's filter row. A graph of the passband vs the carrier
+ * (drag an edge, drag the middle to shift), the mode's presets + Var1/Var2 as
+ * toggles, and Low/High spin rows for exact Hz. Built fresh on every open and
+ * dropped on close; the App pointers are cleared in the closed handler. */
+#define FILT_GRAPH_W 400
+#define FILT_GRAPH_H 140
+
+/* Graph frequency range: every preset of the mode plus the current edges,
+ * with a margin — 0 Hz (the carrier) always lands inside for the usual tables. */
+static void filt_graph_range(App *app, double *fmin, double *fmax) {
+  int nf, dfl; const FilterPreset *ft = mode_filters(app->mode, &nf, &dfl);
+  double lo = app->flo, hi = app->fhi;
+  for (int i = 0; i < nf; i++) {
+    if (ft[i].low  < lo) { lo = ft[i].low; }
+    if (ft[i].high > hi) { hi = ft[i].high; }
+  }
+  if (lo > 0) { lo = 0; }
+  if (hi < 0) { hi = 0; }
+  double m = (hi - lo) * 0.08 + 100.0;
+  *fmin = lo - m; *fmax = hi + m;
+}
+static double filt_fx(double f, double fmin, double fmax, int w) {
+  return 14.0 + (f - fmin) / (fmax - fmin) * (w - 28.0);
+}
+
+static void filt_graph_draw(GtkDrawingArea *da, cairo_t *cr, int w, int h, gpointer data) {
+  (void)da;
+  App *app = (App *)data;
+  double fmin, fmax; filt_graph_range(app, &fmin, &fmax);
+  const double gtop = 4.0, gbot = h - 16.0;   /* plot band; axis labels below */
+  /* backdrop */
+  cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.55);
+  cairo_rectangle(cr, 0, 0, w, h); cairo_fill(cr);
+  /* grid: nice step (1/2/5·10ⁿ) for ~5 divisions */
+  double raw = (fmax - fmin) / 5.0, mag = pow(10.0, floor(log10(raw))), nn = raw / mag;
+  double step = (nn <= 1 ? 1 : nn <= 2 ? 2 : nn <= 5 ? 5 : 10) * mag;
+  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_set_font_size(cr, 10.0);
+  cairo_set_line_width(cr, 1.0);
+  for (double f = ceil(fmin / step) * step; f <= fmax; f += step) {
+    double x = floor(filt_fx(f, fmin, fmax, w)) + 0.5;
+    cairo_set_source_rgba(cr, 1, 1, 1, 0.10);
+    cairo_move_to(cr, x, gtop); cairo_line_to(cr, x, gbot); cairo_stroke(cr);
+    char lbl[16];
+    if (fabs(f) >= 1000.0) { snprintf(lbl, sizeof lbl, "%gk", f / 1000.0); }
+    else                   { snprintf(lbl, sizeof lbl, "%g", f); }
+    cairo_text_extents_t e; cairo_text_extents(cr, lbl, &e);
+    cairo_set_source_rgba(cr, 0.7, 0.75, 0.85, 0.8);
+    cairo_move_to(cr, x - e.width / 2, h - 4); cairo_show_text(cr, lbl);
+  }
+  /* carrier: the red hairline, as on the spectrum */
+  {
+    double x = floor(filt_fx(0.0, fmin, fmax, w)) + 0.5;
+    cairo_set_source_rgba(cr, 1.0, 0.25, 0.20, 0.7);
+    cairo_set_line_width(cr, 0.75);
+    cairo_move_to(cr, x, gtop); cairo_line_to(cr, x, gbot); cairo_stroke(cr);
+  }
+  /* passband: flat top with soft skirts */
+  double lo = app->flo, hi = app->fhi;
+  double sk = (fmax - fmin) * 0.03;
+  const double top = gtop + 22.0, base = gbot - 2.0;
+  double xl = filt_fx(lo, fmin, fmax, w), xh = filt_fx(hi, fmin, fmax, w);
+  double xls = filt_fx(lo - sk, fmin, fmax, w), xhs = filt_fx(hi + sk, fmin, fmax, w);
+  cairo_move_to(cr, xls, base);
+  cairo_curve_to(cr, (xls + xl) / 2, base, (xls + 3 * xl) / 4, top, xl, top);
+  cairo_line_to(cr, xh, top);
+  cairo_curve_to(cr, (3 * xh + xhs) / 4, top, (xh + xhs) / 2, base, xhs, base);
+  cairo_close_path(cr);
+  cairo_set_source_rgba(cr, 0.35, 0.75, 1.0, 0.28); cairo_fill_preserve(cr);
+  cairo_set_source_rgba(cr, 0.55, 0.85, 1.0, 0.95); cairo_set_line_width(cr, 1.5); cairo_stroke(cr);
+  /* edge handles + values */
+  cairo_set_line_width(cr, 1.0);
+  const double xs[2] = { xl, xh }; const double fs[2] = { lo, hi };
+  for (int i = 0; i < 2; i++) {
+    double x = floor(xs[i]) + 0.5;
+    cairo_set_source_rgba(cr, 0.55, 0.85, 1.0, 0.95);
+    cairo_move_to(cr, x, top - 8); cairo_line_to(cr, x, base); cairo_stroke(cr);
+    cairo_rectangle(cr, x - 5, top - 14, 10, 12); cairo_fill(cr);
+    char v[16]; snprintf(v, sizeof v, "%d", (int)lrint(fs[i]));
+    cairo_set_font_size(cr, 11.0);
+    cairo_text_extents_t e; cairo_text_extents(cr, v, &e);
+    double lx = x - e.width / 2;
+    if (lx < 2) { lx = 2; }
+    if (lx + e.width > w - 2) { lx = w - 2 - e.width; }
+    cairo_set_source_rgba(cr, 0.85, 0.93, 1.0, 0.95);
+    cairo_move_to(cr, lx, top - 18); cairo_show_text(cr, v);
+  }
+  /* width, centred in the passband */
+  char wl[16]; filter_width_label(app, wl, sizeof wl);
+  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+  cairo_set_font_size(cr, 18.0);
+  cairo_text_extents_t e; cairo_text_extents(cr, wl, &e);
+  cairo_set_source_rgba(cr, 0.93, 0.96, 1.0, 0.95);
+  cairo_move_to(cr, (xl + xh) / 2 - e.width / 2, top + 40); cairo_show_text(cr, wl);
+}
+
+/* Graph hit test: 1 low edge, 2 high edge, 3 inside (shift), 0 outside. */
+static int filt_graph_hit(App *app, double x) {
+  int w = gtk_widget_get_width(app->filt_graph);
+  if (w < 1) { return 0; }
+  double fmin, fmax; filt_graph_range(app, &fmin, &fmax);
+  double xl = filt_fx(app->flo, fmin, fmax, w), xh = filt_fx(app->fhi, fmin, fmax, w);
+  if (fabs(x - xl) <= 8.0) { return 1; }
+  if (fabs(x - xh) <= 8.0) { return 2; }
+  if (x > xl && x < xh)    { return 3; }
+  return 0;
+}
+static void on_filt_graph_drag_begin(GtkGestureDrag *g, double x, double y, gpointer data) {
+  (void)g; (void)y;
+  App *app = (App *)data;
+  app->filt_drag = filt_graph_hit(app, x);
+  app->filt_drag_lo = (int)lrint(app->flo);
+  app->filt_drag_hi = (int)lrint(app->fhi);
+}
+static void on_filt_graph_drag_update(GtkGestureDrag *g, double off_x, double off_y, gpointer data) {
+  (void)g; (void)off_y;
+  App *app = (App *)data;
+  if (!app->filt_drag) { return; }
+  int w = gtk_widget_get_width(app->filt_graph);
+  if (w < 1) { return; }
+  double fmin, fmax; filt_graph_range(app, &fmin, &fmax);
+  double hzpp = (fmax - fmin) / (w - 28.0);
+  int d = (int)lrint(off_x * hzpp / 10.0) * 10;          /* 10 Hz steps */
+  int lo = app->filt_drag_lo, hi = app->filt_drag_hi;
+  if (app->filt_drag == 1)      { lo += d; if (lo > hi - 50) { lo = hi - 50; } }
+  else if (app->filt_drag == 2) { hi += d; if (hi < lo + 50) { hi = lo + 50; } }
+  else                          { lo += d; hi += d; }
+  if (lo == (int)lrint(app->flo) && hi == (int)lrint(app->fhi)) { return; }
+  filter_apply_var_edges(app, lo, hi);
+}
+static void on_filt_graph_drag_end(GtkGestureDrag *g, double off_x, double off_y, gpointer data) {
+  (void)g; (void)off_x; (void)off_y;
+  ((App *)data)->filt_drag = 0;
+}
+static void on_filt_graph_motion(GtkEventControllerMotion *c, double x, double y, gpointer data) {
+  (void)c; (void)y;
+  App *app = (App *)data;
+  int hit = filt_graph_hit(app, x);
+  gtk_widget_set_cursor_from_name(app->filt_graph,
+      hit == 1 || hit == 2 ? "ew-resize" : hit == 3 ? "grab" : NULL);
+}
+
+static void on_filt_preset_toggled(GtkToggleButton *b, gpointer data) {
+  App *app = (App *)data;
+  if (app->filt_syncing || !gtk_toggle_button_get_active(b)) { return; }
+  filter_select(app, GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "idx")));
+}
+static void on_filt_edge_changed(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)r; (void)ps;
+  App *app = (App *)data;
+  if (app->filt_syncing) { return; }
+  int lo = (int)lrint(adw_spin_row_get_value(ADW_SPIN_ROW(app->filt_low_row)));
+  int hi = (int)lrint(adw_spin_row_get_value(ADW_SPIN_ROW(app->filt_high_row)));
+  if (lo == (int)lrint(app->flo) && hi == (int)lrint(app->fhi)) { return; }
+  filter_apply_var_edges(app, lo, hi);
+}
+
+static GtkWidget *filt_spin_row(const char *title, App *app) {
+  GtkAdjustment *a = gtk_adjustment_new(0, -20000, 20000, 10, 100, 0);
+  GtkWidget *row = g_object_new(ADW_TYPE_SPIN_ROW, "title", title, "adjustment", a,
+                                "digits", 0, NULL);
+  g_signal_connect(row, "notify::value", G_CALLBACK(on_filt_edge_changed), app);
+  return row;
+}
+
+static void on_filt_dialog_closed(AdwDialog *d, gpointer data) {
+  (void)d;
+  App *app = (App *)data;          /* widgets die with the dialog */
+  app->filt_dlg = NULL; app->filt_graph = NULL; app->filt_mode_lbl = NULL;
+  app->filt_low_row = app->filt_high_row = NULL;
+  for (int i = 0; i < NPRESET + 2; i++) { app->filt_btn[i] = NULL; }
+  app->filt_drag = 0;
+}
+
+static void filter_dialog_build(App *app) {
+  AdwDialog *dlg = adw_dialog_new();
+  adw_dialog_set_title(dlg, "Filter");
+  adw_dialog_set_content_width(dlg, 440);
+  GtkWidget *tv = adw_toolbar_view_new();
+  GtkWidget *hb = adw_header_bar_new();
+  app->filt_mode_lbl = gtk_label_new("");
+  gtk_widget_add_css_class(app->filt_mode_lbl, "span");
+  adw_header_bar_pack_start(ADW_HEADER_BAR(hb), app->filt_mode_lbl);   /* the mode, left of the title */
+  adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(tv), hb);
+  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+  gtk_widget_set_margin_top(box, 6); gtk_widget_set_margin_bottom(box, 18);
+  gtk_widget_set_margin_start(box, 18); gtk_widget_set_margin_end(box, 18);
+
+  app->filt_graph = gtk_drawing_area_new();
+  gtk_widget_set_size_request(app->filt_graph, FILT_GRAPH_W, FILT_GRAPH_H);
+  gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(app->filt_graph), filt_graph_draw, app, NULL);
+  GtkGesture *drag = gtk_gesture_drag_new();
+  g_signal_connect(drag, "drag-begin",  G_CALLBACK(on_filt_graph_drag_begin),  app);
+  g_signal_connect(drag, "drag-update", G_CALLBACK(on_filt_graph_drag_update), app);
+  g_signal_connect(drag, "drag-end",    G_CALLBACK(on_filt_graph_drag_end),    app);
+  gtk_widget_add_controller(app->filt_graph, GTK_EVENT_CONTROLLER(drag));
+  GtkEventController *mo = gtk_event_controller_motion_new();
+  g_signal_connect(mo, "motion", G_CALLBACK(on_filt_graph_motion), app);
+  gtk_widget_add_controller(app->filt_graph, mo);
+  gtk_box_append(GTK_BOX(box), app->filt_graph);
+
+  GtkWidget *grid = gtk_grid_new();
+  gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
+  gtk_grid_set_column_spacing(GTK_GRID(grid), 6);
+  gtk_grid_set_column_homogeneous(GTK_GRID(grid), TRUE);
+  GtkWidget *group = NULL;
+  for (int i = 0; i < NPRESET + 2; i++) {
+    GtkWidget *b = gtk_toggle_button_new_with_label("");
+    g_object_set_data(G_OBJECT(b), "idx", GINT_TO_POINTER(i));
+    if (!group) { group = b; } else { gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(b), GTK_TOGGLE_BUTTON(group)); }
+    g_signal_connect(b, "toggled", G_CALLBACK(on_filt_preset_toggled), app);
+    app->filt_btn[i] = b;
+    if (i < NPRESET) { gtk_grid_attach(GTK_GRID(grid), b, i % 5, i / 5, 1, 1); }
+    else             { gtk_grid_attach(GTK_GRID(grid), b, (i - NPRESET) * 2, 2, 2, 1); }
+  }
+  gtk_box_append(GTK_BOX(box), grid);
+
+  GtkWidget *rows = gtk_list_box_new();
+  gtk_list_box_set_selection_mode(GTK_LIST_BOX(rows), GTK_SELECTION_NONE);
+  gtk_widget_add_css_class(rows, "boxed-list");
+  app->filt_low_row  = filt_spin_row("Low edge (Hz)",  app);
+  app->filt_high_row = filt_spin_row("High edge (Hz)", app);
+  gtk_list_box_append(GTK_LIST_BOX(rows), app->filt_low_row);
+  gtk_list_box_append(GTK_LIST_BOX(rows), app->filt_high_row);
+  gtk_box_append(GTK_BOX(box), rows);
+
+  adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(tv), box);
+  adw_dialog_set_child(dlg, tv);
+  g_signal_connect(dlg, "closed", G_CALLBACK(on_filt_dialog_closed), app);
+  app->filt_dlg = dlg;
+}
+
+/* Popover widgets ← state: labels for the mode's presets, the active toggle,
+ * the spin values, the graph. Signals are muted meanwhile. */
+static void filter_widgets_sync(App *app) {
+  if (!app->filt_dlg) { return; }
+  app->filt_syncing = 1;
+  int nf, dfl; const FilterPreset *ft = mode_filters(app->mode, &nf, &dfl);
+  gtk_label_set_text(GTK_LABEL(app->filt_mode_lbl), mode_label(app->mode));
+  for (int i = 0; i < NPRESET + 2; i++) {
+    const char *l = i < nf ? ft[i].name : i == NPRESET ? "Var1" : i == NPRESET + 1 ? "Var2" : "";
+    gtk_button_set_label(GTK_BUTTON(app->filt_btn[i]), l);
+    gtk_widget_set_visible(app->filt_btn[i], i < nf || i >= NPRESET);
+  }
+  if (app->filter_idx >= 0 && app->filter_idx < NPRESET + 2) {
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->filt_btn[app->filter_idx]), TRUE);
+  }
+  adw_spin_row_set_value(ADW_SPIN_ROW(app->filt_low_row),  app->flo);
+  adw_spin_row_set_value(ADW_SPIN_ROW(app->filt_high_row), app->fhi);
+  gtk_widget_queue_draw(app->filt_graph);
+  app->filt_syncing = 0;
+}
+
+/* Open (from the header-bar button or the card's filter row). */
+static void filter_dialog_open(App *app) {
+  if (!app->win) { return; }
+  if (app->filt_dlg) { filter_widgets_sync(app); return; }   /* already open */
+  filter_dialog_build(app);
+  filter_widgets_sync(app);
+  adw_dialog_present(app->filt_dlg, GTK_WIDGET(app->win));
+}
+static void act_filter(GSimpleAction *a, GVariant *param, gpointer data) {
+  (void)a; (void)param;
+  filter_dialog_open((App *)data);
+}
+
+/* Filter dropdown → apply the selected preset's passband live (shared path). */
+static void on_filter_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data) {
+  (void)ps;
+  filter_select((App *)data, (int)gtk_drop_down_get_selected(dd));
 }
 
 /* Rebuild the filter dropdown for the current mode and select filter_idx. */
@@ -2715,6 +3269,7 @@ static void on_mode_toggled(GtkToggleButton *b, gpointer data) {
       app->agc = a;
       demod_set_agc(a);
       agc_dd_sync(app);
+      agc_widgets_sync(app);
     }
   }
   if (app->cur_band >= 0) { app->band_mode[app->cur_band] = mode; }   /* band stacking */
@@ -2727,6 +3282,7 @@ static void on_mode_toggled(GtkToggleButton *b, gpointer data) {
   app->flo = lo; app->fhi = hi;
   demod_set_mode(mode, app->flo, app->fhi);
   populate_filter_dd(app);               /* refill dropdown for the new mode */
+  filter_widgets_sync(app);              /* popover: new preset names + edges */
   tx_push_cfg(app);                      /* TX runtime learns the mode (CW break-in gates on it) */
   tx_update_mic(app);                    /* voice mode → mic ready; CW/data → mic closed */
   digi_drive_clamp(app);                 /* ⛔ entering DIGU/DIGL caps the drive */
@@ -2760,24 +3316,197 @@ static void on_lna_changed(GtkRange *r, gpointer data) {
   schedule_save(app);
 }
 
+static void on_agct_changed(GtkRange *r, gpointer data);   /* below */
+
+/* ============================================================================
+ * AGC — one path for every editor (the dialog's toggles + AGC-T row, the
+ * footer AGC-T slider, the per-mode-group restore), like the filter.
+ * ========================================================================== */
+static void agc_widgets_sync(App *app);   /* dialog ← state (below) */
+
+/* AGC character (demod mode 0=off … 4=fast) for the current mode group. */
+static void agc_select(App *app, int mode) {
+  if (mode < 0 || mode > 4) { return; }
+  app->agc = mode;
+  app->agc_by_group[agc_group_of(app->mode)] = mode;   /* remember per group */
+  demod_set_agc(mode);
+  agc_dd_sync(app);
+  agc_widgets_sync(app);
+  schedule_save(app);
+  if (app->area) { gtk_widget_queue_draw(app->area); }
+}
+/* AGC-T threshold/gain (dB). */
+static void agc_gain_set(App *app, double db) {
+  if (db < -20.0) { db = -20.0; }
+  if (db > 120.0) { db = 120.0; }
+  app->agc_gain = db;
+  demod_set_agc_gain(db);
+  if (app->agct_scale && fabs(gtk_range_get_value(GTK_RANGE(app->agct_scale)) - db) > 0.01) {
+    g_signal_handlers_block_by_func(app->agct_scale, (gpointer)on_agct_changed, app);
+    gtk_range_set_value(GTK_RANGE(app->agct_scale), db);
+    g_signal_handlers_unblock_by_func(app->agct_scale, (gpointer)on_agct_changed, app);
+  }
+  agc_widgets_sync(app);
+  schedule_save(app);
+}
+
+/* ---- AGC dialog (SDR-14 step 2, AGC part) -------------------------------------
+ * Same style as the filter dialog: header-bar button / the card's "AGC …" text
+ * / the app.agc action. Character toggles with their hang/decay constants, the
+ * AGC-T row (mirrors the footer slider), and a LIVE gain bar from the WDSP AGC
+ * meter so the operator sees how hard the AGC is working against AGC-T. */
+static const struct { const char *name; const char *caption; } AGC_CHAR[5] = {
+  { "Off",  "fixed 0 dB gain — no AGC" },
+  { "Long", "hang 2000 ms · decay 2000 ms" },
+  { "Slow", "hang 1000 ms · decay 500 ms" },
+  { "Med",  "no hang · decay 250 ms" },
+  { "Fast", "no hang · decay 50 ms" },
+};
+
+static void agc_meter_draw(GtkDrawingArea *da, cairo_t *cr, int w, int h, gpointer data) {
+  (void)da;
+  App *app = (App *)data;
+  double gain, out;
+  demod_agc_meters(&gain, &out);
+  double top = app->agc_gain > 1.0 ? app->agc_gain : 1.0;   /* AGC-T = full scale */
+  cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.55);
+  cairo_rectangle(cr, 0, 0, w, h); cairo_fill(cr);
+  const double bx = 14.0, bw = w - 28.0, by = 22.0, bh = 12.0;
+  cairo_set_source_rgba(cr, 1, 1, 1, 0.10);
+  cairo_rectangle(cr, bx, by, bw, bh); cairo_fill(cr);
+  int live = gain > -100.0 && app->agc > 0;
+  double frac = live ? gain / top : 0.0;
+  if (frac < 0.0) { frac = 0.0; }
+  if (frac > 1.0) { frac = 1.0; }
+  cairo_set_source_rgba(cr, 0.55, 0.85, 1.0, 0.85);
+  cairo_rectangle(cr, bx, by, bw * frac, bh); cairo_fill(cr);
+  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_set_font_size(cr, 11.0);
+  cairo_set_source_rgba(cr, 0.7, 0.75, 0.85, 0.8);
+  cairo_move_to(cr, bx, by - 7); cairo_show_text(cr, "0 dB");
+  char t[32]; snprintf(t, sizeof t, "AGC-T %.0f dB", top);
+  cairo_text_extents_t e; cairo_text_extents(cr, t, &e);
+  cairo_move_to(cr, bx + bw - e.x_advance, by - 7); cairo_show_text(cr, t);
+  cairo_set_font_size(cr, 15.0);
+  cairo_set_source_rgba(cr, 0.93, 0.96, 1.0, 0.95);
+  if (live)             { snprintf(t, sizeof t, "Gain %.0f dB   ·   out %.0f dB", gain, out); }
+  else if (app->agc>0)  { snprintf(t, sizeof t, "no signal path"); }
+  else                  { snprintf(t, sizeof t, "AGC off"); }
+  cairo_move_to(cr, bx, by + bh + 20); cairo_show_text(cr, t);
+}
+static gboolean agc_meter_tick(gpointer data) {
+  App *app = (App *)data;
+  if (app->agc_meter) { gtk_widget_queue_draw(app->agc_meter); }
+  return G_SOURCE_CONTINUE;
+}
+static void on_agc_char_toggled(GtkToggleButton *b, gpointer data) {
+  App *app = (App *)data;
+  if (app->agc_syncing || !gtk_toggle_button_get_active(b)) { return; }
+  agc_select(app, GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "agc")));
+}
+static void on_agc_gain_row(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps;
+  App *app = (App *)data;
+  if (app->agc_syncing) { return; }
+  double v = adw_spin_row_get_value(r);
+  if (fabs(v - app->agc_gain) < 0.01) { return; }
+  agc_gain_set(app, v);
+}
+static void on_agc_dialog_closed(AdwDialog *d, gpointer data) {
+  (void)d;
+  App *app = (App *)data;
+  if (app->agc_tick) { g_source_remove(app->agc_tick); app->agc_tick = 0; }
+  app->agc_dlg = NULL; app->agc_meter = NULL; app->agc_gain_row = NULL; app->agc_caption = NULL;
+  for (int i = 0; i < 5; i++) { app->agc_btn[i] = NULL; }
+}
+static void agc_dialog_build(App *app) {
+  AdwDialog *dlg = adw_dialog_new();
+  adw_dialog_set_title(dlg, "AGC");
+  adw_dialog_set_content_width(dlg, 440);
+  GtkWidget *tv = adw_toolbar_view_new();
+  GtkWidget *hb = adw_header_bar_new();
+  GtkWidget *ml = gtk_label_new(mode_label(app->mode));
+  gtk_widget_add_css_class(ml, "span");
+  adw_header_bar_pack_start(ADW_HEADER_BAR(hb), ml);
+  adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(tv), hb);
+  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+  gtk_widget_set_margin_top(box, 6); gtk_widget_set_margin_bottom(box, 18);
+  gtk_widget_set_margin_start(box, 18); gtk_widget_set_margin_end(box, 18);
+
+  GtkWidget *chars = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_add_css_class(chars, "linked");
+  gtk_box_set_homogeneous(GTK_BOX(chars), TRUE);
+  GtkWidget *group = NULL;
+  for (int i = 0; i < 5; i++) {
+    GtkWidget *b = gtk_toggle_button_new_with_label(AGC_CHAR[i].name);
+    g_object_set_data(G_OBJECT(b), "agc", GINT_TO_POINTER(i));
+    if (!group) { group = b; } else { gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(b), GTK_TOGGLE_BUTTON(group)); }
+    g_signal_connect(b, "toggled", G_CALLBACK(on_agc_char_toggled), app);
+    app->agc_btn[i] = b;
+    gtk_box_append(GTK_BOX(chars), b);
+  }
+  gtk_box_append(GTK_BOX(box), chars);
+  app->agc_caption = gtk_label_new("");
+  gtk_widget_add_css_class(app->agc_caption, "dim");
+  gtk_widget_set_halign(app->agc_caption, GTK_ALIGN_START);
+  gtk_box_append(GTK_BOX(box), app->agc_caption);
+
+  app->agc_meter = gtk_drawing_area_new();
+  gtk_widget_set_size_request(app->agc_meter, 400, 70);
+  gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(app->agc_meter), agc_meter_draw, app, NULL);
+  gtk_box_append(GTK_BOX(box), app->agc_meter);
+
+  GtkWidget *rows = gtk_list_box_new();
+  gtk_list_box_set_selection_mode(GTK_LIST_BOX(rows), GTK_SELECTION_NONE);
+  gtk_widget_add_css_class(rows, "boxed-list");
+  GtkAdjustment *a = gtk_adjustment_new(app->agc_gain, -20, 120, 1, 10, 0);
+  app->agc_gain_row = g_object_new(ADW_TYPE_SPIN_ROW, "title", "AGC-T (dB)",
+                                   "subtitle", "threshold · mirrors the footer slider",
+                                   "adjustment", a, "digits", 0, NULL);
+  g_signal_connect(app->agc_gain_row, "notify::value", G_CALLBACK(on_agc_gain_row), app);
+  gtk_list_box_append(GTK_LIST_BOX(rows), app->agc_gain_row);
+  gtk_box_append(GTK_BOX(box), rows);
+
+  adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(tv), box);
+  adw_dialog_set_child(dlg, tv);
+  g_signal_connect(dlg, "closed", G_CALLBACK(on_agc_dialog_closed), app);
+  app->agc_dlg = dlg;
+  app->agc_tick = g_timeout_add(100, agc_meter_tick, app);   /* 10 Hz live bar */
+}
+static void agc_widgets_sync(App *app) {
+  if (!app->agc_dlg) { return; }
+  app->agc_syncing = 1;
+  if (app->agc >= 0 && app->agc <= 4) {
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->agc_btn[app->agc]), TRUE);
+    gtk_label_set_text(GTK_LABEL(app->agc_caption), AGC_CHAR[app->agc].caption);
+  }
+  adw_spin_row_set_value(ADW_SPIN_ROW(app->agc_gain_row), app->agc_gain);
+  if (app->agc_meter) { gtk_widget_queue_draw(app->agc_meter); }
+  app->agc_syncing = 0;
+}
+static void agc_dialog_open(App *app) {
+  if (!app->win) { return; }
+  if (app->agc_dlg) { agc_widgets_sync(app); return; }
+  agc_dialog_build(app);
+  agc_widgets_sync(app);
+  adw_dialog_present(app->agc_dlg, GTK_WIDGET(app->win));
+}
+static void act_agc(GSimpleAction *a, GVariant *param, gpointer data) {
+  (void)a; (void)param;
+  agc_dialog_open((App *)data);
+}
+
 static void on_agc_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data) {
   (void)ps;
   App *app = (App *)data;
   guint i = gtk_drop_down_get_selected(dd);
   if (i >= G_N_ELEMENTS(AGC_MODE_OF_IDX)) { return; }
-  app->agc = AGC_MODE_OF_IDX[i];
-  app->agc_by_group[agc_group_of(app->mode)] = app->agc;   /* remember per group */
-  demod_set_agc(app->agc);
-  schedule_save(app);
+  agc_select(app, AGC_MODE_OF_IDX[i]);
 }
 
-/* AGC-T threshold/gain slider. */
+/* AGC-T threshold/gain slider (footer) — shared path with the dialog's row. */
 static void on_agct_changed(GtkRange *r, gpointer data) {
-  App *app = (App *)data;
-  double g = gtk_range_get_value(r);
-  demod_set_agc_gain(g);
-  app->agc_gain = g;
-  schedule_save(app);
+  agc_gain_set((App *)data, gtk_range_get_value(r));
 }
 
 /* Noise reduction / blanker / auto-notch toggles. */
@@ -2879,8 +3608,12 @@ static GtkWidget *labeled(const char *text, GtkWidget *w) {
 
 /* Build the horizontal control strip and wire it to the engine. Radio mode. */
 static GtkWidget *build_controls(App *app) {
-  GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+  /* Three groups (Richard 2026-09-06): modes on the left, the function set
+   * (NR…MON) CENTRED on the strip, bands on the right — a GtkCenterBox keeps
+   * the middle group on the window's centre line as long as it fits. */
+  GtkWidget *bar = gtk_center_box_new();
   gtk_widget_add_css_class(bar, "controlbar");
+  GtkWidget *mid = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
 
   /* Mode — segmented, grouped; keep a handle per DEMOD id for key sync. */
   static const int         mids[]   = {DEMOD_USB, DEMOD_LSB, DEMOD_CWL, DEMOD_CWU, DEMOD_AM,
@@ -2904,26 +3637,19 @@ static GtkWidget *build_controls(App *app) {
   for (int i = 0; i < (int)G_N_ELEMENTS(mids); i++) {  /* … then connect, so this doesn't re-fire the engine */
     g_signal_connect(app->mode_btns[mids[i]], "toggled", G_CALLBACK(on_mode_toggled), app);
   }
-  gtk_box_append(GTK_BOX(bar), modebox);
+  gtk_center_box_set_start_widget(GTK_CENTER_BOX(bar), modebox);
 
-  /* Filter — piHPSDR presets for the current mode; repopulated on mode change. */
-  app->filter_dd = gtk_drop_down_new(NULL, NULL);
-  g_signal_connect(app->filter_dd, "notify::selected", G_CALLBACK(on_filter_changed), app);
-  populate_filter_dd(app);
-  gtk_box_append(GTK_BOX(bar), labeled("Filter", app->filter_dd));
+  /* Filter: no dropdown here any more (Richard 2026-09-06) — the filter lives
+   * in its dialog (header-bar button / the VFO card's filter row) and shows on
+   * the card. app->filter_dd stays NULL; the dropdown sync paths no-op. */
+  app->filter_dd = NULL;
 
   /* AGC character (the AGC-T / Att / AF sliders live on the footer — the top
    * bar got full once PS + 2T arrived; Richard's layout call 2026-07-10). */
-  GtkWidget *agc_dd = gtk_drop_down_new_from_strings(
-      (const char *[]){"Med","Fast","Slow","Long","Off", NULL});
-  guint aidx = 0;
-  for (guint i = 0; i < G_N_ELEMENTS(AGC_MODE_OF_IDX); i++) {
-    if (AGC_MODE_OF_IDX[i] == app->agc) { aidx = i; break; }
-  }
-  gtk_drop_down_set_selected(GTK_DROP_DOWN(agc_dd), aidx);   /* before wiring: no re-fire */
-  g_signal_connect(agc_dd, "notify::selected", G_CALLBACK(on_agc_changed), app);
-  app->agc_dd = agc_dd;                    /* per-mode-group restore syncs it */
-  gtk_box_append(GTK_BOX(bar), labeled("AGC", agc_dd));
+  /* AGC: no dropdown here any more (Richard 2026-09-06) — the character lives
+   * in the AGC dialog (header-bar button / the card's "AGC …" text) and shows
+   * on the card. app->agc_dd stays NULL; agc_dd_sync no-ops. */
+  app->agc_dd = NULL;
 
   GtkWidget *nrbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_add_css_class(nrbox, "linked");
@@ -2944,7 +3670,7 @@ static GtkWidget *build_controls(App *app) {
   gtk_box_append(GTK_BOX(nrbox), nb_b);
   gtk_box_append(GTK_BOX(nrbox), anf_b);
   gtk_box_append(GTK_BOX(nrbox), bin_b);
-  gtk_box_append(GTK_BOX(bar), nrbox);
+  gtk_box_append(GTK_BOX(mid), nrbox);
 
   /* TX: TUNE keys a carrier at the tune power through the tx_gate safety layer
    * (into a dummy load / matched antenna); MOX keys SSB voice from the mic (F6c) —
@@ -3001,15 +3727,13 @@ static GtkWidget *build_controls(App *app) {
   gtk_widget_set_sensitive(mon_b, app->tx_ready);
   g_signal_connect(mon_b, "toggled", G_CALLBACK(on_mon_toggled), app);
   gtk_box_append(GTK_BOX(txbox), mon_b);
-  gtk_box_append(GTK_BOX(bar), txbox);
+  gtk_box_append(GTK_BOX(mid), txbox);
 
   app->tx_label = gtk_label_new("");   /* only flashes a refusal/trip reason; empty otherwise */
   gtk_widget_add_css_class(app->tx_label, "span");
-  gtk_box_append(GTK_BOX(bar), app->tx_label);
+  gtk_box_append(GTK_BOX(mid), app->tx_label);
 
-  GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-  gtk_widget_set_hexpand(spacer, TRUE);
-  gtk_box_append(GTK_BOX(bar), spacer);
+  gtk_center_box_set_center_widget(GTK_CENTER_BOX(bar), mid);
 
   /* Band buttons — jump the VFO. */
   static const struct { const char *l; int f; } bands[] = {
@@ -3033,7 +3757,7 @@ static GtkWidget *build_controls(App *app) {
     gtk_box_append(GTK_BOX(bandbox), b);
   }
   update_band_highlight(app);   /* reflect the startup band */
-  gtk_box_append(GTK_BOX(bar), bandbox);
+  gtk_center_box_set_end_widget(GTK_CENTER_BOX(bar), bandbox);
   return bar;
 }
 
@@ -3204,6 +3928,7 @@ static GtkWidget *build_bottom_controls(App *app) {
   }
 
   GtkWidget *agct = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, -20, 120, 1);
+  app->agct_scale = agct;                  /* the AGC dialog's row mirrors it */
   gtk_range_set_value(GTK_RANGE(agct), app->agc_gain);   /* before wiring: no send */
   gtk_widget_set_size_request(agct, 110, -1);
   gtk_scale_set_draw_value(GTK_SCALE(agct), TRUE);
@@ -3708,6 +4433,7 @@ static void tci_set_filter(int lo, int hi) {
   tci_app->flo = lo;
   tci_app->fhi = hi;
   demod_set_passband(lo, hi);
+  filter_widgets_sync(tci_app);
   gtk_widget_queue_draw(tci_app->area);
 }
 static double tci_get_drive(void) { return tci_app->tx_drive_w; }
@@ -4581,6 +5307,27 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
     gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(menu), G_MENU_MODEL(m));
     g_object_unref(m);
     adw_header_bar_pack_end(ADW_HEADER_BAR(header), menu);
+    /* Filter dialog button, left of the menu (pack_end packs right-to-left).
+     * Our own symbolic icon from the compiled-in resources — the icon theme
+     * has no bandpass glyph. */
+    gtk_icon_theme_add_resource_path(gtk_icon_theme_get_for_display(gdk_display_get_default()),
+                                     "/cz/ok1br/sdr_for_linux/icons");
+    GSimpleAction *fa = g_simple_action_new("filter", NULL);
+    g_signal_connect(fa, "activate", G_CALLBACK(act_filter), app);
+    g_action_map_add_action(G_ACTION_MAP(gtkapp), G_ACTION(fa));
+    g_object_unref(fa);
+    GtkWidget *fb = gtk_button_new_from_icon_name("sdrfl-filter-symbolic");
+    gtk_widget_set_tooltip_text(fb, "Filter: passband, presets, Var1/Var2");
+    gtk_actionable_set_action_name(GTK_ACTIONABLE(fb), "app.filter");
+    adw_header_bar_pack_end(ADW_HEADER_BAR(header), fb);
+    GSimpleAction *ga = g_simple_action_new("agc", NULL);
+    g_signal_connect(ga, "activate", G_CALLBACK(act_agc), app);
+    g_action_map_add_action(G_ACTION_MAP(gtkapp), G_ACTION(ga));
+    g_object_unref(ga);
+    GtkWidget *gb = gtk_button_new_from_icon_name("sdrfl-agc-symbolic");
+    gtk_widget_set_tooltip_text(gb, "AGC: character, AGC-T, live gain");
+    gtk_actionable_set_action_name(GTK_ACTIONABLE(gb), "app.agc");
+    adw_header_bar_pack_end(ADW_HEADER_BAR(header), gb);
   }
 
   GtkWidget *tv = adw_toolbar_view_new();

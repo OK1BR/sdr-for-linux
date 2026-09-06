@@ -71,8 +71,13 @@ ui_sources = [
 # v0: the GTK4 front-end (panadapter + waterfall) driven, for now, by the
 # piHPSDR client/server network path (client.c). The direct-to-radio engine
 # (HPSDR Protocol 2 + WDSP) replaces that data source in upcoming milestones.
+# App-private icons (the header-bar filter button) compiled into the binary.
+sdrfl_res = gnome.compile_resources('sdrfl-resources',
+  'data/sdr-for-linux.gresource.xml', source_dir : 'data', c_name : 'sdrfl')
+
 executable('sdr-for-linux',
   [
+    sdrfl_res,
     'src/gui.c',
     'src/settings.c',
     'src/bandplan.c',
