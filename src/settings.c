@@ -58,6 +58,8 @@ int settings_load(Settings *s) {
       s->pan_high = g_key_file_get_double(kf, GROUP_DISPLAY, "pan_high", NULL);
     if (g_key_file_has_key(kf, GROUP_DISPLAY, "pan_low", NULL))
       s->pan_low = g_key_file_get_double(kf, GROUP_DISPLAY, "pan_low", NULL);
+    if (g_key_file_has_key(kf, GROUP_DISPLAY, "pan_frac", NULL))
+      s->pan_frac = g_key_file_get_double(kf, GROUP_DISPLAY, "pan_frac", NULL);
     if (g_key_file_has_key(kf, GROUP_DISPLAY, "db_grid", NULL))
       s->db_grid = g_key_file_get_integer(kf, GROUP_DISPLAY, "db_grid", NULL);
     if (g_key_file_has_key(kf, GROUP_DISPLAY, "db_scale", NULL))
@@ -304,6 +306,7 @@ int settings_save(const Settings *s) {
   g_key_file_set_double (kf, GROUP_DISPLAY, "zoom",  s->zoom);
   g_key_file_set_double (kf, GROUP_DISPLAY, "pan_high", s->pan_high);
   g_key_file_set_double (kf, GROUP_DISPLAY, "pan_low",  s->pan_low);
+  g_key_file_set_double (kf, GROUP_DISPLAY, "pan_frac", s->pan_frac);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "db_grid",    s->db_grid);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "db_scale",   s->db_scale);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "freq_grid",  s->freq_grid);

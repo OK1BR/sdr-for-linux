@@ -40,6 +40,39 @@ that leaves the machine wrong; `medium` = gets in the operator's way;
 
 ## Open — tasks
 
+### SDR-17 — Draggable spectrum/waterfall divider
+- **Type:** task · **Severity:** — · **Status:** done — live-verified 2026-09-06 by Richard on the G2E ("dobrý")
+- **Source:** Richard, 2026-09-06 — "potřebujeme mít možnost volně hejbat s poměrem oken mezi spektrem a vodopádem, aby šlo myší chytnout to rozmezí a posunout ho"; the affordance is the cursor: "uživatel to pozná tak, že se mu tam nabídne šipečka"
+- **Detail:** `src/gui.c` — `split_ph()` / `split_clamp()` / `in_split()` / `draw_split_line()`, the left-drag, motion (+ leave) and click handlers; `[display] pan_frac` in `settings.[ch]`
+
+The split was a compile-time constant (`PANADAPTER_FRACTION 0.5`) computed
+independently in four places (RX snapshot, RX fallback, TX display, the dB-axis
+hit-test). Now ONE helper computes it from `app->pan_frac`, a fraction of the
+area height (so a window resize keeps the proportion, as the fixed 0.5 did),
+persisted as `[display] pan_frac`. Behaviour:
+
+- **Grab zone** ±5 px around the separator line, live display only (the status
+  screens have no separator). Over it the cursor is `ns-resize`; the line lights
+  up (passband-edge blue) while hovered or dragged. Left-drag moves it, relative
+  to the split at press (no jump on grab); the arrow stays up through a clamped
+  drag until release.
+- **Clamps:** spectrum ≥ `CARD_TOP + CARD_H + 16` = 230 px — the upper cairo
+  node is exactly `ph + 1` tall, so a lower split would silently cut the VFO
+  card; waterfall ≥ 48 px. Clamped in pixels first, then stored, so the stored
+  fraction is always the one shown and can never collapse to 0.
+- **Double-click the line** → back to the default 0.5.
+- **Priority:** the divider wins over the zones it overlaps — the dB gutter's
+  bottom rows (drag AND double-click autofit) and a passband edge crossing it.
+- TX display uses the same split (draggable while keyed too).
+- Fixed in passing: `on_motion`'s "nothing here" cursor was NULL, so leaving any
+  hover zone in select mode dropped the crosshair; the base is now `crosshair`
+  when select mode is on.
+
+Verified: build clean (no warnings), the 11 offline gates, and a headless
+broadway run with an isolated config — `pan_frac=0.3` seeded, app started with
+the new code, SIGTERM, config re-read: still 0.3 (exit 0). Then the live pass
+on the G2E the same evening (arrow cursor, drag, reset, restart) — Richard's OK.
+
 ### SDR-14 — Spectrum-centred control surface: the VFO card, then filter/AGC/mode controls on the spectrum
 - **Type:** task · **Severity:** — · **Status:** doing — step 1 (the card) implemented 2026-09-06, live look pending; step 2 not started
 - **Source:** Richard, 2026-09-06, after the SDR-2 window-width note; inspiration = SmartSDR's per-slice "flag" (the always-visible info panel at the slice's tuning line), explicitly *not* to be copied 1:1

@@ -211,6 +211,13 @@ typedef struct {
   int         rdrag_zoomed;                    /* right-drag actually zoomed (vs a click)*/
   GtkWidget  *zoom_scale;    /* footer zoom slider (kept in sync by right-drag)   */
   double      ptr_x, ptr_y;  /* last pointer pos over the area (scroll hit-test)  */
+  /* Spectrum/waterfall divider (SDR-17): the operator drags the separator line
+   * to set the split; stored as a FRACTION of the area height so a window
+   * resize keeps the proportion (what the old fixed 0.5 did). */
+  double      pan_frac;        /* spectrum share of the area height (persisted)   */
+  int         drag_split;      /* the active left-drag is moving the divider      */
+  double      drag_split_ph;   /* spectrum height (px) at drag-begin              */
+  int         split_hover;     /* pointer is over the divider → highlight it      */
   int         show_db_grid, show_db_scale;     /* horizontal grid / dB labels     */
   int         show_freq_grid, show_freq_scale; /* vertical grid / freq labels      */
   int         show_filter_wf; /* extend filter edges + centre onto the waterfall  */
@@ -466,7 +473,13 @@ static void band_apply(App *app) {
  * just one 50 ms status packet — hold it so it's visible at any frame rate. */
 #define ADC_OVL_HOLD_US 700000
 
-#define PANADAPTER_FRACTION 0.5
+/* Spectrum/waterfall split (SDR-17). SPLIT_FRAC_DEFAULT = the old fixed ratio;
+ * the divider drags between SPLIT_MIN_TOP px of spectrum (the VFO card must
+ * stay whole: CARD_TOP + CARD_H + a ruler's worth — see split_ph()) and
+ * SPLIT_MIN_BOTTOM px of waterfall. SPLIT_HIT_PX = grab zone either side. */
+#define SPLIT_FRAC_DEFAULT 0.5
+#define SPLIT_MIN_BOTTOM   48
+#define SPLIT_HIT_PX       5.0
 #define EMA_FACTOR 0.55f   /* network-path trace EMA (fixed) */
 
 /* EMA weight for a time constant `ms` at `fps` frames/s (log-domain, on dBm).
@@ -820,6 +833,44 @@ static void card_rect(App *app, int w, double *x0, double *y0, double *x1, doubl
 static int in_card(const App *app, double x, double y) {
   return app->card_x1 > app->card_x0 &&
          x >= app->card_x0 && x <= app->card_x1 && y >= app->card_y0 && y <= app->card_y1;
+}
+
+/* Spectrum height in px for an area `h` tall: app->pan_frac clamped so the VFO
+ * card never gets cut (the upper cairo node is exactly this tall) and the
+ * waterfall keeps a usable strip. THE one place the split is computed — every
+ * draw path and hit-test goes through here. */
+#define SPLIT_MIN_TOP ((int)(CARD_TOP + CARD_H) + 16)
+static int split_clamp(int h, int ph) {
+  if (ph < SPLIT_MIN_TOP)        { ph = SPLIT_MIN_TOP; }
+  if (ph > h - SPLIT_MIN_BOTTOM) { ph = h - SPLIT_MIN_BOTTOM; }   /* bottom wins on a tiny area */
+  if (ph < 1) { ph = 1; }
+  return ph;
+}
+static int split_ph(const App *app, int h) {
+  double f = app->pan_frac > 0.0 ? app->pan_frac : SPLIT_FRAC_DEFAULT;   /* 0 = never set (network head) */
+  return split_clamp(h, (int)lrint(h * f));
+}
+/* Is y on the divider? Only while the live display is up — the status screens
+ * paint the whole area and have no separator to grab. */
+static int in_split(const App *app, double y) {
+  if (!app->connected || !app->have_frame) { return 0; }
+  int h = gtk_widget_get_height(app->area);
+  if (h < 1) { return 0; }
+  return fabs(y - split_ph(app, h)) <= SPLIT_HIT_PX;
+}
+/* The divider itself: the dark separator over the waterfall's top edge, lit
+ * up while the pointer hovers it or drags it (the cursor arrow is the primary
+ * cue — Richard 2026-09-06 — this just confirms the grab). */
+static void draw_split_line(cairo_t *cr, int w, int ph, const App *app) {
+  int hot = app->drag_split || app->split_hover;
+  cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.55);
+  cairo_rectangle(cr, 0, ph - 1, w, 2);
+  cairo_fill(cr);
+  if (hot) {
+    cairo_set_source_rgba(cr, 0.55, 0.85, 1.0, 0.75);   /* the passband-edge blue */
+    cairo_rectangle(cr, 0, ph - 1, w, 1);
+    cairo_fill(cr);
+  }
 }
 
 static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
@@ -1404,8 +1455,7 @@ static void draw_tx(cairo_t *cr, int w, int h, App *app) {
     return;
   }
   tx_run_status ts; tx_run_get_status(&ts);
-  int ph = (int)(h * PANADAPTER_FRACTION);
-  if (ph < 1) { ph = 1; }
+  int ph = split_ph(app, h);
   /* Fixed, operator-draggable dB window (F6c-3, like RX) — no per-frame auto-range,
    * so the scale no longer jumps. tick_tx one-shot-fits it on the first TX frame. */
   double high = app->tx_pan_high, low = app->tx_pan_low;
@@ -1459,9 +1509,7 @@ static void draw_tx(cairo_t *cr, int w, int h, App *app) {
   /* TX waterfall (bottom): transmitted-spectrum history — drawn by the widget
    * snapshot as a GPU-scaled texture UNDER this cairo layer (see
    * sdrfl_display_snapshot); here only the separator on top of it. */
-  cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.55);
-  cairo_rectangle(cr, 0, ph - 1, w, 2);
-  cairo_fill(cr);
+  draw_split_line(cr, w, ph, app);
 
   /* Big red power/SWR numbers, top-left — the RX frequency readout's TX sibling.
    * No sub-line: power + SWR appearing is itself the "we're transmitting" cue.
@@ -1673,9 +1721,7 @@ static void draw_upper(cairo_t *cr, int w, int ph, App *app) {
   else                 { draw_s_meter(cr, app, w); app->card_x1 = app->card_x0 = 0.0; }
 
   /* Separator over the waterfall's top edge (the GPU texture sits under us). */
-  cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.55);
-  cairo_rectangle(cr, 0, ph - 1, w, 2);
-  cairo_fill(cr);
+  draw_split_line(cr, w, ph, app);
 }
 
 /* True when the waterfall region needs a cairo overlay node at all — must
@@ -1759,8 +1805,7 @@ static void draw_all(cairo_t *cr, int w, int h, App *app) {
   /* While keyed, the whole area is the TX panadapter (no RX trace / waterfall). */
   if (app->tx_display) { draw_tx(cr, w, h, app); return; }
 
-  int ph = (int)(h * PANADAPTER_FRACTION);
-  if (ph < 1) { ph = 1; }
+  int ph = split_ph(app, h);
   draw_upper(cr, w, ph, app);
   draw_wf_overlays(cr, w, h, ph, app);
 }
@@ -1806,8 +1851,7 @@ static void sdrfl_display_snapshot(GtkWidget *widget, GtkSnapshot *snapshot) {
   int w = gtk_widget_get_width(widget), h = gtk_widget_get_height(widget);
   if (!app || w < 1 || h < 1) { return; }
   int live = app->connected && app->have_frame;
-  int ph = (int)(h * PANADAPTER_FRACTION);
-  if (ph < 1) { ph = 1; }
+  int ph = split_ph(app, h);
 
   /* Waterfall first (bottom layer) — the active one (RX, or TX while keyed).
    * The status screens (not connected / calibrating) paint the full area
@@ -2268,6 +2312,7 @@ static void app_to_settings(const App *app, Settings *s) {
   }
   s->pan_high = app->pan_high;
   s->pan_low  = app->pan_low;
+  s->pan_frac = app->pan_frac;
   s->db_grid    = app->show_db_grid;
   s->db_scale   = app->show_db_scale;
   s->freq_grid  = app->show_freq_grid;
@@ -2446,9 +2491,9 @@ static double clampd(double v, double lo, double hi) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
 
-/* Panadapter pixel height (the top PANADAPTER_FRACTION of the drawing area). */
+/* Panadapter pixel height (the spectrum part of the drawing area, split_ph). */
 static double pan_height_px(App *app) {
-  return gtk_widget_get_height(app->area) * PANADAPTER_FRACTION;
+  return split_ph(app, gtk_widget_get_height(app->area));
 }
 
 /* Push the TX dB window onto the TX waterfall so it colours to the same manual
@@ -2580,9 +2625,15 @@ static void agc_widgets_sync(App *app);                                         
 static void on_drag_begin(GtkGestureDrag *g, double x, double y, gpointer data) {
   App *app = (App *)data;
   GdkModifierType mods = gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(g));
-  app->drag_gutter = in_gutter(app, x, y);
+  app->drag_gutter = 0;
   app->drag_edge = 0;
   app->drag_pan = 0;
+  app->drag_dead = 0;
+  /* The divider wins over everything it overlaps (the gutter's bottom rows, a
+   * passband edge crossing it): grabbing the line moves the split (SDR-17). */
+  app->drag_split = in_split(app, y);
+  if (app->drag_split) { app->drag_split_ph = pan_height_px(app); return; }
+  app->drag_gutter = in_gutter(app, x, y);
   app->drag_dead = !app->tx_display && in_card(app, x, y);   /* began on the VFO card */
   if (app->drag_dead) { return; }
   if (app->drag_gutter) {
@@ -2608,6 +2659,19 @@ static void on_drag_begin(GtkGestureDrag *g, double x, double y, gpointer data) 
 static void on_drag_update(GtkGestureDrag *g, double off_x, double off_y, gpointer data) {
   (void)g;
   App *app = (App *)data;
+  if (app->drag_split) {                  /* move the spectrum/waterfall divider */
+    int h = gtk_widget_get_height(app->area);
+    if (h < 1) { return; }
+    /* Relative to the ph at press (not the press y): no jump on grab. Clamp in
+     * pixels FIRST, then store — so the fraction is always the one shown and a
+     * drag past the top can never collapse it to 0 (which split_ph() would
+     * read as "unset" and snap back to the default). */
+    int ph = split_clamp(h, (int)lrint(app->drag_split_ph + off_y));
+    app->pan_frac = (double)ph / h;
+    gtk_widget_queue_draw(app->area);
+    schedule_save(app);
+    return;
+  }
   if (!app->radio_mode) { return; }
   if (app->drag_dead) { return; }
 
@@ -2663,6 +2727,22 @@ static void on_drag_update(GtkGestureDrag *g, double off_x, double off_y, gpoint
   schedule_save(app);
 }
 
+/* Pointer left the area: drop the divider highlight (no motion event follows). */
+static void on_leave(GtkEventControllerMotion *m, gpointer data) {
+  (void)m;
+  App *app = (App *)data;
+  if (app->split_hover && !app->drag_split) { app->split_hover = 0; gtk_widget_queue_draw(app->area); }
+}
+
+static void on_drag_end(GtkGestureDrag *g, double off_x, double off_y, gpointer data) {
+  (void)g; (void)off_x; (void)off_y;
+  App *app = (App *)data;
+  if (!app->drag_split) { return; }
+  app->drag_split = 0;                    /* hover state takes over from here */
+  app->split_hover = in_split(app, app->ptr_y);
+  gtk_widget_queue_draw(app->area);
+}
+
 /* Track the pointer so on_scroll (which carries no coords) can hit-test the
  * gutter — and, in select mode, so the filter cursor follows the mouse. */
 static void on_motion(GtkEventControllerMotion *m, double x, double y, gpointer data) {
@@ -2673,8 +2753,16 @@ static void on_motion(GtkEventControllerMotion *m, double x, double y, gpointer 
   /* Cursor tells what a click/drag would do here: a hand over the VFO card's
    * filter row (it opens the filter dialog — Richard 2026-09-06: "nobody will
    * know otherwise"), a resize arrow over a draggable passband edge. */
-  const char *cur = NULL;
-  if (!app->tx_display && in_card(app, x, y)) {
+  /* Base = what the area shows when nothing is under the pointer: the select-
+   * mode crosshair must survive a hover in and out of a hot zone. */
+  const char *cur = app->select_mode ? "crosshair" : NULL;
+  /* Divider: during the drag the line may sit at a clamp while the pointer
+   * runs on, so keep the arrow up until release, not just while over it. */
+  int hover = app->drag_split || in_split(app, y);
+  if (hover != app->split_hover) { app->split_hover = hover; gtk_widget_queue_draw(app->area); }
+  if (hover) {
+    cur = "ns-resize";
+  } else if (!app->tx_display && in_card(app, x, y)) {
     if (y >= app->card_filt_y0 && y <= app->card_filt_y1 &&
         ((x >= app->card_filt_x0 - 4 && x <= app->card_filt_x1 + 4) ||
          (x >= app->card_agc_x0 - 4  && x <= app->card_agc_x1 + 4))) { cur = "pointer"; }
@@ -2709,6 +2797,16 @@ static void click_tune(App *app, double x) {
 static void on_pressed(GtkGestureClick *g, int n_press, double x, double y, gpointer data) {
   (void)g;
   App *app = (App *)data;
+  if (n_press == 2 && in_split(app, y)) {                    /* divider: back to the default split */
+    app->pan_frac = SPLIT_FRAC_DEFAULT;
+    /* The same press also began a left-drag (controller order is not ours to
+     * rely on), whose base is the OLD split — re-base it, or a pixel of jitter
+     * before release would drag the divider straight back where it was. */
+    app->drag_split_ph = pan_height_px(app);
+    gtk_widget_queue_draw(app->area);
+    schedule_save(app);
+    return;
+  }
   if (!app->radio_mode) { return; }
   if (!app->tx_display && in_card(app, x, y)) {              /* the card is not tunable area */
     if (n_press == 1 && y >= app->card_filt_y0 && y <= app->card_filt_y1) {
@@ -5362,11 +5460,13 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
   GtkGesture *drag = gtk_gesture_drag_new();   /* left button by default */
   g_signal_connect(drag, "drag-begin",  G_CALLBACK(on_drag_begin),  app);
   g_signal_connect(drag, "drag-update", G_CALLBACK(on_drag_update), app);
+  g_signal_connect(drag, "drag-end",    G_CALLBACK(on_drag_end),    app);
   gtk_widget_add_controller(app->area, GTK_EVENT_CONTROLLER(drag));
 
   GtkEventControllerMotion *motion =
       GTK_EVENT_CONTROLLER_MOTION(gtk_event_controller_motion_new());
   g_signal_connect(motion, "motion", G_CALLBACK(on_motion), app);
+  g_signal_connect(motion, "leave",  G_CALLBACK(on_leave),  app);
   gtk_widget_add_controller(app->area, GTK_EVENT_CONTROLLER(motion));
 
   GtkGesture *click = gtk_gesture_click_new();   /* left: dbl-click gutter → auto-fit,
@@ -5447,6 +5547,7 @@ static void start_radio(App *app) {
                   .agc = 3, .agc_gain = 80.0, .filter = -1,
                   .agc_by_group = { -1, -1, -1, -1 },   /* unset → seeded below */
                   .pan_high = PAN_HIGH_DEFAULT, .pan_low = PAN_LOW_DEFAULT,
+                  .pan_frac = SPLIT_FRAC_DEFAULT,
                   .db_grid = 1, .db_scale = 1, .freq_grid = 1, .freq_scale = 1,
                   .filter_wf = 1, .filter_op = 60, .avg_spec = -1, .avg_wf = -1,
                   .avg_smeter = -1,
@@ -5655,6 +5756,10 @@ static void start_radio(App *app) {
     app->band_freq[app->cur_band] = app->freq;
   }
   app->ptr_x = 1e9;   /* until the pointer moves, wheel = tune (not gutter zoom) */
+  /* Split: anything but a proper fraction in (0, 1) falls back to the default;
+   * the pixel clamps in split_ph() take care of the extremes (a short window
+   * legitimately stores ~0.9 at the bottom stop, so no tighter range here). */
+  app->pan_frac = (st.pan_frac > 0.0 && st.pan_frac < 1.0) ? st.pan_frac : SPLIT_FRAC_DEFAULT;
   app->show_db_grid    = st.db_grid    ? 1 : 0;
   app->show_db_scale   = st.db_scale   ? 1 : 0;
   app->show_freq_grid  = st.freq_grid  ? 1 : 0;

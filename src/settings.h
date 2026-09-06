@@ -30,6 +30,7 @@ typedef struct {
   double    zoom;      /* panadapter zoom factor (1 = full span)     */
   double    pan_high;  /* dB scale top (dBm)                         */
   double    pan_low;   /* dB scale bottom (dBm)                      */
+  double    pan_frac;  /* spectrum share of the display height (0-1) */
   int       db_grid;   /* show horizontal (dB) grid lines            */
   int       db_scale;  /* show dB scale labels (left)                */
   int       freq_grid; /* show vertical (frequency) grid lines       */

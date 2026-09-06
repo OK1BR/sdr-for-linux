@@ -313,6 +313,19 @@ through ~12 restarts; ⛔ always ≥ 5 s between stop and relaunch. README
 screenshot is stale. Next: mode editor / footer width (SDR-14), SDR-15
 link-local bind, SDR-16 trough warning, then the EQ milestone.
 
+**SDR-17 — draggable spectrum/waterfall divider, DONE + LIVE 2026-09-06
+(same evening):** the split was `PANADAPTER_FRACTION 0.5` computed in four
+places; now ONE helper `split_ph()` from the persisted `[display] pan_frac`
+(a fraction, so resizes keep the proportion). Grab zone ±5 px on the
+separator, cursor `ns-resize` + blue highlight (Richard: the arrow IS the
+affordance), left-drag relative to the split at press, clamps 230 px top
+(`CARD_TOP + CARD_H + 16` — the upper cairo node is exactly `ph + 1` tall,
+a lower split would cut the VFO card) / 48 px bottom, double-click on the
+line resets to 0.5 (⛔ the same press also begins a drag — the reset
+re-bases `drag_split_ph` or jitter drags it back). The divider wins over
+the gutter rows and passband edges it overlaps. Headless persistence
+round-trip proven under `dbus-run-session` + isolated XDG. BACKLOG SDR-17.
+
 **★ RELEASED 2026-08-25: v0.5.0 — the G2-tested release.** Same-day
 turnaround on W1IZZ's round 2 (gh#3, evaluated in RADIOS-SCOPE §7.2): his
 run confirmed SDR-1 (raw 544 → 13.9 V; no PSU reference reading), SDR-8
