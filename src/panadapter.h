@@ -78,5 +78,9 @@ void panadapter_format_hz(long long hz, char *buf, size_t n);
 /* Width (px) of the left dB-scale gutter — the grab zone for vertical
  * pan/zoom. The GUI hit-tests against this so the affordance matches the draw. */
 #define PANADAPTER_GUTTER_W 46
+/* The RX VFO line colour (RGB for cairo_set_source_rgba(cr, PANADAPTER_VFO_RGB, a)).
+ * Colour language (Richard 2026-09-06): RX = green, TX = red. Shared with
+ * gui.c (waterfall carry-down, select-mode aim line, filter-dialog carrier). */
+#define PANADAPTER_VFO_RGB 0.42, 0.96, 0.56
 
 #endif /* PIHPSDR_CLIENT_PANADAPTER_H */

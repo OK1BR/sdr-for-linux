@@ -70,6 +70,21 @@ typedef struct {
    * the GUI initializer is positional. */
   void      (*rtty_send)(const char *text);
   void      (*rtty_stop)(void);
+  /* VFO B + split (SDR-12): `vfo:0,1,f` (and piHPSDR's `vfo:1,0,f` spelling)
+   * addresses VFO B; `split_enable:0,true` = transmit on B while receiving on
+   * A (ExpertSDR semantics; JTDX/tciadapter send exactly this pair). Any may
+   * be NULL → the server answers as a single-VFO radio (B mirrors A, split
+   * echoed false). */
+  long long (*get_freq_b)(void);
+  void      (*set_freq_b)(long long hz);
+  int       (*get_split)(void);
+  void      (*set_split)(int on);
+  /* CTUN (SDR-18): the DDC centre — what the IQ stream and `dds:` carry —
+   * can differ from the RX dial (`vfo:0,0` / `if:0,0` = dial − centre).
+   * NULL → centre == dial (Model A). set_centre keeps the IF offset (the
+   * plain reading of ExpertSDR's VFO = DDS + IF: the RX rides along). */
+  long long (*get_centre)(void);
+  void      (*set_centre)(long long hz);
 } TciOps;
 
 /* Start/stop the server. start returns 0 on success (port bound). *ops is

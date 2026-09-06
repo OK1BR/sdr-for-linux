@@ -52,6 +52,10 @@ void p1_rx_stop(void);
  * 0x02 frame keeps the TX NCO on the same value, which is what the HL2
  * gateware's automatic N2ADR filter-board LPF selection tracks). */
 void p1_set_frequency(long long freq_hz);
+/* TX (DUC) frequency for the 0x02 NCO frame + the PS feedback DDCs (chan ≥ 2).
+ * 0 = follow the RX frequency (no split). piHPSDR: channel_freq(-1) =
+ * vfo_get_tx_freq() = VFO B when split (old_protocol.c:1029-1040). */
+void p1_set_tx_frequency(long long tx_freq_hz);
 
 /*
  * HL2 LNA gain in dB, −12..+48 (AD9866 extended mode: C&C 0x14-C4 =
@@ -100,13 +104,14 @@ typedef struct {
  * by sdrfl-p1txprobe). `step` advances the round-robin; returns next step.
  * `nrx` ∈ {1, 4}: receiver count on the wire — general C4 (nrx−1)<<3 bits
  * (o_p.c:2036) and one NCO frame per RX in the round-robin (C0 = 0x04+2·chan,
- * o_p.c:2120-2127; every chan carries `freq_hz` — chan ≥ 2 wants the DUC
- * frequency, and our dial == DUC). Cycle length = nrx + 10. */
+ * o_p.c:2120-2127; chan 0/1 carry `freq_hz`, chan ≥ 2 = the PS feedback DDCs
+ * carry `tx_freq_hz` like the 0x02 TX NCO frame — the DUC frequency, = VFO B
+ * under split, o_p.c:1015-1040; 0 = no split). Cycle length = nrx + 10. */
 void p1_build_cc_general(unsigned char c[5], int device, int rate_bits,
                          long long freq_hz, const p1_tx_state *tx, int nrx);
 int p1_build_cc_round_robin(unsigned char c[5], int device, long long freq_hz,
-                            int lna_gain_db, int step, const p1_tx_state *tx,
-                            const p1_ps_state *ps, int nrx);
+                            long long tx_freq_hz, int lna_gain_db, int step,
+                            const p1_tx_state *tx, const p1_ps_state *ps, int nrx);
 
 /* Parse the sample payload of one 512-byte EP6 frame (pure, offline-testable
  * — the status/telemetry side stays in the live parser). Writes chan-0 IQ to

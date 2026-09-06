@@ -22,6 +22,9 @@ typedef struct {
   long long freq;      /* tuned DDC centre (Hz)                      */
   int       rate;      /* IQ sample rate (Hz) = panadapter span      */
   int       mode;      /* demod mode (DEMOD_*)                       */
+  int       split;     /* transmit on VFO B (SDR-12)                 */
+  int       ctun;      /* CTUN: dial free inside a fixed DDC span     */
+  long long freq_b;    /* VFO B = TX frequency under split (Hz)      */
   double    volume;    /* AF gain (dB)                               */
   double    gain;      /* digital master gain                        */
   int       fps;       /* panadapter frame rate                      */

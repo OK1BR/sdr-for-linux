@@ -192,10 +192,11 @@ static void draw_center_line(cairo_t *cr, int w, int h, double vfo_frac) {
   double x = floor(vfo_frac * w) + 0.5;   /* pixel-centre snap: ONE column, never
                                              a 2-px antialiased smear when the VFO
                                              lands between columns (panned / odd w) */
-  /* RED = the exact tuned frequency (Richard 2026-09-06; the earlier amber was
-   * indistinct and, in select mode, confusable with the amber filter ghost).
-   * Hairline: 0.75 px at 55 % reads as a thin, calm line on a 1× display. */
-  cairo_set_source_rgba(cr, 1.0, 0.25, 0.20, 0.55);
+  /* GREEN = the exact RX tuned frequency (Richard 2026-09-06 evening: RX is
+   * green, TX is red — the earlier red clashed with the split TX filter; the
+   * even earlier amber was confusable with the select ghost). Hairline:
+   * 0.75 px at 60 % reads as a thin, calm line on a 1× display. */
+  cairo_set_source_rgba(cr, PANADAPTER_VFO_RGB, 0.60);
   cairo_set_line_width(cr, 0.75);
   cairo_move_to(cr, x, 0);
   cairo_line_to(cr, x, h);

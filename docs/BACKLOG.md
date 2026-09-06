@@ -40,6 +40,54 @@ that leaves the machine wrong; `medium` = gets in the operator's way;
 
 ## Open — tasks
 
+### SDR-18 — CTUN: the spectrum pans, the RX dial stays — the RX passband becomes a handle
+- **Type:** task · **Severity:** — · **Status:** done — live-verified 2026-09-06 by Richard on the G2E ("dobrý, to funguje": the shifter sign discriminator passed)
+- **Source:** Richard, 2026-09-06: "ještě by se mi hodila funkce C-TUN… myší budu dál posouvat spektrum, ale naladěná RX zůstane na místě a budu s ní hýbat stejně jako s TX při splitu"
+- **Detail:** `src/gui.c` — `centre_hz()` / `centre_x()` / `vfo_x()`, `engine_set_frequency()` / `engine_set_centre()` / `engine_push_rx()` / `ctun_room()`, `in_rx_filter()`, `ctun_set()`; `demod_set_ctun_offset()` in `src/engine/demod.[ch]`; TCI `dds` / `if` / `vfo` in `tci_server.c`
+
+*Model:* `app->freq` stays the RX dial everywhere; `app->centre` is the DDC
+centre (== dial unless CTUN). The dial's offset from the centre is applied
+in the WDSP RXA shifter exactly like piHPSDR's `rx_set_offset`
+(receiver.c:1101: `offset = ctun_frequency − frequency`, added to the CW/RTTY
+pitch term in `apply_passband()`; the passband itself stays dial-relative), so
+the TCI IQ stream is still the un-shifted DDC. `engine_set_frequency()` is the
+one dispatch for every tuning path: Model A → the centre follows the dial;
+CTUN → the centre stays while the dial fits, a dial pushed past the span edge
+drags the centre along by the overshoot (decision: push, not piHPSDR's
+refusal — a wheel that keeps turning should keep tuning), a jump beyond the
+span (band button, far spot) recentres. Room = DDC span (`rate`, not the zoomed
+window) minus 2 % and the passband, so a shift+drag pan can never make the
+next wheel notch jump the centre.
+
+*Interaction:* plain drag pans the DDC centre (clamped so the dial's passband
+stays in the span), the RX passband BODY is the dial's handle (`grab` cursor,
+lit while hovered/dragged; edges still drag the Var edges — edges win), wheel
+tunes the dial as before, select-click / spot click tune without the Model-A
+`pan = 0` recentre, double-click on the RX body recentres the span on the
+dial. **CTUN** toggle after BIN in the strip (RX-side); off → the DDC hops
+back onto the dial (Model A). Persisted `[rx] ctun`; the centre starts on the
+dial. VFO card sub-line shows `CTUN`; the card reads the dial through the
+frame's `vfo_a_ctun_freq`.
+
+*TCI:* the three now diverge — `dds:0` = DDC centre (what skimmer-for-linux
+uses for its waterfall, verified in its tci_test), `if:0,0` = dial − centre,
+`vfo:0,0` = dial (what log-for-linux reads); handshake + reporter; **IQ centre
+stamps carry the centre**, not the dial. `dds` set = move the centre, the dial
+keeps its IF offset (the plain reading of ExpertSDR's VFO = DDS + IF; stated,
+not spec-verified); `if` set = dial at centre + off. New ops `get_centre` /
+`set_centre` appended last, NULL-safe; `sdrfl-tci-test` +2.
+
+*TX:* nothing to change — `tx_vfo_freq()` reads the dial, so MOX goes out on
+the dial (or B under split); unkeyed, the P2 HP builder parks the DUC and
+picks the LPF from the DDC centre and the RX BPF/HPF from the centre too,
+which is piHPSDR parity (np.c:1169-1211 uses `vfo.frequency`). Two setters
+(DDC retune, shifter) are not atomic — a frame of wrong pitch during a fast
+pan is possible; piHPSDR has the same.
+
+*Live:* the shifter sign cannot be checked offline; the discriminating test
+(CTUN on, listen to a station, drag the spectrum — the audio must not change)
+passed on the G2E the same night, Richard's verdict "dobrý, to funguje".
+
 ### SDR-17 — Draggable spectrum/waterfall divider
 - **Type:** task · **Severity:** — · **Status:** done — live-verified 2026-09-06 by Richard on the G2E ("dobrý")
 - **Source:** Richard, 2026-09-06 — "potřebujeme mít možnost volně hejbat s poměrem oken mezi spektrem a vodopádem, aby šlo myší chytnout to rozmezí a posunout ho"; the affordance is the cursor: "uživatel to pozná tak, že se mu tam nabídne šipečka"
@@ -623,7 +671,7 @@ and NR4 on the same recording, which is the same corpus discipline
 `CONTRIBUTING.md` already asks of outside patches.
 
 ### SDR-12 — VFO B + split with a TCI backend (`vfo:0,1,…`, `split_enable`), for pileup click-to-TX
-- **Type:** idea · **Severity:** — · **Status:** deferred (not designed; opened so the skimmer's SKM-4 has somewhere to point)
+- **Type:** idea · **Severity:** — · **Status:** done — live-verified 2026-09-06 by Richard on the G2E (interaction + colours; see the implementation block at the end of this item)
 - **Source:** skimmer-for-linux `SKM-4` — Roy Andre Løntjern, LB0EI, 2026-08-29:
   in a split pileup he clicks where the DX was just listening and moves his
   **TX** frequency there while RX stays on the DX. Filed here 2026-09-05 when
@@ -651,6 +699,48 @@ while RX on A, or XIT as the minimal form), then the TCI backend for
 `vfo:0,1,f` and `split_enable`. Until it exists the skimmer's click can only
 tune the one VFO, which is what its station rows already do. Nothing is
 promised; the item exists so the two backlogs point at each other.
+
+**Implemented 2026-09-06** (Richard: "chtěl bych funkci split… odlehčená
+frekvenční karta a TX filtr… jen ještě nevím, jak budeme mezi kartami
+přepínat"; decision after the reference research: **no switching at all**):
+
+- *Model:* VFO A = RX (and TX without split), VFO B = the TX frequency under
+  split. `tx_vfo_freq()` is what the TX runtime, the in-band gate, the P2
+  DUC/LPF and the P1 TX NCO receive (TX-SAFETY has the wire audit).
+- *No active-VFO mode to forget* (against Thetis' ClickTuneMode / SmartSDR's
+  active slice): everything acts on A as before; B moves only by touching the
+  **TX filter** drawn at B (drag its body, wheel over it — `grab` cursor) or
+  with **Ctrl** held (Ctrl+wheel steps B, Ctrl+click = "TX here" = the LB0EI
+  pileup click, turning split on if needed, Ctrl+drag drags B).
+- *Display:* RED TX filter outline in the spectrum and, with the filter
+  overlay, the waterfall (colour language settled the same evening: RX =
+  green — passband, VFO line, VFO card, dialog graphs — TX = red; the first
+  cut had Thetis' yellow and the red VFO line, "trochu pomíchané");
+  CW = a carrier line, voice = the TX audio filter with the sideband's sign,
+  data/RTTY = the RX passband. A **lightweight TX card** (250 × 58) at the
+  foot of the spectrum beside the TX carrier, on B's side away from A (the
+  VFO card owns the top; they only meet with the divider at its 230 px
+  minimum): `TX`
+  + frequency, `SPLIT +1.00 kHz`, buttons **A=B** and **OFF**. The VFO card's
+  indicator row gained `SPLIT` (yellow when on). Key `s` toggles split;
+  switching on seeds B = A + 1 kHz (CW) / 5 kHz (voice) / 0 (data) unless B
+  is already valid on this band.
+- *In-band by construction:* `split_set_b()` clamps B into A's band (a drag
+  stops at the edge, a TCI `vfo:0,1` beyond it is echoed back clamped) — so
+  the per-band PA calibration keyed on A's band is always B's too;
+  `band_apply()` drops split (B := A, toast) on a band change — ExpertSDR's
+  "automatic SPLIT disable", hard-wired; startup refuses an off-band B.
+  Persisted as `[rx] split` + `freq_b`.
+- *TCI:* `vfo:0,1,f` (and piHPSDR's `vfo:1,0,f`) = B, `split_enable:0,x`
+  real backend (no longer the echo table), both in the handshake and the
+  change reporter, `tx_frequency:` = the TX VFO. JTDX and tciadapter send
+  exactly this pair (research 2026-09-06: JTDX `TCITransceiver.cpp:1184/1469`,
+  tciadapter `adapter.go:228-255`). `sdrfl-tci-test` +6 checks.
+- *Gates:* `sdrfl-p2dev-test` pins DUC/LPF from B and BPF from A (in-band and
+  cross-band), `sdrfl-p1txprobe` pins the 0x02 + feedback-DDC frames.
+- *Live:* Richard's pass on the G2E the same evening (interaction, SPLIT
+  strip button, colours) — "dobrý". The keyed path on B follows the same
+  `tx_freq` the wire tests pin; first on-air use will be the proof of that.
 
 ## Deferred
 

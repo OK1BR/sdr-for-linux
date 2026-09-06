@@ -326,6 +326,50 @@ re-bases `drag_split_ph` or jitter drags it back). The divider wins over
 the gutter rows and passband edges it overlaps. Headless persistence
 round-trip proven under `dbus-run-session` + isolated XDG. BACKLOG SDR-17.
 
+**SPLIT / VFO B — implemented + LIVE 2026-09-06 (same evening, BACKLOG
+SDR-12; Richard's verdict "dobrý"):** TX on VFO B while RX stays on A. ⛔ Design decision
+with Richard: **no active-VFO switching** — everything acts on A as before;
+B moves only by grabbing the yellow TX filter drawn at B (drag / wheel,
+`grab` cursor) or with Ctrl (Ctrl+wheel, Ctrl+click = "TX here",
+Ctrl+drag). Lightweight TX card at the foot of the spectrum (A=B / OFF),
+`s` toggles, VFO card shows `SPLIT`. ⛔ TX path: `tx_vfo_freq()` feeds
+`tx_run_set_freq()` → gate in-band + P2 `state.tx_freq` (DUC + TX-LPF from
+B, BPF from A) and the new `p1_set_tx_frequency()` (0x02 NCO + PS feedback
+DDCs), audited vs piHPSDR (np.c:668/743, o_p.c:1015-1040) and pinned in
+`sdrfl-p2dev-test` / `sdrfl-p1txprobe`; split is in-band by construction
+(`split_set_b()` clamps B into A's band so the per-band pa_cal stays right,
+`band_apply()` drops it on a band change, startup refuses an off-band B).
+TCI: `vfo:0,1,f` / `vfo:1,0,f` = B, `split_enable:0,x` real backend (JTDX +
+tciadapter pair), `tx_frequency:` = TX VFO; `sdrfl-tci-test` +6. Reference
+research (Thetis draws the TX filter yellow and tunes B via a right-click
+ClickTuneMode; SmartSDR = TX button on the flag + active slice; TCI spec
+never says "split ⇒ channel 1", the ExpertSDR manual + ftl/tci do) is in
+BACKLOG SDR-12. **Colour language (same evening, Richard: "RX do zelena, TX
+do červena"):** RX state is GREEN — passband fill/edges, the VFO line
+(`PANADAPTER_VFO_RGB`, no longer red), VFO card border/accents, filter +
+AGC dialog graphs; TX is RED — TX filter, TX card, SPLIT indicator; the
+select-mode cursor is ALL amber incl. its aim line (Richard: no green in
+it), the divider highlight is neutral grey
+(`COL_RX_*` / `COL_TX_*` / `COL_NEUTRAL` in gui.c — use them, no ad-hoc
+RGB for path elements). SPLIT strip button sits between 2T and MON.
+
+**CTUN — implemented + LIVE 2026-09-06 (late evening, BACKLOG SDR-18; the
+shifter-sign discriminator passed: "dobrý, to funguje"):** the spectrum (DDC centre, `app->centre`) pans under the mouse
+while the RX dial (`app->freq`, unchanged meaning everywhere) stays put;
+the RX passband body is the dial's handle (grab/drag, wheel as before,
+double-click = recentre), exactly the split TX-filter idiom. Offset lives
+in the WDSP RXA shifter like piHPSDR `rx_set_offset` (receiver.c:1101,
+sign verified: `ctun − frequency`, added to the CW pitch term) →
+`demod_set_ctun_offset()`; the TCI IQ stream stays the raw DDC. ⛔ One
+dispatch: `engine_set_frequency()` decides centre vs offset (push the
+centre by the overshoot at the span edge, recentre on a jump beyond the
+span; room = DDC span, never the zoomed window); `engine_set_centre()` for
+the pan; `centre_hz()` for the three ruler/band/spot sites. TCI: `dds` =
+centre, `if:0,0` = dial − centre, `vfo:0,0` = dial, IQ stamps = centre
+(skimmer reads `dds`, log reads `vfo` — both checked in their tests).
+CTUN button after BIN, `[rx] ctun` persisted. ⛔ Live discriminator for
+the shifter sign: CTUN on, drag the spectrum → the audio must not change.
+
 **★ RELEASED 2026-08-25: v0.5.0 — the G2-tested release.** Same-day
 turnaround on W1IZZ's round 2 (gh#3, evaluated in RADIOS-SCOPE §7.2): his
 run confirmed SDR-1 (raw 544 → 13.9 V; no PSU reference reading), SDR-8

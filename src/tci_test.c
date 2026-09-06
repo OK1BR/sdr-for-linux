@@ -39,11 +39,13 @@ static struct {
   long long spot_hz;
   unsigned  spot_argb;
   int       spot_deleted, spot_cleared;
+  long long freq_b; int split;   /* VFO B + split (SDR-12) — LAST: positional init */
+  long long centre;              /* DDC centre (CTUN, SDR-18) */
 } S = { 14100000, "usb", 150, 2850, 25, 10, -12, 0, 0, 0, 20, "", 0, "", 0,
-        0, 0, "", 0, 0, 0, 0 };
+        0, 0, "", 0, 0, 0, 0, 0, 0, 14100000 };
 
 static long long s_get_freq(void) { return S.freq; }
-static void s_set_freq(long long f) { S.freq = f; }
+static void s_set_freq(long long f) { S.freq = f; S.centre = f;   /* Model A: centre follows */ }
 static const char *s_get_mode(void) { return S.mode; }
 static int s_set_mode(const char *m) { g_strlcpy(S.mode, m, sizeof(S.mode)); return 0; }
 static void s_get_filter(int *lo, int *hi) { *lo = S.flo; *hi = S.fhi; }
@@ -83,6 +85,14 @@ static void s_spot_add(const char *call, const char *mode, long long hz,
 }
 static void s_spot_del(const char *call) { (void)call; S.spot_deleted = 1; }
 static void s_spot_clear(void) { S.spot_cleared = 1; }
+static long long s_get_freq_b(void) { return S.freq_b; }
+static void s_set_freq_b(long long f) { S.freq_b = f; }
+static int s_get_split(void) { return S.split; }
+static void s_set_split(int on) { S.split = on; }
+/* Model-A stub: the centre follows the dial (as the GUI keeps it without
+ * CTUN); dds moves both. The CTUN arithmetic itself lives in the GUI. */
+static long long s_get_centre(void) { return S.centre; }
+static void s_set_centre(long long f) { S.centre = f; S.freq = f; }
 
 static const TciOps STUB_OPS = {
   s_get_freq, s_set_freq, s_get_mode, s_set_mode, s_get_filter, s_set_filter,
@@ -92,7 +102,9 @@ static const TciOps STUB_OPS = {
   s_get_smeter, s_get_txm, s_set_tx_src, s_txa_push,
   NULL,                                    /* iq_rate_changed: no persistence */
   s_spot_add, s_spot_del, s_spot_clear,
-  s_rtty_send, s_rtty_stop,                /* RTTY extension (appended last)  */
+  s_rtty_send, s_rtty_stop,                /* RTTY extension                  */
+  s_get_freq_b, s_set_freq_b, s_get_split, s_set_split,   /* VFO B + split (SDR-12) */
+  s_get_centre, s_set_centre,                             /* CTUN centre (SDR-18)   */
 };
 
 /* ---- LWS test client -------------------------------------------------------- */
@@ -211,6 +223,14 @@ static void check(const char *what, int ok) {
 
 static int cond_ready(void)   { return rx_contains("ready;"); }
 static int cond_freq(void)    { return S.freq == 7020000; }
+static int cond_freq_b(void)  { return S.freq_b == 7025000 && S.freq == 7020000; }
+static int cond_split_on(void)  { return S.split == 1; }
+static int cond_split_off(void) { return S.split == 0; }
+static int cond_bc_b(void)    { return rx_contains("vfo:0,1,7025000;"); }
+static int cond_bc_split(void) { return rx_contains("split_enable:0,true;"); }
+static int cond_bc_b_alias(void) { return rx_contains("vfo:0,1,7030000;") && S.freq_b == 7030000; }
+static int cond_if_set(void)   { return S.freq == 7021000 && rx_contains("vfo:0,0,7021000;"); }
+static int cond_dds_set(void)  { return S.centre == 7040000 && S.freq == 7040000 && rx_contains("dds:0,7040000;"); }
 static int cond_mode(void)    { return strcmp(S.mode, "cw") == 0; }
 static int cond_drive(void)   { return (int)(S.drive + 0.5) == 42; }
 static int cond_wpm(void)     { return S.wpm == 31; }
@@ -302,6 +322,24 @@ int main(void) {
 
   client_send("cw_macros_stop;");
   check("cw_macros_stop aborts", wait_for(cond_stopped, 2000));
+
+  /* VFO B + split (SDR-12): the JTDX / tciadapter pair. */
+  client_send("vfo:0,1,7025000;");
+  check("vfo:0,1 sets VFO B and leaves A alone", wait_for(cond_freq_b, 2000));
+  check("server broadcasts vfo:0,1 back", wait_for(cond_bc_b, 2000));
+  client_send("vfo:1,0,7030000;");
+  check("piHPSDR spelling vfo:1,0 also addresses B", wait_for(cond_bc_b_alias, 2000));
+  client_send("split_enable:0,true;");
+  check("split_enable:0,true lands in the radio", wait_for(cond_split_on, 2000));
+  check("server broadcasts split_enable true", wait_for(cond_bc_split, 2000));
+  client_send("split_enable:0,false;");
+  check("split_enable:0,false lands", wait_for(cond_split_off, 2000));
+
+  /* CTUN (SDR-18): if = dial − centre; dds moves the centre. */
+  client_send("if:0,0,1000;");
+  check("if:0,0,1000 puts the dial at centre + 1 kHz (7.021) and echoes vfo", wait_for(cond_if_set, 2000));
+  client_send("dds:0,7040000;");
+  check("dds:0 goes through set_centre (centre + dial, Model-A stub) and echoes dds", wait_for(cond_dds_set, 2000));
 
   check("handshake advertises rtty appended LAST",
         rx_contains("modulations_list:am,lsb,usb,cw,cwl,cwu,digu,digl,rtty;"));

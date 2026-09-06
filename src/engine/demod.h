@@ -114,6 +114,11 @@ void demod_set_passband(double flo, double fhi);
 /* CW sidetone pitch = the CW BFO offset, Hz (live; thread-safe). */
 void demod_set_cw_pitch(int hz);
 
+/* CTUN: the RX dial's offset from the DDC centre, Hz (live; thread-safe).
+ * Applied in the RXA shifter like piHPSDR's rx_set_offset, so the TCI IQ
+ * stream stays the un-shifted DDC; 0 = Model A (dial == centre). */
+void demod_set_ctun_offset(double hz);
+
 /* RTTY audio pitch = the FSK pair centre in audio, Hz (live; thread-safe).
  * The dial reads the pair CENTRE (what the skimmer spots); the LSB-side
  * mapping puts mark/space at pitch∓85 — default 2210 = the classic

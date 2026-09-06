@@ -61,6 +61,7 @@ static double   d_dbg_pk;          /* raw WDSP-out peak since last dump      */
 static int      d_mode = DEMOD_USB;   /* current demod mode (app id, may be RTTY) */
 static double   d_flo, d_fhi;         /* GUI-space passband (around the dial) */
 static int      d_cw_pitch = 600;     /* CW sidetone pitch (BFO offset), Hz   */
+static double   d_ctun_off = 0.0;     /* CTUN: RX dial − DDC centre, Hz (0 = Model A) */
 static int      d_rtty_pitch = 800;   /* RTTY audio pair centre, Hz (715/885 —
                                          operator-comfort default, Richard
                                          2026-08-15; GUI pushes the setting) */
@@ -78,16 +79,21 @@ static int wdsp_mode_of(int mode) { return mode == DEMOD_RTTY ? DEMOD_DIGL : mod
  * GUI keeps its passbands symmetric around the dial; the translation lives
  * here only. Caller holds d_lock with d_ready. */
 static void apply_passband(void) {
-  double off = 0.0, lo = d_flo, hi = d_fhi;
+  /* CTUN (piHPSDR receiver.c:1101 + rx_set_offset): the RX sits at
+   * ctun_off = dial − DDC centre inside the DDC stream; the shifter brings it
+   * to 0 FIRST, then the CW/RTTY pitch term applies on top — the two terms
+   * simply add in WDSP's SetRXAShiftFreq. The passband stays dial-relative
+   * (only the pitch trick moves lo/hi, CTUN never does). */
+  double off = d_ctun_off, lo = d_flo, hi = d_fhi;
   if (d_mode == DEMOD_CWU) {
-    off = -(double)d_cw_pitch; lo += d_cw_pitch; hi += d_cw_pitch;
+    off -= (double)d_cw_pitch; lo += d_cw_pitch; hi += d_cw_pitch;
   } else if (d_mode == DEMOD_CWL) {
-    off =  (double)d_cw_pitch; lo -= d_cw_pitch; hi -= d_cw_pitch;
+    off += (double)d_cw_pitch; lo -= d_cw_pitch; hi -= d_cw_pitch;
   } else if (d_mode == DEMOD_RTTY) {
     /* The CWL branch with the RTTY pitch: dial = FSK pair centre (what the
      * skimmer spots — a clicked spot lands to the Hz), heard at the classic
      * 2125/2295 audio pair via the LSB-side (DIGL) mapping. */
-    off =  (double)d_rtty_pitch; lo -= d_rtty_pitch; hi -= d_rtty_pitch;
+    off += (double)d_rtty_pitch; lo -= d_rtty_pitch; hi -= d_rtty_pitch;
   }
   SetRXAShiftFreq(d_id, off);
   RXANBPSetShiftFrequency(d_id, off);
@@ -427,6 +433,15 @@ void demod_set_mode(int mode, double flo, double fhi) {
 void demod_set_cw_pitch(int hz) {
   g_mutex_lock(&d_lock);
   d_cw_pitch = hz < 200 ? 200 : (hz > 1200 ? 1200 : hz);
+  if (d_ready) { apply_passband(); }
+  g_mutex_unlock(&d_lock);
+}
+
+/* CTUN offset = RX dial − DDC centre, Hz (live; re-shifts a running RX).
+ * 0 restores Model A (dial == centre). */
+void demod_set_ctun_offset(double hz) {
+  g_mutex_lock(&d_lock);
+  d_ctun_off = hz;
   if (d_ready) { apply_passband(); }
   g_mutex_unlock(&d_lock);
 }

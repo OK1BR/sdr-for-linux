@@ -42,6 +42,12 @@ int settings_load(Settings *s) {
       s->rate = g_key_file_get_integer(kf, GROUP_RADIO, "rate", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "mode", NULL))
       s->mode = g_key_file_get_integer(kf, GROUP_RX, "mode", NULL);
+    if (g_key_file_has_key(kf, GROUP_RX, "split", NULL))
+      s->split = g_key_file_get_integer(kf, GROUP_RX, "split", NULL);
+    if (g_key_file_has_key(kf, GROUP_RX, "ctun", NULL))
+      s->ctun = g_key_file_get_integer(kf, GROUP_RX, "ctun", NULL);
+    if (g_key_file_has_key(kf, GROUP_RX, "freq_b", NULL))
+      s->freq_b = g_key_file_get_int64(kf, GROUP_RX, "freq_b", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "volume", NULL))
       s->volume = g_key_file_get_double(kf, GROUP_RX, "volume", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "gain", NULL))
@@ -281,6 +287,9 @@ int settings_save(const Settings *s) {
   g_key_file_set_int64  (kf, GROUP_RADIO, "freq",   s->freq);
   g_key_file_set_integer(kf, GROUP_RADIO, "rate",   s->rate);
   g_key_file_set_integer(kf, GROUP_RX,    "mode",   s->mode);
+  g_key_file_set_integer(kf, GROUP_RX,    "split",  s->split);
+  g_key_file_set_integer(kf, GROUP_RX,    "ctun",   s->ctun);
+  g_key_file_set_int64  (kf, GROUP_RX,    "freq_b", s->freq_b);
   g_key_file_set_double (kf, GROUP_RX,    "volume",  s->volume);
   g_key_file_set_double (kf, GROUP_RX,    "gain",    s->gain);
   g_key_file_set_integer(kf, GROUP_RX,    "latency", s->latency);

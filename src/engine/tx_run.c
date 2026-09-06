@@ -1136,6 +1136,10 @@ void tx_run_set_ext_notify(void (*cb)(int nsamples)) {
 
 void tx_run_set_freq(long long tx_freq_hz) {
   g_mutex_lock(&s_freq_lock); s_freq = tx_freq_hz; g_mutex_unlock(&s_freq_lock);
+  /* P2: tx_gate copies it into state.tx_freq → HP[329-332] DUC + TX-LPF pick.
+   * P1 has no per-keying TX state carrying a frequency — its 0x02 NCO frame
+   * follows this setter instead (VFO B under split, else the dial). */
+  if (s_p1) { p1_set_tx_frequency(tx_freq_hz); }
 }
 
 void tx_run_set_mic_gain(double db) { tx_dsp_set_mic_gain(db); }   /* tx_dsp locks internally */

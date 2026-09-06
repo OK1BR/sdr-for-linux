@@ -72,7 +72,7 @@ int main(void) {
   for (int i = 0; i < 11; i++) {
     char what[64];
     snprintf(what, sizeof what, "round-robin OFF step %d (C0=0x%02X)", i, off_rr[i][0]);
-    step = p1_build_cc_round_robin(c, DEV, FREQ, GAIN, step, NULL, NULL, 1);
+    step = p1_build_cc_round_robin(c, DEV, FREQ, FREQ, GAIN, step, NULL, NULL, 1);
     expect(what, c, off_rr[i], 5);
     check("  MOX bit clear", (c[0] & 0x01) == 0);
   }
@@ -86,7 +86,7 @@ int main(void) {
 
   step = 0;
   for (int i = 0; i < 11; i++) {
-    step = p1_build_cc_round_robin(c, DEV, FREQ, GAIN, step, &hot, NULL, 1);
+    step = p1_build_cc_round_robin(c, DEV, FREQ, FREQ, GAIN, step, &hot, NULL, 1);
     char what[48];
     snprintf(what, sizeof what, "HOT step %d MOX bit set", i);
     check(what, (c[0] & 0x01) == 1);
@@ -98,13 +98,13 @@ int main(void) {
 
   p1_tx_state oob = hot;                       /* keyed but out of band */
   oob.in_band = 0;
-  step = 0; step = p1_build_cc_round_robin(c, DEV, FREQ, GAIN, 2, &oob, NULL, 1);
+  step = 0; step = p1_build_cc_round_robin(c, DEV, FREQ, FREQ, GAIN, 2, &oob, NULL, 1);
   expect("HOT out-of-band 0x12: drive FORCED 0", c,
          (const unsigned char[]){0x13, 0x00, 0x08, 0x00, 0x00}, 5);
 
   p1_tx_state dry = hot;                       /* keyed, PA off = dry key */
   dry.pa_enabled = 0;
-  step = p1_build_cc_round_robin(c, DEV, FREQ, GAIN, 2, &dry, NULL, 1);
+  step = p1_build_cc_round_robin(c, DEV, FREQ, FREQ, GAIN, 2, &dry, NULL, 1);
   expect("HOT PA-off 0x12: T/R relay stays RX ⛔", c,
          (const unsigned char[]){0x13, 0xF0, 0x04, 0x00, 0x00}, 5);
 
@@ -130,11 +130,11 @@ int main(void) {
   for (int i = 0; i < 5; i++) {
     char what[64];
     snprintf(what, sizeof what, "PS nrx=4 NCO step %d (C0=0x%02X)", i, ps_nco[i][0]);
-    step = p1_build_cc_round_robin(c, DEV, FREQ, GAIN, step, NULL, NULL, 4);
+    step = p1_build_cc_round_robin(c, DEV, FREQ, FREQ, GAIN, step, NULL, NULL, 4);
     expect(what, c, ps_nco[i], 5);
   }
   for (int i = 5; i < 14; i++) {
-    step = p1_build_cc_round_robin(c, DEV, FREQ, GAIN, step, NULL, NULL, 4);
+    step = p1_build_cc_round_robin(c, DEV, FREQ, FREQ, GAIN, step, NULL, NULL, 4);
     expect(i == 5 ? "PS nrx=4 registers follow (0x12 unchanged)" :
            (off_rr[i - 3][0] == 0x14 ? "PS-off 0x14 byte-identical" :
             off_rr[i - 3][0] == 0x1C ? "PS-off 0x1C byte-identical" : "PS nrx=4 register"),
@@ -142,12 +142,37 @@ int main(void) {
   }
   check("PS nrx=4 cycle wraps after 14 steps", step == 0);
 
+  /* Split (SDR-12): tx_freq (VFO B = 7.025 MHz = 0x006B3168) rides the 0x02
+   * TX NCO frame and the PS feedback DDCs (chan 2/3), the RX DDCs (chan 0/1)
+   * keep the dial — piHPSDR channel_freq(): vfonum -1 → vfo_get_tx_freq() for
+   * the TX frame and the feedback channels (o_p.c:1015-1040). */
+  {
+    static const unsigned char split_nco[5][5] = {
+      {0x02, 0x00, 0x6B, 0x31, 0x68},   /* TX NCO = B                   */
+      {0x04, 0x00, 0x6B, 0x1D, 0xE0},   /* RX1 = A                      */
+      {0x06, 0x00, 0x6B, 0x1D, 0xE0},   /* RX2 = A                      */
+      {0x08, 0x00, 0x6B, 0x31, 0x68},   /* RX3 feedback = B (DUC)       */
+      {0x0A, 0x00, 0x6B, 0x31, 0x68},   /* RX4 loopback = B (DUC)       */
+    };
+    step = 0;
+    for (int i = 0; i < 5; i++) {
+      char what[64];
+      snprintf(what, sizeof what, "split nrx=4 NCO step %d (C0=0x%02X)", i, split_nco[i][0]);
+      step = p1_build_cc_round_robin(c, DEV, FREQ, FREQ + 5000, GAIN, step, NULL, NULL, 4);
+      expect(what, c, split_nco[i], 5);
+    }
+    /* tx_freq 0 = no split: byte-identical to the dial (the RX-only path). */
+    step = 0;
+    step = p1_build_cc_round_robin(c, DEV, FREQ, 0, GAIN, step, NULL, NULL, 4);
+    expect("split off (tx_freq 0): TX NCO = dial", c, ps_nco[0], 5);
+  }
+
   /* PS enabled, receiving: 0x14 gains the PS bit (C2 0x40, o_p.c:2284), C4
    * keeps the RX LNA gain; 0x1C-C3 = 0xC0|(31-att) — TX-att is static
    * config (o_p.c:2372-2390). */
   step = 0;
   for (int i = 0; i < 14; i++) {
-    step = p1_build_cc_round_robin(c, DEV, FREQ, GAIN, step, NULL, &psw, 4);
+    step = p1_build_cc_round_robin(c, DEV, FREQ, FREQ, GAIN, step, NULL, &psw, 4);
     if (c[0] == 0x14) {
       expect("PS-on RX 0x14: C2|=0x40, C4=RX gain", c,
              (const unsigned char[]){0x14, 0x00, 0x40, 0x00, 0x5A}, 5);
@@ -161,7 +186,7 @@ int main(void) {
    * attenuator (o_p.c:2288-2308). MOX bit on every frame as ever. */
   step = 0;
   for (int i = 0; i < 14; i++) {
-    step = p1_build_cc_round_robin(c, DEV, FREQ, GAIN, step, &hot, &psw, 4);
+    step = p1_build_cc_round_robin(c, DEV, FREQ, FREQ, GAIN, step, &hot, &psw, 4);
     if ((c[0] & 0xFE) == 0x14) {
       expect("PS-on TX 0x14: C4=0x40|(31-10), MOX", c,
              (const unsigned char[]){0x15, 0x00, 0x40, 0x00, 0x55}, 5);
@@ -172,7 +197,7 @@ int main(void) {
   p1_ps_state ps31 = { .enabled = 1, .attenuation = 31 };
   step = 0;
   for (int i = 0; i < 14; i++) {
-    step = p1_build_cc_round_robin(c, DEV, FREQ, GAIN, step, &hot, &ps31, 4);
+    step = p1_build_cc_round_robin(c, DEV, FREQ, FREQ, GAIN, step, &hot, &ps31, 4);
     if ((c[0] & 0xFE) == 0x14) {
       check("PS att 31 → TX rxgain 0", c[4] == 0x40);
     }

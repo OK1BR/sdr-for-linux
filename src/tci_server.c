@@ -179,6 +179,8 @@ static struct {
   int       trx, tune, mute, wpm, txen;
   double    drive, tdrive, vol;
   int       valid;
+  long long freq_b, freq_tx; int split;   /* VFO B / TX VFO / split (SDR-12) */
+  long long centre;                       /* DDC centre (CTUN, SDR-18)        */
 } s_last;
 
 /* ---- send path (any thread; queue under s_lock, LWS thread writes) ------- */
@@ -280,6 +282,10 @@ static gboolean tci_sensors_tick(gpointer data) {
   return G_SOURCE_CONTINUE;
 }
 
+static long long freq_b(void);   /* below (VFO B / split accessors) */
+static int split_on(void);
+static long long centre(void);
+
 static gboolean tci_reporter(gpointer data) {
   (void)data;
   if (!s_run) { s_reporter_id = 0; return G_SOURCE_REMOVE; }
@@ -293,11 +299,18 @@ static gboolean tci_reporter(gpointer data) {
   double drv = s_ops.get_drive(), tdrv = s_ops.get_tune_drive();
   double vol = s_ops.get_volume();
 
-  if (!s_last.valid || f != s_last.freq) {
-    tci_broadcastf("dds:0,%lld;", f);
-    tci_broadcastf("vfo:0,0,%lld;", f);
-    tci_broadcastf("tx_frequency:%lld;", f);
+  long long fb = freq_b();
+  int split = split_on();
+  long long ftx = split ? fb : f;          /* TX_FREQUENCY = what keying would use */
+  long long ctr = centre();
+  if (!s_last.valid || ctr != s_last.centre) { tci_broadcastf("dds:0,%lld;", ctr); }
+  if (!s_last.valid || f - ctr != s_last.freq - s_last.centre) {
+    tci_broadcastf("if:0,0,%lld;", f - ctr);
   }
+  if (!s_last.valid || f != s_last.freq) { tci_broadcastf("vfo:0,0,%lld;", f); }
+  if (!s_last.valid || fb != s_last.freq_b)   { tci_broadcastf("vfo:0,1,%lld;", fb); }
+  if (!s_last.valid || split != s_last.split) { tci_broadcastf("split_enable:0,%s;", split ? "true" : "false"); }
+  if (!s_last.valid || ftx != s_last.freq_tx) { tci_broadcastf("tx_frequency:%lld;", ftx); }
   if (!s_last.valid || strcmp(m, s_last.mode) != 0) { tci_broadcastf("modulation:0,%s;", m); }
   if (!s_last.valid || lo != s_last.flo || hi != s_last.fhi) {
     tci_broadcastf("rx_filter_band:0,%d,%d;", lo, hi);
@@ -318,7 +331,7 @@ static gboolean tci_reporter(gpointer data) {
   if (!s_last.valid || tdrv != s_last.tdrive) { tci_broadcastf("tune_drive:0,%d;", (int)(tdrv + 0.5)); }
   if (!s_last.valid || vol != s_last.vol)     { tci_broadcastf("volume:%d;", (int)(vol - 0.5)); }
 
-  s_last.freq = f;
+  s_last.freq = f; s_last.freq_b = fb; s_last.split = split; s_last.freq_tx = ftx; s_last.centre = ctr;
   g_strlcpy(s_last.mode, m, sizeof(s_last.mode));
   s_last.flo = lo; s_last.fhi = hi;
   s_last.trx = trx; s_last.tune = tune; s_last.mute = mute;
@@ -336,7 +349,7 @@ static struct {
   const char *dflt;
   char        val[64];
 } s_echo[] = {
-  { "split_enable",  "0,false", "" }, { "lock",          "0,false", "" },
+  { "lock",          "0,false", "" },
   { "rit_enable",    "0,false", "" }, { "rit_offset",    "0,0",     "" },
   { "xit_enable",    "0,false", "" }, { "xit_offset",    "0,0",     "" },
   { "sql_enable",    "0,false", "" }, { "sql_level",     "0,-80",   "" },
@@ -352,6 +365,14 @@ static void echo_reset(void) {
     g_strlcpy(s_echo[i].val, s_echo[i].dflt, sizeof(s_echo[i].val));
   }
 }
+
+/* VFO B / split through the optional ops: without them B mirrors A and split
+ * reads false, so a single-VFO GUI still answers every client correctly. */
+static long long freq_b(void) { return s_ops.get_freq_b ? s_ops.get_freq_b() : s_ops.get_freq(); }
+static int split_on(void)     { return s_ops.get_split ? (s_ops.get_split() != 0) : 0; }
+/* DDC centre (CTUN, SDR-18): the IQ stream's centre = `dds:`; the dial rides
+ * at `if:0,0` = dial − centre. Without the op the two coincide (Model A). */
+static long long centre(void) { return s_ops.get_centre ? s_ops.get_centre() : s_ops.get_freq(); }
 
 /* Try the echo table; returns 1 when the command was consumed. */
 static int echo_exec(const char *name, char **av, int ac) {
@@ -396,18 +417,19 @@ static gboolean send_initial_idle(gpointer data) {
   tci_sendf(c, "modulations_list:am,lsb,usb,cw,cwl,cwu,digu,digl,rtty;");
   tci_sendf(c, "mute:%s;", s_ops.get_mute() ? "true" : "false");
   tci_sendf(c, "volume:%d;", (int)(s_ops.get_volume() - 0.5));
-  tci_sendf(c, "dds:0,%lld;", f);
-  /* Both channels (A/B) of receiver 0: IF offset 0, VFO on the same freq —
+  tci_sendf(c, "dds:0,%lld;", centre());
+  /* Both channels (A/B) of receiver 0: IF = dial − centre (CTUN), B's 0 —
    * piHPSDR emits the full per-channel set before the client proceeds. */
-  tci_sendf(c, "if:0,0,0;");
+  tci_sendf(c, "if:0,0,%lld;", f - centre());
   tci_sendf(c, "if:0,1,0;");
   tci_sendf(c, "vfo:0,0,%lld;", f);
-  tci_sendf(c, "vfo:0,1,%lld;", f);
+  tci_sendf(c, "vfo:0,1,%lld;", freq_b());
   tci_sendf(c, "modulation:0,%s;", mode);
   tci_sendf(c, "rx_filter_band:0,%d,%d;", lo, hi);
   tci_sendf(c, "rx_enable:0,true;");         /* receiver 0 is running — Decodium gates audio on this */
   /* Full state block like piHPSDR: locks, squelch, noise, RIT/XIT, split,
    * volumes, AGC — clients wait for the lot before they start operating. */
+  tci_sendf(c, "split_enable:0,%s;", split_on() ? "true" : "false");
   for (guint i = 0; i < G_N_ELEMENTS(s_echo); i++) {
     tci_sendf(c, "%s:%s;", s_echo[i].name, s_echo[i].val);
   }
@@ -462,24 +484,57 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
   if (strcmp(name, "vfo") == 0 || strcmp(name, "dds") == 0) {
     int isvfo = (name[0] == 'v');
     int fidx = isvfo ? 2 : 1;               /* vfo:rx,ch,f / dds:rx,f        */
+    /* Which VFO: receiver 0 / channel 1 = B (TCI spec: channel = "A/B"),
+     * and piHPSDR also maps receiver 1 / channel 0 onto B for logbooks that
+     * think in RX1:RX2 — accept both (tci.c:728-750). dds is always A. */
+    int isb = isvfo && ac > 1 &&
+              ((atoi(av[0]) == 0 && atoi(av[1]) == 1) || (atoi(av[0]) == 1 && atoi(av[1]) == 0));
     if (ac > fidx && av[fidx][0]) {
       long long f = g_ascii_strtoll(av[fidx], NULL, 10);
-      if (f > 0) { s_ops.set_freq(f); stamp_note_freq(s_ops.get_freq()); }
-      tci_broadcastf("dds:0,%lld;", s_ops.get_freq());
-      tci_broadcastf("vfo:0,0,%lld;", s_ops.get_freq());
+      if (isb) {
+        if (f > 0 && s_ops.set_freq_b) { s_ops.set_freq_b(f); }
+        tci_broadcastf("vfo:0,1,%lld;", freq_b());
+      } else if (!isvfo && s_ops.set_centre) {
+        /* dds = the panorama centre: move it, the dial keeps its IF offset
+         * and rides along (CTUN); the GUI decides whether the dial fits. */
+        if (f > 0) { s_ops.set_centre(f); stamp_note_freq(centre()); }
+        tci_broadcastf("dds:0,%lld;", centre());
+        tci_broadcastf("if:0,0,%lld;", s_ops.get_freq() - centre());
+        tci_broadcastf("vfo:0,0,%lld;", s_ops.get_freq());
+      } else {
+        if (f > 0) { s_ops.set_freq(f); stamp_note_freq(centre()); }
+        tci_broadcastf("dds:0,%lld;", centre());
+        tci_broadcastf("if:0,0,%lld;", s_ops.get_freq() - centre());
+        tci_broadcastf("vfo:0,0,%lld;", s_ops.get_freq());
+      }
     } else if (isvfo) {
-      tci_sendf(c, "vfo:0,0,%lld;", s_ops.get_freq());
+      if (isb) { tci_sendf(c, "vfo:0,1,%lld;", freq_b()); }
+      else     { tci_sendf(c, "vfo:0,0,%lld;", s_ops.get_freq()); }
     } else {
-      tci_sendf(c, "dds:0,%lld;", s_ops.get_freq());
+      tci_sendf(c, "dds:0,%lld;", centre());
+    }
+  } else if (strcmp(name, "split_enable") == 0) {
+    /* split_enable:trx,state — transceiver-indexed (spec); only trx 0 here. */
+    if (ac > 1 && av[1][0] && atoi(av[0]) == 0) {
+      int on = (g_ascii_strcasecmp(av[1], "true") == 0 || strcmp(av[1], "1") == 0);
+      if (s_ops.set_split) { s_ops.set_split(on); }
+      tci_broadcastf("split_enable:0,%s;", split_on() ? "true" : "false");
+    } else {
+      tci_sendf(c, "split_enable:0,%s;", split_on() ? "true" : "false");
     }
   } else if (strcmp(name, "if") == 0) {
-    /* No CTUN yet: IF stays 0; an IF set retunes by the offset instead. */
-    if (ac > 2 && av[2][0]) {
+    /* IF = dial − DDC centre. With CTUN (get_centre) a set puts the dial at
+     * centre + off; without it the centre follows the dial, so the offset
+     * reads back 0 after a retune by `off` — the pre-CTUN behaviour. */
+    if (ac > 2 && av[2][0] && atoi(av[1]) == 0) {
       long long off = g_ascii_strtoll(av[2], NULL, 10);
-      if (off != 0) { s_ops.set_freq(s_ops.get_freq() + off); stamp_note_freq(s_ops.get_freq()); }
+      long long want = centre() + off;
+      if (want > 0 && want != s_ops.get_freq()) { s_ops.set_freq(want); stamp_note_freq(centre()); }
+      tci_broadcastf("if:0,0,%lld;", s_ops.get_freq() - centre());
       tci_broadcastf("vfo:0,0,%lld;", s_ops.get_freq());
+    } else {
+      tci_sendf(c, "if:0,0,%lld;", s_ops.get_freq() - centre());
     }
-    tci_sendf(c, "if:0,0,0;");
   } else if (strcmp(name, "modulation") == 0) {
     if (ac > 1 && av[1][0]) {
       char m[16];
@@ -1406,7 +1461,7 @@ static void stamp_note_freq(long long hz) {
 
 void tci_server_freq_changed(void) {
   if (!s_run) { return; }
-  stamp_note_freq(s_ops.get_freq());
+  stamp_note_freq(centre());    /* the IQ stream IS the DDC — stamp its centre, not the dial */
   tci_reporter(NULL);           /* diffs state: only what changed goes out    */
 }
 

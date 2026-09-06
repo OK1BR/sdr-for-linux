@@ -46,6 +46,7 @@ static int              s_device;
 static int              s_rate_bits;    /* C&C 0x00-C1 bits1:0 (old_protocol.c:84-87) */
 static GMutex           s_freq_lock;
 static long long        s_freq_hz;
+static long long        s_tx_freq_hz;     /* 0 = follow s_freq_hz (no split) */
 static volatile int     s_gain_db = 14; /* HL2 LNA, −12..+48 (piHPSDR default cal point) */
 static p1_iq_cb         s_cb;
 static void            *s_user;
@@ -199,26 +200,29 @@ static int hl2_ps_rxgain(int lna_gain_db, int transmitting,
 }
 
 int p1_build_cc_round_robin(unsigned char c[5], int device, long long freq_hz,
-                            int lna_gain_db, int step, const p1_tx_state *tx,
-                            const p1_ps_state *ps, int nrx) {
+                            long long tx_freq_hz, int lna_gain_db, int step,
+                            const p1_tx_state *tx, const p1_ps_state *ps, int nrx) {
   int hl = (device == DEVICE_HERMES_LITE || device == DEVICE_HERMES_LITE2);
   int ps_on = (ps && ps->enabled);
+  if (tx_freq_hz <= 0) { tx_freq_hz = freq_hz; }   /* no split: DUC == dial */
   memset(c, 0, 5);
 
   /* Layout: step 0 = TX NCO, steps 1..nrx = per-RX NCO, then the fixed
    * registers. nrx = 1 reproduces the T4-verified 11-step cycle exactly. */
   int reg = (step <= nrx) ? -1 : step - nrx - 1;
 
-  if (step == 0) {                    /* 0x02: TX (DUC) frequency — kept on   */
-    c[0] = 0x02;                      /* the RX frequency like piHPSDR on RX  */
-    be32(c + 1, (guint32)freq_hz);    /* (old_protocol.c:2108; HL2 gateware
-                                         tracks nothing from it, but the DUC
-                                         must sit on the VFO before any TX)   */
+  if (step == 0) {                    /* 0x02: TX (DUC) frequency = the TX VFO */
+    c[0] = 0x02;                      /* (VFO B under split) on RX too, like  */
+    be32(c + 1, (guint32)tx_freq_hz); /* piHPSDR channel_freq(-1) (o_p.c:1029-
+                                         1040, sent at :2108); the DUC must
+                                         sit on the TX VFO before any TX      */
   } else if (step <= nrx) {           /* 0x04+2·chan: DDC frequencies         */
-    c[0] = (unsigned char)(0x04 + 2 * (step - 1));  /* (old_protocol.c:2120)  */
-    be32(c + 1, (guint32)freq_hz);    /* chan ≥ 2 (RX3/RX4 feedback) wants the
-                                         DUC frequency (channel_freq :1015-30)
-                                         — same value here: dial == DUC       */
+    int chan = step - 1;
+    c[0] = (unsigned char)(0x04 + 2 * chan);        /* (old_protocol.c:2120)  */
+    be32(c + 1, (guint32)(chan >= 2 ? tx_freq_hz : freq_hz));
+                                      /* chan ≥ 2 (RX3/RX4 PS feedback) wants
+                                         the DUC frequency (channel_freq
+                                         :1015-30) — under split that is B    */
   } else {
     switch (reg) {
     case 0:                           /* 0x12: drive + HL2 relay/PA           */
@@ -290,12 +294,12 @@ int p1_build_cc_round_robin(unsigned char c[5], int device, long long freq_hz,
 }
 
 static int cc_round_robin(unsigned char *c, int step) {
-  long long freq;
+  long long freq, txf;
   p1_tx_state txb;
   p1_ps_state psb;
-  g_mutex_lock(&s_freq_lock); freq = s_freq_hz; g_mutex_unlock(&s_freq_lock);
+  g_mutex_lock(&s_freq_lock); freq = s_freq_hz; txf = s_tx_freq_hz; g_mutex_unlock(&s_freq_lock);
   /* ⛔ tx handling identical to cc_general(). */
-  return p1_build_cc_round_robin(c, s_device, freq,
+  return p1_build_cc_round_robin(c, s_device, freq, txf,
                                  g_atomic_int_get(&s_gain_db), step,
                                  tx_snapshot(&txb), ps_snapshot(&psb), s_nrx);
 }
@@ -876,6 +880,12 @@ void p1_rx_stop(void) {
 void p1_set_frequency(long long freq_hz) {
   g_mutex_lock(&s_freq_lock);
   s_freq_hz = freq_hz;
+  g_mutex_unlock(&s_freq_lock);
+}
+
+void p1_set_tx_frequency(long long tx_freq_hz) {
+  g_mutex_lock(&s_freq_lock);
+  s_tx_freq_hz = tx_freq_hz;
   g_mutex_unlock(&s_freq_lock);
 }
 

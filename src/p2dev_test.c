@@ -226,6 +226,28 @@ int main(void) {
     p2_build_high_priority(buf, NEW_DEVICE_SATURN, F40, 0, &tx, NULL);
     chk("hp park cannot carry MOX",       buf[4], 0x00);
     chk("hp park: alex0 released",        be32(buf + 1432), 0);
+
+    /* ---- Split (SDR-12): tx_freq != rx_freq. The DUC phase and the TX LPF
+     * follow tx_freq (= VFO B), the RX BPF stays on rx_freq (= VFO A) —
+     * np.c:668/743 take the TX VFO for the DUC + LPF, :1169-1211 the RX VFO
+     * for the BPF. Same double expression as the builder's phase word, so
+     * this pins bytes, not rounding luck. */
+    const double PH = 34.952533333333333333333333333333;
+    p2_tx_state txs = tx; txs.tx_freq = F40 + 5000;                 /* in-band split, up 5 */
+    p2_build_high_priority(buf, NEW_DEVICE_SATURN, F40, 1, &txs, NULL);
+    chk("split: DUC phase = VFO B (7.105 MHz)", be32(buf + 329),
+        (uint32_t)(((double)(F40 + 5000)) * PH));
+    chk("split: alex0 unchanged in-band (BPF A, LPF B same bank)", be32(buf + 1432), 0x09200010u);
+    chk("split: alex1 unchanged in-band", be32(buf + 1428), 0x09200000u);
+    /* Cross-band B (the GUI never keeps one — band_apply drops split — but the
+     * wire must still be right if it ever happens): LPF bank from B (20 m
+     * 0x00100000), BPF from A (40 m 0x10). */
+    txs.tx_freq = 14100000LL;
+    p2_build_high_priority(buf, NEW_DEVICE_SATURN, F40, 1, &txs, NULL);
+    chk("split x-band: DUC phase = VFO B (14.1 MHz)", be32(buf + 329),
+        (uint32_t)(14100000.0 * PH));
+    chk("split x-band: alex0 = BPF(A 40m)|LPF(B 20m)|ANT1|RLY", be32(buf + 1432), 0x09100010u);
+    chk("split x-band: alex1 = LPF(B 20m)|ANT1|RELAY",          be32(buf + 1428), 0x09100000u);
   }
 
   /* ---- PureSignal feedback pair: DDC1 <- pseudo-ADC n_adc --------------- */
