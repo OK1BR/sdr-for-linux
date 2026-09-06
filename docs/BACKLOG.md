@@ -40,6 +40,81 @@ that leaves the machine wrong; `medium` = gets in the operator's way;
 
 ## Open — tasks
 
+### SDR-14 — Spectrum-centred control surface: the VFO card, then filter/AGC/mode controls on the spectrum
+- **Type:** task · **Severity:** — · **Status:** doing — step 1 (the card) implemented 2026-09-06, live look pending; step 2 not started
+- **Source:** Richard, 2026-09-06, after the SDR-2 window-width note; inspiration = SmartSDR's per-slice "flag" (the always-visible info panel at the slice's tuning line), explicitly *not* to be copied 1:1
+- **Detail:** mockups `~/Downloads/sdr-mockup-vfo-karta-v4.png` (approved) — drawn onto `docs/img/main-window.png`
+
+The direction Richard chose instead of re-flowing the top bar (an adaptive
+two-row wrap of both control strips was proposed and declined — the buttons
+stay as they are for now): improve the spectrum first, then move the filter
+and AGC controls onto it, and only then does the top bar lose those widgets.
+
+**Step 1 — the VFO card (done in code 2026-09-06):** one panel next to the VFO
+line replaces the old top-left frequency readout and the top-right S-meter.
+400 × 186 px, rounded, dark translucent with a faint blue border, its right
+edge 20 px left of the VFO line (Richard: "not glued to the line" — 28 px was
+too much, 20 is the approved gap), top just under the ruler; mirrors to the
+right of the line when panned so far that it would leave the left edge.
+Rows: the frequency (same value, font and size as the readout it replaces);
+"Hz · VFO A · band · mode" as before; **mode · passband lo–hi Hz (width) ·
+AGC** (the passband is what the blue edges draw — this is where the filter
+values ended up after the first attempt, small labels at the foot of the
+edges, was rejected as unreadable); the NR/NB/ANF/BIN indicators lit/dimmed;
+the S-meter with its scale, palette fill and latched reading. The S-meter
+ballistics were extracted into one tick function shared with the legacy
+top-right block, which server mode (`--server`) still draws — the card is
+radio mode, RX display only. Spot labels dodge the card; a click or drag that
+starts inside it is swallowed (the card is not tunable area — step 2 makes it
+clickable anyway). Offline: compile + the ten CI gates; the headless lab
+cannot show it (no radio → "Not connected" path). **Live eyeball list:** pan
+(the card follows the VFO line), zoom, CW mode (values like −250…+250),
+drag a Var edge (numbers follow), toggle NR/NB/ANF/BIN, the mirror case.
+
+**Step 2 — filter part (done in code 2026-09-06, same day):** the filter
+editor is a libadwaita **dialog** in the style of Preferences (Richard: "not in
+Preferences — its own icon next to the menu"), opened by a new header-bar
+button left of the hamburger (our own compiled-in symbolic icon
+`sdrfl-filter-symbolic`, GResource under `data/`, since the icon theme has no
+bandpass glyph — ⛔ the `<file>` needs `alias=`, or the resource path grows an
+extra `icons/` component and GTK shows the broken-image placeholder; caught in
+the headless lab), by the `app.filter` action, and by a click on the card's
+filter row. Contents: a passband graph vs the carrier (drag an edge, drag the
+middle to shift, 10 Hz steps, resize/grab cursors), the mode's presets +
+Var1/Var2 as grouped toggles, Low/High spin rows. One state path for every
+editor (`filter_select()` / `filter_apply_var_edges()`): dropdown, spectrum
+edge drag, dialog graph, toggles and spin rows all re-sync each other with
+signals muted; a TCI filter set re-syncs the dialog too. Rules landed with it:
+**any filter's edges drag on the spectrum** and a dragged preset becomes Var1
+seeded with its edges (the preset stays untouched); the card sits on the side
+AWAY from the passband (LSB family → right of the VFO line); the VFO line and
+the select-mode aim line are **red** hairlines (0.75 px, 55 %, pixel-snapped)
+carried down the waterfall, the amber ghost stays for the filter footprint.
+Headless lab: dialog opened via `gdbus … Activate filter`, screenshot checked
+(layout + icon). Live: Richard's eyeball pass in progress.
+
+**Step 2 — AGC part + the strip (done in code 2026-09-06, same session):**
+the AGC dialog in the same style (header-bar button with its own icon
+`sdrfl-agc-symbolic`, the card's "AGC …" text, the `app.agc` action):
+character toggles Off · Long · Slow · Med · Fast with the WDSP hang/decay
+constants of the chosen one as a caption, a LIVE gain bar (new
+`demod_agc_meters()`: gain = −RXA_AGC_GAIN as in the `SDRFL_DEBUG_LEVELS`
+dump, out = RXA_AGC_AV; 10 Hz while open; scale 0 … AGC-T) and an AGC-T spin
+row mirroring the footer slider. One path (`agc_select()` / `agc_gain_set()`)
+for the dialog, the footer slider and the per-mode-group restore. Both the
+Filter and the AGC dropdowns are GONE from the top bar (Richard), the strip is
+a GtkCenterBox — modes left, NR…MON centred on the window, bands right — and
+the window's minimum width is now set by the footer (~1540 px), not the strip.
+Hover cursors: hand over the card's filter and AGC texts, resize arrow over a
+passband edge. Lab-verified (dialogs opened via the actions, icons legible at
+16 px after the outline icon was replaced by a solid trapezoid); Richard's live
+pass the same afternoon. ⛔ The GResource has no `xml-stripblanks` on purpose:
+that would need xmllint at build time (libxml2-utils is not in the CI images).
+
+**Still open:** the mode editor (the mode row stays on the strip for now); the
+footer is the next width driver (RX sliders vs TX sliders). The README
+screenshot is stale (card, icons, strip); refresh it at the next release pass.
+
 ### SDR-6 — Evaluate W1IZZ's G2 test results and close out the bring-up
 - **Type:** task · **Severity:** high · **Status:** done (2026-08-23) — evaluated, fixes tried by Richard on the G2E, released as **v0.4.2**, and the answer posted to `gh#3` with Richard's approval (issuecomment-5388178274). Round 2 came back 2026-08-24, was evaluated in §7.2, released as **v0.5.0**, answered (issuecomment-5414226078) and **`gh#3` was closed as completed 2026-08-25** — a third round (dry-key, SWR-trip, CW, PSU reference) stays optional on his side
 - **Source:** W1IZZ, GitHub `gh#3` ("G2 testing"), 2026-08-22
@@ -117,6 +192,34 @@ to be used wherever the radio is announced.
    to test — a `main` tip is not a build to hand out.
 
 ## Open — bugs
+
+### SDR-15 — P2 data socket binds to the interface's link-local address
+- **Type:** bug · **Severity:** medium · **Status:** open
+- **Source:** Richard's desk, 2026-09-06 — both starts that day logged `p2: socket N bound to 169.254.198.250:0`
+
+`enp134s0f1` carries a link-local 169.254.198.250/16 next to 192.168.1.18/24.
+P2 discovery walks the interface addresses in `getifaddrs` order and records
+one `discovered[]` entry per address the radio answered on (it answered both);
+the picker de-duplicates by the radio's IP and keeps the FIRST entry, which was
+the link-local one, and `p2_rx_start` binds the data socket to that entry's
+`interface_address`. It works only because the G2E replies to whatever source
+address it saw on the same wire. A link-local address is transient (assigned
+by NetworkManager/avahi when nothing better is up) — if it disappears mid-
+session the socket sits on a dead address and the stream dies. Fix: when
+several discovery entries share a radio IP, prefer the one whose interface
+address is in the radio's subnet (else any non-169.254 one); the next start
+must log `bound to 192.168.1.18`. Sibling symptom on the same LAN: SDR-5.
+
+### SDR-16 — `GtkGizmo (trough) reported min height -2` burst after a dry-key TUNE
+- **Type:** bug · **Severity:** low · **Status:** open
+- **Source:** `/tmp/sdr-for-linux-run.log`, 2026-09-06 13:45:07 — six warnings in 83 ms, one widget address, right after `tx: KEY TUNE … drive=0/255` / `UNKEY`
+
+One GtkRange trough measured a negative minimum height for a few frames
+around a TUNE over with drive 0. Cosmetic (GTK clamps it), but a slider is
+being sized from something negative — find which one (a TX HUD / footer
+scale that hides or changes range on key?) with `G_DEBUG=fatal-warnings gdb`
+next time a dry-key TUNE is on the bench. Not seen in the following two runs.
+
 
 ### SDR-13 — Came up at "RX 1 Hz" after a restart, not at the last tuned frequency
 - **Type:** bug · **Severity:** medium · **Status:** done (2026-09-06) — closed as **operator state**, not a defect: the persistence path was read clean, 1 Hz is the tuning clamp, and the next relaunch restored the real last frequency (see the closing note)

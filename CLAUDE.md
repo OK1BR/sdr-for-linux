@@ -287,6 +287,32 @@ TX Mic/Lev/ALC meter got the S-meter ballistics idiom (eadab5f).
 Rejected on measurement: 1-2 kHz side-chain detector filter — Richard's
 quiet speech loses more there (~20 dB) than his fan noise (14.7 dB).
 
+**★ SPECTRUM-CENTRED CONTROL SURFACE — 2026-09-06 (BACKLOG SDR-14, Richard's
+direction instead of re-flowing the top bar):** a **VFO card** next to the VFO
+line replaces the old top-left readout + top-right S-meter (frequency, band ·
+mode, `MODE · lo–hi Hz (width) · AGC X`, NR/NB/ANF/BIN indicators, the
+S-meter with the same ballistics; 400×186, 20 px off the line, on the side
+AWAY from the passband — LSB family → right; mirrors at the screen edge; not
+tunable area, clicks/drags inside are swallowed). **Filter** and **AGC** are
+libadwaita **dialogs** (own compiled-in symbolic icons in the header bar left
+of the menu, GResource under `data/`, ⛔ `<file alias=…>` or the resource path
+grows an extra component; also the card's filter/AGC texts and the `app.filter`
+/ `app.agc` actions — the headless lab opens them via `gdbus … Activate`).
+Filter dialog = passband graph (drag edges / shift), preset toggles, Low/High
+spin rows; **any filter's edges drag on the spectrum, a dragged preset becomes
+Var1**; one state path for every editor. AGC dialog = character toggles +
+hang/decay caption + LIVE gain bar (`demod_agc_meters`) + AGC-T row mirroring
+the footer slider. Top strip: Filter/AGC dropdowns REMOVED, GtkCenterBox
+(modes | NR…MON centred | bands), min width now footer-driven (~1540 px). VFO
+line + select-mode aim line are **red** hairlines (0.75 px, 55 %, pixel-
+snapped, carried down the waterfall); the amber ghost stays for the filter
+footprint. Same day earlier: SDR-13 closed (operator state), SDR-4
+live-verified, SDR-9 (mic drops after TUNE) and SDR-7 (60 m USB + one-time
+`band_levels_v` migration) fixed. All live-tested by Richard on the G2E
+through ~12 restarts; ⛔ always ≥ 5 s between stop and relaunch. README
+screenshot is stale. Next: mode editor / footer width (SDR-14), SDR-15
+link-local bind, SDR-16 trough warning, then the EQ milestone.
+
 **★ RELEASED 2026-08-25: v0.5.0 — the G2-tested release.** Same-day
 turnaround on W1IZZ's round 2 (gh#3, evaluated in RADIOS-SCOPE §7.2): his
 run confirmed SDR-1 (raw 544 → 13.9 V; no PSU reference reading), SDR-8
