@@ -412,8 +412,8 @@ low→high in the readout AND the Filter dialog (mirrored display space,
 `filt_disp`); S-meter `METER_S` 1.06 (sized by proportion — 1.15 was too
 much), white + Sans (its reading had been greenish); spaced passband dash;
 Filter + AGC dialog graphics white + Sans. He closed with "to je prozatím
-vše, díky". ⛔ ALL OF THIS IS UNCOMMITTED, UNPUSHED local work awaiting his
-word — origin/main (a724786) still carries SDR-12's split. TX meters
+vše, díky", then "zapiš změny na github" → committed + pushed as
+**61ecd7f** (origin/main no longer carries SDR-12's split). TX meters
 (Mic/Lev/ALC) still Adwaita Mono (asked, unanswered). Scratch
 `/var/tmp/vfoab` (launch logs, config round-trip) awaits the trash.
 
