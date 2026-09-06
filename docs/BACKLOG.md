@@ -340,7 +340,7 @@ counter. Idea for later: read the Saturn's V4.3 FIFO words as real telemetry
 (DUC FIFO depth + overflow bits = a better tripwire than the G2E's counter).
 
 ### SDR-9 — "tx: over stats — mic drops=…" printed after TUNE overs
-- **Type:** bug · **Severity:** low · **Status:** open
+- **Type:** bug · **Severity:** low · **Status:** done in code (2026-09-06) — live check pending (see below)
 - **Source:** live test of the 2026-08-23 fixes on the G2E (log `/var/tmp/sdrfl-test-2026-08-23/sdr.err`)
 
 With the mic capture open (voice mode) a TUNE over does not consume the mic
@@ -349,6 +349,21 @@ reports tens of thousands of "mic drops" — a number meant to flag lost speech.
 Four TUNE overs in that session printed 57 856–88 320; every MOX over printed
 nothing (clean). Suppress the mic counters for overs that never read the mic
 (TUNE, two-tone, CW, digi), or clear the ring stats at key-down of those.
+
+**Fix (2026-09-06, `tx_run.c`):** at key-on the control thread now records
+whether THIS over pulls the mic ring at all — `over_mic = mox && !gen_key &&
+!s_ext_src`, the exact condition of the feed thread's live-mic branch
+(`keyed_mox && !s_ext_src`). At unkey the mic counters are still read (and so
+cleared) every over, but reported only when `over_mic` is set; the IQ-ring
+numbers are unaffected. So: TUNE (silence feed), CW/RTTY (generators) and
+TCI-fed digi (ext ring) print nothing for the mic; a voice MOX over prints
+exactly what it printed before. Two-tone stays reported — it is a MOX over
+and the feed does pull the ring under the generator, so its counters are
+real. No offline gate compiles `tx_run.c` (radio-bound), so the change is
+compile-checked + the nine CI gates only. **Live check, next time the TX
+path is keyed anyway:** one TUNE over in a voice mode must print no
+`tx: over stats` line; one MOX voice over must behave as before (silent when
+clean, the line only on real drops/shorts).
 
 ### SDR-11 — Footer supply readout: noisy last digit, and the green is unreadable in some themes
 - **Type:** bug · **Severity:** low · **Status:** done (2026-08-25) — live-verified on the G2E the same day (headless broadway lab against the real radio): the value held a pixel-identical "13,5 V" in theme-foreground white across 5 screenshots over ~20 s while the raw word jittered 797/798, and 13.45 V is the worst case — it sits exactly on a 0.1 V rounding boundary. No Pango/GTK warnings from the new markup. **Light theme verified too** (same lab, `ADW_DEBUG_COLOR_SCHEME=prefer-light` against the live radio): the value renders near-black on the light footer, readable. Follow-up from Richard's own look (2026-08-25): the readout sat glued to the window edge → the Supply/Temp slot now carries an 8 px margin-end. Both the light theme and the margin were then confirmed by Richard on his own desktop the same day. The HL2 die-temperature half (same one-line pattern) is not live-verified.

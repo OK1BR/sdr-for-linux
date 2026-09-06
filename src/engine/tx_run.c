@@ -407,6 +407,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
    * 2918-2928). Toggleable mid-over: the operator A/Bs PureSignal against a
    * steady spectrum. */
   static int tt_applied;
+  static int over_mic;             /* key-on: this over pulls the mic ring (SDR-9) */
   double tt_sign = (wmode == DEMOD_LSB || wmode == DEMOD_DIGL) ? -1.0 : 1.0;
   int tt_want_now = want_tt && keyed && r.state.mox && !r.state.tune && !gen_key;
   if (keyed && !*prev_keyed) {
@@ -468,6 +469,14 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
 
       if (s_p1) { p1_tx_ring_stats_take(&d0, &s0); }
     }
+    /* Does THIS over pull the mic ring at all? Mirrors the feed thread's
+     * live-mic branch (keyed_mox && !s_ext_src): MOX in a voice/digi mode
+     * with the local mic as the source. TUNE feeds silence, CW/RTTY run the
+     * generators, TCI-fed digi reads the ext ring — in all of those the
+     * capture (open in voice modes) fills a ring nobody drains, so its
+     * drops/shorts say nothing about the over (BACKLOG SDR-9: a TUNE over
+     * printed tens of thousands of "mic drops" that never were speech). */
+    over_mic = r.state.mox && !gen_key && !g_atomic_int_get(&s_ext_src);
   } else if (!keyed && *prev_keyed) {
     /* KEY OFF (operator release OR protection trip): drop MOX first, stop the
      * tone, flush a little audio, then stop the channel. */
@@ -484,10 +493,13 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
 
     /* Per-over audio-transport health (buzz/click forensics, 2026-07-12):
      * silent when everything is clean. mic shorts/drops cover the capture
-     * ring on both protocols; the IQ-ring numbers are P1's EP2 sender. */
+     * ring on both protocols; the IQ-ring numbers are P1's EP2 sender.
+     * The mic counters are read (cleared) every over but REPORTED only for
+     * an over that pulled the ring (over_mic, set at key-on) — SDR-9. */
     {
       int md, ms, ru = 0, rd = 0;
       mic_stats_take(&md, &ms);
+      if (!over_mic) { md = 0; ms = 0; }
 
       if (s_p1) { p1_tx_ring_stats_take(&ru, &rd); }
       else      { p2_txiq_ring_stats_take(&rd); }
