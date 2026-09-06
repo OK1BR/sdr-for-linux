@@ -310,7 +310,8 @@ footprint. Same day earlier: SDR-13 closed (operator state), SDR-4
 live-verified, SDR-9 (mic drops after TUNE) and SDR-7 (60 m USB + one-time
 `band_levels_v` migration) fixed. All live-tested by Richard on the G2E
 through ~12 restarts; ⛔ always ≥ 5 s between stop and relaunch. README
-screenshot is stale. Next: mode editor / footer width (SDR-14), SDR-15
+screenshot is stale. Next: SDR-20 (TX filter drawn red on the TX spectrum +
+waterfall, filed 2026-09-07), mode editor / footer width (SDR-14), SDR-15
 link-local bind, SDR-16 trough warning, then the EQ milestone.
 
 **SDR-17 — draggable spectrum/waterfall divider, DONE + LIVE 2026-09-06
@@ -372,8 +373,9 @@ centre, `if:0,0` = dial − centre, `vfo:0,0` = dial, IQ stamps = centre
 CTUN button after BIN, `[rx] ctun` persisted. ⛔ Live discriminator for
 the shifter sign: CTUN on, drag the spectrum → the audio must not change.
 
-**★ STANDARD VFO A/B — implemented 2026-09-06 (late evening, BACKLOG
-SDR-19; NOT yet live-verified — Richard's pass pending):** Richard reversed
+**★ STANDARD VFO A/B — implemented + LIVE 2026-09-06 (late evening, BACKLOG
+SDR-19; every round below was looked at live by Richard on the G2E, closing
+with "to je prozatím vše, díky"):** Richard reversed
 the SDR-12 "no active-VFO switching" call after an afternoon of split use
 ("asi bych ji spíš předělal na standardní funkci VFOA/VFOB … to VFO B tam
 potřeba bude"). Model = the classic rig: A/B swaps what you hear/tune/TX
@@ -415,7 +417,7 @@ Filter + AGC dialog graphics white + Sans. He closed with "to je prozatím
 vše, díky", then "zapiš změny na github" → committed + pushed as
 **61ecd7f** (origin/main no longer carries SDR-12's split). TX meters
 (Mic/Lev/ALC) still Adwaita Mono (asked, unanswered). Scratch
-`/var/tmp/vfoab` (launch logs, config round-trip) awaits the trash.
+`/var/tmp/vfoab` (launch logs, config round-trip) is in the trash.
 
 **★ RELEASED 2026-08-25: v0.5.0 — the G2-tested release.** Same-day
 turnaround on W1IZZ's round 2 (gh#3, evaluated in RADIOS-SCOPE §7.2): his

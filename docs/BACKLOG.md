@@ -40,8 +40,34 @@ that leaves the machine wrong; `medium` = gets in the operator's way;
 
 ## Open — tasks
 
+### SDR-20 — Draw the TX filter on the TX display, in red, on the spectrum AND the waterfall
+- **Type:** task · **Severity:** — · **Status:** open
+- **Source:** Richard, 2026-09-06 night: "v TX režimu zobrazovat filtr, odpovídající TX filtru, a to červenou barvou, a stejně jako u RX okna, by mělo být vidět jak na spektru, tak na vodopádu"
+- **Detail:** `src/gui.c` — `draw_tx()` is where it goes; the RX footprint to mirror is the spectrum overlay and the waterfall continuation of it (the latter gated on `show_filter_wf`); the TX audio filter edges are `app->tx_flo` / `app->tx_fhi` (Audio prefs, persisted).
+
+While keyed the display switches to the TX panadapter + TX waterfall
+(carrier-centred, span = the RX span capped at the 192 kHz TX IQ bandwidth) and
+draws the ruler, the dB window and the HUD meters — but **no filter footprint at
+all**. RX draws its passband as a fill + two edges on the spectrum and continues
+the same fill/edges down the waterfall; TX should do the same for the TX filter,
+in the **red** of the RX-green / TX-red colour language (`COL_TX_*`, not ad-hoc
+RGB), so the operator can see where the transmitted energy is supposed to sit
+against what actually goes out.
+
+To settle when it is implemented (not decisions for now):
+- The footprint is carrier-relative and mode-dependent — USB puts it at
+  `+tx_flo … +tx_fhi`, LSB mirrored below the carrier (the same mirroring the
+  readout/Filter dialog already do for the LSB family, SDR-19), and CW/RTTY have
+  no audio passband at all (carrier / FSK pair) — decide whether anything is
+  drawn there.
+- Whether the waterfall half follows the existing "filter on waterfall" switch
+  or is always on for TX.
+- Read-only or draggable: RX's edges are grab handles; during an over the TX
+  display is display-only today (cf. the TX HUD rule), so the first cut probably
+  just draws.
+
 ### SDR-19 — Standard VFO A/B (swap, A=B); split removed; the card dissolved into a plain white readout
-- **Type:** task · **Severity:** — · **Status:** doing — implemented 2026-09-06 (evening → night) in four live rounds with Richard on the G2E; builds clean, gates pass; final verdict pending
+- **Type:** task · **Severity:** — · **Status:** done — implemented and live-verified 2026-09-06 (evening → night) over eleven rounds with Richard on the G2E ("to je prozatím vše, díky"); committed + pushed as `61ecd7f`
 - **Source:** Richard, 2026-09-06 evening, after an afternoon of using SDR-12's
   split: "funkce split jak je teď se mi moc nezdá, asi bych ji spíš předělal na
   standardní funkci VFOA/VFOB … a nebo split tam necháme, ale to VFO B tam
@@ -230,7 +256,7 @@ the new code, SIGTERM, config re-read: still 0.3 (exit 0). Then the live pass
 on the G2E the same evening (arrow cursor, drag, reset, restart) — Richard's OK.
 
 ### SDR-14 — Spectrum-centred control surface: the VFO card, then filter/AGC/mode controls on the spectrum
-- **Type:** task · **Severity:** — · **Status:** doing — step 1 (the card) implemented 2026-09-06, live look pending; step 2 not started
+- **Type:** task · **Severity:** — · **Status:** doing — step 1 (the card) shipped 2026-09-06 and then **superseded the same night by SDR-19**: after a live pass Richard first pinned the card top-left and then dropped it altogether, so the frequency readout is plain white text where it always was and the S-meter is back in the top-right corner. What survives of step 1 are the **filter and AGC dialogs** and the centred control strip. Step 2 (mode editor, footer width ~1540 px) not started.
 - **Source:** Richard, 2026-09-06, after the SDR-2 window-width note; inspiration = SmartSDR's per-slice "flag" (the always-visible info panel at the slice's tuning line), explicitly *not* to be copied 1:1
 - **Detail:** mockups `~/Downloads/sdr-mockup-vfo-karta-v4.png` (approved) — drawn onto `docs/img/main-window.png`
 
