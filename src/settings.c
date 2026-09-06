@@ -98,6 +98,8 @@ int settings_load(Settings *s) {
       char *bl = g_key_file_get_string(kf, GROUP_DISPLAY, "band_levels", NULL);
       if (bl) { g_strlcpy(s->band_levels, bl, sizeof(s->band_levels)); g_free(bl); }
     }
+    if (g_key_file_has_key(kf, GROUP_DISPLAY, "band_levels_v", NULL))
+      s->band_levels_v = g_key_file_get_integer(kf, GROUP_DISPLAY, "band_levels_v", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "atten", NULL))
       s->atten = g_key_file_get_integer(kf, GROUP_RX, "atten", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "lna", NULL))
@@ -319,6 +321,7 @@ int settings_save(const Settings *s) {
   g_key_file_set_string (kf, GROUP_RX,      "region",     s->region);
   g_key_file_set_string (kf, GROUP_RX,      "country",    s->country);
   g_key_file_set_string (kf, GROUP_DISPLAY, "band_levels", s->band_levels);
+  g_key_file_set_integer(kf, GROUP_DISPLAY, "band_levels_v", s->band_levels_v);
   g_key_file_set_integer(kf, txdev,        "pa_enable", s->tx_pa);
   g_key_file_set_integer(kf, txdev,        "antenna",   s->tx_ant);
   g_key_file_set_double (kf, txdev,        "drive_w",   s->tx_drive);

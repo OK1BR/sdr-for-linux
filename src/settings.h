@@ -50,6 +50,10 @@ typedef struct {
   int       win_h;     /* window height (px, 0 = default)            */
   int       win_max;   /* window maximized                          */
   char      band_levels[512]; /* per-band dB window, "key=hi/lo;..." */
+  int       band_levels_v;    /* band_levels seed version: 0 = written before
+                                 0.5.1 (every band seeded LSB below 10 MHz, 60 m
+                                 included), 1 = seeded from the per-band table.
+                                 Drives the one-time 60 m LSB→USB migration (SDR-7) */
   int       atten;     /* ADC0 step attenuator (dB, 0-31)            */
   int       lna;       /* P1/HL2 LNA gain (dB, −12..+48)             */
   int       agc;       /* AGC mode 0=off,1=long,2=slow,3=med,4=fast  */

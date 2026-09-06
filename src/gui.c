@@ -321,19 +321,41 @@ static App *tci_app;
 
 /* HF bands [lo,hi] Hz + a config key. The dB window is remembered per band, so
  * the noise-floor placement follows you across bands. Order defines the
- * persistence layout; the key survives reordering. */
-static const struct { long long lo, hi; const char *key; long long dflt; } BANDS[NBANDS] = {
-  { 1800000,  2000000, "160m",  1840000 }, { 3500000,  4000000, "80m",  3600000 },
-  { 5250000,  5450000, "60m",   5357000 }, { 7000000,  7300000, "40m",  7074000 },
-  {10100000, 10150000, "30m",  10136000 }, {14000000, 14350000, "20m", 14074000 },
-  {18068000, 18168000, "17m",  18100000 }, {21000000, 21450000, "15m", 21074000 },
-  {24890000, 24990000, "12m",  24915000 }, {28000000, 29700000, "10m", 28074000 },
-  {50000000, 54000000, "6m",   50313000 },
+ * persistence layout; the key survives reordering. `dmode` is the mode a band
+ * starts in before the operator ever touched it (band stacking then remembers):
+ * the convention is LSB below 10 MHz, USB above — EXCEPT 60 m, which is USB
+ * everywhere (WRC-15 / US / UK channels; piHPSDR band.c seeds every 60 m
+ * bandstack entry modeUSB; our bandplan marks 5354-5366 "USB voice"). SDR-7. */
+static const struct { long long lo, hi; const char *key; long long dflt; int dmode; }
+BANDS[NBANDS] = {
+  { 1800000,  2000000, "160m",  1840000, DEMOD_LSB }, { 3500000,  4000000, "80m",  3600000, DEMOD_LSB },
+  { 5250000,  5450000, "60m",   5357000, DEMOD_USB }, { 7000000,  7300000, "40m",  7074000, DEMOD_LSB },
+  {10100000, 10150000, "30m",  10136000, DEMOD_USB }, {14000000, 14350000, "20m", 14074000, DEMOD_USB },
+  {18068000, 18168000, "17m",  18100000, DEMOD_USB }, {21000000, 21450000, "15m", 21074000, DEMOD_USB },
+  {24890000, 24990000, "12m",  24915000, DEMOD_USB }, {28000000, 29700000, "10m", 28074000, DEMOD_USB },
+  {50000000, 54000000, "6m",   50313000, DEMOD_USB },
 };
+
+/* SDR-7 one-time migration. Configs written before `band_levels_v` 1 carry the
+ * old "< 10 MHz → LSB" seed in every band entry — on 60 m that is an LSB nobody
+ * chose. Only a saved LSB on a band whose seed CHANGED (60 m today) migrates,
+ * and only while the marker is absent: once this build has saved the config
+ * the marker is there and a saved LSB is the operator's own and stays. */
+static int seed_lsb_migrates(int band, int md, int levels_v) {
+  return levels_v < 1 && band >= 0 && md == DEMOD_LSB &&
+         BANDS[band].lo < 10000000 && BANDS[band].dmode != DEMOD_LSB;
+}
 
 static int band_for_freq(long long f) {
   for (int i = 0; i < NBANDS; i++) { if (f >= BANDS[i].lo && f <= BANDS[i].hi) { return i; } }
   return -1;
+}
+
+/* Mode a frequency starts in when nothing is remembered: the band's `dmode`,
+ * the old by-frequency rule outside every band table entry. */
+static int default_mode_for_freq(long long f) {
+  int b = band_for_freq(f);
+  return b >= 0 ? BANDS[b].dmode : (f < 10000000 ? DEMOD_LSB : DEMOD_USB);
 }
 
 /* Device-specific TX-calibration DEFAULTS, pulled from piHPSDR for the ANAN G2E.
@@ -2058,6 +2080,7 @@ static void app_to_settings(const App *app, Settings *s) {
     if (n < 0 || (size_t)n >= brem) { break; }
     bp += n; brem -= (size_t)n;
   }
+  s->band_levels_v = 1;   /* seeded from BANDS[].dmode — a saved mode is the operator's from here on (SDR-7) */
   /* per-band PA calibration → "key=dB;..." (F6b, locale-independent '.') */
   char *cp = s->pa_cal; size_t crem = sizeof(s->pa_cal); cp[0] = '\0';
   for (int i = 0; i < NBANDS; i++) {
@@ -4718,7 +4741,12 @@ static void start_radio(App *app) {
   /* Mode: env SDRFL_MODE > saved mode (if valid) > by-band default. */
   int mode = mode_from_name(getenv("SDRFL_MODE"));
   if (mode < 0) { mode = st.mode; }
-  if (mode < 0) { mode = (st.freq < 10000000) ? DEMOD_LSB : DEMOD_USB; }
+  if (mode < 0) { mode = default_mode_for_freq(st.freq); }
+  if (seed_lsb_migrates(band_for_freq(st.freq), mode, st.band_levels_v)) {
+    mode = default_mode_for_freq(st.freq);           /* SDR-7: the startup mode too */
+    printf("settings: startup mode on %lld Hz was the old LSB seed → %s (one-time migration)\n",
+           st.freq, mode == DEMOD_USB ? "USB" : "?");
+  }
 
   snprintf(ipaddr_radio, sizeof(ipaddr_radio), "%s", st.ip);
   g_strlcpy(app->radio_ip, st.ip, sizeof(app->radio_ip));
@@ -4828,7 +4856,7 @@ static void start_radio(App *app) {
   for (int i = 0; i < NBANDS; i++) {
     app->band_high[i] = app->pan_high;
     app->band_low[i]  = app->pan_low;
-    app->band_mode[i] = (BANDS[i].lo < 10000000) ? DEMOD_LSB : DEMOD_USB;  /* default */
+    app->band_mode[i] = BANDS[i].dmode;                                    /* default */
     app->band_freq[i] = BANDS[i].dflt;
   }
   char blbuf[512];
@@ -4858,7 +4886,14 @@ static void start_radio(App *app) {
       for (int i = 0; i < NBANDS; i++) {
         if (strcmp(tok, BANDS[i].key) == 0) {
           app->band_high[i] = hi; app->band_low[i] = lo;
-          if (md >= 0 && md < DEMOD_NMODES) { app->band_mode[i] = md; }
+          if (md >= 0 && md < DEMOD_NMODES) {
+            if (seed_lsb_migrates(i, md, st.band_levels_v)) {
+              printf("settings: %s saved as LSB by the old by-frequency seed → %s (one-time migration)\n",
+                     BANDS[i].key, BANDS[i].dmode == DEMOD_USB ? "USB" : "?");
+              md = BANDS[i].dmode;
+            }
+            app->band_mode[i] = md;
+          }
           if (bf >= BANDS[i].lo && bf <= BANDS[i].hi) { app->band_freq[i] = bf; }
           break;
         }

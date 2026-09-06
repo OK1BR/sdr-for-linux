@@ -309,7 +309,7 @@ our first DUC packet adds the unavoidable +1. The healthy signature in
 `TX-DESIGN.md` §10 stands as written.
 
 ### SDR-7 — 60 m defaults to LSB; the band is USB/CWU
-- **Type:** bug · **Severity:** low · **Status:** open
+- **Type:** bug · **Severity:** low · **Status:** done (2026-09-06) — seed fixed + one-time migration, verified offline on three config shapes (see below)
 - **Source:** review of SDR-2, 2026-08-23
 
 The per-band default mode comes from the `< 10 MHz → LSB` rule at the band
@@ -318,6 +318,34 @@ button lands in LSB. piHPSDR's 60 m bandstack entries are USB/CWU
 (`band.c`), and 5357 kHz is the FT8 (USB) dial. A default change alone would
 not fix a config that already persists `60m=…/0/…` (0 = LSB) — decide how to
 treat an already-saved LSB on 60 m (migrate once, or only change the seed).
+
+**Fix (2026-09-06, `gui.c` + `settings.[ch]`):** both — the seed AND a
+one-time migration, because a seed change alone leaves every existing config
+(Richard's included: `60m=…/0/5359602`) in LSB until the operator happens to
+press USB there, and a blanket "LSB on 60 m is refused on load" would break
+the persist-everything rule for a mode the operator may pick deliberately.
+1. The `BANDS[]` table carries a per-band default mode `dmode` (160/80/40 m
+   LSB, 60 m USB, 30 m and up USB — piHPSDR `band.c` seeds every 60 m
+   bandstack entry `modeUSB`, our bandplan marks 5354-5366 "USB voice");
+   `default_mode_for_freq()` replaces both `< 10 MHz → LSB` sites (the
+   per-band seed and the startup-mode fallback). Outside any table entry the
+   old by-frequency rule still applies.
+2. New `[display] band_levels_v` marker (0 when absent = written before this
+   build, 1 = seeded from the table; `app_to_settings` always writes 1). On
+   load, `seed_lsb_migrates()`: a saved LSB on a band whose seed changed
+   (`lo < 10 MHz && dmode != LSB` — only 60 m today) migrates to `dmode`
+   **only while the marker is absent**, with a `settings: … (one-time
+   migration)` line; the startup `[rx] mode` gets the same treatment when the
+   app last closed on such a band. Once this build has saved the config the
+   marker is there and a saved LSB is the operator's own and stays.
+   Verified offline (broadway + isolated `XDG_CONFIG_HOME` under
+   `dbus-run-session`, `SDRFL_RADIO_IP=192.0.2.1`, SIGTERM exit → save):
+   (A) Richard's config copy, marker-less → line printed, `60m=…/1/…` +
+   `band_levels_v=1` after exit; (B) marker present + 60 m put back to LSB →
+   no line, LSB preserved; (C) marker-less, last closed on 5 359 602 Hz in
+   LSB → both lines, `mode=1` + `60m=…/1/…` after exit. The real config and
+   the live instance were untouched throughout. Not clicked on a live radio
+   (the band button path is unchanged, only its seed value moved).
 
 ### SDR-8 — "p2: DUC sequence errors" spam on the ANAN G2 (bytes 32-35 are not a counter there)
 - **Type:** bug · **Severity:** low · **Status:** done (2026-08-23) — confirmed live on the G2 by W1IZZ 2026-08-24 ("Sequence errors are gone")
@@ -360,7 +388,7 @@ TCI-fed digi (ext ring) print nothing for the mic; a voice MOX over prints
 exactly what it printed before. Two-tone stays reported — it is a MOX over
 and the feed does pull the ring under the generator, so its counters are
 real. No offline gate compiles `tx_run.c` (radio-bound), so the change is
-compile-checked + the nine CI gates only. **Live check, next time the TX
+compile-checked + the ten CI gates only. **Live check, next time the TX
 path is keyed anyway:** one TUNE over in a voice mode must print no
 `tx: over stats` line; one MOX voice over must behave as before (silent when
 clean, the line only on real drops/shorts).
