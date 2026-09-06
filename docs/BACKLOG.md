@@ -119,7 +119,7 @@ to be used wherever the radio is announced.
 ## Open — bugs
 
 ### SDR-13 — Came up at "RX 1 Hz" after a restart, not at the last tuned frequency
-- **Type:** bug · **Severity:** medium · **Status:** open — not reproduced; code read 2026-09-06, persistence path clean, working hypothesis = operator state (see below); reproduce at the NEXT planned restart
+- **Type:** bug · **Severity:** medium · **Status:** done (2026-09-06) — closed as **operator state**, not a defect: the persistence path was read clean, 1 Hz is the tuning clamp, and the next relaunch restored the real last frequency (see the closing note)
 - **Source:** Richard's desk, 2026-09-05 21:27 — the SDR was stopped (SIGTERM, clean `p2: stopped`) and relaunched from `build/` for the capture-clock stamp (98c57de); the log's first line read `Using ANAN G2E … RX 1 Hz`
 - **Detail:** this entry; the skimmer session write-up (skimmer-for-linux `docs/SCOPE.md`, M8 evening state)
 
@@ -158,6 +158,18 @@ stopped for this): note the frequency on screen, tune once over TCI
 (`vfo:0,0,<hz>`), tune once by hand, wait > 1 s, SIGTERM, relaunch, compare the
 `Using … RX <hz>` line and `[radio] freq` in `config.ini` with the last value
 set. Reopen with a cause if they differ; close as operator state if they match.
+
+**Closed 2026-09-06.** Richard's own read: the 1 Hz was a leftover of the
+skimmer waterfall test that evening (sweeping the DC line), and he has seen
+nothing of the kind since. The next relaunch supplied the missing data point:
+the 2026-09-06 13:14 start (same `build/` binary, previous instance stopped
+the evening before after hand tuning on 80 m) came up at
+`Using ANAN G2E … RX 3528509 Hz` — the real last frequency — and the
+debounced save was seen working in the same session (`[radio] freq` followed
+his 20 m tuning within seconds). Not the full TCI+hand+SIGTERM recipe, but a
+normal stop → start cycle restoring the last value, on top of the code
+reading. Reopen only if a start ever lands on a frequency the operator did
+not set.
 
 ### SDR-1 — Supply voltage reads wrong on an ANAN G2
 - **Type:** bug · **Severity:** high · **Status:** done (2026-08-24) — G2 mapping confirmed by W1IZZ's v0.4.2 read-back (raw 544 ≈ expected 540 at a nominal 13.8 V; he did not state his PSU's actual reading)
@@ -258,7 +270,7 @@ recurs: `G_DEBUG=fatal-warnings gdb -batch -ex run -ex bt --args
 note in skimmer-for-linux still carries the old numbers (separate repo).
 
 ### SDR-4 — `p2: DUC sequence errors: 2` at every stream start
-- **Type:** bug · **Severity:** low · **Status:** done in code (2026-08-23) — hardened + instrumented, live signature pending
+- **Type:** bug · **Severity:** low · **Status:** done (2026-08-23) — hardened + instrumented; **live signature confirmed on the G2E 2026-09-06** (see the closing note)
 - **Source:** stderr of the YO DX HF runs, 2026-08-22 / 23
 - **Detail:** `docs/CONTEST-NOTES-2026-08-22.md` §N2 (day-2 section)
 
@@ -286,7 +298,15 @@ baseline once per link start (`p2: DUC sequence-error counter at link start:
 N (before|after the first DUC packet)`). **Live criterion for the next run
 against the G2E (TX-DESIGN §10):** at most ONE `DUC sequence errors: N (+1)`
 line within ~1 s of `p2: started`, never a second one, never one later; the
-baseline's N settles the origin. Not verified on the radio yet.
+baseline's N settles the origin. ~~Not verified on the radio yet.~~
+
+**Live-verified 2026-09-06 (G2E, `build/` at 1f288d9, ~10 min / 300 log
+lines):** `p2: DUC sequence-error counter at link start: 1 (before the first
+DUC packet)`, then exactly one `p2: DUC sequence errors: 2 (+1)` in the line
+right after `p2: started`, and nothing later. That settles the origin of the
+old "2": the gateware counts 1 by itself at run=1, before our first packet;
+our first DUC packet adds the unavoidable +1. The healthy signature in
+`TX-DESIGN.md` §10 stands as written.
 
 ### SDR-7 — 60 m defaults to LSB; the band is USB/CWU
 - **Type:** bug · **Severity:** low · **Status:** open

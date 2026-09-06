@@ -711,10 +711,12 @@ knowledge — the listener now prints a baseline line once per link start,
 packet)`, to settle it. **Healthy signature = at most ONE
 `p2: DUC sequence errors: N (+1)` line, only within ~1 s of `p2: started`,
 and never anything later; a second line at start, or any line during the
-run, is real wire loss.** ⏳ Live verification pending (no radio in the SDR-4
-session): the next live run's stderr must show the new baseline line and
-either no `DUC sequence errors` line or exactly one `(+1)` at start — and the
-baseline's "before/after" + N tells where the pre-fix "2" came from.
+run, is real wire loss.** ✅ Live-verified 2026-09-06 on the G2E (BACKLOG
+SDR-4): baseline `1 (before the first DUC packet)`, then exactly one
+`DUC sequence errors: 2 (+1)` right after `p2: started`, nothing in the
+following ~10 min. So the pre-fix "2" was the gateware's own 1 at run=1 plus
+our unavoidable first-packet +1 — the fix removed nothing visible, and was
+not expected to; what it removed was the torn-ring window.
 
 **Mic-clock pacing is self-healing now.** The one-shot permanent fallback
 (N2 v2) is gone: on timeout the feed falls back to the local timer AND

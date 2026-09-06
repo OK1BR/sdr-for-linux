@@ -325,7 +325,8 @@ voltage; Saturn = HP-status bytes 57-58 × 0.02553 per piHPSDR + Thetis, still
 unconfirmed on a G2), SDR-2 (60/30 m buttons), SDR-4 (TX-IQ ring gated on the
 live link + baseline line; ⛔ the live-healthy signature is now *at most one*
 `DUC sequence errors: N (+1)` right after `p2: started` — the radio itself
-counts 1 at run=1 before our first packet — and NEVER a line later), SDR-8
+counts 1 at run=1 before our first packet — and NEVER a line later;
+**live-confirmed on the G2E 2026-09-06**, BACKLOG SDR-4 closed), SDR-8
 (the seq-error parser is G2E-only: Saturn bytes 30-42 are p2app "V4.3" FIFO
 telemetry), SDR-3 (GtkImage INT_MIN warnings = GTK/Pango NaN baseline,
 docs only), SDR-6 (his results evaluated → RADIOS-SCOPE §7.1; G2 status
