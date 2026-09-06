@@ -40,6 +40,114 @@ that leaves the machine wrong; `medium` = gets in the operator's way;
 
 ## Open — tasks
 
+### SDR-19 — Standard VFO A/B (swap, A=B); split removed; the card dissolved into a plain white readout
+- **Type:** task · **Severity:** — · **Status:** doing — implemented 2026-09-06 (evening → night) in four live rounds with Richard on the G2E; builds clean, gates pass; final verdict pending
+- **Source:** Richard, 2026-09-06 evening, after an afternoon of using SDR-12's
+  split: "funkce split jak je teď se mi moc nezdá, asi bych ji spíš předělal na
+  standardní funkci VFOA/VFOB … a nebo split tam necháme, ale to VFO B tam
+  potřeba bude" — and on the card: "frekvenční kartu hodíme zpět ke straně, kde
+  byla původně frekvence … takhle mi tam nějak překáží při provozu".
+
+This **reverses the SDR-12 decision "no active-VFO switching"** taken the same
+afternoon. The two framings in the source are not alternatives: the standard
+transceiver model is two full VFOs (frequency + mode), **A/B** switches the
+active one (what you hear, tune and — without split — transmit on), **A=B**
+copies, **SPLIT** = transmit on the *other* VFO. SDR-12's split is exactly the
+special case "A active + split on", so nothing was ripped out — B got a life
+outside split.
+
+- *Model (gui.c, "swap model"):* `app->freq`/`app->mode` stay the ACTIVE VFO
+  (so every tuning/mode/band path in the file is untouched); the other VFO is
+  parked in `ofreq`/`omode`; `vfo_b` is only the letter the active one carries.
+  `vfo_swap()` = swap the pairs, then re-apply through the existing paths:
+  `engine_set_frequency` → `band_apply` FIRST (cur_band, levels, relays,
+  band-stack mode) → the VFO's own mode via the mode toggle (⛔ ordering:
+  `on_mode_toggled` files the mode under `cur_band`, which only `band_apply`
+  advances — the other order stores it under the old band and the next tick's
+  band-stack overrides it). Refused while keyed (toast) — RX BPF and TX LPF
+  would move together mid-over. `vfo_copy()` = A=B (frequency + mode).
+  `tx_vfo_freq()` is unchanged in meaning: `split ? other : active` — the wire
+  path and its gates (`sdrfl-p2dev-test`, `sdrfl-p1txprobe`) are untouched.
+- *The one constraint that moved:* the other VFO is no longer clamped into the
+  active band — a second VFO on another band is the whole point. The rule is
+  now "**split requires both VFOs in the same band**": `vfo_other_set()` clamps
+  only while split is on; `split_set()` re-seeds an off-band other VFO before
+  switching on (default offset per mode, as before) and *says so in a toast*,
+  because that overwrites a real VFO memory now; `band_apply()` drops split on
+  a band change but no longer clobbers the other VFO; startup restores split
+  only same-band. No cross-mode split: the other VFO's mode mirrors the active
+  one while split is on (`split_set`, `on_mode_toggled`, `vfo_swap`).
+- *TCI:* channel 0 = the active (RX) VFO, channel 1 = the other one, whatever
+  letters they carry — so `split_enable` ("TX on channel 1") stays right for
+  JTDX/tciadapter regardless of which VFO is active, and skimmer (`dds`) / log
+  (`vfo:0,0`) keep reading the RX frequency. `vfo:0,1,f` with split off sets a
+  free other VFO (no clamp); JTDX's order (vfo:0,1 then split_enable) lands the
+  same as before. `sdrfl-tci-test` (59) unchanged — ⚠ it drives a stub ops
+  table, so it says nothing about the real clamp/swap paths.
+- *UI — three iterations the same evening.* (1) The card fixed top-left with
+  an other-VFO row; Richard's first live look: "dobrý, tak to trochu
+  rozložíme" → (2) **the card is gone**: "kartu zruš … nech frekvenci, druhý
+  a třetí řádek … S-metr dej zpět do pravého rohu … řádek NR/NB atd. dej
+  pryč, to je redundantní zobrazení … všechno ať je bílou barvou". So the
+  readout is plain WHITE text at the pre-card place (x = 44 under the ruler):
+  frequency · `Hz · VFO A · band · mode` · `MODE · lo–hi Hz (width) · AGC X`
+  · **the other VFO row** `VFO B  7.025.000 · CW` (tag `TX B` under split)
+  with the **A/B** and **A=B** buttons right after it on the same line — my
+  proposal for his open question "jen nevím, kam dáme přepínač A/B a A=B":
+  the second VFO's readout and its controls together, like a rig's display,
+  and the ~1540 px strip does not grow. No box: the area tunes as before the
+  card; only the filter/AGC texts and the two buttons are click targets
+  (`readout_target`). S-meter back top-right via `draw_s_meter` (both paths),
+  indicator row dropped (the strip buttons show the same state). Active line
+  reads `VFO A` / `VFO B`; key **b** = A/B; TX card tag `TX B` / `TX A`, its
+  A=B = `vfo_copy`; OVL badge right of the block; `SPLIT_MIN_TOP` = `RO_TOP +
+  RO_H + 16` = 156 px (was 230). Identifiers `card_*`/`CARD_*` → `ro_*`/`RO_*`.
+- *Round 4 — SPLIT REMOVED (Richard: "zruš tu funkci split" → "necháme jen
+  VFO A/B"):* gone from the GUI and settings — `app->split`, the SPLIT strip
+  button, key `s`, the red TX filter + TX card, Ctrl+click / Ctrl+drag /
+  Ctrl+wheel on the TX VFO, the same-band clamp, re-seed + toasts,
+  `tx_vfo_freq()`, `[rx] split` (retired on save), the TCI split ops (table
+  entries NULL → `split_enable` echoes false, TX_FREQUENCY = channel 0; the
+  generic server backend and `sdrfl-tci-test`'s stub-driven split checks
+  stay). `tx_run_set_freq()` always gets the active VFO; the other VFO is a
+  memory on any band. The readout's third line also lost its mode label
+  ("ten údaj USB je tam redundantní" — the strip's mode buttons show it).
+  Consequence named to Richard before he confirmed: LB0EI's pileup click-to-TX
+  (SKM-4) has no radio side now.
+- *Rounds 5-7 (same night):* the whole readout block +10 % via one factor
+  `RO_S` (fonts, line pitch, buttons, `RO_H`); fonts unified with the strip —
+  Adwaita Mono only on the big number (tabular digits), Adwaita Sans (`FONT_UI`)
+  on lines 2-4 and the A/B, A=B buttons; **lower-sideband filters shown as
+  audio Hz, low to high** ("u LSB se blbě ukazují filtry, měly by být stejně
+  jako USB — absolutní hodnoty od nejnižšího do nejvyššího"): the readout's
+  passband text prints `150–2850 Hz` for LSB/CWL/DIGL, and the Filter dialog
+  works in a mirrored DISPLAY space for those modes — graph axis, edge
+  handles/labels, drag and the Low/High spin rows all read audio Hz
+  (`filt_mirrored` / `filt_disp` = its own inverse / `filt_graph_drange`);
+  AM/RTTY stay signed; WDSP-facing `flo/fhi` untouched.
+- *Rounds 8-11 (same night, all live-looked-at by Richard, "to je prozatím
+  vše"):* readout fonts `RO_S` 1.20 / line pitch `RO_L` 1.26; S-meter sized by
+  proportion at `METER_S` 1.06 (1.15 was "trochu moc"): ticks 16 px ≈ the
+  strip's 14.7 px Sans + optical compensation, reading 20 px, bar 407 px — and
+  its ticks + `S9+20 −53 dBm` reading were bluish-grey/greenish, now WHITE in
+  Adwaita Sans (that was the "divné písmo"); the passband dash is spaced
+  (`150 – 3050 Hz`); the Filter graph (fill/outline/handles/values/carrier/
+  axis) and the AGC gain bar are WHITE with the UI font. Spot labels dodge
+  the readout block (measured extent) and the S-meter (scaled macros) —
+  verified in code, not with live spots. TX meters still Adwaita Mono (asked,
+  no answer yet). ⏳ NOT committed — awaiting Richard's word.
+- *Persistence (`[rx]`):* `vfo` (0/1), `vfo_other_freq`, `vfo_other_mode`;
+  legacy `freq_b` is read as the fallback for `vfo_other_freq` and removed on
+  the next save. Proven headless (isolated XDG, private session bus): new keys
+  round-trip, a legacy-only config maps `freq_b` → `vfo_other_freq`.
+- *Live checklist for Richard (G2E; ≥ 5 s between relaunches):* (1) A/B across
+  bands — relays click, band levels + the other VFO's mode follow, the card
+  letter flips; (2) A/B under split — the TX filter jumps to the old RX
+  frequency, audio moves to the old TX frequency; (3) split on with the other
+  VFO parked off-band — re-seed + toast; (4) Ctrl+click / TX-filter drag still
+  move the TX VFO and stop at the band edge; (5) `s`, `b`, A=B; (6) the JTDX or
+  tciadapter split pair if handy. Commit after his verdict, as on 6.9.
+
 ### SDR-18 — CTUN: the spectrum pans, the RX dial stays — the RX passband becomes a handle
 - **Type:** task · **Severity:** — · **Status:** done — live-verified 2026-09-06 by Richard on the G2E ("dobrý, to funguje": the shifter sign discriminator passed)
 - **Source:** Richard, 2026-09-06: "ještě by se mi hodila funkce C-TUN… myší budu dál posouvat spektrum, ale naladěná RX zůstane na místě a budu s ní hýbat stejně jako s TX při splitu"
@@ -671,7 +779,7 @@ and NR4 on the same recording, which is the same corpus discipline
 `CONTRIBUTING.md` already asks of outside patches.
 
 ### SDR-12 — VFO B + split with a TCI backend (`vfo:0,1,…`, `split_enable`), for pileup click-to-TX
-- **Type:** idea · **Severity:** — · **Status:** done — live-verified 2026-09-06 by Richard on the G2E (interaction + colours; see the implementation block at the end of this item)
+- **Type:** idea · **Severity:** — · **Status:** done, then **REMOVED the same night (2026-09-06, SDR-19)** — live-verified by Richard on the G2E in the afternoon, dropped on his call in the evening ("zruš tu funkci split … necháme jen VFO A/B"); what survives is the second VFO (A/B, A=B), the engine's TX-frequency wire path + its gates, and the generic TCI server backend (the GUI passes no split ops now — `split_enable` echoes false, TX_FREQUENCY = channel 0). The pileup click-to-TX this item was filed for (LB0EI, SKM-4) is therefore not available; the implementation block below is history.
 - **Source:** skimmer-for-linux `SKM-4` — Roy Andre Løntjern, LB0EI, 2026-08-29:
   in a split pileup he clicks where the DX was just listening and moves his
   **TX** frequency there while RX stays on the DX. Filed here 2026-09-05 when

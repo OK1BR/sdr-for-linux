@@ -326,7 +326,9 @@ re-bases `drag_split_ph` or jitter drags it back). The divider wins over
 the gutter rows and passband edges it overlaps. Headless persistence
 round-trip proven under `dbus-run-session` + isolated XDG. BACKLOG SDR-17.
 
-**SPLIT / VFO B — implemented + LIVE 2026-09-06 (same evening, BACKLOG
+**SPLIT / VFO B — implemented + LIVE 2026-09-06, then ⛔ REMOVED the same
+night on Richard's call ("zruš tu funkci split … necháme jen VFO A/B") —
+see the STANDARD VFO A/B block below; the record stays as history (BACKLOG
 SDR-12; Richard's verdict "dobrý"):** TX on VFO B while RX stays on A. ⛔ Design decision
 with Richard: **no active-VFO switching** — everything acts on A as before;
 B moves only by grabbing the yellow TX filter drawn at B (drag / wheel,
@@ -369,6 +371,51 @@ centre, `if:0,0` = dial − centre, `vfo:0,0` = dial, IQ stamps = centre
 (skimmer reads `dds`, log reads `vfo` — both checked in their tests).
 CTUN button after BIN, `[rx] ctun` persisted. ⛔ Live discriminator for
 the shifter sign: CTUN on, drag the spectrum → the audio must not change.
+
+**★ STANDARD VFO A/B — implemented 2026-09-06 (late evening, BACKLOG
+SDR-19; NOT yet live-verified — Richard's pass pending):** Richard reversed
+the SDR-12 "no active-VFO switching" call after an afternoon of split use
+("asi bych ji spíš předělal na standardní funkci VFOA/VFOB … to VFO B tam
+potřeba bude"). Model = the classic rig: A/B swaps what you hear/tune/TX
+on, A=B copies, SPLIT = TX on the OTHER VFO; SDR-12's split survived as the
+special case "A active + split". ⛔ Swap model: `app->freq/mode` ARE the
+active VFO (every tuning path untouched), the other one lives in
+`ofreq/omode`, `vfo_b` is just the letter; `vfo_swap()` must call
+`band_apply()` BEFORE toggling the VFO's mode (band-stack ordering trap),
+refuses while keyed. `tx_vfo_freq()` unchanged (`split ? other : active`),
+wire gates untouched. The other VFO is FREE across bands; **split requires
+same band** (`vfo_other_set` clamps only under split, `split_set` re-seeds
+an off-band other VFO + toast, `band_apply` drops split without clobbering
+it). TCI channel 0 = active, 1 = other. Persisted `[rx] vfo`,
+`vfo_other_freq`, `vfo_other_mode` (legacy `freq_b` migrates). Same
+evening, two more turns on the display: the card first went back to a
+FIXED top-left position ("překáží při provozu"), then Richard **dropped
+the card altogether** ("kartu zruš … řádek NR/NB atd. pryč, redundantní …
+S-metr zpět do pravého rohu … všechno bílou") → the readout is plain
+WHITE text where it always was (`RO_X` 44 under the ruler): frequency ·
+`Hz · VFO A · band · mode` · `MODE · lo–hi Hz · AGC` · **other-VFO row**
+`VFO B 7.025.000 · CW` (`TX B` under split) with the **A/B** and **A=B**
+buttons inline after it (my placement proposal, pending his verdict); the
+area tunes like before the card, only those texts/buttons are click
+targets (`readout_target`); S-meter top-right (`draw_s_meter`, both
+paths); key `b` = A/B; the passband/AGC line carries no mode label
+(redundant with the strip). **Round 4 the same night: SPLIT REMOVED
+ENTIRELY** ("zruš tu funkci split … necháme jen VFO A/B") — no `app->split`,
+no SPLIT button / key `s` / TX filter / TX card / Ctrl+click, no TCI split
+ops (server echoes `split_enable` false), `tx_run_set_freq()` always gets
+the active VFO, the other VFO is a free memory. Engine wire path + gates
+untouched. ⚠ This drops the radio side of LB0EI's pileup click (SKM-4).
+Rounds 5-11 the same night, every one looked at live by Richard on the
+G2E: readout fonts `RO_S` 1.20 / line pitch `RO_L` 1.26, mono only on the
+big number, Adwaita Sans elsewhere; LSB/CWL/DIGL filters shown as audio Hz
+low→high in the readout AND the Filter dialog (mirrored display space,
+`filt_disp`); S-meter `METER_S` 1.06 (sized by proportion — 1.15 was too
+much), white + Sans (its reading had been greenish); spaced passband dash;
+Filter + AGC dialog graphics white + Sans. He closed with "to je prozatím
+vše, díky". ⛔ ALL OF THIS IS UNCOMMITTED, UNPUSHED local work awaiting his
+word — origin/main (a724786) still carries SDR-12's split. TX meters
+(Mic/Lev/ALC) still Adwaita Mono (asked, unanswered). Scratch
+`/var/tmp/vfoab` (launch logs, config round-trip) awaits the trash.
 
 **★ RELEASED 2026-08-25: v0.5.0 — the G2-tested release.** Same-day
 turnaround on W1IZZ's round 2 (gh#3, evaluated in RADIOS-SCOPE §7.2): his

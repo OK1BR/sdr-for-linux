@@ -86,8 +86,13 @@ typedef struct {
   int         audio_ok;     /* demod + audio sink up                           */
   long long   freq;         /* DDC centre = tuned frequency (Model A)          */
   int         mode;         /* current demod mode (DEMOD_*)                    */
-  int         split;        /* transmit on VFO B (SDR-12)                      */
-  long long   freq_b;       /* VFO B = the TX frequency under split (Hz)       */
+  /* Two VFOs (SDR-19), swap model: freq/mode ARE the active VFO, the other
+   * one is parked in ofreq/omode, and vfo_b is only the letter the active one
+   * carries (0 = A, 1 = B). One source of truth — every tuning/mode path in
+   * this file keeps working on freq/mode unchanged. */
+  int         vfo_b;        /* active VFO letter: 0 = A, 1 = B                 */
+  long long   ofreq;        /* the other VFO's frequency (Hz; 0 = never set)   */
+  int         omode;        /* the other VFO's mode (DEMOD_*)                  */
   int         ctun;         /* CTUN: the dial rides inside a fixed DDC span (SDR-18) */
   long long   centre;       /* DDC centre (== freq unless CTUN)                */
   int         rate;         /* IQ sample rate = full panadapter span (Hz)      */
@@ -164,9 +169,10 @@ typedef struct {
   int         drag_pan;      /* shift+drag is panning the view (not tuning)        */
   double      drag_base_pan; /* pan captured at drag-begin (for shift+drag)        */
   double      flo, fhi;      /* current passband (Hz, rel. centre) — for drawing */
-  double      card_x0, card_y0, card_x1, card_y1; /* VFO card rect of the last draw
-                                (radio mode; 0 = not drawn) — spots dodge it,
-                                clicks/drags inside it are swallowed          */
+  double      ro_x0, ro_y0, ro_x1, ro_y1; /* readout block extent of the last draw
+                                (radio mode; 0 = not drawn) — spots dodge it, the
+                                OVL badge sits right of it; only its click targets
+                                (readout_target) swallow clicks/drags          */
   int         drag_dead;     /* drag began inside the VFO card: ignore it      */
   GtkWidget  *filter_dd;     /* filter dropdown (repopulated per mode)         */
   GtkWidget  *agc_dd;        /* AGC dropdown (synced on per-mode-group restore) */
@@ -179,9 +185,12 @@ typedef struct {
   int         filt_syncing;  /* popover widgets being set from state → ignore signals */
   int         filt_drag;     /* graph drag: 0 none, 1 low edge, 2 high edge, 3 shift */
   int         filt_drag_lo, filt_drag_hi;   /* passband at graph drag-begin (Hz)   */
-  double      card_filt_y0, card_filt_y1;   /* the card's mode·filter·AGC row (y)  */
-  double      card_filt_x0, card_filt_x1;   /* … the filter text (x) → filter dialog */
-  double      card_agc_x0,  card_agc_x1;    /* … the AGC text (x) → AGC dialog      */
+  double      ro_filt_y0, ro_filt_y1;   /* the card's mode·filter·AGC row (y)  */
+  double      ro_filt_x0, ro_filt_x1;   /* … the filter text (x) → filter dialog */
+  double      ro_agc_x0,  ro_agc_x1;    /* … the AGC text (x) → AGC dialog      */
+  double      ro_btn_y0,  ro_btn_y1;    /* the other-VFO row's buttons (y band)  */
+  double      ro_ab_x0,   ro_ab_x1;     /* … A/B (x) → vfo_swap                 */
+  double      ro_aeb_x0,  ro_aeb_x1;    /* … A=B (x) → vfo_copy                 */
   AdwDialog  *agc_dlg;       /* AGC dialog while open (NULL when closed)             */
   GtkWidget  *agc_btn[5];    /* character toggles, index = demod AGC mode 0..4       */
   GtkWidget  *agc_gain_row;  /* AdwSpinRow: AGC-T (dB)                               */
@@ -222,13 +231,6 @@ typedef struct {
   int         drag_split;      /* the active left-drag is moving the divider      */
   double      drag_split_ph;   /* spectrum height (px) at drag-begin              */
   int         split_hover;     /* pointer is over the divider → highlight it      */
-  /* Split (SDR-12): the TX filter at VFO B is a draggable object; the small
-   * TX card at its foot is a readout with two buttons (A=B, OFF). */
-  int         drag_tx;         /* the active left-drag moves VFO B                */
-  long long   drag_base_freq_b;
-  int         tx_hover;        /* pointer over the TX filter → highlight it       */
-  double      txc_x0, txc_y0, txc_x1, txc_y1;      /* TX card rect (last draw)   */
-  double      txc_ab_x0, txc_ab_x1, txc_off_x0, txc_off_x1, txc_btn_y0, txc_btn_y1;
   /* CTUN (SDR-18): the RX passband body is the dial's handle, the plain drag
    * pans the DDC centre instead of the dial. */
   int         drag_rx;         /* the active left-drag moves the RX dial          */
@@ -332,7 +334,6 @@ typedef struct {
   GtkWidget  *mox_btn;       /* MOX toggle (disabled until F6c)                     */
   GtkWidget  *ps_btn;        /* PureSignal toggle (header bar, after MOX)           */
   GtkWidget  *tt_btn;        /* two-tone test toggle (header bar; KEYS → .txkey)    */
-  GtkWidget  *split_btn;     /* SPLIT toggle (strip, between 2T and MON; SDR-12)    */
   GtkWidget  *tx_label;      /* live TX power/SWR + refusal reason readout          */
   char        tx_reason[64]; /* last refusal/trip reason to flash                   */
   gint64      tx_reason_until;/* monotonic µs until which to show tx_reason         */
@@ -450,9 +451,6 @@ static void update_band_highlight(App *app) {
 }
 
 static void tx_push_cfg(App *app);   /* fwd: re-push TX cfg when the band changes */
-static void split_set(App *app, int on); /* fwd: split off on a band change (SDR-12) */
-static void split_set_b(App *app, long long f); /* fwd: wheel over the TX filter */
-static void on_split_toggled(GtkToggleButton *b, gpointer data); /* fwd: split_set syncs the button */
 static void toast_brief(App *app, const char *msg);  /* fwd */
 static void ps_apply(App *app);      /* fwd: PureSignal enable/att/SetPk → engine */
 static void schedule_save(App *app); /* fwd: GUI tick persists auto-att changes   */
@@ -464,15 +462,6 @@ static void band_apply(App *app) {
   if (b == app->cur_band) { return; }
   app->cur_band = b;
   update_band_highlight(app);
-  /* ⛔ Split is in-band by design: a B left behind on the old band would be a
-   * surprise TX frequency (TX-SAFETY). Band change → split off, B = A
-   * (ExpertSDR's "automatic SPLIT disable", hard-wired here). cur_band is
-   * -1 until start_radio seeds it, so the startup pass never trips this. */
-  if (app->split && (b < 0 || band_for_freq(app->freq_b) != b)) {
-    app->freq_b = app->freq;
-    split_set(app, 0);
-    toast_brief(app, "Split off — band changed");
-  }
   if (b >= 0) {
     app->pan_high = app->band_high[b];
     app->pan_low  = app->band_low[b];
@@ -506,8 +495,8 @@ static void band_apply(App *app) {
 #define ADC_OVL_HOLD_US 700000
 
 /* Spectrum/waterfall split (SDR-17). SPLIT_FRAC_DEFAULT = the old fixed ratio;
- * the divider drags between SPLIT_MIN_TOP px of spectrum (the VFO card must
- * stay whole: CARD_TOP + CARD_H + a ruler's worth — see split_ph()) and
+ * the divider drags between SPLIT_MIN_TOP px of spectrum (the readout block
+ * must stay whole: RO_TOP + RO_H + a ruler's worth — see split_ph()) and
  * SPLIT_MIN_BOTTOM px of waterfall. SPLIT_HIT_PX = grab zone either side. */
 #define SPLIT_FRAC_DEFAULT 0.5
 
@@ -846,8 +835,14 @@ static void draw_band_edges(cairo_t *cr, App *app, int w, int ph) {
  * the two read as one family. METER_BY aligns the bar with the frequency readout
  * (its tick labels line up with the big number's top); METER_RM keeps it off the
  * right edge. (Defined up here so draw_spots can steer labels around the meter.) */
-#define METER_BW 384.0
-#define METER_BH 24.0
+#define METER_S  1.06   /* S-meter size. Richard 2026-09-06: "zvětši i trochu S-metr" →
+                         * 1.15 was "trochu moc"; sized by proportion instead: tick
+                         * labels 16 px ≈ the strip's Adwaita Sans 11 pt (14.7 px) + the
+                         * Sans-vs-Mono optical difference, the reading 20 px just above
+                         * the readout's 18 px lines, bar 407 px so 12 ticks keep ≥ 2×
+                         * a label's width. The TX meters share the geometry. */
+#define METER_BW (384.0 * METER_S)
+#define METER_BH (24.0 * METER_S)
 #define METER_BY 54.0
 #define METER_RM 28.0   /* right margin */
 
@@ -862,40 +857,43 @@ static int spot_cmp_hz(const void *a, const void *b) {
   long long d = ((const struct spot *)a)->hz - ((const struct spot *)b)->hz;
   return d < 0 ? -1 : (d > 0 ? 1 : 0);
 }
-/* VFO card (Richard's layout, 2026-09-06, mockup v4): the frequency readout,
- * mode · passband · AGC, the NR/NB/ANF/BIN indicators and the S-meter in one
- * panel next to the VFO line — where the eye already is — instead of the old
- * top-left readout + top-right meter. Sits CARD_GAP left of the VFO line, under
- * the ruler; mirrors to the right of the line when panned so far that it would
- * leave the left edge. Radio mode, RX display only. */
-#define CARD_W    400.0
-#define CARD_H    186.0
-#define CARD_TOP   28.0
-#define CARD_GAP   20.0
-static void card_rect(App *app, int w, double *x0, double *y0, double *x1, double *y1) {
-  double cx = vfo_x(app, w);
-  /* Side = AWAY from the passband (Richard 2026-09-06: in LSB the card must
-   * flip to the other side or it covers the filter): USB-family passbands
-   * lie right of the line → card left; LSB-family (fhi <= 0) → card right;
-   * straddling modes (CW/AM/RTTY) take the side with the smaller extent.
-   * Then the screen-edge rule: no room on the chosen side → the other one. */
-  int right = app->fhi > app->flo &&
-              (app->fhi <= 0.0 || (app->flo < 0.0 && -app->flo > app->fhi));
-  double left = right ? cx + CARD_GAP : cx - CARD_GAP - CARD_W;
-  if (!right && left < 4.0)                 { left = cx + CARD_GAP; }
-  else if (right && left + CARD_W > w - 4.0) { left = cx - CARD_GAP - CARD_W; }
-  *x0 = left; *x1 = left + CARD_W; *y0 = CARD_TOP; *y1 = CARD_TOP + CARD_H;
-}
-static int in_card(const App *app, double x, double y) {
-  return app->card_x1 > app->card_x0 &&
-         x >= app->card_x0 && x <= app->card_x1 && y >= app->card_y0 && y <= app->card_y1;
+/* VFO readout (Richard 2026-09-06, third iteration that day — a floating card
+ * beside the VFO line, then a fixed card, then: "kartu zruš… řádek NR/NB atd.
+ * dej pryč, to je redundantní zobrazení… S-metr dej zpět do pravého rohu…
+ * všechno ať je bílou barvou"): plain WHITE text in the top-left corner where
+ * the readout always was — frequency · "Hz · VFO A · band · mode" · "MODE ·
+ * lo–hi Hz (width) · AGC X" · the other VFO (SDR-19) with its A/B and A=B
+ * buttons. No box: the area stays tunable spectrum like before the card;
+ * only the filter/AGC texts and the two buttons are click targets
+ * (readout_target). The S-meter is back top-right (draw_s_meter — the
+ * network head's place). Radio mode, RX display only. */
+#define RO_X     44.0    /* the pre-card readout's x: clear of the dB gutter */
+#define RO_TOP   28.0    /* under the frequency ruler */
+#define RO_S      1.20   /* fonts + buttons (Richard 2026-09-06: first "+10 %", then
+                          * "písmo ještě trochu zvětšit") */
+#define RO_L      1.26   /* line pitch — a touch more than the fonts ("o malinko i rozestup") */
+#define RO_H    (112.0 * RO_L)   /* block height (4 lines) — the divider clamp keeps it whole */
+enum { RO_NONE = 0, RO_FILTER, RO_AGC, RO_AB, RO_AEB };
+/* Which readout click target is under (x, y)? RO_NONE for the plain text and
+ * the spectrum around it (both tune as ever). */
+static int readout_target(const App *app, double x, double y) {
+  if (app->ro_x1 <= app->ro_x0) { return RO_NONE; }       /* not drawn (network head) */
+  if (y >= app->ro_filt_y0 && y <= app->ro_filt_y1) {
+    if (x >= app->ro_filt_x0 - 4 && x <= app->ro_filt_x1 + 4) { return RO_FILTER; }
+    if (x >= app->ro_agc_x0 - 4  && x <= app->ro_agc_x1 + 4)  { return RO_AGC; }
+  }
+  if (y >= app->ro_btn_y0 && y <= app->ro_btn_y1) {
+    if (x >= app->ro_ab_x0  && x <= app->ro_ab_x1)  { return RO_AB; }
+    if (x >= app->ro_aeb_x0 && x <= app->ro_aeb_x1) { return RO_AEB; }
+  }
+  return RO_NONE;
 }
 
 /* Spectrum height in px for an area `h` tall: app->pan_frac clamped so the VFO
  * card never gets cut (the upper cairo node is exactly this tall) and the
  * waterfall keeps a usable strip. THE one place the split is computed — every
  * draw path and hit-test goes through here. */
-#define SPLIT_MIN_TOP ((int)(CARD_TOP + CARD_H) + 16)
+#define SPLIT_MIN_TOP ((int)(RO_TOP + RO_H) + 16)
 static int split_clamp(int h, int ph) {
   if (ph < SPLIT_MIN_TOP)        { ph = SPLIT_MIN_TOP; }
   if (ph > h - SPLIT_MIN_BOTTOM) { ph = h - SPLIT_MIN_BOTTOM; }   /* bottom wins on a tiny area */
@@ -929,66 +927,20 @@ static void draw_split_line(cairo_t *cr, int w, int ph, const App *app) {
   }
 }
 
-/* ---- Split / VFO B (SDR-12) ------------------------------------------------
- * VFO A = RX (and TX without split); VFO B = the TX frequency while split is
- * on. There is NO "active VFO" mode to forget (Richard 2026-09-06, against the
- * Thetis ClickTuneMode / SmartSDR active-slice pattern): everything acts on A
- * exactly as before, and B moves only by touching the TX filter drawn at B
- * (drag its body, wheel over it) or with Ctrl held (Ctrl+wheel steps B,
- * Ctrl+click puts B under the pointer = the pileup click, Ctrl+drag drags B).
- * Split is in-band by construction (band_apply drops it on a band change);
- * the in-band gate evaluates the TX VFO either way. */
-static long long tx_vfo_freq(const App *app) {
-  return (app->split && app->freq_b > 0) ? app->freq_b : app->freq;
-}
-
-/* TX passband edges relative to the TX carrier, Hz. CW = a carrier line
- * (lo == hi == 0); voice = the TX audio filter with the sideband's sign
- * (tx_passband() in tx_run does the same); data + RTTY = the RX passband. */
-static void tx_pass_edges(const App *app, double *lo, double *hi) {
-  switch (app->mode) {
-    case DEMOD_CWL: case DEMOD_CWU: *lo = *hi = 0.0; break;
-    case DEMOD_USB: *lo =  app->tx_flo; *hi =  app->tx_fhi; break;
-    case DEMOD_LSB: *lo = -app->tx_fhi; *hi = -app->tx_flo; break;
-    case DEMOD_AM:  *lo = -app->tx_fhi; *hi =  app->tx_fhi; break;
-    default:        *lo =  app->flo;    *hi =  app->fhi;    break;
-  }
-}
-
-/* Screen x of VFO B and of the TX filter's edges (pixel-snapped like the RX
- * passband). 0 when split is off. */
-static int tx_filter_px(App *app, int w, double *xc, double *x0, double *x1) {
-  if (!app->split || w < 1 || app->rate <= 0 || app->zoom <= 0.0) { return 0; }
-  double hzpp = (double)app->rate / app->zoom / w;
-  double lo, hi;
-  tx_pass_edges(app, &lo, &hi);
-  double c = vfo_x(app, w) + (double)(app->freq_b - app->freq) / hzpp;
-  *xc = floor(c) + 0.5;
-  *x0 = floor(c + lo / hzpp) + 0.5;
-  *x1 = floor(c + hi / hzpp) + 0.5;
-  return 1;
-}
-
-#define TX_HIT_PX 6.0
-/* Pointer on the TX filter body (or within TX_HIT_PX of its carrier line),
- * in the spectrum strip, RX display only. */
-static int in_tx_filter(App *app, double x, double y) {
-  if (!app->split || app->tx_display || !app->connected || !app->have_frame) { return 0; }
-  int w = gtk_widget_get_width(app->area), h = gtk_widget_get_height(app->area);
-  if (w < 1 || h < 1 || y >= split_ph(app, h)) { return 0; }
-  double xc, x0, x1;
-  if (!tx_filter_px(app, w, &xc, &x0, &x1)) { return 0; }
-  if (fabs(x - xc) <= TX_HIT_PX) { return 1; }
-  return (x1 - x0 > 2.0 * TX_HIT_PX) && x >= x0 && x <= x1;
-}
-static int in_tx_card(const App *app, double x, double y) {
-  return app->split && !app->tx_display && app->txc_x1 > app->txc_x0 &&
-         x >= app->txc_x0 && x <= app->txc_x1 && y >= app->txc_y0 && y <= app->txc_y1;
-}
+/* ---- Two VFOs (SDR-19) -----------------------------------------------------
+ * The classic pair: the ACTIVE VFO (freq/mode) is what you hear, tune and
+ * transmit on; A/B swaps the two (vfo_swap), A=B copies (vfo_copy). There is
+ * NO split: SDR-12's "TX on the other VFO" (red TX filter, TX card, Ctrl+click,
+ * key s, TCI split_enable) was built and live-tested 2026-09-06 and REMOVED
+ * the same night on Richard's call ("zruš tu funkci split … necháme jen VFO
+ * A/B"). The engine keeps the wire path for a TX frequency ≠ RX dial
+ * (tx_run_set_freq / p1_set_tx_frequency, pinned by their gates); the GUI
+ * always feeds it the active VFO. */
+#define HANDLE_HIT_PX 6.0   /* grab tolerance around a thin handle (CTUN body on a CW passband) */
 
 /* CTUN (SDR-18): pointer on the RX passband BODY (its edges stay edge_hit's)
  * in the spectrum strip — with the DDC fixed, the body is the dial's handle,
- * exactly like the split TX filter. CW's narrow passband: the line ± hit. */
+ * a draggable object. CW's narrow passband: the line ± hit. */
 static int in_rx_filter(App *app, double x, double y) {
   if (!app->ctun || app->tx_display || !app->connected || !app->have_frame) { return 0; }
   if (app->fhi <= app->flo) { return 0; }
@@ -997,105 +949,8 @@ static int in_rx_filter(App *app, double x, double y) {
   double hzpp = (double)app->rate / app->zoom / w;
   double cx = vfo_x(app, w);
   double x0 = cx + app->flo / hzpp, x1 = cx + app->fhi / hzpp;
-  if (x1 - x0 < 4.0 * TX_HIT_PX) { return fabs(x - cx) <= TX_HIT_PX; }
-  return x > x0 + TX_HIT_PX && x < x1 - TX_HIT_PX;
-}
-
-/* The TX filter at VFO B, over rows y0..y1 (spectrum strip, and the waterfall
- * when the filter overlay is carried down). RED = TX in this app's colour
- * language (RX is green; Thetis paints its TX filter yellow — not followed).
- * Lit up while hovered/dragged — same feedback language as the divider. */
-static void draw_tx_filter(cairo_t *cr, App *app, int w, double y0, double y1) {
-  double xc, x0, x1;
-  if (!tx_filter_px(app, w, &xc, &x0, &x1)) { return; }
-  double op  = app->filter_op / 100.0;
-  int    hot = app->tx_hover || app->drag_tx;
-  if (x1 - x0 > 1.0) {
-    cairo_set_source_rgba(cr, COL_TX_FILL, op * (hot ? 0.30 : 0.16));       /* body */
-    cairo_rectangle(cr, x0, y0, x1 - x0, y1 - y0);
-    cairo_fill(cr);
-    cairo_set_source_rgba(cr, COL_TX_EDGE, op * 0.95);                      /* edges */
-    cairo_set_line_width(cr, hot ? 1.5 : 1.0);
-    cairo_move_to(cr, x0, y0); cairo_line_to(cr, x0, y1);
-    cairo_move_to(cr, x1, y0); cairo_line_to(cr, x1, y1);
-    cairo_stroke(cr);
-  }
-  cairo_set_source_rgba(cr, COL_TX_EDGE, hot ? 0.95 : 0.75);                /* carrier */
-  cairo_set_line_width(cr, hot ? 1.5 : 1.0);
-  cairo_move_to(cr, xc, y0); cairo_line_to(cr, xc, y1);
-  cairo_stroke(cr);
-  cairo_set_line_width(cr, 1.0);
-}
-
-/* The lightweight TX card: frequency, offset from A, two buttons. Sits at the
- * FOOT of the spectrum strip beside the TX carrier, on B's side away from A
- * (mirrored at the screen edges) — the VFO card owns the top, so the two only
- * meet with the divider at its minimum (VFO card ends at 214, this one starts
- * at ph − 68); the VFO card then wins the click, this card the paint. */
-#define TXC_W 250.0
-#define TXC_H 58.0
-static void draw_tx_card(cairo_t *cr, App *app, int w, int ph) {
-  double xc, x0, x1;
-  if (!tx_filter_px(app, w, &xc, &x0, &x1)) { app->txc_x1 = app->txc_x0 = 0.0; return; }
-  int right = app->freq_b >= app->freq;
-  double left = right ? xc + 14.0 : xc - 14.0 - TXC_W;
-  if (!right && left < 4.0)                  { left = xc + 14.0; }
-  else if (right && left + TXC_W > w - 4.0) { left = xc - 14.0 - TXC_W; }
-  if (left < 4.0) { left = 4.0; }
-  double top = ph - 10.0 - TXC_H;
-  double cx0 = left, cy0 = top, cx1 = left + TXC_W, cy1 = top + TXC_H;
-  app->txc_x0 = cx0; app->txc_y0 = cy0; app->txc_x1 = cx1; app->txc_y1 = cy1;
-  const double r = 6.0;
-  cairo_new_sub_path(cr);
-  cairo_arc(cr, cx1 - r, cy0 + r, r, -G_PI / 2, 0);
-  cairo_arc(cr, cx1 - r, cy1 - r, r, 0, G_PI / 2);
-  cairo_arc(cr, cx0 + r, cy1 - r, r, G_PI / 2, G_PI);
-  cairo_arc(cr, cx0 + r, cy0 + r, r, G_PI, 3 * G_PI / 2);
-  cairo_close_path(cr);
-  cairo_set_source_rgba(cr, COL_TX_BG, 0.84); cairo_fill_preserve(cr);   /* faintly red: TX */
-  cairo_set_source_rgba(cr, COL_TX_EDGE, 0.60); cairo_set_line_width(cr, 1.0); cairo_stroke(cr);
-  /* line 1: TX tag + frequency (the VFO card's font family, smaller) */
-  char buf[64];
-  panadapter_format_hz(app->freq_b, buf, sizeof buf);
-  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
-  cairo_set_font_size(cr, 13.0);
-  cairo_set_source_rgba(cr, COL_TX_EDGE, 0.95);
-  cairo_move_to(cr, cx0 + 12, cy0 + 24); cairo_show_text(cr, "TX");
-  cairo_set_font_size(cr, 21.0);
-  cairo_set_source_rgba(cr, 0.93, 0.96, 1.0, 0.96);
-  cairo_move_to(cr, cx0 + 42, cy0 + 25); cairo_show_text(cr, buf);
-  /* line 2: SPLIT · offset, then the buttons at the right */
-  char off[32];
-  double khz = (double)(app->freq_b - app->freq) / 1000.0;
-  snprintf(off, sizeof off, "SPLIT  %+.2f kHz", khz);
-  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-  cairo_set_font_size(cr, 13.0);
-  cairo_set_source_rgba(cr, 0.62, 0.72, 0.85, 0.9);
-  cairo_move_to(cr, cx0 + 12, cy0 + 47); cairo_show_text(cr, off);
-  {
-    const double bh = 18.0, by = cy1 - 8.0 - bh, gap = 6.0;
-    const double w_off = 38.0, w_ab = 42.0;
-    double bx_off = cx1 - 8.0 - w_off, bx_ab = bx_off - gap - w_ab;
-    const struct { const char *l; double x, w; } b[2] = { { "A=B", bx_ab, w_ab }, { "OFF", bx_off, w_off } };
-    cairo_set_font_size(cr, 12.0);
-    for (int i = 0; i < 2; i++) {
-      cairo_new_sub_path(cr);
-      cairo_arc(cr, b[i].x + b[i].w - 4, by + 4, 4, -G_PI / 2, 0);
-      cairo_arc(cr, b[i].x + b[i].w - 4, by + bh - 4, 4, 0, G_PI / 2);
-      cairo_arc(cr, b[i].x + 4, by + bh - 4, 4, G_PI / 2, G_PI);
-      cairo_arc(cr, b[i].x + 4, by + 4, 4, G_PI, 3 * G_PI / 2);
-      cairo_close_path(cr);
-      cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.10); cairo_fill_preserve(cr);
-      cairo_set_source_rgba(cr, 0.62, 0.72, 0.85, 0.55); cairo_stroke(cr);
-      cairo_text_extents_t e; cairo_text_extents(cr, b[i].l, &e);
-      cairo_set_source_rgba(cr, 0.93, 0.96, 1.0, 0.92);
-      cairo_move_to(cr, b[i].x + (b[i].w - e.x_advance) / 2.0, by + bh / 2.0 + 4.5);
-      cairo_show_text(cr, b[i].l);
-    }
-    app->txc_ab_x0 = bx_ab;  app->txc_ab_x1 = bx_ab + w_ab;
-    app->txc_off_x0 = bx_off; app->txc_off_x1 = bx_off + w_off;
-    app->txc_btn_y0 = by;     app->txc_btn_y1 = by + bh;
-  }
+  if (x1 - x0 < 4.0 * HANDLE_HIT_PX) { return fabs(x - cx) <= HANDLE_HIT_PX; }
+  return x > x0 + HANDLE_HIT_PX && x < x1 - HANDLE_HIT_PX;
 }
 
 static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
@@ -1123,15 +978,15 @@ static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
   /* HUD exclusion zones. Radio mode: the VFO card (labels overlapping it in x
    * stack below it). Server mode: the panadapter's own readout extent (left)
    * and the top-right S-meter block incl. its dBm line. */
-  double ro_x1 = 0.0, ro_y1 = 0.0, sm_x0 = 1e9, sm_y1 = 0.0;
+  double pr_x1 = 0.0, pr_y1 = 0.0, sm_x0, sm_y1;
   double cd_x0 = 0.0, cd_x1 = -1.0, cd_y1 = 0.0;
-  if (app->radio_mode) {
-    double cy0; card_rect(app, w, &cd_x0, &cy0, &cd_x1, &cd_y1);
+  if (app->radio_mode) {                               /* our readout block (last draw) */
+    if (app->ro_x1 > app->ro_x0) { cd_x0 = app->ro_x0; cd_x1 = app->ro_x1; cd_y1 = app->ro_y1; }
   } else {
-    panadapter_readout_extent(&ro_x1, &ro_y1);
-    sm_x0 = (double)w - METER_RM - METER_BW - 40.0;   /* tick overhang */
-    sm_y1 = METER_BY + METER_BH + 26.0;               /* dBm line bottom */
+    panadapter_readout_extent(&pr_x1, &pr_y1);         /* the panadapter's own readout */
   }
+  sm_x0 = (double)w - METER_RM - METER_BW - 40.0;      /* S-meter top-right: tick overhang */
+  sm_y1 = METER_BY + METER_BH + 26.0;                  /* dBm line bottom */
   cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
   cairo_set_font_size(cr, 13.0);
   cairo_set_line_width(cr, 1.0);
@@ -1151,14 +1006,14 @@ static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
       if (x - 2.0 > rowend[k]) { row = k; break; }
     }
     double base = y0;
-    if (ro_y1 > 0.0 && x - 3.0 <= ro_x1 + 6.0 && x + te.width + 6.0 >= 38.0) {
-      base = ro_y1 + 13.0;                     /* under the VFO readout */
+    if (pr_y1 > 0.0 && x - 3.0 <= pr_x1 + 6.0 && x + te.width + 6.0 >= 38.0) {
+      base = pr_y1 + 13.0;                     /* under the VFO readout */
     }
     if (x + te.width + 6.0 >= sm_x0) {
       base = fmax(base, sm_y1 + 13.0);         /* under the S-meter */
     }
     if (cd_x1 > cd_x0 && x + te.width + 6.0 >= cd_x0 - 6.0 && x - 3.0 <= cd_x1 + 6.0) {
-      base = fmax(base, cd_y1 + 13.0);         /* under the VFO card */
+      base = fmax(base, cd_y1 + 13.0);         /* under our readout block */
     }
     double ly = base + (row < 0 ? 0 : row) * rh;
     if (row >= 0) {                            /* label fits in a free row */
@@ -1242,7 +1097,7 @@ static void s_meter_paint(cairo_t *cr, App *app, double dbm, double bx, double b
   cairo_restore(cr);
   cairo_pattern_destroy(grad);
 
-  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_select_font_face(cr, FONT_UI, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);   /* the strip's face (Richard: "sjednoť") */
   cairo_set_font_size(cr, lbl_fs);
   const struct { double dbm; const char *l; } mk[] = {
     {-121,"1"},{-109,"3"},{-97,"5"},{-85,"7"},{-73,"9"},{-53,"+20"},{-33,"+40"},{-13,"+60"},
@@ -1250,7 +1105,7 @@ static void s_meter_paint(cairo_t *cr, App *app, double dbm, double bx, double b
   cairo_set_line_width(cr, 1.0);
   for (int i = 0; i < 8; i++) {
     double mx = bx + (mk[i].dbm - DBM_MIN) / span * bw;
-    cairo_set_source_rgba(cr, 0.7, 0.75, 0.85, 0.6);
+    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.80);   /* white (Richard 2026-09-06) */
     cairo_move_to(cr, mx + 0.5, by - 4); cairo_line_to(cr, mx + 0.5, by); cairo_stroke(cr);
     cairo_text_extents_t ex; cairo_text_extents(cr, mk[i].l, &ex);
     double lx = mx - ex.width / 2;
@@ -1269,111 +1124,127 @@ static void s_meter_paint(cairo_t *cr, App *app, double dbm, double bx, double b
   }
   cairo_set_font_size(cr, rd_fs);
   cairo_text_extents_t ex; cairo_text_extents(cr, lbl, &ex);
-  cairo_set_source_rgba(cr, 0.82, 0.92, 0.78, 0.95);
+  cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.95);
   cairo_move_to(cr, bx + bw - ex.x_advance, by + bh + 22); cairo_show_text(cr, lbl);
 }
 
 /* Legacy top-right S-meter block (server mode; radio mode has it in the card). */
 static void draw_s_meter(cairo_t *cr, App *app, int w) {
   double dbm = s_meter_tick(app);
-  s_meter_paint(cr, app, dbm, w - METER_BW - METER_RM, METER_BY, METER_BW, METER_BH, 15.0, 19.0);
+  s_meter_paint(cr, app, dbm, w - METER_BW - METER_RM, METER_BY, METER_BW, METER_BH,
+                15.0 * METER_S, 19.0 * METER_S);
 }
 
-/* The VFO card itself (see card_rect for the placement rule). */
-static void draw_vfo_card(cairo_t *cr, App *app, int w, const char *bandinfo) {
-  double x0, y0, x1, y1;
-  card_rect(app, w, &x0, &y0, &x1, &y1);
-  app->card_x0 = x0; app->card_y0 = y0; app->card_x1 = x1; app->card_y1 = y1;
-  const double r = 6.0, cw = x1 - x0, ch = y1 - y0;
-  cairo_new_sub_path(cr);
-  cairo_arc(cr, x1 - r, y0 + r, r, -G_PI / 2, 0);
-  cairo_arc(cr, x1 - r, y1 - r, r, 0, G_PI / 2);
-  cairo_arc(cr, x0 + r, y1 - r, r, G_PI / 2, G_PI);
-  cairo_arc(cr, x0 + r, y0 + r, r, G_PI, 3 * G_PI / 2);
-  cairo_close_path(cr);
-  cairo_set_source_rgba(cr, COL_RX_BG, 0.84); cairo_fill_preserve(cr);   /* faintly green: RX */
-  cairo_set_source_rgba(cr, COL_RX_EDGE, 0.35); cairo_set_line_width(cr, 1.0); cairo_stroke(cr);
+/* The readout block (see the RO_* comment for the placement rule). */
+static void draw_vfo_readout(cairo_t *cr, App *app, int w, const char *bandinfo) {
+  (void)w;
+  const double x = RO_X, WHITE_A = 0.96, WHITE_B = 0.88;   /* big number / the lines under it */
+  double xmax = x;
+  cairo_text_extents_t e;
 
-  /* Frequency — the same value the panadapter readout used to print (CTUN if
-   * it differs from the dial), same font and size, so nothing changes but the place. */
+  /* 1: frequency — the value, font and place the panadapter readout printed
+   * (CTUN if it differs from the dial). */
   const ClientFrame *f = &app->frame;
   long long freq = (f->vfo_a_ctun_freq && f->vfo_a_ctun_freq != f->vfo_a_freq)
                      ? f->vfo_a_ctun_freq : f->vfo_a_freq;
   char buf[64];
   panadapter_format_hz(freq, buf, sizeof buf);
   cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
-  cairo_set_font_size(cr, 32.0);
-  cairo_set_source_rgba(cr, 0.93, 0.96, 1.0, 0.96);
-  cairo_move_to(cr, x0 + 14, y0 + 40); cairo_show_text(cr, buf);
+  cairo_set_font_size(cr, 32.0 * RO_S);
+  cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, WHITE_A);
+  cairo_move_to(cr, x, RO_TOP + 32.0 * RO_S); cairo_show_text(cr, buf);
+  cairo_text_extents(cr, buf, &e); if (x + e.x_advance > xmax) { xmax = x + e.x_advance; }
 
+  /* 2: Hz · VFO A/B · CTUN · band · mode */
   char sub[80];
+  const char vl = app->vfo_b ? 'B' : 'A';   /* the active VFO's letter (SDR-19) */
   const char *ct = app->ctun ? "  ·  CTUN" : "";
-  if (bandinfo && *bandinfo) { snprintf(sub, sizeof sub, "Hz  ·  VFO A%s  ·  %s", ct, bandinfo); }
-  else                       { snprintf(sub, sizeof sub, "Hz  ·  VFO A%s", ct); }
-  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-  cairo_set_font_size(cr, 15.0);
-  cairo_set_source_rgba(cr, 0.62, 0.72, 0.85, 0.9);
-  cairo_move_to(cr, x0 + 14, y0 + 62); cairo_show_text(cr, sub);
+  if (bandinfo && *bandinfo) { snprintf(sub, sizeof sub, "Hz  ·  VFO %c%s  ·  %s", vl, ct, bandinfo); }
+  else                       { snprintf(sub, sizeof sub, "Hz  ·  VFO %c%s", vl, ct); }
+  /* Lines 2-4 + the buttons: the UI face (Adwaita Sans), the same as the
+   * strip's buttons (Richard 2026-09-06: "sjednoť to"); mono stays only on
+   * the big number, whose tabular digits must not jitter while tuning. */
+  cairo_select_font_face(cr, FONT_UI, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_set_font_size(cr, 15.0 * RO_S);
+  cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, WHITE_B);
+  cairo_move_to(cr, x, RO_TOP + 54.0 * RO_L); cairo_show_text(cr, sub);
+  cairo_text_extents(cr, sub, &e); if (x + e.x_advance > xmax) { xmax = x + e.x_advance; }
 
-  /* mode · passband lo…hi (width) · AGC — the passband is what the blue edges
-   * draw, Hz relative to the carrier; Var edges dragged live update it too. */
-  char wl[16], pb[48], line[96];
-  filter_width_label(app, wl, sizeof wl);
-  int lo = (int)lrint(app->flo), hi = (int)lrint(app->fhi);
-  if (lo >= 0 && hi >= 0) { snprintf(pb, sizeof pb, "%d–%d Hz (%s)", lo, hi, wl); }
-  else                    { snprintf(pb, sizeof pb, "%+d…%+d Hz (%s)", lo, hi, wl); }
-  cairo_set_font_size(cr, 15.0);
-  cairo_set_source_rgba(cr, COL_RX_EDGE, 0.95);
-  {   /* drawn in pieces so the filter and AGC texts know their x extents:
-       * they are click targets (filter dialog / AGC dialog, hand cursor). */
-    char agct[24]; snprintf(agct, sizeof agct, "AGC %s", agc_label(app->agc));
-    const char *sep = "  ·  ";
-    cairo_text_extents_t e;
-    double x = x0 + 14;
-    cairo_move_to(cr, x, y0 + 86); cairo_show_text(cr, mode_label(app->mode));
-    cairo_text_extents(cr, mode_label(app->mode), &e); x += e.x_advance;
-    cairo_move_to(cr, x, y0 + 86); cairo_show_text(cr, sep);
-    cairo_text_extents(cr, sep, &e); x += e.x_advance;
-    app->card_filt_x0 = x;
-    cairo_move_to(cr, x, y0 + 86); cairo_show_text(cr, pb);
-    cairo_text_extents(cr, pb, &e); x += e.x_advance;
-    app->card_filt_x1 = x;
-    cairo_move_to(cr, x, y0 + 86); cairo_show_text(cr, sep);
-    cairo_text_extents(cr, sep, &e); x += e.x_advance;
-    app->card_agc_x0 = x;
-    cairo_move_to(cr, x, y0 + 86); cairo_show_text(cr, agct);
-    cairo_text_extents(cr, agct, &e); x += e.x_advance;
-    app->card_agc_x1 = x;
-    (void)line;
-  }
-  app->card_filt_y0 = y0 + 70; app->card_filt_y1 = y0 + 92;   /* the row's y band */
-
-  /* Indicators: lit when active, dimmed otherwise; NR2…/NB2 carry their suffix
-   * like the buttons do. */
-  cairo_set_font_size(cr, 14.0);
+  /* 3: passband lo…hi (width) · AGC — drawn in pieces so the filter and AGC
+   * texts know their x extents: they are click targets (filter dialog / AGC
+   * dialog, hand cursor). No mode label here (Richard: the strip's mode
+   * buttons already say it — "ten údaj USB je tam redundantní"). The
+   * passband is what the green edges draw, Hz relative to the carrier; Var
+   * edges dragged live update it too. */
   {
-    char nr[8], nb[8];
-    snprintf(nr, sizeof nr, "NR%c", (app->nr >= 2 && app->nr <= 9) ? (char)('0' + app->nr) : '\0');
-    snprintf(nb, sizeof nb, "NB%c", (app->nb >= 2 && app->nb <= 9) ? (char)('0' + app->nb) : '\0');
-    const struct { const char *l; int on; } ind[] = {
-      { nr, app->nr > 0 }, { nb, app->nb > 0 }, { "ANF", app->anf }, { "BIN", app->binaural },
-      { "SPLIT", app->split },                    /* red when on = the TX filter's colour */
-    };
-    double x = x0 + 14;
-    for (int i = 0; i < 5; i++) {
-      if (ind[i].on && i == 4) { cairo_set_source_rgba(cr, COL_TX_EDGE, 0.95); }
-      else if (ind[i].on)      { cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.95); }
-      else                     { cairo_set_source_rgba(cr, 0.62, 0.72, 0.85, 0.35); }
-      cairo_move_to(cr, x, y0 + 108); cairo_show_text(cr, ind[i].l);
-      cairo_text_extents_t te; cairo_text_extents(cr, ind[i].l, &te);
-      x += te.x_advance + 22;
-    }
+    char wl[16], pb[48], agct[24];
+    filter_width_label(app, wl, sizeof wl);
+    int lo = (int)lrint(app->flo), hi = (int)lrint(app->fhi);
+    if      (lo >= 0 && hi >= 0) { snprintf(pb, sizeof pb, "%d – %d Hz (%s)", lo, hi, wl); }   /* spaced dash: Sans sets it too tight */
+    else if (lo < 0 && hi <= 0)  { snprintf(pb, sizeof pb, "%d – %d Hz (%s)", -hi, -lo, wl); } /* LSB family: audio Hz */
+    else                         { snprintf(pb, sizeof pb, "%+d…%+d Hz (%s)", lo, hi, wl); }  /* straddling (AM, RTTY) */
+    snprintf(agct, sizeof agct, "AGC %s", agc_label(app->agc));
+    const char *sep = "  ·  ";
+    const double by = RO_TOP + 76.0 * RO_L;
+    double px = x;
+    app->ro_filt_x0 = px;
+    cairo_move_to(cr, px, by); cairo_show_text(cr, pb);
+    cairo_text_extents(cr, pb, &e); px += e.x_advance;
+    app->ro_filt_x1 = px;
+    cairo_move_to(cr, px, by); cairo_show_text(cr, sep);
+    cairo_text_extents(cr, sep, &e); px += e.x_advance;
+    app->ro_agc_x0 = px;
+    cairo_move_to(cr, px, by); cairo_show_text(cr, agct);
+    cairo_text_extents(cr, agct, &e); px += e.x_advance;
+    app->ro_agc_x1 = px;
+    app->ro_filt_y0 = by - 16.0 * RO_S; app->ro_filt_y1 = by + 6.0 * RO_S;   /* the row's y band */
+    if (px > xmax) { xmax = px; }
   }
 
-  /* S-meter, same ballistics + palette fill as ever, just inside the card. */
-  double dbm = s_meter_tick(app);
-  s_meter_paint(cr, app, dbm, x0 + 14, y0 + 136, cw - 28, 10.0, 11.0, 17.0);
-  (void)ch;
+  /* 4: the OTHER VFO (SDR-19) — "VFO B  7.025.000  ·  CW" (tag "TX B" under
+   * split: that is where the next over goes), then the A/B and A=B buttons
+   * right after it on the same line — the second VFO's readout and its
+   * controls together, the way a rig's display has them (proposal for
+   * Richard's open question 2026-09-06: "jen nevím, kam dáme přepínač A/B
+   * a A=B"). */
+  {
+    const int om = (app->omode >= 0 && app->omode < DEMOD_NMODES) ? app->omode : app->mode;
+    char ob[64], line[96], tag[8];
+    panadapter_format_hz(app->ofreq > 0 ? app->ofreq : app->freq, ob, sizeof ob);
+    snprintf(tag, sizeof tag, "VFO %c", app->vfo_b ? 'A' : 'B');
+    snprintf(line, sizeof line, "  %s  ·  %s", ob, mode_label(om));
+    const double by = RO_TOP + 100.0 * RO_L;
+    double px = x;
+    cairo_select_font_face(cr, FONT_UI, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+    cairo_move_to(cr, px, by); cairo_show_text(cr, tag);
+    cairo_text_extents(cr, "VFO B", &e); px += e.x_advance;   /* one column for both tags */
+    cairo_select_font_face(cr, FONT_UI, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+    cairo_move_to(cr, px, by); cairo_show_text(cr, line);
+    cairo_text_extents(cr, line, &e); px += e.x_advance + 18.0 * RO_S;
+    const double bh = 18.0 * RO_S, bty = by - 14.0 * RO_S, gap = 6.0 * RO_S, bw = 42.0 * RO_S;
+    const struct { const char *l; double x; } b[2] = { { "A/B", px }, { "A=B", px + bw + gap } };
+    cairo_set_font_size(cr, 12.0 * RO_S);
+    for (int i = 0; i < 2; i++) {
+      cairo_new_sub_path(cr);
+      cairo_arc(cr, b[i].x + bw - 4, bty + 4, 4, -G_PI / 2, 0);
+      cairo_arc(cr, b[i].x + bw - 4, bty + bh - 4, 4, 0, G_PI / 2);
+      cairo_arc(cr, b[i].x + 4, bty + bh - 4, 4, G_PI / 2, G_PI);
+      cairo_arc(cr, b[i].x + 4, bty + 4, 4, G_PI, 3 * G_PI / 2);
+      cairo_close_path(cr);
+      cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.10); cairo_fill_preserve(cr);
+      cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.55); cairo_set_line_width(cr, 1.0); cairo_stroke(cr);
+      cairo_text_extents_t te; cairo_text_extents(cr, b[i].l, &te);
+      cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, WHITE_A);
+      cairo_move_to(cr, b[i].x + (bw - te.x_advance) / 2.0, bty + bh / 2.0 + 4.5 * RO_S);
+      cairo_show_text(cr, b[i].l);
+    }
+    app->ro_ab_x0  = b[0].x; app->ro_ab_x1  = b[0].x + bw;
+    app->ro_aeb_x0 = b[1].x; app->ro_aeb_x1 = b[1].x + bw;
+    app->ro_btn_y0 = bty;    app->ro_btn_y1 = bty + bh;
+    if (b[1].x + bw > xmax) { xmax = b[1].x + bw; }
+  }
+  /* The block's extent (spot labels steer around it; the OVL badge sits right of it). */
+  app->ro_x0 = x - 6.0; app->ro_y0 = RO_TOP; app->ro_x1 = xmax + 6.0; app->ro_y1 = RO_TOP + RO_H;
 }
 
 /* TX level meter — top-right of the TX panadapter, in the SAME geometry as the RX
@@ -1898,8 +1769,6 @@ static void draw_upper(cairo_t *cr, int w, int ph, App *app) {
     cairo_move_to(cr, x1, 0); cairo_line_to(cr, x1, ph);
     cairo_stroke(cr);
   }
-  /* Split: the TX filter at VFO B (SDR-12). */
-  if (app->radio_mode && app->split && !app->tx_display) { draw_tx_filter(cr, app, w, 0, ph); }
   /* Select-mode filter cursor: the passband footprint (amber) at the pointer,
    * showing where a left-click would place the filter before it recenters. */
   if (app->select_mode && app->fhi > app->flo && app->ptr_x >= 0 && app->ptr_x <= w) {
@@ -1938,7 +1807,9 @@ static void draw_upper(cairo_t *cr, int w, int ph, App *app) {
     cairo_set_font_size(cr, 12.0);
     cairo_text_extents_t ext;
     cairo_text_extents(cr, txt, &ext);
-    const double pad = 5.0, bx = 8.0, by = 28.0;   /* below the freq ruler strip */
+    const double pad = 5.0, by = 28.0;             /* below the freq ruler strip */
+    const double bx = (app->radio_mode && app->ro_x1 > app->ro_x0)
+                      ? app->ro_x1 + 10.0 : 8.0;   /* right of our readout block (last draw) */
     cairo_set_source_rgba(cr, 0.78, 0.06, 0.06, 0.85);   /* red badge */
     cairo_rectangle(cr, bx, by, ext.width + 2 * pad, ext.height + 2 * pad);
     cairo_fill(cr);
@@ -1947,10 +1818,9 @@ static void draw_upper(cairo_t *cr, int w, int ph, App *app) {
     cairo_show_text(cr, txt);
   }
 
-  if (app->radio_mode) { draw_vfo_card(cr, app, w, bname); }   /* readout + meter + state */
-  else                 { draw_s_meter(cr, app, w); app->card_x1 = app->card_x0 = 0.0; }
-  if (app->radio_mode && app->split && !app->tx_display) { draw_tx_card(cr, app, w, ph); }
-  else { app->txc_x1 = app->txc_x0 = 0.0; }
+  if (app->radio_mode) { draw_vfo_readout(cr, app, w, bname); }   /* readout + the other VFO */
+  else                 { app->ro_x1 = app->ro_x0 = 0.0; }
+  draw_s_meter(cr, app, w);                                         /* top-right, both paths */
 
   /* Separator over the waterfall's top edge (the GPU texture sits under us). */
   draw_split_line(cr, w, ph, app);
@@ -1959,16 +1829,12 @@ static void draw_upper(cairo_t *cr, int w, int ph, App *app) {
 /* True when the waterfall region needs a cairo overlay node at all — must
  * match exactly what draw_wf_overlays() can paint, or overlays would vanish. */
 static int wf_overlays_wanted(const App *app) {
-  return app->radio_mode && app->show_filter_wf && (app->fhi > app->flo || app->split);
+  return app->radio_mode && app->show_filter_wf && app->fhi > app->flo;
 }
 
 /* Overlays ON the waterfall (filter edges / VFO line / select-mode cursor
  * carried down): a small cairo node over the texture, only when enabled. */
 static void draw_wf_overlays(cairo_t *cr, int w, int h, int ph, App *app) {
-  /* Split: the TX filter carried down the waterfall with the RX one (SDR-12). */
-  if (app->radio_mode && app->split && app->show_filter_wf && !app->tx_display) {
-    draw_tx_filter(cr, app, w, ph, h);
-  }
   /* Optionally carry the filter (both edges) + the VFO centre line down through
    * the waterfall, so signals line up with the passband over time. Toggleable. */
   if (app->radio_mode && app->show_filter_wf && app->fhi > app->flo) {
@@ -2386,7 +2252,7 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
        * If the gate refused or a protection latch tripped while TUNE is held,
        * pop the button back (which fires the handler → unkey) and flash why. */
       if (app->tx_ready) {
-        tx_run_set_freq(tx_vfo_freq(app));   /* VFO B under split (SDR-12) */
+        tx_run_set_freq(app->freq);          /* TX = the active VFO (no split) */
         tx_run_status ts; tx_run_get_status(&ts);
         if (app->tune_btn && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(app->tune_btn))
             && (ts.tripped || !ts.allowed)) {
@@ -2477,8 +2343,9 @@ static void app_to_settings(const App *app, Settings *s) {
   /* ⛔ route the per-radio TX-cal keys to the connected radio's group */
   g_strlcpy(s->tx_group, app->tx_group, sizeof(s->tx_group));
   s->freq   = app->freq;
-  s->split  = app->split;
-  s->freq_b = app->freq_b;
+  s->vfo_b  = app->vfo_b;
+  s->ofreq  = app->ofreq;
+  s->omode  = app->omode;
   s->ctun   = app->ctun;
   s->rate   = app->rate;
   s->mode   = app->mode;
@@ -2865,25 +2732,20 @@ static void engine_set_centre(App *app, long long c) {
 }
 
 static gboolean on_scroll(GtkEventControllerScroll *ctl, double dx, double dy, gpointer data) {
-  (void)dx;
+  (void)ctl; (void)dx;
   App *app = (App *)data;
   if (!app->radio_mode) { return FALSE; }
   if (!app->engine_ok) { return FALSE; }
   int dir = (int)llround(-dy);        /* wheel up (dy < 0) tunes higher */
   if (dir == 0) { return FALSE; }
-  /* Split: the wheel steps VFO B over the TX filter or with Ctrl held; every-
-   * where else it stays the RX wheel it always was (SDR-12). */
-  GdkModifierType mods = gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(ctl));
-  int on_b = app->split && ((mods & GDK_CONTROL_MASK) || in_tx_filter(app, app->ptr_x, app->ptr_y));
   long long step = app->tune_step > 0 ? app->tune_step : TUNE_STEP_DEFAULT;
-  long long f = on_b ? app->freq_b : app->freq;
+  long long f = app->freq;
   /* Snap to the grid in the scroll direction (floor going up, ceil going down),
    * then move whole steps — so nf is always a multiple of step. */
   long long base = (dir > 0) ? (f / step) * step
                              : ((f + step - 1) / step) * step;
   long long nf = base + (long long)dir * step;
   if (nf < 1) { nf = 1; }
-  if (on_b) { split_set_b(app, nf); return TRUE; }
   app->freq = nf;              /* readout follows on the next tick */
   engine_set_frequency(app, nf);
   schedule_save(app);
@@ -2911,55 +2773,54 @@ static void toast_brief(App *app, const char *msg) {
   adw_toast_overlay_add_toast(ADW_TOAST_OVERLAY(app->toast_overlay), t);
 }
 
-/* ONE path for every VFO B edit (drag, wheel, Ctrl+click, card, TCI): clamp,
- * push to the TX runtime NOW (a TCI client may key right after — the tick's
- * ≤ 40 ms would be a window), tell TCI clients, persist, redraw. */
-static void split_set_b(App *app, long long f) {
+/* The other VFO set from outside (TCI vfo:0,1): any frequency, any band — it
+ * is a memory, not a TX frequency (no split). Tell TCI clients, persist, redraw. */
+static void vfo_other_set(App *app, long long f) {
   if (f < 1) { f = 1; }
-  /* ⛔ B stays inside A's band — split is in-band by construction, and every
-   * per-band TX decision (pa_cal via cur_band, tx_push_cfg) is A's band's, so
-   * a B elsewhere would transmit with the wrong calibration. A drag or wheel
-   * simply stops at the band edge; a TCI vfo:0,1 beyond it is echoed back
-   * clamped (the echo IS the state). A out of every band → no clamp (the
-   * gate refuses TX there anyway). */
-  int ba = band_for_freq(app->freq);
-  if (ba >= 0) {
-    if (f < BANDS[ba].lo) { f = BANDS[ba].lo; }
-    if (f > BANDS[ba].hi) { f = BANDS[ba].hi; }
-  }
-  app->freq_b = f;
-  if (app->tx_ready) { tx_run_set_freq(tx_vfo_freq(app)); }
+  app->ofreq = f;
   tci_server_freq_changed();
   schedule_save(app);
   if (app->area) { gtk_widget_queue_draw(app->area); }
 }
 
-/* Default offset when split comes on with a stale B: the pileup habit per mode
- * (CW "up 1", SSB "up 5"); data modes 0 — the TCI client sets B itself. */
-static long long split_default_offset(int mode) {
-  switch (mode) {
-    case DEMOD_CWL: case DEMOD_CWU:               return 1000;
-    case DEMOD_LSB: case DEMOD_USB: case DEMOD_AM: return 5000;
-    default:                                      return 0;
+/* A/B (SDR-19): swap the two VFOs and re-apply the now-active one through the
+ * same paths a band click and a mode click use — engine_set_frequency (DDC /
+ * CTUN), band_apply (band levels, relays, band-stack) and the mode toggle
+ * (WDSP mode + per-mode filter + AGC group). ⛔ Ordering trap: on_mode_toggled
+ * files the mode under app->cur_band, which only band_apply advances — so
+ * band_apply runs FIRST (it may toggle the band-stack mode), then the VFO's
+ * own mode wins and is stored under the new band. Refused while keyed: the
+ * RX BPF and the TX LPF/DUC would both move mid-over, which the atomic-packet
+ * rule (TX-SAFETY) forbids. */
+static void vfo_swap(App *app) {
+  if (!app->radio_mode || !app->engine_ok) { return; }
+  if (app->tx_ready && tx_run_keyed()) {
+    toast_brief(app, "A/B: not while transmitting");
+    return;
   }
+  if (app->ofreq < 1) { app->ofreq = app->freq; app->omode = app->mode; }   /* never set → A=B */
+  const long long f = app->freq;
+  const int m = app->mode;
+  const int nm = (app->omode >= 0 && app->omode < DEMOD_NMODES) ? app->omode : m;
+  app->freq = app->ofreq; app->ofreq = f; app->omode = m;
+  app->vfo_b = app->vfo_b ? 0 : 1;
+  if (band_for_freq(app->freq) != app->cur_band && app->pan != 0.0) {   /* new band → recentre */
+    app->pan = 0.0; analyzer_set_pan(0.0);
+  }
+  engine_set_frequency(app, app->freq);
+  band_apply(app);                                    /* cur_band + levels + band-stack mode FIRST … */
+  if (nm != app->mode && app->mode_btns[nm]) {        /* … then the VFO's own mode (stored under the new band) */
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->mode_btns[nm]), TRUE);
+  }
+  if (app->tx_ready) { tx_run_set_freq(app->freq); }  /* now, not at the next tick */
+  tci_server_freq_changed();
+  schedule_save(app);
+  if (app->area) { gtk_widget_queue_draw(app->area); }
 }
-
-/* Split on/off — the one path for the key, the card's OFF, Ctrl+click on a
- * non-split radio, band_apply and TCI. B is (re)seeded only when it is stale:
- * never set, or on another band than A (split is in-band by design). */
-static void split_set(App *app, int on) {
-  on = on ? 1 : 0;
-  if (on && !app->split &&
-      (app->freq_b < 1 || band_for_freq(app->freq_b) != band_for_freq(app->freq))) {
-    app->freq_b = app->freq + split_default_offset(app->mode);
-  }
-  app->split = on;
-  if (app->split_btn) {                   /* strip button follows (key/card/TCI/band) */
-    g_signal_handlers_block_by_func(app->split_btn, (gpointer)on_split_toggled, app);
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->split_btn), on);
-    g_signal_handlers_unblock_by_func(app->split_btn, (gpointer)on_split_toggled, app);
-  }
-  if (app->tx_ready) { tx_run_set_freq(tx_vfo_freq(app)); }
+/* A=B: the other VFO becomes a copy of the active one (frequency + mode). */
+static void vfo_copy(App *app) {
+  if (!app->radio_mode) { return; }
+  app->ofreq = app->freq; app->omode = app->mode;
   tci_server_freq_changed();
   schedule_save(app);
   if (app->area) { gtk_widget_queue_draw(app->area); }
@@ -3004,20 +2865,14 @@ static void on_drag_begin(GtkGestureDrag *g, double x, double y, gpointer data) 
   /* The divider wins over everything it overlaps (the gutter's bottom rows, a
    * passband edge crossing it): grabbing the line moves the split (SDR-17). */
   app->drag_split = in_split(app, y);
-  app->drag_tx = 0;
   app->drag_rx = 0;
   if (app->drag_split) { app->drag_split_ph = pan_height_px(app); return; }
   app->drag_gutter = in_gutter(app, x, y);
-  app->drag_dead = (!app->tx_display && in_card(app, x, y)) || in_tx_card(app, x, y);   /* cards are not tunable area */
+  app->drag_dead = !app->tx_display && readout_target(app, x, y) != RO_NONE;   /* not tunable area */
   if (app->drag_dead) { return; }
   if (app->drag_gutter) {
     app->drag_base_high = pan_win_high(app);
     app->drag_base_low  = pan_win_low(app);
-  } else if ((mods & GDK_CONTROL_MASK) || (app->split && in_tx_filter(app, x, y))) {
-    /* Ctrl claims the drag even before split is on: the Ctrl+click that turns
-     * it on must never let a pixel of jitter retune A on the same press. */
-    app->drag_tx = 1;                     /* the TX filter (or Ctrl) → drag VFO B */
-    app->drag_base_freq_b = app->freq_b;
   } else if ((mods & GDK_SHIFT_MASK) && app->zoom > 1.0) {   /* shift+drag = pan the view */
     app->drag_pan = 1;
     app->drag_base_pan = app->pan;
@@ -3058,13 +2913,6 @@ static void on_drag_update(GtkGestureDrag *g, double off_x, double off_y, gpoint
   if (!app->radio_mode) { return; }
   if (app->drag_dead) { return; }
 
-  if (app->drag_tx) {                     /* VFO B follows the cursor (the object moves) */
-    int w = gtk_widget_get_width(app->area);
-    if (w < 1 || !app->split) { return; } /* Ctrl-drag without split: inert, never A */
-    double hzpp = (double)app->rate / app->zoom / w;
-    split_set_b(app, app->drag_base_freq_b + (long long)llround(off_x * hzpp));
-    return;
-  }
   if (app->drag_rx) {                     /* CTUN: the dial follows the cursor (SDR-18) */
     int w = gtk_widget_get_width(app->area);
     if (w < 1 || !app->engine_ok) { return; }
@@ -3138,18 +2986,12 @@ static void on_leave(GtkEventControllerMotion *m, gpointer data) {
   (void)m;
   App *app = (App *)data;
   if (app->split_hover && !app->drag_split) { app->split_hover = 0; gtk_widget_queue_draw(app->area); }
-  if (app->tx_hover && !app->drag_tx)       { app->tx_hover = 0;    gtk_widget_queue_draw(app->area); }
   if (app->rx_hover && !app->drag_rx)       { app->rx_hover = 0;    gtk_widget_queue_draw(app->area); }
 }
 
 static void on_drag_end(GtkGestureDrag *g, double off_x, double off_y, gpointer data) {
   (void)g; (void)off_x; (void)off_y;
   App *app = (App *)data;
-  if (app->drag_tx) {
-    app->drag_tx = 0;
-    app->tx_hover = in_tx_filter(app, app->ptr_x, app->ptr_y);
-    gtk_widget_queue_draw(app->area);
-  }
   if (app->drag_rx) {
     app->drag_rx = 0;
     app->rx_hover = in_rx_filter(app, app->ptr_x, app->ptr_y);
@@ -3178,22 +3020,12 @@ static void on_motion(GtkEventControllerMotion *m, double x, double y, gpointer 
    * runs on, so keep the arrow up until release, not just while over it. */
   int hover = app->drag_split || in_split(app, y);
   if (hover != app->split_hover) { app->split_hover = hover; gtk_widget_queue_draw(app->area); }
-  int txh = app->drag_tx || in_tx_filter(app, x, y);       /* TX filter (SDR-12) */
-  if (txh != app->tx_hover) { app->tx_hover = txh; gtk_widget_queue_draw(app->area); }
   int rxh = app->drag_rx || (!app->select_mode && in_rx_filter(app, x, y));   /* RX body (CTUN) */
   if (rxh != app->rx_hover) { app->rx_hover = rxh; gtk_widget_queue_draw(app->area); }
   if (hover) {
     cur = "ns-resize";
-  } else if (!app->tx_display && in_card(app, x, y)) {
-    if (y >= app->card_filt_y0 && y <= app->card_filt_y1 &&
-        ((x >= app->card_filt_x0 - 4 && x <= app->card_filt_x1 + 4) ||
-         (x >= app->card_agc_x0 - 4  && x <= app->card_agc_x1 + 4))) { cur = "pointer"; }
-  } else if (in_tx_card(app, x, y)) {
-    if (y >= app->txc_btn_y0 && y <= app->txc_btn_y1 &&
-        ((x >= app->txc_ab_x0 && x <= app->txc_ab_x1) ||
-         (x >= app->txc_off_x0 && x <= app->txc_off_x1))) { cur = "pointer"; }
-  } else if (txh) {
-    cur = app->drag_tx ? "grabbing" : "grab";               /* the TX filter is a handle */
+  } else if (!app->tx_display && readout_target(app, x, y) != RO_NONE) {
+    cur = "pointer";                                          /* filter / AGC / A/B / A=B */
   } else if (!app->select_mode && !in_gutter(app, x, y) && edge_hit(app, x)) {
     cur = "ew-resize";
   } else if (rxh) {
@@ -3225,8 +3057,8 @@ static void click_tune(App *app, double x) {
 /* Left click: double-click the gutter → auto-fit; single click in select mode
  * → tune to the cursor (recenter). */
 static void on_pressed(GtkGestureClick *g, int n_press, double x, double y, gpointer data) {
+  (void)g;
   App *app = (App *)data;
-  GdkModifierType mods = gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(g));
   if (n_press == 2 && in_split(app, y)) {                    /* divider: back to the default split */
     app->pan_frac = SPLIT_FRAC_DEFAULT;
     /* The same press also began a left-drag (controller order is not ours to
@@ -3238,33 +3070,17 @@ static void on_pressed(GtkGestureClick *g, int n_press, double x, double y, gpoi
     return;
   }
   if (!app->radio_mode) { return; }
-  if (!app->tx_display && in_card(app, x, y)) {              /* the card is not tunable area */
-    if (n_press == 1 && y >= app->card_filt_y0 && y <= app->card_filt_y1) {
-      if (x >= app->card_filt_x0 - 4 && x <= app->card_filt_x1 + 4) { filter_dialog_open(app); }
-      else if (x >= app->card_agc_x0 - 4 && x <= app->card_agc_x1 + 4) { agc_dialog_open(app); }
+  if (!app->tx_display) {                                    /* readout click targets */
+    int t = readout_target(app, x, y);
+    if (t != RO_NONE) {
+      if (n_press == 1) {
+        if      (t == RO_FILTER) { filter_dialog_open(app); }
+        else if (t == RO_AGC)    { agc_dialog_open(app); }
+        else if (t == RO_AB)     { vfo_swap(app); }          /* SDR-19 */
+        else if (t == RO_AEB)    { vfo_copy(app); }
+      }
+      return;
     }
-    return;
-  }
-  if (in_tx_card(app, x, y)) {                               /* TX card: A=B / OFF (SDR-12) */
-    if (n_press == 1 && y >= app->txc_btn_y0 && y <= app->txc_btn_y1) {
-      if      (x >= app->txc_ab_x0  && x <= app->txc_ab_x1)  { split_set_b(app, app->freq); }
-      else if (x >= app->txc_off_x0 && x <= app->txc_off_x1) { split_set(app, 0); }
-    }
-    return;
-  }
-  /* Ctrl+click = "TX here": VFO B under the pointer, split on if it was off —
-   * the pileup click (LB0EI's SKM-4 workflow). Exact Hz, like click_tune. */
-  if (n_press == 1 && (mods & GDK_CONTROL_MASK) && !app->tx_display && !in_gutter(app, x, y)) {
-    int w = gtk_widget_get_width(app->area);
-    if (w < 1) { return; }
-    double hzpp = (double)app->rate / app->zoom / w;
-    long long f = app->freq + (long long)llround((x - vfo_x(app, w)) * hzpp);
-    if (f < 1) { f = 1; }
-    if (!app->split) { app->freq_b = f; split_set(app, 1); }
-    else             { split_set_b(app, f); }
-    app->drag_base_freq_b = app->freq_b;  /* the same press began a Ctrl-drag from the OLD B —
-                                             re-base it or jitter drags B straight back */
-    return;
   }
   if (n_press == 2 && in_gutter(app, x, y)) {
     if (app->tx_display) { tx_pan_autofit(app); schedule_save(app); gtk_widget_queue_draw(app->area); }
@@ -3408,9 +3224,9 @@ static gboolean on_key(GtkEventControllerKey *ctl, guint keyval, guint keycode,
     if (t && strcmp(t, "1") == 0) { tx_run_cw_send("V V V TEST DE OK1BR "); }
     return TRUE;
   }
-  if (gdk_keyval_to_lower(keyval) == GDK_KEY_s &&
-      !(state & (GDK_CONTROL_MASK | GDK_ALT_MASK))) {       /* s = split on/off (SDR-12) */
-    split_set(app, !app->split);
+  if (gdk_keyval_to_lower(keyval) == GDK_KEY_b &&
+      !(state & (GDK_CONTROL_MASK | GDK_ALT_MASK))) {       /* b = A/B swap (SDR-19) */
+    vfo_swap(app);
     return TRUE;
   }
   int mode;
@@ -3512,11 +3328,27 @@ static void filt_graph_range(App *app, double *fmin, double *fmax) {
 static double filt_fx(double f, double fmin, double fmax, int w) {
   return 14.0 + (f - fmin) / (fmax - fmin) * (w - 28.0);
 }
+/* Lower-sideband passbands (LSB, CWL, DIGL) live at negative Hz relative to
+ * the carrier, but the operator thinks in AUDIO Hz, low to high, the same
+ * for both sidebands (Richard 2026-09-06: "u LSB se blbě ukazují filtry, měly
+ * by být stejně jako USB — absolutní hodnoty od nejnižšího do nejvyššího").
+ * The dialog therefore works in a DISPLAY space that mirrors the lower
+ * sideband: filt_disp() maps a (lo, hi) pair either way (it is its own
+ * inverse), filt_graph_drange() the axis. Straddling passbands (AM, RTTY)
+ * stay signed. The WDSP-facing state (flo/fhi) is untouched. */
+static int filt_mirrored(const App *app) { return app->fhi <= 0.0 && app->flo < 0.0; }
+static void filt_disp(const App *app, double lo, double hi, double *dlo, double *dhi) {
+  if (filt_mirrored(app)) { *dlo = -hi; *dhi = -lo; } else { *dlo = lo; *dhi = hi; }
+}
+static void filt_graph_drange(App *app, double *fmin, double *fmax) {
+  double a, b; filt_graph_range(app, &a, &b);
+  filt_disp(app, a, b, fmin, fmax);
+}
 
 static void filt_graph_draw(GtkDrawingArea *da, cairo_t *cr, int w, int h, gpointer data) {
   (void)da;
   App *app = (App *)data;
-  double fmin, fmax; filt_graph_range(app, &fmin, &fmax);
+  double fmin, fmax; filt_graph_drange(app, &fmin, &fmax);
   const double gtop = 4.0, gbot = h - 16.0;   /* plot band; axis labels below */
   /* backdrop */
   cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.55);
@@ -3524,7 +3356,7 @@ static void filt_graph_draw(GtkDrawingArea *da, cairo_t *cr, int w, int h, gpoin
   /* grid: nice step (1/2/5·10ⁿ) for ~5 divisions */
   double raw = (fmax - fmin) / 5.0, mag = pow(10.0, floor(log10(raw))), nn = raw / mag;
   double step = (nn <= 1 ? 1 : nn <= 2 ? 2 : nn <= 5 ? 5 : 10) * mag;
-  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_select_font_face(cr, FONT_UI, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
   cairo_set_font_size(cr, 10.0);
   cairo_set_line_width(cr, 1.0);
   for (double f = ceil(fmin / step) * step; f <= fmax; f += step) {
@@ -3535,18 +3367,18 @@ static void filt_graph_draw(GtkDrawingArea *da, cairo_t *cr, int w, int h, gpoin
     if (fabs(f) >= 1000.0) { snprintf(lbl, sizeof lbl, "%gk", f / 1000.0); }
     else                   { snprintf(lbl, sizeof lbl, "%g", f); }
     cairo_text_extents_t e; cairo_text_extents(cr, lbl, &e);
-    cairo_set_source_rgba(cr, 0.7, 0.75, 0.85, 0.8);
+    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.75);
     cairo_move_to(cr, x - e.width / 2, h - 4); cairo_show_text(cr, lbl);
   }
   /* carrier: the VFO hairline, as on the spectrum */
   {
     double x = floor(filt_fx(0.0, fmin, fmax, w)) + 0.5;
-    cairo_set_source_rgba(cr, PANADAPTER_VFO_RGB, 0.75);
+    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.75);
     cairo_set_line_width(cr, 0.75);
     cairo_move_to(cr, x, gtop); cairo_line_to(cr, x, gbot); cairo_stroke(cr);
   }
   /* passband: flat top with soft skirts */
-  double lo = app->flo, hi = app->fhi;
+  double lo, hi; filt_disp(app, app->flo, app->fhi, &lo, &hi);   /* display (audio) edges */
   double sk = (fmax - fmin) * 0.03;
   const double top = gtop + 22.0, base = gbot - 2.0;
   double xl = filt_fx(lo, fmin, fmax, w), xh = filt_fx(hi, fmin, fmax, w);
@@ -3556,14 +3388,14 @@ static void filt_graph_draw(GtkDrawingArea *da, cairo_t *cr, int w, int h, gpoin
   cairo_line_to(cr, xh, top);
   cairo_curve_to(cr, (3 * xh + xhs) / 4, top, (xh + xhs) / 2, base, xhs, base);
   cairo_close_path(cr);
-  cairo_set_source_rgba(cr, COL_RX_FILL, 0.30); cairo_fill_preserve(cr);
-  cairo_set_source_rgba(cr, COL_RX_EDGE, 0.95); cairo_set_line_width(cr, 1.5); cairo_stroke(cr);
+  cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.18); cairo_fill_preserve(cr);   /* white (Richard 2026-09-06) */
+  cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.95); cairo_set_line_width(cr, 1.5); cairo_stroke(cr);
   /* edge handles + values */
   cairo_set_line_width(cr, 1.0);
   const double xs[2] = { xl, xh }; const double fs[2] = { lo, hi };
   for (int i = 0; i < 2; i++) {
     double x = floor(xs[i]) + 0.5;
-    cairo_set_source_rgba(cr, COL_RX_EDGE, 0.95);
+    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.95);
     cairo_move_to(cr, x, top - 8); cairo_line_to(cr, x, base); cairo_stroke(cr);
     cairo_rectangle(cr, x - 5, top - 14, 10, 12); cairo_fill(cr);
     char v[16]; snprintf(v, sizeof v, "%d", (int)lrint(fs[i]));
@@ -3572,15 +3404,15 @@ static void filt_graph_draw(GtkDrawingArea *da, cairo_t *cr, int w, int h, gpoin
     double lx = x - e.width / 2;
     if (lx < 2) { lx = 2; }
     if (lx + e.width > w - 2) { lx = w - 2 - e.width; }
-    cairo_set_source_rgba(cr, 0.85, 0.93, 1.0, 0.95);
+    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.95);
     cairo_move_to(cr, lx, top - 18); cairo_show_text(cr, v);
   }
   /* width, centred in the passband */
   char wl[16]; filter_width_label(app, wl, sizeof wl);
-  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+  cairo_select_font_face(cr, FONT_UI, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
   cairo_set_font_size(cr, 18.0);
   cairo_text_extents_t e; cairo_text_extents(cr, wl, &e);
-  cairo_set_source_rgba(cr, 0.93, 0.96, 1.0, 0.95);
+  cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.95);
   cairo_move_to(cr, (xl + xh) / 2 - e.width / 2, top + 40); cairo_show_text(cr, wl);
 }
 
@@ -3588,8 +3420,9 @@ static void filt_graph_draw(GtkDrawingArea *da, cairo_t *cr, int w, int h, gpoin
 static int filt_graph_hit(App *app, double x) {
   int w = gtk_widget_get_width(app->filt_graph);
   if (w < 1) { return 0; }
-  double fmin, fmax; filt_graph_range(app, &fmin, &fmax);
-  double xl = filt_fx(app->flo, fmin, fmax, w), xh = filt_fx(app->fhi, fmin, fmax, w);
+  double fmin, fmax; filt_graph_drange(app, &fmin, &fmax);
+  double lo, hi; filt_disp(app, app->flo, app->fhi, &lo, &hi);
+  double xl = filt_fx(lo, fmin, fmax, w), xh = filt_fx(hi, fmin, fmax, w);
   if (fabs(x - xl) <= 8.0) { return 1; }
   if (fabs(x - xh) <= 8.0) { return 2; }
   if (x > xl && x < xh)    { return 3; }
@@ -3599,8 +3432,9 @@ static void on_filt_graph_drag_begin(GtkGestureDrag *g, double x, double y, gpoi
   (void)g; (void)y;
   App *app = (App *)data;
   app->filt_drag = filt_graph_hit(app, x);
-  app->filt_drag_lo = (int)lrint(app->flo);
-  app->filt_drag_hi = (int)lrint(app->fhi);
+  double lo, hi; filt_disp(app, app->flo, app->fhi, &lo, &hi);   /* drag in display space */
+  app->filt_drag_lo = (int)lrint(lo);
+  app->filt_drag_hi = (int)lrint(hi);
 }
 static void on_filt_graph_drag_update(GtkGestureDrag *g, double off_x, double off_y, gpointer data) {
   (void)g; (void)off_y;
@@ -3608,15 +3442,17 @@ static void on_filt_graph_drag_update(GtkGestureDrag *g, double off_x, double of
   if (!app->filt_drag) { return; }
   int w = gtk_widget_get_width(app->filt_graph);
   if (w < 1) { return; }
-  double fmin, fmax; filt_graph_range(app, &fmin, &fmax);
+  double fmin, fmax; filt_graph_drange(app, &fmin, &fmax);
   double hzpp = (fmax - fmin) / (w - 28.0);
   int d = (int)lrint(off_x * hzpp / 10.0) * 10;          /* 10 Hz steps */
   int lo = app->filt_drag_lo, hi = app->filt_drag_hi;
   if (app->filt_drag == 1)      { lo += d; if (lo > hi - 50) { lo = hi - 50; } }
   else if (app->filt_drag == 2) { hi += d; if (hi < lo + 50) { hi = lo + 50; } }
   else                          { lo += d; hi += d; }
-  if (lo == (int)lrint(app->flo) && hi == (int)lrint(app->fhi)) { return; }
-  filter_apply_var_edges(app, lo, hi);
+  double ilo, ihi; filt_disp(app, lo, hi, &ilo, &ihi);           /* back to WDSP space */
+  int nlo = (int)lrint(ilo), nhi = (int)lrint(ihi);
+  if (nlo == (int)lrint(app->flo) && nhi == (int)lrint(app->fhi)) { return; }
+  filter_apply_var_edges(app, nlo, nhi);
 }
 static void on_filt_graph_drag_end(GtkGestureDrag *g, double off_x, double off_y, gpointer data) {
   (void)g; (void)off_x; (void)off_y;
@@ -3639,8 +3475,10 @@ static void on_filt_edge_changed(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   (void)r; (void)ps;
   App *app = (App *)data;
   if (app->filt_syncing) { return; }
-  int lo = (int)lrint(adw_spin_row_get_value(ADW_SPIN_ROW(app->filt_low_row)));
-  int hi = (int)lrint(adw_spin_row_get_value(ADW_SPIN_ROW(app->filt_high_row)));
+  double ilo, ihi;                                                /* rows are display (audio) Hz */
+  filt_disp(app, adw_spin_row_get_value(ADW_SPIN_ROW(app->filt_low_row)),
+                 adw_spin_row_get_value(ADW_SPIN_ROW(app->filt_high_row)), &ilo, &ihi);
+  int lo = (int)lrint(ilo), hi = (int)lrint(ihi);
   if (lo == (int)lrint(app->flo) && hi == (int)lrint(app->fhi)) { return; }
   filter_apply_var_edges(app, lo, hi);
 }
@@ -3735,8 +3573,9 @@ static void filter_widgets_sync(App *app) {
   if (app->filter_idx >= 0 && app->filter_idx < NPRESET + 2) {
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->filt_btn[app->filter_idx]), TRUE);
   }
-  adw_spin_row_set_value(ADW_SPIN_ROW(app->filt_low_row),  app->flo);
-  adw_spin_row_set_value(ADW_SPIN_ROW(app->filt_high_row), app->fhi);
+  { double lo, hi; filt_disp(app, app->flo, app->fhi, &lo, &hi);   /* display (audio) Hz */
+    adw_spin_row_set_value(ADW_SPIN_ROW(app->filt_low_row),  lo);
+    adw_spin_row_set_value(ADW_SPIN_ROW(app->filt_high_row), hi); }
   gtk_widget_queue_draw(app->filt_graph);
   app->filt_syncing = 0;
 }
@@ -3938,17 +3777,17 @@ static void agc_meter_draw(GtkDrawingArea *da, cairo_t *cr, int w, int h, gpoint
   double frac = live ? gain / top : 0.0;
   if (frac < 0.0) { frac = 0.0; }
   if (frac > 1.0) { frac = 1.0; }
-  cairo_set_source_rgba(cr, COL_RX_EDGE, 0.85);
+  cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.85);   /* white (Richard 2026-09-06) */
   cairo_rectangle(cr, bx, by, bw * frac, bh); cairo_fill(cr);
-  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_select_font_face(cr, FONT_UI, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
   cairo_set_font_size(cr, 11.0);
-  cairo_set_source_rgba(cr, 0.7, 0.75, 0.85, 0.8);
+  cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.75);
   cairo_move_to(cr, bx, by - 7); cairo_show_text(cr, "0 dB");
   char t[32]; snprintf(t, sizeof t, "AGC-T %.0f dB", top);
   cairo_text_extents_t e; cairo_text_extents(cr, t, &e);
   cairo_move_to(cr, bx + bw - e.x_advance, by - 7); cairo_show_text(cr, t);
   cairo_set_font_size(cr, 15.0);
-  cairo_set_source_rgba(cr, 0.93, 0.96, 1.0, 0.95);
+  cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.95);
   if (live)             { snprintf(t, sizeof t, "Gain %.0f dB   ·   out %.0f dB", gain, out); }
   else if (app->agc>0)  { snprintf(t, sizeof t, "no signal path"); }
   else                  { snprintf(t, sizeof t, "AGC off"); }
@@ -4121,15 +3960,6 @@ static void on_mon_toggled(GtkToggleButton *b, gpointer data) {
   schedule_save(app);
 }
 
-/* SPLIT — the strip's way in (Richard: "na zapínání splitu by to chtělo taky
- * tlačítko, mezi 2T a MON"). Same one path as the key, the card and TCI;
- * split_set() writes the button back with the signal blocked, so every
- * other way of switching keeps it in step. */
-static void on_split_toggled(GtkToggleButton *b, gpointer data) {
-  App *app = (App *)data;
-  split_set(app, gtk_toggle_button_get_active(b) ? 1 : 0);
-}
-
 static void on_tx_key_toggled(GtkToggleButton *b, gpointer data) {
   (void)b;
   App *app = (App *)data;
@@ -4295,16 +4125,6 @@ static GtkWidget *build_controls(App *app) {
       app->tx_ready && app->mode != DEMOD_CWL && app->mode != DEMOD_CWU);
   g_signal_connect(app->tt_btn, "toggled", G_CALLBACK(on_tt_toggled), app);
   gtk_box_append(GTK_BOX(txbox), app->tt_btn);
-  /* SPLIT — TX on VFO B (SDR-12). Not .txkey: it never keys. Gated like MON
-   * (tx_ready): without a transmitter there is nothing to split. */
-  app->split_btn = gtk_toggle_button_new_with_label("SPLIT");
-  gtk_widget_set_tooltip_text(app->split_btn,
-      "Split: transmit on VFO B (the yellow TX filter) while receiving on A — "
-      "drag the TX filter or use Ctrl+wheel / Ctrl+click to move B; key s");
-  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->split_btn), app->split != 0);
-  gtk_widget_set_sensitive(app->split_btn, app->tx_ready);
-  g_signal_connect(app->split_btn, "toggled", G_CALLBACK(on_split_toggled), app);
-  gtk_box_append(GTK_BOX(txbox), app->split_btn);
   /* MON — TX monitor (self-listen) on/off. Operational control → on the bar
    * next to MOX (level stays in Preferences). Deliberately NOT .txkey: red
    * means "transmitting", and MON never keys. Works for CW sidetone too, so
@@ -5171,13 +4991,14 @@ static void tci_get_tx_meters(double *mic_db, double *rms_w, double *pep_w, doub
   *swr    = ts.swr;
 }
 
-/* VFO B + split for TCI (SDR-12): vfo:0,1,f and split_enable:0,x land on the
- * same one-path setters the GUI uses. Handlers run on the main loop
- * (process_payload_idle), so touching GTK state here is fine. */
-static long long tci_get_freq_b(void) { return tci_app->freq_b > 0 ? tci_app->freq_b : tci_app->freq; }
-static void tci_set_freq_b(long long f) { if (f >= 1) { split_set_b(tci_app, f); } }
-static int  tci_get_split(void) { return tci_app->split; }
-static void tci_set_split(int on) { split_set(tci_app, on); }
+/* Second VFO for TCI (SDR-19): vfo:0,1,f addresses the OTHER VFO (a memory —
+ * channel 0 is the active one, whichever letters they carry after an A/B
+ * swap). No split ops → the server echoes split_enable false and TX_FREQUENCY
+ * = channel 0 (the SDR-12 split backend went with the feature, 2026-09-06).
+ * Handlers run on the main loop (process_payload_idle), so touching GTK
+ * state here is fine. */
+static long long tci_get_freq_b(void) { return tci_app->ofreq > 0 ? tci_app->ofreq : tci_app->freq; }
+static void tci_set_freq_b(long long f) { if (f >= 1) { vfo_other_set(tci_app, f); } }
 /* CTUN (SDR-18): dds = the DDC centre. Model A: same as vfo. CTUN: the centre
  * moves and the dial keeps its IF offset (rides along) — the plain reading of
  * ExpertSDR's VFO = DDS + IF; engine_set_centre clamps the dial into the span. */
@@ -5201,7 +5022,7 @@ static const TciOps TCI_OPS = {
   tci_get_smeter, tci_get_tx_meters, tci_set_tx_src, tci_tx_audio_push,
   tci_iq_rate_changed, tci_spot_add, tci_spot_del, tci_spot_clear,
   tci_rtty_send, tci_rtty_stop,
-  tci_get_freq_b, tci_set_freq_b, tci_get_split, tci_set_split,
+  tci_get_freq_b, tci_set_freq_b, NULL, NULL,   /* no split (SDR-19) */
   tci_get_centre, tci_set_centre,   /* ⛔ appended LAST — positional init */
 };
 
@@ -6054,7 +5875,7 @@ static void tx_cal_from_settings(App *app, const Settings *st) {
 /* Bring up the direct-radio engine: discover → analyzer → P2 RX.
  * State precedence: env var > saved config > built-in default. */
 static void start_radio(App *app) {
-  Settings st = { .freq = 14100000, .rate = 192000, .mode = -1,
+  Settings st = { .freq = 14100000, .rate = 192000, .mode = -1, .omode = -1,
                   .volume = -10.0, .gain = 1.0, .fps = 25, .latency = 10,
                   .step = TUNE_STEP_DEFAULT, .zoom = 1.0, .atten = 0, .lna = 14,
                   .agc = 3, .agc_gain = 80.0, .filter = -1,
@@ -6114,10 +5935,12 @@ static void start_radio(App *app) {
   app->freq   = st.freq;
   app->centre = app->freq;           /* CTUN starts with the span centred on the dial */
   app->ctun   = st.ctun ? 1 : 0;
-  /* Split restores only in-band (band_apply would drop it anyway) — B from
-   * another band is never a TX frequency we start on. */
-  app->freq_b = st.freq_b > 0 ? st.freq_b : app->freq;
-  app->split  = (st.split && band_for_freq(app->freq_b) == band_for_freq(app->freq)) ? 1 : 0;
+  /* The other VFO (SDR-19): any band is legal for it; split restores only
+   * same-band (band_apply would drop it anyway) — a TX VFO on another band is
+   * never something we start on. Old configs (≤ 0.5.0) carry freq_b only. */
+  app->vfo_b = st.vfo_b ? 1 : 0;
+  app->ofreq = st.ofreq > 0 ? st.ofreq : app->freq;
+  app->omode = (st.omode >= 0 && st.omode < DEMOD_NMODES) ? st.omode : mode;
   app->rate   = st.rate;
   app->mode   = mode;
   app->volume = st.volume;

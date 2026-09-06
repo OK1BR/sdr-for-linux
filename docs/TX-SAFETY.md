@@ -64,17 +64,17 @@ the status bit is ignored (today's behavior, bit-for-bit).
 - [ ] **Out-of-band lockout**: refuse MOX outside ham bands unless the user
       explicitly enables OOB TX (piHPSDR: txband->disablePA + "Out of band"
       in vfo.c; general packet resent on band edge crossing, vfo.c:281).
-- [ ] **Split (SDR-12, 2026-09-06): the TX frequency is VFO B, and every TX
-      decision reads the TX VFO, not the dial.** `tx_run_set_freq()` receives
-      `tx_vfo_freq()` (B under split, else A); tx_gate evaluates in-band on
-      it and copies it into `state.tx_freq` → P2 DUC phase + TX-LPF bank
-      (np.c:668/743 take `vfo_get_tx_vfo()` for both), the RX BPF/HPF stay
-      on the dial (np.c:1169-1211). P1: `p1_set_tx_frequency()` feeds the
-      0x02 TX-NCO frame and the PS feedback DDCs (o_p.c:1015-1040). Split is
-      **in-band by construction**: `split_set_b()` clamps B into A's band
-      (so the per-band PA calibration, keyed on A's band, is B's too),
-      `band_apply()` drops split (B := A) on any band change and startup
-      refuses an off-band B — the TX LPF/cal can never be a stale band's.
+- [ ] **Two VFOs, no split (SDR-12 → SDR-19, 2026-09-06): the TX frequency is
+      always the ACTIVE VFO, and every TX decision reads what `tx_run_set_freq()`
+      was given.** The GUI feeds it `app->freq` (the tick and `vfo_swap()`);
+      tx_gate evaluates in-band on it and copies it into `state.tx_freq` → P2
+      DUC phase + TX-LPF bank (np.c:668/743 take `vfo_get_tx_vfo()` for both),
+      the RX BPF/HPF from the dial (np.c:1169-1211); P1: `p1_set_tx_frequency()`
+      feeds the 0x02 TX-NCO frame and the PS feedback DDCs (o_p.c:1015-1040).
+      SDR-12's split (TX on the other VFO, same-band by construction) was built,
+      live-tested and REMOVED the same day on Richard's call; the other VFO is a
+      memory on any band and never a TX frequency. `vfo_swap()` is refused while
+      keyed, because it moves the RX BPF and the TX LPF/DUC together.
       The builders are still correct cross-band (pinned in
       `sdrfl-p2dev-test` + `sdrfl-p1txprobe`). **CTUN (SDR-18)** changes
       nothing here: MOX still goes out on the dial (`tx_vfo_freq()` reads

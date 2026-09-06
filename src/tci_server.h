@@ -70,11 +70,15 @@ typedef struct {
    * the GUI initializer is positional. */
   void      (*rtty_send)(const char *text);
   void      (*rtty_stop)(void);
-  /* VFO B + split (SDR-12): `vfo:0,1,f` (and piHPSDR's `vfo:1,0,f` spelling)
-   * addresses VFO B; `split_enable:0,true` = transmit on B while receiving on
-   * A (ExpertSDR semantics; JTDX/tciadapter send exactly this pair). Any may
-   * be NULL → the server answers as a single-VFO radio (B mirrors A, split
-   * echoed false). */
+  /* Second VFO (SDR-19) + split: `vfo:0,1,f` (and piHPSDR's `vfo:1,0,f`
+   * spelling) addresses the OTHER VFO — channel 0 is whatever the radio
+   * receives on, channel 1 the other one, whichever letter (A/B) each carries
+   * after an A/B swap; `split_enable:0,true` = transmit on channel 1 while
+   * receiving on channel 0 (ExpertSDR semantics; JTDX and tciadapter send
+   * exactly this pair). Any may be NULL → the server answers as a radio
+   * without that capability (B mirrors A / split echoed false). The GUI
+   * passes the VFO B pair and NO split ops since 2026-09-06 (SDR-12's split
+   * was removed; the server keeps the generic backend). */
   long long (*get_freq_b)(void);
   void      (*set_freq_b)(long long hz);
   int       (*get_split)(void);
