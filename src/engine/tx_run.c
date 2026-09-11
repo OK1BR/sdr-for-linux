@@ -96,6 +96,9 @@ static void tx_passband(int mode, double lo, double hi, double *flo, double *fhi
   default:         *flo = lo;     *fhi = hi;    break;  /* USB + DIGU     */
   }
 }
+void tx_run_passband(int mode, double lo, double hi, double *flo, double *fhi) {
+  tx_passband(mode, lo, hi, flo, fhi);
+}
 #define FEED_BLOCK    512      /* mic samples per fexchange0 (matches tx.c TX_BUFSIZE)   */
 #define PACE_US       10667    /* 512 samples @ 48 kHz — real-time TX IQ pacing          */
 #define GATE_US       50000    /* gate + meter cadence (~20 Hz, like tx_update_display)  */

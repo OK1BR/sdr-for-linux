@@ -41,7 +41,7 @@ that leaves the machine wrong; `medium` = gets in the operator's way;
 ## Open — tasks
 
 ### SDR-20 — Draw the TX filter on the TX display, in red, on the spectrum AND the waterfall
-- **Type:** task · **Severity:** — · **Status:** open
+- **Type:** task · **Severity:** — · **Status:** done — implemented 2026-09-11 (`draw_tx_filter()` in `draw_tx()`; build clean, 11 gates) and live-verified by Richard on the G2E the same evening: 4 TUNE + 12 MOX overs on 20 m, "vypadá to dobře", then USB and LSB explicitly ("lsb i usb se zdají taky dobré" — the body sat on the right side of the carrier in both) and TUNE ("tune taky ukazuje rudý střed frekvence" — carrier line only), waterfall with the switch ON; the switch-OFF case (footprint skipped on the waterfall) was not explicitly looked at. Zero Gtk warnings under the SDR-16 harness throughout.
 - **Source:** Richard, 2026-09-06 night: "v TX režimu zobrazovat filtr, odpovídající TX filtru, a to červenou barvou, a stejně jako u RX okna, by mělo být vidět jak na spektru, tak na vodopádu"
 - **Detail:** `src/gui.c` — `draw_tx()` is where it goes; the RX footprint to mirror is the spectrum overlay and the waterfall continuation of it (the latter gated on `show_filter_wf`); the TX audio filter edges are `app->tx_flo` / `app->tx_fhi` (Audio prefs, persisted).
 
@@ -54,17 +54,29 @@ in the **red** of the RX-green / TX-red colour language (`COL_TX_*`, not ad-hoc
 RGB), so the operator can see where the transmitted energy is supposed to sit
 against what actually goes out.
 
-To settle when it is implemented (not decisions for now):
-- The footprint is carrier-relative and mode-dependent — USB puts it at
-  `+tx_flo … +tx_fhi`, LSB mirrored below the carrier (the same mirroring the
-  readout/Filter dialog already do for the LSB family, SDR-19), and CW/RTTY have
-  no audio passband at all (carrier / FSK pair) — decide whether anything is
-  drawn there.
-- Whether the waterfall half follows the existing "filter on waterfall" switch
-  or is always on for TX.
-- Read-only or draggable: RX's edges are grab handles; during an over the TX
-  display is display-only today (cf. the TX HUD rule), so the first cut probably
-  just draws.
+**Decided at implementation (2026-09-11):**
+- **Edges = the DSP's own.** A new pure export `tx_run_passband()` wraps the
+  static `tx_passband()` the TXA chain filters with (USB `(lo,hi)`, LSB/DIGL
+  `(-hi,-lo)`, AM `(-hi,hi)`), so the GUI never re-types the sideband
+  mirroring. Geometry is the kHz ruler's: carrier = `w/2`, span =
+  `tx_span_hz()`.
+- **Per mode:** voice + digi = the signed passband body; **CW and any TUNE
+  over = the carrier line only** (the DSP ±150 Hz is channel housekeeping,
+  TUNE is a carrier whatever the mode); **RTTY = the FSK pair**
+  ±`RTTY_SHIFT_HZ/2` (now public in `rtty_gen.h`) with the carrier through it.
+- **Waterfall half follows the existing "Filter on waterfall" switch** — same
+  as RX, no second setting.
+- **Display-only**, no grab handles (the TX display is display-only during an
+  over, TX HUD rule).
+- **Colour language:** the panadapter's green VFO line is suppressed on the TX
+  display (`vfo_frac = −1`) and the footprint's RED carrier hairline
+  (0.75 px, 0.60) replaces it — RX green / TX red. Fill/edges = the RX
+  passband's numbers with `COL_TX_*`, the filter-opacity slider applies.
+
+**Live discriminator for Richard:** in LSB the red body must sit ON the
+transmitted energy to the LEFT of the carrier, in USB to the RIGHT (a wrong
+side = one sign in the GUI mapping, not in the engine); TUNE and CW show
+the carrier line only; the waterfall toggle both ways.
 
 ### SDR-19 — Standard VFO A/B (swap, A=B); split removed; the card dissolved into a plain white readout
 - **Type:** task · **Severity:** — · **Status:** done — implemented and live-verified 2026-09-06 (evening → night) over eleven rounds with Richard on the G2E ("to je prozatím vše, díky"); committed + pushed as `61ecd7f`
@@ -407,6 +419,50 @@ to be used wherever the radio is announced.
    to test — a `main` tip is not a build to hand out.
 
 ## Open — bugs
+
+### SDR-21 — P2 listener dies on EINTR: a paused process (debugger, SIGSTOP) leaves RX dead and the display frozen
+- **Type:** bug · **Severity:** high · **Status:** done (2026-09-11) — fixed in `protocol2.c` (`listener_thread` treats EINTR as transient; `send_packet` retries EINTR), reproduced before and verified after with `kill -STOP <pid>; sleep 3; kill -CONT <pid>` on the live G2E
+- **Source:** Richard's desk, 2026-09-11 ~22:41 ("teď se zaseklo SDR úplně … úplně se zadřelo RX") while the app ran under the SDR-16 gdb harness
+- **Detail:** `src/engine/protocol2.c` `listener_thread()` error path; the SDR-16 harness recipe in `/var/tmp/sdr16/gdb.cmd`
+
+**What happened.** The harness stopped the whole process on every Gtk warning,
+and at 22:40:10 SDR-3's GtkImage baseline warning started flooding (192 hits in
+43 s — the flood is harmless by itself). Each stop/resume of a thread blocked in
+`recvfrom()` on a socket with `SO_RCVTIMEO` makes the kernel return **EINTR**
+instead of restarting the call (any signal does — SIGCONT after SIGSTOP, a
+ptrace stop, a profiler). The listener treated anything but EAGAIN as a dead
+socket: `t_perror("p2 recvfrom"); p2running = 0; break;`. With `p2running`
+cleared the keepalive timer thread ended too, the radio's hardware watchdog
+(General[38]=1, TX-DESIGN §8) then stopped streaming, and nothing ever
+restarted it: RX dead, spectrum frozen, process alive and idle, clean shutdown
+still possible. The 14 021 `UdpRcvbufErrors` the kernel counted are the stream
+piling into the unread socket. The log of the frozen session was lost (the
+relaunch overwrote it); the chain was proven instead by reproducing it:
+`kill -STOP` for 3 s on the healthy relaunched instance → `p2 recvfrom:
+Přerušené volání systému` and RX dead the same way.
+
+**Fix + proof.** EINTR → `continue` in the listener (P1's loop and the network
+head's `client.c` already loop on any negative recv), and a 4-try EINTR retry
+in `send_packet()`. The same 3 s pause on the fixed build: the listener thread
+survived, the radio's watchdog had stopped the stream (its DDC sequence
+restarted at 5, the DUC error counter reset → one cosmetic
+`DUC sequence errors: 1 (+4294967295)` line) and the next 100 ms keepalive
+with run=1 re-armed it by itself — RX resumed, UDP drops stopped growing.
+So: **the radio recovers from a host pause on its own; only our listener did
+not.** No LOS re-arm logic is needed.
+
+**Tripwire.** `sdrfl-txiq-ring-test` section 8 (52 checks now): a forked
+worker runs the loopback link, the test freezes it with SIGSTOP/SIGCONT for
+300 ms and then sends an HP status packet; the worker's listener must still
+parse it. Validated both ways: the pre-fix listener fails it (exit 1), the
+fixed one passes. (Stopping the test process itself is not an option — the
+calling shell reports exit 147 and abandons it, which would break CI.)
+
+**Lessons.** (1) The gdb warning harness is a diagnostic-session tool, never
+for operating — every hit pauses the process; it now excludes the baseline
+flood and carries this warning in its header. (2) `SO_RCVTIMEO` sockets must
+treat EINTR as transient everywhere. (3) Never relaunch over a log you still
+need — copy it aside first.
 
 ### SDR-15 — P2 data socket binds to the interface's link-local address
 - **Type:** bug · **Severity:** medium · **Status:** done (2026-09-11) — `discovery_dedup()` post-pass; offline gate `sdrfl-discovery-test` 23/23, live broadcast discovery on the LAN (two G2E answers → one entry), and the acceptance line itself: a start THROUGH THE PICKER (picker broadcast + the app's directed probe, both dropped in favour of the in-subnet entry) logged `p2: socket 61 bound to 192.168.1.18:0`, stream up, SDR-4 signature clean

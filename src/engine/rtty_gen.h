@@ -27,6 +27,11 @@
 
 typedef struct rtty_gen rtty_gen;
 
+/* The FSK pair: mark = +RTTY_SHIFT_HZ/2, space = −RTTY_SHIFT_HZ/2 around the
+ * dial (fixed by decision, RTTY-SCOPE §7E). Public so the TX display can draw
+ * where the pair sits (SDR-20); the generator is the only other user. */
+#define RTTY_SHIFT_HZ 170.0
+
 /* Create a generator at `sample_rate` Hz (the TX IQ rate). NULL on OOM. */
 rtty_gen *rtty_gen_new(int sample_rate);
 void      rtty_gen_free(rtty_gen *g);

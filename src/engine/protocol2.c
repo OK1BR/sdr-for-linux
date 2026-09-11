@@ -725,7 +725,14 @@ static gpointer txiq_thread(gpointer data) {
 
 static void send_packet(const unsigned char *buf, int len,
                         struct sockaddr_in *addr, socklen_t addrlen, const char *what) {
-  ssize_t rc = sendto(data_socket, buf, len, 0, (struct sockaddr *)addr, addrlen);
+  ssize_t rc;
+  int tries = 0;
+  do {                                   /* EINTR = interrupted, not failed —
+                                            same signal/ptrace case as the
+                                            listener's recvfrom; a few retries,
+                                            then the usual link-down verdict */
+    rc = sendto(data_socket, buf, len, 0, (struct sockaddr *)addr, addrlen);
+  } while (rc < 0 && errno == EINTR && ++tries < 4);
   if (rc < 0) {
     t_perror("p2 sendto");
     t_print("p2: send %s failed\n", what);
@@ -1194,6 +1201,17 @@ static gpointer listener_thread(gpointer data) {
         }
         continue;
       }
+      /* ⛔ EINTR is NOT a dead socket. With SO_RCVTIMEO set the kernel returns
+       * EINTR for ANY signal that touches this thread — a SIGSTOP/SIGCONT
+       * pair, a debugger's ptrace stop/resume, a profiler — instead of
+       * restarting the call. Treating it as fatal killed this thread (and
+       * with it the whole link: p2running=0 stops the keepalive timer, the
+       * radio's watchdog then stops streaming) the first time the app was
+       * paused under gdb — RX dead, GUI frozen, process alive
+       * (2026-09-11 evening, reproduced with `kill -STOP; sleep 3; kill
+       * -CONT`). P1 (protocol1.c) and the network head (client.c) already
+       * loop on any negative recv. */
+      if (errno == EINTR) { continue; }
       t_perror("p2 recvfrom");
       p2running = 0;
       break;

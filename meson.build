@@ -196,7 +196,8 @@ executable('sdrfl-p2dev-test',
 # pre-link or previous-link slot, and carry post-link packets in order — incl.
 # across a stop/start in one process. The "radio" is a UDP socket on
 # 127.0.0.1:1029 owned by the test; p2_rx_start is pointed at loopback. NO
-# discovery, NO real radio.
+# discovery, NO real radio. Section 8 (SDR-21): the listener must survive a
+# SIGSTOP/SIGCONT of the process (EINTR on the RCVTIMEO socket).
 executable('sdrfl-txiq-ring-test',
   ['src/txiq_ring_test.c'] + engine_sources,
   include_directories : [vendor_inc, src_inc, engine_inc],

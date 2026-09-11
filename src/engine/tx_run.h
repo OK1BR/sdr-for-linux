@@ -152,6 +152,14 @@ void tx_run_set_monitor_raw(int on);
 /* TX panadapter zoom: set the displayed span (Hz). Safe if TX isn't up. */
 void tx_run_set_span(double span_hz);
 
+/* The TX audio passband the TXA chain filters with, as SIGNED edges relative
+ * to the carrier — USB (lo,hi), LSB/DIGL/RTTY (-hi,-lo), AM (-hi,hi), CW ±150
+ * (channel housekeeping; WDSP is bypassed for CW). Pure: the same switch the
+ * runtime applies (tx_passband, mirrors piHPSDR tx_set_filter), exported so a
+ * display can draw the footprint WITHOUT re-typing the sideband mirroring
+ * (BACKLOG SDR-20). lo/hi = the operator's positive audio edges. */
+void tx_run_passband(int mode, double lo, double hi, double *flo, double *fhi);
+
 /*
  * CW (F6d). Queue Morse for `text` (appended); the TX runtime's break-in logic
  * keys the exciter through tx_gate while there's Morse to send, then holds MOX for

@@ -49,6 +49,7 @@
 #include "radio_support.h"
 #include "tci_server.h"
 #include "tx_run.h"
+#include "rtty_gen.h"  /* RTTY_SHIFT_HZ — the FSK pair on the TX display (SDR-20) */
 #include "tx_meter.h"   /* tx_meter_set_cal — per-radio wattmeter bridge constants */
 #include "tx.h"   /* tx_dsp_in_rate() — mic capture rate must match the WDSP TX input */
 #include "ps.h"   /* PureSignal runtime — enable/att/SetPk from Preferences (F7/PS-2) */
@@ -1547,6 +1548,54 @@ static double tx_span_hz(App *app) {
   return s < TX_IQ_BW ? s : TX_IQ_BW;
 }
 
+/* TX filter footprint on the TX display (BACKLOG SDR-20): where the
+ * transmitted energy is SUPPOSED to sit, in the colour language's RED, over
+ * rows y0..y1 — the spectrum strip, and the waterfall when "Filter on
+ * waterfall" is on (the same switch as the RX passband; no second setting).
+ * Geometry is the kHz ruler's own: carrier = w/2, span = tx_span_hz(). The
+ * edges come from the SAME function the TXA chain filters with
+ * (tx_run_passband → tx_passband), so USB/LSB/DIGL/AM mirroring cannot drift
+ * from the DSP. Emission shape per mode:
+ *   voice + digi   the signed DSP passband (LSB/DIGL left of the carrier)
+ *   CW, TUNE       carrier line only (the DSP ±150 Hz is channel housekeeping;
+ *                  TUNE is a carrier whatever the mode)
+ *   RTTY           the FSK pair ±RTTY_SHIFT_HZ/2 with the carrier through it
+ * Style = the RX passband verbatim (fill 0.22·op, edges 0.95·op, 1 px), and
+ * the carrier line replaces panadapter.c's green VFO line here (RX green /
+ * TX red): 0.75 px hairline like it, 0.60 alpha, carried down the waterfall
+ * exactly as the RX overlay carries the VFO line. Display-only — the TX
+ * display is display-only during an over (TX HUD rule); nothing is a grab. */
+static void draw_tx_filter(cairo_t *cr, App *app, const tx_run_status *ts, int w,
+                           double y0, double y1) {
+  double tx_span = tx_span_hz(app);
+  if (w < 1 || !(tx_span > 0.0) || y1 <= y0) { return; }
+  double lo = 0.0, hi = 0.0;
+  int body = 1;
+  if (ts->tune || app->mode == DEMOD_CWL || app->mode == DEMOD_CWU) { body = 0; }
+  else if (app->mode == DEMOD_RTTY) { lo = -RTTY_SHIFT_HZ / 2.0; hi = RTTY_SHIFT_HZ / 2.0; }
+  else { tx_run_passband(app->mode, app->tx_flo, app->tx_fhi, &lo, &hi); }
+  double pxhz = (double)w / tx_span, cx = w / 2.0;
+  double op = app->filter_op / 100.0;
+  if (body && hi > lo) {
+    double x0 = floor(cx + lo * pxhz) + 0.5;
+    double x1 = floor(cx + hi * pxhz) + 0.5;
+    cairo_set_source_rgba(cr, COL_TX_FILL, op * 0.22);       /* body — like the RX fill */
+    cairo_rectangle(cr, x0, y0, x1 - x0, y1 - y0);
+    cairo_fill(cr);
+    cairo_set_source_rgba(cr, COL_TX_EDGE, op * 0.95);       /* both edges */
+    cairo_set_line_width(cr, 1.0);
+    cairo_move_to(cr, x0, y0); cairo_line_to(cr, x0, y1);
+    cairo_move_to(cr, x1, y0); cairo_line_to(cr, x1, y1);
+    cairo_stroke(cr);
+  }
+  double xc = floor(cx) + 0.5;                                /* carrier: TX red hairline */
+  cairo_set_source_rgba(cr, COL_TX_EDGE, 0.60);
+  cairo_set_line_width(cr, 0.75);
+  cairo_move_to(cr, xc, y0); cairo_line_to(cr, xc, y1);
+  cairo_stroke(cr);
+  cairo_set_line_width(cr, 1.0);
+}
+
 static void draw_tx(cairo_t *cr, int w, int h, App *app) {
   int n = app->pixels;
   if (app->tx_ema_w != n) {
@@ -1567,7 +1616,9 @@ static void draw_tx(cairo_t *cr, int w, int h, App *app) {
   cairo_rectangle(cr, 0, 0, w, ph);
   cairo_clip(cr);
   panadapter_set_readout(0);
-  panadapter_draw(cr, w, ph, &app->tx_frame, app->tx_ema, low, high - low, NULL, NULL, 0.5);
+  /* vfo_frac −1 = no green VFO line here: the TX display's centre is the
+   * carrier and draw_tx_filter() paints it RED (RX green / TX red, SDR-20). */
+  panadapter_draw(cr, w, ph, &app->tx_frame, app->tx_ema, low, high - low, NULL, NULL, -1.0);
   panadapter_set_readout(1);
 
   /* Frequency ruler at the TOP (like the RX ruler), now zoom-aware: the span
@@ -1603,11 +1654,15 @@ static void draw_tx(cairo_t *cr, int w, int h, App *app) {
   }
   cairo_set_source_rgba(cr, 0.72, 0.82, 0.94, 0.7);
   cairo_move_to(cr, cx + half_khz * 1000.0 * pxhz + 8, ly); cairo_show_text(cr, "kHz");
+  /* The TX filter footprint + carrier over the spectrum strip (SDR-20). */
+  draw_tx_filter(cr, app, &ts, w, 0.0, (double)ph);
   cairo_restore(cr);
 
   /* TX waterfall (bottom): transmitted-spectrum history — drawn by the widget
    * snapshot as a GPU-scaled texture UNDER this cairo layer (see
-   * sdrfl_display_snapshot); here only the separator on top of it. */
+   * sdrfl_display_snapshot); here the footprint carried down (same "Filter on
+   * waterfall" switch as RX) and the separator on top of it. */
+  if (app->show_filter_wf && h > ph) { draw_tx_filter(cr, app, &ts, w, (double)ph, (double)h); }
   draw_split_line(cr, w, ph, app);
 
   /* Big red power/SWR numbers, top-left — the RX frequency readout's TX sibling.

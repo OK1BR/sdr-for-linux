@@ -315,9 +315,26 @@ DONE — `discovery_dedup()` post-pass (one `discovered[]` entry per radio,
 in-subnet > routed > off-subnet > link-local; gate `sdrfl-discovery-test`
 in CI; picker start now logs `bound to 192.168.1.18`); SDR-9 live-verified
 (no `tx: over stats` after TUNE 0 W / 72 W / MOX ×2); SDR-16 NOT reproduced
-under a gdb warning harness (`/var/tmp/sdr16`, recipe in the ticket). Next:
-SDR-20 (TX filter drawn red on the TX spectrum + waterfall, filed
-2026-09-07), mode editor / footer width (SDR-14), then the EQ milestone.
+under a gdb warning harness (`/var/tmp/sdr16`, recipe in the ticket).
+**SDR-20 DONE + LIVE the same evening:** `draw_tx_filter()` in `draw_tx()`
+— TX filter footprint in RED over the TX spectrum and (same "Filter on
+waterfall" switch as RX) the TX waterfall; edges from the new pure export
+`tx_run_passband()` (= the TXA chain's own `tx_passband`, so LSB/DIGL/AM
+mirroring cannot drift), CW + TUNE = carrier line only, RTTY = the FSK pair
+(`RTTY_SHIFT_HZ` now public), display-only; the panadapter's green VFO line
+is suppressed on the TX display (`vfo_frac = −1`) and the red carrier
+hairline replaces it. Richard: USB body right of the carrier, LSB left, TUNE
+carrier only — "vypadá to dobře". ⛔ **SDR-21 the same night (high, DONE):
+the P2 listener died on EINTR** — a socket with `SO_RCVTIMEO` returns EINTR
+for ANY signal/ptrace stop instead of restarting, the listener treated it as
+a dead socket → `p2running=0` → keepalives stopped → the radio's watchdog
+stopped streaming → RX dead + display frozen, process alive. Trigger was the
+SDR-16 gdb harness pausing the process 192× on SDR-3's baseline flood.
+Proven by `kill -STOP; sleep 3; kill -CONT` before (dead) and after the fix
+(the radio re-arms itself on the next run=1 keepalive; sequence resets,
+cosmetic `+4294967295` DUC line). Lessons in BACKLOG SDR-21: the harness is
+never for operating; copy a log aside before relaunching over it. Next: mode
+editor / footer width (SDR-14), then the EQ milestone.
 
 **SDR-17 — draggable spectrum/waterfall divider, DONE + LIVE 2026-09-06
 (same evening):** the split was `PANADAPTER_FRACTION 0.5` computed in four

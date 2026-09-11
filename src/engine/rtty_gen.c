@@ -24,7 +24,7 @@
 #endif
 
 #define RTTY_BAUD        45.45   /* fixed by decision (RTTY-SCOPE §7E)          */
-#define RTTY_SHIFT_HZ    170.0   /* mark = +85 Hz, space = −85 Hz around 0      */
+/* RTTY_SHIFT_HZ (170: mark +85 / space −85 around 0) lives in rtty_gen.h  */
 #define RTTY_RAMP_MS     5.0     /* key-on/off raised-cosine amplitude ramp     */
 #define RTTY_PREAMBLE_MS 100.0   /* steady mark before the first start bit      */
 #define RTTY_TAIL_BITS   1.0     /* steady mark after the last stop bit         */

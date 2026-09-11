@@ -32,8 +32,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <glib.h>
@@ -440,6 +442,66 @@ int main(void) {
     chk("kick: an unchanged frequency does not kick (HP ≤ 5 in 300 ms)", same <= 5, 1);
     p2_rx_stop();
     close(hpsock); close(txsock); close(gensock); close(rxsock);
+  }
+
+  /* ---- 8. the listener survives a process pause (SDR-21) ----------------
+   * A socket with SO_RCVTIMEO returns EINTR for ANY signal that touches the
+   * thread blocked in recvfrom — a SIGSTOP/SIGCONT pair, a debugger's ptrace
+   * stop/resume — instead of restarting the call. The listener used to take
+   * anything but EAGAIN as a dead socket and exit: p2running=0, keepalives
+   * stopped, the radio's watchdog stopped streaming, RX dead with the process
+   * alive (Richard's desk 2026-09-11, the app under a gdb warning harness).
+   * The link runs in a forked WORKER process (stopping the test process itself
+   * makes the calling shell report exit 147 and abandon it): the worker starts
+   * the link and emits one DUC packet; this process — owning the fake radio —
+   * learns the worker's port from it, freezes the worker for 300 ms with
+   * SIGSTOP/SIGCONT, then sends an HP status packet; the worker checks that
+   * its listener still parsed it and exits 0. The old code fails this
+   * (verified by reverting the fix). */
+  {
+    printf("[8] listener survives SIGSTOP/SIGCONT (EINTR on the RCVTIMEO socket)\n");
+    int radio8 = socket(AF_INET, SOCK_DGRAM, 0);
+    setsockopt(radio8, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes);
+    struct sockaddr_in ra8; memset(&ra8, 0, sizeof ra8);
+    ra8.sin_family = AF_INET; ra8.sin_port = htons(TXIQ_PORT);
+    ra8.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(radio8, (struct sockaddr *)&ra8, sizeof ra8) < 0) { perror("bind 1029 (8)"); return 2; }
+    int hp8 = socket(AF_INET, SOCK_DGRAM, 0);
+    setsockopt(hp8, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes);
+    struct sockaddr_in ha8; memset(&ha8, 0, sizeof ha8);
+    ha8.sin_family = AF_INET; ha8.sin_port = htons(1025);
+    ha8.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(hp8, (struct sockaddr *)&ha8, sizeof ha8) < 0) { perror("bind 1025 (8)"); return 2; }
+    dev.device = NEW_DEVICE_G1;
+    fflush(stdout); fflush(stderr);
+    pid_t worker = fork();
+    if (worker == 0) {
+      close(radio8); close(hp8);
+      if (p2_rx_start(&dev, 14000000, 192000, on_iq, NULL) != 0) { _exit(3); }
+      emit_seq(7000);                                 /* tells the parent our port */
+      g_usleep(1800000);                              /* parent: pause + status   */
+      int have = -1; unsigned last = 0;
+      p2_seqerr_debug(&have, &last);
+      p2_rx_stop();
+      _exit(last == 0x0A0B0C0Du ? 0 : 1);
+    }
+    struct sockaddr_in host8; socklen_t hl8 = sizeof host8;
+    unsigned char buf8[1500];
+    struct pollfd pf8 = { radio8, POLLIN, 0 };
+    int got8 = worker > 0 && poll(&pf8, 1, 2000) > 0 &&
+               recvfrom(radio8, buf8, sizeof buf8, 0, (struct sockaddr *)&host8, &hl8) == 1444;
+    chk("pause: learned the worker's port from its DUC packet", got8, 1);
+    if (worker > 0) {
+      kill(worker, SIGSTOP); g_usleep(300000); kill(worker, SIGCONT);   /* the pause */
+      g_usleep(150000);                                                 /* EINTR lands */
+      unsigned char status8[60]; memset(status8, 0, sizeof status8);
+      status8[32] = 0x0A; status8[33] = 0x0B; status8[34] = 0x0C; status8[35] = 0x0D;
+      if (got8) { sendto(hp8, status8, sizeof status8, 0, (struct sockaddr *)&host8, hl8); }
+    }
+    int st = -1; if (worker > 0) { waitpid(worker, &st, 0); }
+    chk("pause: worker's listener still parsed HP status after the pause (exit 0)",
+        WIFEXITED(st) ? WEXITSTATUS(st) : -1, 0);
+    close(radio8); close(hp8);
   }
 
   printf("sdrfl-txiq-ring-test: %d checks, %d failed — %s\n",
