@@ -34,6 +34,10 @@
 // The TCP fallback (1032-byte probe) and the HL2 fixed-IP/altered-MAC reply
 // flags (buf[11]) are deliberately not implemented — LAN UDP only for now.
 //
+// The inline MAC dedup below keeps the FIRST answer; p1_discovery() then ends
+// with discovery_dedup() (discovery_dedup.c, SDR-15), which keeps the BEST
+// interface per radio across both protocols' rounds.
+//
 #include <glib.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -99,6 +103,8 @@ void p1_discovery(void) {
 
     freeifaddrs(addrs);
   }
+
+  discovery_dedup();   /* one entry per radio, best interface kept (SDR-15) */
 }
 
 //

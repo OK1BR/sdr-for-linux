@@ -409,7 +409,7 @@ to be used wherever the radio is announced.
 ## Open — bugs
 
 ### SDR-15 — P2 data socket binds to the interface's link-local address
-- **Type:** bug · **Severity:** medium · **Status:** open
+- **Type:** bug · **Severity:** medium · **Status:** done (2026-09-11) — `discovery_dedup()` post-pass; offline gate `sdrfl-discovery-test` 23/23, live broadcast discovery on the LAN (two G2E answers → one entry), and the acceptance line itself: a start THROUGH THE PICKER (picker broadcast + the app's directed probe, both dropped in favour of the in-subnet entry) logged `p2: socket 61 bound to 192.168.1.18:0`, stream up, SDR-4 signature clean
 - **Source:** Richard's desk, 2026-09-06 — both starts that day logged `p2: socket N bound to 169.254.198.250:0`
 
 `enp134s0f1` carries a link-local 169.254.198.250/16 next to 192.168.1.18/24.
@@ -424,6 +424,27 @@ session the socket sits on a dead address and the stream dies. Fix: when
 several discovery entries share a radio IP, prefer the one whose interface
 address is in the radio's subnet (else any non-169.254 one); the next start
 must log `bound to 192.168.1.18`. Sibling symptom on the same LAN: SDR-5.
+Data point 2026-09-11: a start with `SDRFL_RADIO_IP=192.168.1.247` (direct-IP
+discovery, picker skipped) logged `p2: socket 29 bound to 0.0.0.0:0` — the
+link-local bind comes from the broadcast-discovery entry, not from the
+direct-IP path.
+
+**Fix (2026-09-11):** the duplicate itself is gone. `src/engine/discovery_dedup.c`
+— a post-pass both `p2_discovery()` and `p1_discovery()` end with — collapses
+entries of the same radio (protocol + MAC) into the best-ranked interface:
+in-subnet (interface and radio agree under the netmask, mask ≠ 0) > routed
+(directed probe / INADDR_ANY, tested FIRST because the discovery files' static
+netmask is never reset by a directed probe) > off-subnet > link-local; ties
+keep the earlier entry. This is where the two-entry table came from: the
+picker's broadcast round stays in `discovered[]`, the app's start path runs a
+directed probe on top (`gui.c:6134`), and every "first entry with this IP"
+site (gui, picker, panprobe) took getifaddrs' first. One pass fixes all of
+them; `sdrfl-discover` now prints the interface address + class per radio.
+Log line when it drops one: `discovery: ANAN G2E at 192.168.1.247 also
+answered via 169.254.198.250 (link-local) — keeping 192.168.1.18 (in-subnet)`
+— seen live 2026-09-11 with `SDRFL_RADIO_IP=192.0.2.1 sdrfl-discover`
+(dead directed target forces the broadcast round; safe while the app holds
+the radio).
 
 ### SDR-16 — `GtkGizmo (trough) reported min height -2` burst after a dry-key TUNE
 - **Type:** bug · **Severity:** low · **Status:** open
@@ -432,8 +453,22 @@ must log `bound to 192.168.1.18`. Sibling symptom on the same LAN: SDR-5.
 One GtkRange trough measured a negative minimum height for a few frames
 around a TUNE over with drive 0. Cosmetic (GTK clamps it), but a slider is
 being sized from something negative — find which one (a TX HUD / footer
-scale that hides or changes range on key?) with `G_DEBUG=fatal-warnings gdb`
-next time a dry-key TUNE is on the bench. Not seen in the following two runs.
+scale that hides or changes range on key?). Not seen in the following two
+runs.
+
+**2026-09-11 attempt — NOT reproduced.** Nothing in `gui.c` changes a
+scale's visibility or range on key (the key/unkey reaction is mute/settle
+only, `gui.c:572`), so a static pin was not possible. The app was run under
+a gdb harness (`/var/tmp/sdr16/gdb.cmd` + `run.sh`: conditional breakpoint
+on `g_log_structured_standard` / `g_logv` for Gtk-domain warnings, prints
+file:line:func + format + a 40-frame backtrace and continues — NOT
+`G_DEBUG=fatal-warnings`, which would abort the session on SDR-3's GtkImage
+warnings first; self-tested on a synthetic structured `g_warning`, 1 hit,
+`g_message` ignored). Richard then keyed TUNE at drive 0 (the ticket's
+trigger), TUNE at 35/255 = 72 W, and MOX twice: zero Gtk warnings caught,
+none in stderr either. The harness stays armed for the rest of that session;
+re-run `run.sh` whenever the warning shows up again and read
+`/var/tmp/sdr16/gdb.log` for the widget.
 
 
 ### SDR-13 — Came up at "RX 1 Hz" after a restart, not at the last tuned frequency
@@ -686,7 +721,7 @@ counter. Idea for later: read the Saturn's V4.3 FIFO words as real telemetry
 (DUC FIFO depth + overflow bits = a better tripwire than the G2E's counter).
 
 ### SDR-9 — "tx: over stats — mic drops=…" printed after TUNE overs
-- **Type:** bug · **Severity:** low · **Status:** done in code (2026-09-06) — live check pending (see below)
+- **Type:** bug · **Severity:** low · **Status:** done (2026-09-11) — live-verified on the G2E with the 2026-09-11 build: TUNE at drive 0, TUNE at drive 35 (72 W) and two MOX overs in a voice mode, not one `tx: over stats` line in the log (the old binary printed `mic drops=45568` after a single TUNE)
 - **Source:** live test of the 2026-08-23 fixes on the G2E (log `/var/tmp/sdrfl-test-2026-08-23/sdr.err`)
 
 With the mic capture open (voice mode) a TUNE over does not consume the mic

@@ -47,6 +47,7 @@ engine_sources = [
   'src/engine/engine_state.c',
   'src/engine/discovery_p1.c',
   'src/engine/discovery_p2.c',
+  'src/engine/discovery_dedup.c',
   'src/engine/protocol1.c',
   'src/engine/protocol2.c',
 ]
@@ -134,6 +135,17 @@ executable('sdrfl-wdsp-smoke',
 # safe to run alongside another client). Engine's first milestone gate.
 executable('sdrfl-discover',
   ['src/discover_main.c'] + engine_sources,
+  include_directories : [vendor_inc, engine_inc],
+  dependencies : engine_deps,
+  install : false,
+)
+
+# Offline discovery-table gate (BACKLOG SDR-15): discovery_dedup() must keep
+# ONE entry per radio and the best-ranked interface address (in-subnet >
+# routed > off-subnet > link-local), order-independently, never merging two
+# radios or two protocols. Synthetic DISCOVERED entries — no socket, no radio.
+executable('sdrfl-discovery-test',
+  ['src/discovery_test.c'] + engine_sources,
   include_directories : [vendor_inc, engine_inc],
   dependencies : engine_deps,
   install : false,

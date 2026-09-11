@@ -19,8 +19,12 @@
 
 //
 // sdr-for-linux: adapted from piHPSDR src/new_discovery.c @ 974acba (dl1ycf).
-// Only change vs upstream: <gtk/gtk.h> -> <glib.h> to keep the engine headless
-// (it uses GLib only: GThread + g_main_context_iteration). Logic is unchanged.
+// Changes vs upstream: (1) <gtk/gtk.h> -> <glib.h> to keep the engine headless
+// (it uses GLib only: GThread + g_main_context_iteration); (2) p2_discovery()
+// ends with discovery_dedup() (discovery_dedup.c, SDR-15) — upstream keeps one
+// entry per interface address the radio answered on and lets the operator
+// pick; we select by IP, so the table must hold one entry per radio. The
+// discovery logic itself is unchanged.
 // The globals it drives (devices, discovered[], ipaddr_radio) live in
 // engine_state.c; t_print/t_perror come from our message.h shim.
 //
@@ -100,6 +104,8 @@ void p2_discovery(void) {
 
     freeifaddrs(addrs);
   }
+
+  discovery_dedup();   /* one entry per radio, best interface kept (SDR-15) */
 }
 
 //

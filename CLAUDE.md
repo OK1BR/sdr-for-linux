@@ -310,9 +310,14 @@ footprint. Same day earlier: SDR-13 closed (operator state), SDR-4
 live-verified, SDR-9 (mic drops after TUNE) and SDR-7 (60 m USB + one-time
 `band_levels_v` migration) fixed. All live-tested by Richard on the G2E
 through ~12 restarts; ⛔ always ≥ 5 s between stop and relaunch. README
-screenshot is stale. Next: SDR-20 (TX filter drawn red on the TX spectrum +
-waterfall, filed 2026-09-07), mode editor / footer width (SDR-14), SDR-15
-link-local bind, SDR-16 trough warning, then the EQ milestone.
+screenshot is stale. **2026-09-11 (bugs first, Richard's call):** SDR-15
+DONE — `discovery_dedup()` post-pass (one `discovered[]` entry per radio,
+in-subnet > routed > off-subnet > link-local; gate `sdrfl-discovery-test`
+in CI; picker start now logs `bound to 192.168.1.18`); SDR-9 live-verified
+(no `tx: over stats` after TUNE 0 W / 72 W / MOX ×2); SDR-16 NOT reproduced
+under a gdb warning harness (`/var/tmp/sdr16`, recipe in the ticket). Next:
+SDR-20 (TX filter drawn red on the TX spectrum + waterfall, filed
+2026-09-07), mode editor / footer width (SDR-14), then the EQ milestone.
 
 **SDR-17 — draggable spectrum/waterfall divider, DONE + LIVE 2026-09-06
 (same evening):** the split was `PANADAPTER_FRACTION 0.5` computed in four
