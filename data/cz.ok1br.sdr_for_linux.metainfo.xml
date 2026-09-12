@@ -17,8 +17,8 @@
       Includes a TCI server (ExpertSDR3-compatible) for skimmers, loggers and
       digimode software. Three radios are verified on real hardware by the
       author — the Apache Labs ANAN G2E, the ANAN 10E/100B and the Hermes
-      Lite 2 (all RX + TX) — and the ANAN G2 (Saturn) had its first live pass
-      from an external tester. Untested models are refused by a safety
+      Lite 2 (all RX + TX) — and the ANAN G2 (Saturn) was live-tested in two
+      rounds by an external operator. Untested models are refused by a safety
       whitelist, because a wrong relay or filter bit can physically damage a
       transmitter.
     </p>
@@ -37,6 +37,25 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.5.1" date="2026-09-12">
+      <description>
+        <p>
+          Two VFOs: A/B swap and A=B, the second VFO shown under the
+          frequency readout. CTUN: dragging pans the spectrum while the dial
+          and the passband stay put. Filter and AGC move into their own
+          dialogs behind header-bar icons, with a draggable passband graph
+          and a live AGC gain bar; any preset's edges drag on the spectrum.
+          The spectrum/waterfall divider is draggable, the TX filter footprint
+          is drawn in red on the TX spectrum and waterfall, LSB-family filters
+          read as audio Hz, and the AF slider floor is a true mute. Fixes:
+          the receiver no longer dies when the process is paused (debugger,
+          SIGSTOP); discovery keeps one entry per radio and binds the data
+          socket on the in-subnet interface; 60 m starts in USB. TCI: dds/vfo
+          are broadcast immediately on every tuning step, with opt-in IQ
+          centre stamps for skimmers.
+        </p>
+      </description>
+    </release>
     <release version="0.5.0" date="2026-08-25">
       <description>
         <p>

@@ -16,22 +16,30 @@ does the heavy lifting.
 > **Hermes Lite 2** (all RX + TX), including a full CW contest deployment;
 > see [Supported hardware](#supported-hardware).
 
-![SDR for Linux — 20 m CW on the ANAN G2E](docs/img/main-window.png)
+![SDR for Linux — 20 m USB on the ANAN G2E](docs/img/main-window.png)
 
 ## Features
 
 **Receive**
 - Full-float panadapter + waterfall straight from the WDSP analyzer — no
   quantisation, no column cap; 6 colour palettes, adjustable averaging & FPS
-- SSB / CW / AM / SAM / DIGU / DIGL / RTTY demodulation with piHPSDR filter
+- SSB / CW / AM / DIGU / DIGL / RTTY demodulation with piHPSDR filter
   presets, passband drawn on the spectrum (RTTY: dial = FSK pair centre,
   heard on the classic 2125/2295 Hz pair)
-- AGC, noise reduction (ANR), noise blanker (ANB), auto-notch (ANF),
-  binaural mode
-- Low-latency native **PipeWire** audio (~15 ms), 48/96/192 kHz
-- Scroll/drag/click-to-tune, octave-snap zoom, band buttons, band-plan
-  overlay (IARU R1/R2/R3 + country overrides), DX-spot overlay with
-  click-to-tune
+- **Filter and AGC dialogs** behind two header-bar icons: a passband graph
+  you drag (edges or the whole band), the mode's presets + Var1/Var2,
+  Low/High rows; AGC Off/Long/Slow/Med/Fast with a live gain bar and the
+  AGC-T threshold. Any preset's edges also drag right on the spectrum
+  (a dragged preset becomes Var1); LSB-family filters read as audio Hz
+- **Two VFOs**: A/B swap and A=B, the other VFO shown under the frequency
+  readout, free across bands; **CTUN**: drag pans the spectrum while the
+  dial stays put — the green passband is the tuning handle
+- Noise reduction (ANR), noise blanker (ANB), auto-notch (ANF), binaural mode
+- Low-latency native **PipeWire** audio (~15 ms), 48/96/192 kHz; the AF
+  slider's floor is a true mute
+- Scroll/drag/click-to-tune, octave-snap zoom, draggable spectrum/waterfall
+  divider, band buttons, band-plan overlay (IARU R1/R2/R3 + country
+  overrides), DX-spot overlay with click-to-tune
 - CW BFO offset done right: the dial reads the carrier, spots sound at your
   sidetone pitch
 
@@ -51,15 +59,25 @@ does the heavy lifting.
   continuously on voice, converges in seconds after drive/band changes
   (G2E and Hermes Lite 2; not available on old Hermes-class P2 firmware —
   see the hardware table)
-- TX panadapter + waterfall of the transmitted spectrum
+- TX panadapter + waterfall of the transmitted spectrum, with the TX
+  filter footprint drawn in red (the display's colour language: RX green,
+  TX red)
 
 **Integration**
 - **TCI server** (ExpertSDR3-compatible, port 40001): control, CW macros,
-  RX audio, TX audio (digimodes), wideband IQ, spots — verified live with
-  **SDC**, **CW Skimmer** and **Decodium** (complete FT8 QSOs on the air)
+  RX audio, TX audio (digimodes), wideband IQ with optional per-block
+  centre stamps for skimmers, spots — verified live with **SDC**,
+  **CW Skimmer** and **Decodium** (complete FT8 QSOs on the air); `dds`/`vfo`
+  go out on every tuning step
 - CAT/hamlib applications are covered through the third-party
   [tciadapter](https://github.com/ftl/tciadapter) bridge (WSJT-X, fldigi,
   CQRLOG verified by its author) — no serial-port emulation needed here
+
+**Companion apps** (same author, same stack — C, GTK4/libadwaita, TCI):
+[skimmer-for-linux](https://github.com/OK1BR/skimmer-for-linux), a
+multi-channel CW/RTTY/PSK skimmer fed by this app's TCI IQ stream, and
+[log-for-linux](https://github.com/OK1BR/log-for-linux), a logbook that
+follows the dial over TCI.
 
 ## Supported hardware
 
@@ -155,14 +173,23 @@ sudo meson install -C build      # install binary + desktop integration
    the state) and caches them in `~/.config/sdr-for-linux/`. Every later
    start imports the cache instantly. Without this, deep zoom would freeze
    for up to half a minute at a time — same approach as piHPSDR and Thetis.
-2. **Radio picker.** The app broadcast-discovers HPSDR radios on the LAN;
-   pick yours (or add by IP for a different subnet). One client owns the
-   radio at a time — close piHPSDR/Thetis first.
+2. **Radio picker.** The app broadcast-discovers HPSDR radios on the LAN
+   (one entry per radio even when it answers on several interfaces; the
+   data link takes the in-subnet one); pick yours, or add by IP for a
+   different subnet. One client owns the radio at a time — close
+   piHPSDR/Thetis first.
 3. **Transmit is conservative by default:** PA drive starts at zero and TX
    is gated (out-of-band, high SWR, or missing prerequisites refuse to key).
    Check *Preferences → TX* before your first transmission.
 
 Settings persist in `~/.config/sdr-for-linux/config.ini`.
+
+**Mouse & keys.** Wheel = tune by the footer *Step*; left-drag = pan
+(with CTUN on, the spectrum pans and the dial stays — drag the passband to
+tune); right-drag = zoom; drag a passband edge to reshape the filter; drag
+the spectrum/waterfall separator to resize (double-click resets). Keys:
+`u`/`l`/`c`/`a`/`r` = USB/LSB/CW/AM/RTTY, `b` = VFO A/B, `Esc` = leave
+select mode / abort a TX over.
 
 **Display rendering** is chosen automatically: on GTK ≥ 4.22 the app uses
 GTK's GPU (GL) renderer — the waterfall history is scaled by the graphics
