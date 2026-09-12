@@ -446,6 +446,25 @@ vše, díky", then "zapiš změny na github" → committed + pushed as
 (Mic/Lev/ALC) still Adwaita Mono (asked, unanswered). Scratch
 `/var/tmp/vfoab` (launch logs, config round-trip) is in the trash.
 
+**★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
+VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
+red TX filter footprint, AF true mute, 60 m USB, SDR-15 discovery dedup,
+SDR-21 EINTR listener fix, SDR-9, TCI dds/vfo-on-tune + IQ centre stamps.
+Checklist walked in one session: 11 offline gates, headless About = 0.5.1
+(`dbus-run-session` + isolated XDG + broadway, no radio), CI dry-run green
+(run 34703819744), notes EN + CZ approved by Richard BEFORE `gh release
+create` (title plain "SDR for Linux 0.5.1"), tag CI (34704571844) attached
+AppImage/.deb/.rpm, public AppImage reports 0.5.1, AUR 0.5.1-1 built with
+`makepkg -C` (packaged binary 0.5.1, namcap clean, pinned host key
+unchanged). README refreshed: screenshot cut from Richard's own screen
+recording (`ffmpeg -vf fps=1/2.5` frames → pick → crop to the window's
+2 px border; the recording's background is pure black on his rice, so
+crop by the border line, not by darkness), SAM dropped (never selectable),
+a Mouse & keys paragraph, companion apps (skimmer-for-linux,
+log-for-linux). SDR-14 closed the same day (step 2 immaterial — see the
+BACKLOG closing note; window-min-width is not a topic). ⛔ `gh` needs
+`-R OK1BR/sdr-for-linux` when run outside the tree. Next: the EQ milestone.
+
 **★ RELEASED 2026-08-25: v0.5.0 — the G2-tested release.** Same-day
 turnaround on W1IZZ's round 2 (gh#3, evaluated in RADIOS-SCOPE §7.2): his
 run confirmed SDR-1 (raw 544 → 13.9 V; no PSU reference reading), SDR-8
