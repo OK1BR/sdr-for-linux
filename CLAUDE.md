@@ -333,8 +333,13 @@ SDR-16 gdb harness pausing the process 192× on SDR-3's baseline flood.
 Proven by `kill -STOP; sleep 3; kill -CONT` before (dead) and after the fix
 (the radio re-arms itself on the next run=1 keepalive; sequence resets,
 cosmetic `+4294967295` DUC line). Lessons in BACKLOG SDR-21: the harness is
-never for operating; copy a log aside before relaunching over it. Next: mode
-editor / footer width (SDR-14), then the EQ milestone.
+never for operating; copy a log aside before relaunching over it.
+**SDR-14 CLOSED 2026-09-12** — its step-2 leftovers (mode editor, footer
+width) were dropped as immaterial on Richard's call after a mockup + public
+screen-resolution data (BACKLOG SDR-14 closing note): the 1534 px minimum
+fits every normal monitor; ⛔ don't re-open window-min-width without a
+concrete user on a concrete screen. Next: release 0.5.1 (README screenshot
+refresh), then the EQ milestone.
 
 **SDR-17 — draggable spectrum/waterfall divider, DONE + LIVE 2026-09-06
 (same evening):** the split was `PANADAPTER_FRACTION 0.5` computed in four

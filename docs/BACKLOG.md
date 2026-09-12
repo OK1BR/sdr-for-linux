@@ -268,7 +268,7 @@ the new code, SIGTERM, config re-read: still 0.3 (exit 0). Then the live pass
 on the G2E the same evening (arrow cursor, drag, reset, restart) — Richard's OK.
 
 ### SDR-14 — Spectrum-centred control surface: the VFO card, then filter/AGC/mode controls on the spectrum
-- **Type:** task · **Severity:** — · **Status:** doing — step 1 (the card) shipped 2026-09-06 and then **superseded the same night by SDR-19**: after a live pass Richard first pinned the card top-left and then dropped it altogether, so the frequency readout is plain white text where it always was and the S-meter is back in the top-right corner. What survives of step 1 are the **filter and AGC dialogs** and the centred control strip. Step 2 (mode editor, footer width ~1540 px) not started.
+- **Type:** task · **Severity:** — · **Status:** done — closed 2026-09-12: step 2 dropped as immaterial on Richard's call (see the closing note at the end of this item); step 1 (the card) shipped 2026-09-06 and then **superseded the same night by SDR-19**: after a live pass Richard first pinned the card top-left and then dropped it altogether, so the frequency readout is plain white text where it always was and the S-meter is back in the top-right corner. What survives of step 1 are the **filter and AGC dialogs** and the centred control strip. Step 2 (mode editor, footer width ~1540 px) not started.
 - **Source:** Richard, 2026-09-06, after the SDR-2 window-width note; inspiration = SmartSDR's per-slice "flag" (the always-visible info panel at the slice's tuning line), explicitly *not* to be copied 1:1
 - **Detail:** mockups `~/Downloads/sdr-mockup-vfo-karta-v4.png` (approved) — drawn onto `docs/img/main-window.png`
 
@@ -338,9 +338,28 @@ passband edge. Lab-verified (dialogs opened via the actions, icons legible at
 pass the same afternoon. ⛔ The GResource has no `xml-stripblanks` on purpose:
 that would need xmllint at build time (libxml2-utils is not in the CI images).
 
-**Still open:** the mode editor (the mode row stays on the strip for now); the
-footer is the next width driver (RX sliders vs TX sliders). The README
-screenshot is stale (card, icons, strip); refresh it at the next release pass.
+**Step 2 leftovers CLOSED 2026-09-12 as immaterial (Richard: "uzavři to jako
+nepodstatné").** The "mode editor" and "footer width" notes were never his
+request: the whole width thread started with the agent's own SDR-2 note that
+the 60/30 m buttons pushed the minimum from 1618 to 1704 px and "a 1680 px
+screen no longer fits" — a hypothetical user, and Richard's 2026-09-06 reply
+was about freeing the strip, which the filter/AGC dialogs did (minimum now
+1534 px, measured in the headless lab). Before closing, a mockup was drawn
+and reviewed (`~/Downloads/sdr-mockup-lista-paticka-v1.png`: modes off the
+strip into a popover at the readout's mode text + a header-bar button,
+functions left, footer without Tune drive and the span text, estimated
+minimum ~1198 px). Richard's question "why wouldn't it fit on a normal
+monitor?" settled it: it does. Public data pulled 2026-09-12 (August 2026):
+StatCounter desktop web traffic below 1534 logical px = 14 % worldwide /
+10 % Czech Republic, and that bucket is mostly 1366×768 legacy laptops and
+Full HD laptops at 150 % scaling; Steam's primary-display survey ≈ 3 %.
+For a desktop SDR app whose point is a wide spectrum that is not worth a
+second click on every mode change or a rebuilt footer. Decisions that stand:
+the mode row stays on the strip, the footer stays as it is (Drive / Tune /
+Ant remain operational, F6a), the function group stays centred. ⛔ Do not
+re-open the window-minimum-width topic without a concrete user on a
+concrete screen. The README screenshot is still stale (dialog icons,
+centred strip, readout, S-meter); refresh it at the next release pass.
 
 ### SDR-6 — Evaluate W1IZZ's G2 test results and close out the bring-up
 - **Type:** task · **Severity:** high · **Status:** done (2026-08-23) — evaluated, fixes tried by Richard on the G2E, released as **v0.4.2**, and the answer posted to `gh#3` with Richard's approval (issuecomment-5388178274). Round 2 came back 2026-08-24, was evaluated in §7.2, released as **v0.5.0**, answered (issuecomment-5414226078) and **`gh#3` was closed as completed 2026-08-25** — a third round (dry-key, SWR-trip, CW, PSU reference) stays optional on his side
