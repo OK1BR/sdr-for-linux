@@ -3,10 +3,10 @@
 ⛔ **TX-SAFETY applies in full** (docs/TX-SAFETY.md): every byte below was
 read first-hand from piHPSDR old_protocol.c / radio.c / transmitter.c
 @974acba on 2026-07-12, with line references, and MUST be re-verified there
-whenever the sending code is edited. TX-capable code goes live only through
-the phased gates at the bottom, each live step with Richard's explicit
-consent. Until the live phase, the three P1 no-TX guarantees stay untouched:
-MOX bit never set, drive 0, T/R relay locked RX (0x12-C2 = 0x04).
+whenever the sending code is edited. TX went live on 2026-07-12 through the
+phased gates T1–T4 (§4), each live step with Richard's explicit consent;
+PureSignal over P1 (§6) the same day. The per-phase narration was removed
+once done (last full version: commit 39bd8a1).
 
 ## 1. The P1 TX wire, byte by byte (piHPSDR @974acba)
 
@@ -80,7 +80,7 @@ MOX bit never set, drive 0, T/R relay locked RX (0x12-C2 = 0x04).
   **temperature guard** (drop TX above ~60 °C, warn earlier — we already
   decode temperature live) since a 5 W PA has no Alex-style protection
   around it.
-- PS far-future note: HL2 P1 TX-DAC feedback peak ≈ 0.230 → GetPk display
+- PureSignal (§6): HL2 P1 TX-DAC feedback peak ≈ 0.230 → GetPk display
   offset 17.0 (transmitter.c:838). Feedback via RX3/RX4.
 
 ## 3. What our engine needs (delta from the P2 TX path)
@@ -88,51 +88,44 @@ MOX bit never set, drive 0, T/R relay locked RX (0x12-C2 = 0x04).
 1. **protocol1.c builders** (offline first, txprobe pattern): a
    `p1_tx_state` (mox, pa_enabled, in_band, drive_att, tune) consumed by
    `cc_general`/`cc_round_robin`/frame filler; TX IQ encoder (16-bit BE +
-   CWX guard + drive_scale); 0x2E in the round-robin. Live path keeps
-   passing the off state until the live phase.
+   CWX guard + drive_scale); 0x2E in the round-robin.
 2. **TX IQ feed**: WDSP TX channel output at **48 kHz** for P1 (the P2 path
    runs 192 k to port 1029) + a ring the EP2 sender drains — sender switches
    from zero payload to ring payload while keyed, pacing per §1.
 3. **tx_run dispatch**: p1/p2 branch like engine_set_frequency (set_tx_state,
    IQ route, meters source).
 4. **Config**: `radio_tx_profile()` HL2 entry (5 W, wattmeter constants
-   above, pacal floor TBD live, cfg group `[tx-hl2]`), pa_calibration
+   above, pa_cal floor 25, cfg group `[tx-hl2]`), pa_calibration
    default 40.5 dB (piHPSDR band.c — "the No. 1 problem for new HermesLite
    users is 'no RF output'").
 5. **Whitelist last**: `radio_tx_supported()` += HL2 only at the live
    checklist, with Richard present.
 
-## 4. Phased gates (mirrors TX-DESIGN §F1-F6)
+## 4. Phased gates (mirrors TX-DESIGN §F1-F6) — all passed 2026-07-12
 
-| Phase | Content | Gate |
-|---|---|---|
-| T1 ✅ | Offline builders + `sdrfl-p1txprobe`: hexdump TX-hot frames, assert every byte against §1; assert the OFF state is byte-identical to the RX build | PASS 2026-07-12 (offline) + live RX regression |
-| T2 ✅ | Engine: 48 k TX WDSP route (CFIR off — proven by the 0.5000-vs-0.4481 = ×0.896 magnitude in the txdsp gate), EP2 TX-IQ ring, production-paced keyed sender (20 ms zero-IQ keepalive cap), tx_run dispatch (engine_set_tx_state, drive split), CW amp 1.0 on P1 | PASS 2026-07-12: p1txprobe + txprobe + txdsp-test (new P1 section) |
-| T3 ✅ | Protections: fwd/rev EMA + PEP max-hold + TX FIFO health in the EP6 parser, thermal trip 60 °C in tx_gate (4 new txgate-test cases), fwd/rev swap hook, HL2 radio_tx_profile (5 W, c2=1.5, offsets 6/6, [tx-hl2], pa_cal floor 25), P1 footswitch PTT | PASS 2026-07-12 (all offline gates + live RX regression) |
-| T4 ✅ | Live checklist into the dummy load (through the tuner, external wattmeter at the tuner input); `radio_tx_supported()` += HL2 flipped with Richard's consent | **PASS live 2026-07-12 evening**: TUNE at drive 191-197/255 (first RF from the app on an HL2), 20 m pa_cal calibrated to **28.4 dB** (other bands stay at the safe under-driving 53 default until calibrated), request ≈ external meter, SWR 1.2 into the dummy (rev channel + swap hook verified), temperature stable, **CW via SDC/TCI** (clean per-element envelope in the wire log: dits 64 ms/dahs 139 ms, RF zero between elements, no backwave), **voice MOX** peaks ~4 W. Digi (TCI TX audio) deferred to a Decodium session — same external-source path as CW. |
-
-*Audited & written 2026-07-12; the ENTIRE milestone (T1-T4) landed and was
-live-verified the same day — the HL2 is a full RX+TX radio in the app. The
-SWR bridge lives on the N2ADR filter board (fitted on Richard's unit).*
+T1 offline builders + `sdrfl-p1txprobe` (every TX-hot byte asserted against
+§1; the OFF state byte-identical to the RX build) · T2 the 48 k TX WDSP route
+(CFIR off), the EP2 TX-IQ ring, tx_run dispatch, CW amp 1.0 on P1 · T3
+protections: fwd/rev EMA + PEP max-hold + TX FIFO health in the EP6 parser,
+thermal trip 60 °C in tx_gate, the fwd/rev swap hook, the HL2
+`radio_tx_profile` (5 W, c2 = 1.5, offsets 6/6, `[tx-hl2]`, pa_cal floor 25),
+P1 footswitch PTT · T4 the live checklist into the dummy load (through the
+tuner, external wattmeter at the tuner input): TUNE, 20 m pa_cal calibrated
+to **28.4 dB** (other bands stay at the safe under-driving 53 default until
+calibrated), SWR 1.2 into the dummy (rev channel + swap hook verified), CW
+via SDC/TCI, voice MOX ~4 W peaks. The SWR bridge lives on the N2ADR filter
+board (fitted on Richard's unit).
 
 ## 5. Open items after the live day
 
-- ~~**TX FIFO status semantics (gw 73.2)**: the addr-0 C3 top bits climb on
-  BOTH sides ~30/s while the RF is demonstrably clean~~ — **RESOLVED
-  2026-07-12: the RF was NOT clean.** Those were real under/over events
-  caused by our bursty production-paced sender (see the ⛔ pacing lesson,
-  §1); the flags counted the ~47 Hz FIFO oscillation that was audible as
-  a buzz once anyone listened off-air. With the fixed-grid sender the
-  audio is clean; the flags remain useful telemetry (SDRFL_LAT_DEBUG).
 - **Per-band pa_cal**: only 20 m calibrated (28.4 dB); the rest sit at the
   under-driving 53 dB default — calibrate as bands get used.
 - **Drive linearity**: same top-end compression as the G2E/10E — covered by
   the planned guided multi-point wattmeter/drive calibration (TODO).
 - **Digi TX** (TCI external audio): live check with Decodium pending.
-- **PureSignal on P1**: separate milestone — full byte-level audit in §6
-  below (2026-07-12). No known firmware wedge on P1 (unlike P2 on the
-  10E) — and the same infrastructure is the alternative route to PS on
-  the 10E, which also speaks P1.*
+- **PureSignal on the 10E via P1**: the P1 PS infrastructure of §6 is the
+  alternative route to PS on the ANAN 10E, which also speaks P1 — no known
+  firmware wedge on P1 (unlike P2 on the 10E).
 
 ## 6. PureSignal over P1 (HL2) — piHPSDR audit @974acba (2026-07-12)
 
@@ -164,7 +157,7 @@ differs:
   **DUC/TX frequency** (channel_freq :1015-1030 — for us dial == DUC, so
   all five frequency frames carry the same value today).
 - **PS enable bit**: 0x14-C2 `|= 0x40` while PS is on (:2284 — device-
-  independent in piHPSDR; verify live that gw 73.2 wants it).
+  independent in piHPSDR; set in the build that was live-verified on gw 73.2).
 - **⛔ Attenuation = the AD9866 LNA, two write sites** (both must move
   together): 0x14-C4 = `0x40 | rxgain` (:2288-2308) and 0x1C-C3 =
   `0xC0 | rxgain` (:2372-2390, bit7 = "enable TX att", bit6 = 6-bit
@@ -187,24 +180,17 @@ differs:
 - Discovery byte 0x13 = gateware RX count (HL2 wiki); piHPSDR ignores it
   (supported_receivers hard-coded 2, old_discovery.c:504) and simply uses
   4 on HL2. We read it, log it, and refuse PS if the gateware reports < 4.
-- Whitelist: `radio_ps_supported()` += HL2 **only at the live test** with
-  Richard (dummy load; PS-4-style checklist: 2T → fdbk window/auto-att →
-  GetPk vs 0.2400 → voice → IMD A/B).
+- Whitelist: `radio_ps_supported()` includes the HL2 since the live test of
+  2026-07-12 (dummy load; PS-4-style checklist: 2T → fdbk window/auto-att →
+  GetPk vs 0.2400 → voice).
 
-**★ LIVE-VERIFIED 2026-07-12 (HL2 gw 73.2, 20 m into the dummy load, SWR
-1.00):** RX regression nrx=1 ratio 1.0004 / 0 errors; nrx=4 with both
-feedback streams at full rate (throughput 5.2 MB/s @192k as computed).
-2T: fdbk in-window, ~12 cals/s, CORRECTING held. **GetPk 0.237–0.241
-under both 2T and voice → the piHPSDR HL2 SetPk default 0.2400 is
-confirmed** (upstream measured 0.2386). Auto-att via the LNA stepped both
-directions (0→2 dB at fdbk 183, 2→0 at fdbk 56), no oscillation, no
-stalls. Voice calibrates continuously (piHPSDR-pattern; rejected fits
-only at over edges, correction never dropped). The PS-enable link restart
-ran 14× (7 off/on A/B cycles) — clean nrx swap both ways every time.
-At low power (~1–2 W) correction is visually inconsequential — the 5 W
-PA is near-linear below ~3 W and fdbk sits below window (108) with the
-attenuation floor at 0; expected, references behave identically.
-Optional left: IMD A/B on the IC-705.
+**Live-verified 2026-07-12 (HL2 gw 73.2, 20 m into the dummy load):** GetPk
+0.237–0.241 under both 2T and voice → the piHPSDR HL2 SetPk default
+**0.2400 is confirmed** (upstream measured 0.2386); the PS-enable link
+restart swaps nrx cleanly both ways. At ~1–2 W correction is visually
+inconsequential — the 5 W PA is near-linear below ~3 W and fdbk sits below
+the window with the attenuation floor at 0; expected. Optional left: IMD A/B
+on the IC-705.
 
 One wire lesson landed during the test (see the listener): the gateware
 applies a changed RX count only **~8 ms into a started stream** — ~6

@@ -8,9 +8,11 @@ gateware `dsopenhpsdr1.v`). Target radio: **Hermes Lite 2** on the LAN
 (192.168.1.21, gateware 73.2, board id 6 → synthetic `DEVICE_HERMES_LITE2`
 506; current upstream stable is 74.2).
 
-> ⛔ This milestone is **RX only**. P1 TX (5 W PA, IQ-scaled drive, CW)
-> comes much later, behind the full TX-SAFETY process, per-model whitelist
-> and Richard's explicit consent — exactly like the G2E/10E bring-ups.
+> **Status:** the whole RX milestone (R1–R4) landed and was live-verified on
+> 2026-07-12; TX and PureSignal over P1 followed the same day —
+> `docs/P1-TX-SCOPE.md`. Still ahead: whitelisting HL1 / original Metis
+> boards after a live test. Originally a scope plan — the per-step gate
+> narration was removed once done (last full version: commit 39bd8a1).
 
 ## 0. What P1 is, in one paragraph
 
@@ -25,7 +27,7 @@ Radio→host (EP6) frames mirror that: sync, 5 status bytes, then per-RX
 keepalive packet: **the continuous EP2 stream is the keepalive** (HL2
 watchdog stops streaming + TX ~10 s after the last host packet).
 
-## 1. Discovery — DONE (2026-07-12, live-verified)
+## 1. Discovery
 
 `src/engine/discovery_p1.c` (adapted from piHPSDR `old_discovery.c` the same
 way `discovery_p2.c` adapts `new_discovery.c`; results land in the shared
@@ -35,29 +37,30 @@ gateware major, `[10]` board id; board 6 → composite version
 against everything already discovered (the same radio answers directed +
 per-interface broadcast rounds). Wired into the picker (always), `sdrfl-
 discover` (always) and `start_radio` (only when the pinned IP wasn't
-answered by P2 — a P2 start pays no extra probe time). Live: HL2 found via
-directed UDP, correct name/version/range; picker shows the row greyed
-("Not supported yet") until the RX path lands.
+answered by P2 — a P2 start pays no extra probe time).
 
 HL2 extras deliberately not used yet: discovery also answers on port 1025;
 reply bytes carry temperature/fwd/rev/bias telemetry + ADC clip count; the
 out-of-band `EF FE 05` command packet (port 1025) can read/write registers
 without starting the stream (documented only in gateware + hermeslite.py).
 
-## 2. RX milestone plan (mirrors the P2 bring-up gates)
+## 2. The RX path (R1–R4, done 2026-07-12)
 
-| Step | Content | Gate |
-|---|---|---|
-| R1 ✅ | P1 link core: socket, start/stop, EP2 sender thread (1032 B / 2.625 ms pacing, zeroed audio+IQ payload), C&C round-robin builder, EP6 parser (sync hunt, seq check, 63×24-bit IQ → float) | `sdrfl-p1probe` (headless IQ counter, like sdrfl-rxprobe) — PASS live 2026-07-12 |
-| R2 ✅ | Feed the existing WDSP analyzer + demod/audio path (they are protocol-agnostic — same `on_rx_iq` contract as P2). Both gates grew the start_radio discovery policy (P2 first, P1 round only when the pinned IP didn't answer), select the radio BY IP (not `discovered[0]` — the broadcast fallback also collects the P2 radios), and branch p1/p2_rx_start on `dev->protocol`; audioprobe caps a >384k rate to P1's maximum | PASS live 2026-07-12: panprobe @192k (40 m band picture, floor −115 dB), audioprobe @384k-capped (CW audio, 0 ferr, queue ≤3 ms) |
-| R3 ✅ | GUI integration: whitelist `radio_supported()` += HERMES_LITE2 (RX-only; TX/PS whitelists exclude P1 structurally), one `engine_set_frequency()` dispatch for all 7 tuning paths, footer LNA slider (−12..+48 dB, persisted `[rx] lna`) replacing Att on P1, prefs rate list 48-384 k, 6 m band button greyed (38.4 MHz cap) | PASS live 2026-07-12: tuning/controls + filter-board relays confirmed by Richard. Landed two WIRE FIXES (see §4): the R1 C0 double-shift and the N2ADR OC bits |
-| R4 ✅ | Polish: ADC-overload badge ("ADC OVL", single-ADC text) + die temperature (`0.0795898*raw − 50` °C, EMA, footer "Temp" slot replacing "Supply", green <45/amber/red >55 °C) from `p1_get_telemetry` in the GUI tick; TCI server decoupled from the TX runtime (starts for RX-only radios — control/RX-audio/IQ/spots work, TX ops already refuse on `!tx_ready`); LNA slider + PTT-ignore landed in R3/R1 | PASS live 2026-07-12: temperature shown (~33 °C), TCI up on the HL2 |
+P1 link core in `src/engine/protocol1.c`: one socket, start/stop, an EP2
+sender thread on the fixed 1032 B / 2.625 ms grid (zeroed audio + IQ payload
+while not keyed), the C&C round-robin builder and the EP6 parser (sync hunt,
+sequence check, 63×24-bit IQ → float). Analyzer, demod and audio are
+protocol-agnostic — the same `on_rx_iq` contract as P2. Start policy: P2
+discovery first, the P1 round only when the pinned IP did not answer; the
+radio is selected BY IP, never `discovered[0]`. GUI: one
+`engine_set_frequency()` dispatch for all tuning paths, a footer LNA slider
+(−12..+48 dB, persisted `[rx] lna`) instead of Att, rates 48–384 k, the 6 m
+band button greyed (38.4 MHz ceiling), the "ADC OVL" badge and the die
+temperature (`0.0795898·raw − 50` °C) from `p1_get_telemetry`; the TCI server
+also starts for RX-only radios. Gates: `sdrfl-p1probe`, `sdrfl-panprobe`,
+`sdrfl-audioprobe`.
 
-Reuse from the P2 engine: analyzer, demod, audio_pw, panadapter/waterfall,
-picker, settings — the ONLY new code is the P1 link (discovery done + R1)
-and small GUI conditionals (rates, gain, no atten).
-
-## 3. HL2 device profile facts (for R3 and far-future TX)
+## 3. HL2 device profile facts
 
 - **Gain, not attenuator**: single AD9866 LNA setting −12..+48 dB, sent as
   `0x40 | (gain+12)` in C&C 0x14-C4 (extended mode). piHPSDR calibration
@@ -72,15 +75,6 @@ and small GUI conditionals (rates, gain, no atten).
   layers): MOX bit (C0[0]) never set, drive byte (0x12-C1) 0, and **0x12-C2
   = 0x04 = "T/R relay locked to RX"** (HL2-specific bit; piHPSDR
   old_protocol.c:2243-2248). No PA-enable general byte exists in P1.
-- **Far-future TX** (documented now so it isn't re-researched): PA_5W,
-  `pa_calibration` default 40.5 dB (piHPSDR band.c — "the No. 1 problem
-  for new HermesLite users is 'no RF output'"), drive = 16-step hardware
-  attenuator (0x12-C1 high nibble) + host-side IQ scaling (`do_scale`,
-  radio.c:2936-2993), TX IQ LSBs cleared (CWX guard), PTT-hang/TX-latency
-  via 0x2E (piHPSDR: 20/40 ms), PS feedback = RX3/RX4 (4 receivers).
-  Telemetry: temperature + bias current instead of Alex fwd/rev — the SWR
-  protection design must be revisited for HL2 (fwd/rev exist as raw 12-bit
-  values in responses; needs its own calibration).
 - **RQST/ACK extension**: C0 bit7 = request on writes, ACK frames echo
   register + data (C0 bit7 set in EP6 status — the EP6 parser MUST skip
   dot/dash bits in ACK frames). Rules: at most one RQST outstanding, at
@@ -127,13 +121,3 @@ N2ADR filter board, 2026-07-12):
 - Startup sequence (piHPSDR `old_protocol_run`): prime 2×2 zero frames
   (C0=0x00 + freq), 20 ms apart, then start, then expect the first EP6
   within the retry loop (10 tries).
-- `enp134s0f1` carries two IPv4 addresses (LAN + link-local) → per-address
-  broadcast rounds duplicate P2 replies in `discovered[]`; P1 dedups by
-  MAC, P2 (vendored logic, unmodified) does not — the picker dedups rows,
-  `sdrfl-discover` output may show a P2 radio twice. Cosmetic.
-
-*Written 2026-07-12 after the discovery step went live; the ENTIRE RX
-milestone (R1-R4) landed and was live-verified the same day. The HL2 is a
-supported RX-only radio. Still here for the future: P1 TX (§3 facts
-pre-collected; full TX-SAFETY process + Richard's consent required), P1 PS
-as the possible 10E-PS route, HL1/Metis whitelisting after a live test.*
