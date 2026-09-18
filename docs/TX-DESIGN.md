@@ -2,9 +2,9 @@
 
 Companion to [`docs/TX-SAFETY.md`](TX-SAFETY.md) (the safety **checklist** — the
 acceptance criteria) and the repo `CLAUDE.md` TX-safety section. This doc is the
-**how**: the byte-level Protocol-2 TX wire format, the DSP/audio subsystem we must
-build, the safety model, and the phased plan that keeps RF impossible until the
-last gate.
+**how**: the byte-level Protocol-2 TX wire format, the DSP/audio subsystem, the
+safety model, and what each build phase (F0–F6d) left behind as rules and
+tripwires.
 
 All references are to piHPSDR src at `~/.local/opt/pihpsdr/src` @ **974acba**
 (`np.c` = `new_protocol.c`, `tx.c` = `transmitter.c`). Target radio: **ANAN G2E**
@@ -14,23 +14,20 @@ HERMES-class, single ADC, Protocol 2). Verified 2026-07-08 by
 first-hand read of the four hazardous mechanisms plus a three-way cross-check of
 the full TX path.
 
-> ⛔ This document does not authorise TX. Keying the radio happens only at **F5**,
-> into a dummy load, with Richard present, and only after a fresh explicit "ano"
-> and the whole `TX-SAFETY.md` checklist green.
+> ⛔ This document does not authorise anything: TX-capable code lands only with
+> Richard's explicit consent and with the whole `TX-SAFETY.md` checklist
+> satisfied. (First keying — F5 — was 2026-07-08, into a dummy load, with Richard
+> present.) The phase-by-phase build narration was removed once done; last full
+> version: commit bb75c7c.
 
 ---
 
-## 0. Current state — the engine is RX-only
+## 0. Current state
 
-`src/engine/protocol2.c` implements RX only. Three independent layers guarantee it
-cannot transmit, and all three hold today:
-
-1. **No MOX** — HP `byte[4]` carries only the run bit; `0x02` (MOX) never set.
-2. **PA disabled** — General `byte[58] = 0` (memset, never written).
-3. **Drive = 0** — `build_transmit_specific()` is all-zero; there is no DUC, no
-   mic ingest, no WDSP TX channel.
-
-**TX is therefore a new subsystem, not a byte tweak.** What must be built:
+TX is live: G2E (first keyed 2026-07-08), ANAN 10E and Hermes Lite 2
+(2026-07-12), ANAN G2 by an external operator (2026-08-22/24). What keeps RF
+impossible while nothing is keyed — the three idle layers — is described in
+`TX-SAFETY.md`. The TX subsystem, as built:
 
 | Subsystem | Summary | piHPSDR anchor |
 |---|---|---|
@@ -51,8 +48,7 @@ High-Priority **1027**, Audio-to-radio **1028**, **TX-IQ 1029**.
 Radio→host: cmd-resp 1024, **HP-status 1025** (we already parse this — ADC OVL +
 fwd/rev/exciter power + supply), mic/line 1026, RX-IQ 1035+.
 
-New for TX: we must open the **1029** outbound path and start reading the fwd/rev
-words already arriving on 1025.
+TX uses the **1029** outbound path and the fwd/rev words arriving on 1025.
 
 ---
 
@@ -159,7 +155,7 @@ G2E uses `drive` for MOX/voice and **`tune_drive` (default 10)** for TUNE
 
 ## 4. Safety model (our policy — stricter than piHPSDR where noted)
 
-Verified guards to port, and where we deliberately diverge:
+The guards, and where we deliberately diverge:
 
 - **PA gating** — General[58] and `TX_RELAY` gated by `pa_enabled &&
   !txband->disablePA`. T/R relay never thrown to TX with PA disabled ("safety
@@ -177,8 +173,9 @@ Verified guards to port, and where we deliberately diverge:
   auto-stops streaming *and* TX if the host dies. Do **not** adopt Thetis's
   watchdog-off model.
 - **SWR / fwd-rev** — from status packet: fwd `[14/15]`, rev `[22/23]`, exciter
-  `[6/7]`. G2E calibration: `C1=3.3, C2=0.12, rC2=0.15` (`0.7` on 6 m),
-  `fwd_off=48, rev_off=42` (`tx.c:645`). `gamma=sqrt(rev/fwd)` (clamp 0.95),
+  `[6/7]`. G2E calibration: `C1=5.0` (our live-calibrated value, §7 —
+  piHPSDR/Thetis say 3.3), `C2=0.12, rC2=0.15` (`0.7` on 6 m),
+  `fwd_off=48, rev_off=42` (`tx.c:645`); the other radios: §9. `gamma=sqrt(rev/fwd)` (clamp 0.95),
   `swr = 0.7·(1+γ)/(1−γ) + 0.3·swr`, alarm default **3.0**.
 
 ### ⚠ Our SWR policy (Richard's decision, 2026-07-08) — **differs from piHPSDR**
@@ -188,18 +185,24 @@ piHPSDR ships SWR protection **OFF by default** and, when on, cuts **drive only*
 
 - **MOX / voice:** high SWR (≥ alarm, **2 consecutive** readings — spike filter)
   → drive 0 **AND drop MOX** AND refuse re-key until the operator releases. Plus
-  **Thetis open-antenna detection**: `fwd > 10 W && (fwd − rev) < 1 W` → same trip
-  (catches TX into an open feedline faster than SWR alone).
-- **TUNE:** SWR protection **suppressed** (`!tx->tune`, `tx.c:779`). This is not a
-  loophole — tuning an ATU deliberately drives into a mismatch so the tuner can
-  find a match, at the limited `tune_drive`. Without this, an ATU can never be
-  tuned.
+  **Thetis open-antenna detection**: `fwd > 10 W && (fwd − rev) < 1 W` (scaled to
+  the PA rating, §9) → same trip (catches TX into an open feedline faster than
+  SWR alone).
+- **TUNE:** the high-SWR trip is **suppressed** (`!tx->tune`, `tx.c:779`) — it
+  only raises the amber "⚠ HIGH SWR" flag. This is not a loophole — tuning an ATU
+  deliberately drives into a mismatch so the tuner can find a match; without
+  this, an ATU can never be tuned. The **open-antenna test stays active during
+  TUNE** (two polls): TUNE can run to full power (below), and a full-power
+  carrier into an open port is never legitimate.
 
 ### Two separate drive controls (Richard's decision)
 
 - **Drive** — normal MOX/voice power (persistent).
-- **Tune drive** — separate, bounded, his ~10–15 W (persistent). ATU tuning needs
-  real power into a deliberate mismatch. Mirrors `tx->drive` vs `tx->tune_drive`.
+- **Tune drive** — separate (persistent); ATU tuning needs real power into a
+  deliberate mismatch. Since 2026-07-09 its slider spans the full rating like
+  Drive — a wattmeter-calibration pass needs a full-range carrier — which is why
+  the open-antenna guard runs during TUNE too. Mirrors `tx->drive` vs
+  `tx->tune_drive`.
 
 ### Antenna (Richard's decision)
 
@@ -208,26 +211,18 @@ ANT1. Feeds the TX-antenna bits in alex0/alex1 and the existing RX ANT relay.
 
 ---
 
-## 5. Phased plan — RF impossible until F5
+## 5. The build phases — what each one left behind
 
-Each phase is independently testable offline or with the PA disabled; keying
-happens only at F5.
+All phases are done: F0 design · F1 TX bytes in the builders (`sdrfl-txprobe`) ·
+F2 WDSP TX channel + mic→DUC IQ chain + port-1029 framer (`sdrfl-txdsp-test`) ·
+F3 fwd/rev/exciter parse + watts/SWR (`tx_meter`, `sdrfl-swr-test`) · F4 the
+safety gate `tx_gate` (`sdrfl-txgate-test`) · F5 first keying via the headless
+`sdrfl-txkey`, TUNE into a dummy load through `tx_gate` (2026-07-08, d3776e5) ·
+F6 TX in the GUI app: a) controls + meter, b) calibration settings, c) mic/SSB,
+d) CW. PureSignal (the former "F7 — optional, later") is done too —
+`docs/PS-SCOPE.md`. What stays worth knowing from each:
 
-| Phase | Content | Status (commit) |
-|---|---|---|
-| **F0** | This design doc + safety checklist mapping | ✅ done (a2d32df) |
-| **F1** | TX bytes in the builders, **MOX/PA/drive hard-0**; offline `sdrfl-txprobe` | ✅ done, 41/41 (2eff0e9) |
-| **F2** | WDSP TX channel + mic→DUC IQ chain + port-1029 framer (dormant); `sdrfl-txdsp-test` | ✅ done, 12/12 (2c36926) |
-| **F3** | fwd/rev/exciter parse (read-only) + G2E watts/SWR (`tx_meter`); `sdrfl-swr-test` | ✅ done, 8/8 (4f80abd) |
-| **F4** | Safety gate `tx_gate` (in-band, PA gate, SWR/open-ant shutdown, tune-exempt); `sdrfl-txgate-test` | ✅ done, 12/12 (f11a0c4) |
-| **F5** | **FIRST KEYING** via headless `sdrfl-txkey` — TUNE into a dummy load through `tx_gate` | ✅ **done, keyed live** (d3776e5) |
-| **F6** | TX into the GUI app: **a)** controls+meter · **b)** cal settings · **c)** mic/SSB · **d)** CW | 🟢 **F6a+F6b done + live-keyed; F6c-1/2 (mic capture + mode-gated wiring) done, MOX enable = F6c-3** |
-| **F7** | PureSignal (predistortion) — optional, later | — |
-
-**F6a — done, live-validated on the G2E (OK1BR, 2026-07-08/09).** The GUI app keys
-RF through the safety gate into a matched load; verified across 20/40 m (~8 W for a
-10 W request — the known low-drive sensor under-read, F6b territory — rev 0, SWR 1.00,
-no trips). What landed:
+**F6a — TX in the GUI app** (live-validated on the G2E, 2026-07-08/09):
 - **TX runtime** (`src/engine/tx_run.[ch]`) — a dedicated worker thread running the
   F5 keying loop (real-time IQ feed → port 1029, `tx_meter` + `tx_gate` at ~20 Hz,
   `p2_set_tx_state`). **Why a thread, not the GUI tick:** the tick is a
@@ -246,21 +241,19 @@ no trips). What landed:
   ramped, no click), kept muted ~200 ms after unkey through the AGC recovery, plus a
   ~20 ms demod-input silence for the T/R crosstalk tail (piHPSDR `txrxmax` anti-pump).
   ADC-overload badge suppressed across the transition (a known transient).
-- **Controls:** **TUNE** button keys via `tx_gate`; **MOX** present but disabled until
-  F6c (SSB with silence ≈ no RF). Footer bar: **Drive** / **Tune** sliders (watts) +
-  **antenna** ANT1/2/3. **Preferences → Radio → Transmit:** PA-enable (persistent,
-  mirrors piHPSDR) + SWR alarm. A refuse/trip pops TUNE back and flashes the reason.
-  `pa_calibration` fixed at the validated 53 dB (per-band table = F6b).
-- Also: unified the canvas font to **Adwaita Mono** (the generic Cairo "monospace"
-  resolved to a serif Courier clone) to match the Adwaita Sans UI.
-- **F6b — done + live-keyed on the G2E (2026-07-09).** Both piHPSDR calibration
-  knobs, taken in their common/default form (Richard's call: start from the proven
-  version, refine later). HF calibration confirmed accurate live; 6 m over-reads
-  ~25 % (safe direction) → per-band nonlinear calibration is the next milestone:
+- **Controls:** TUNE and MOX key via `tx_gate`. Footer bar: **Drive** / **Tune**
+  sliders (watts) + **antenna** ANT1/2/3. **Preferences → Radio → Transmit:**
+  PA-enable (persistent, mirrors piHPSDR) + SWR alarm. A refuse/trip pops the
+  button back and flashes the reason.
+- **F6b — calibration** (live-keyed on the G2E, 2026-07-09). Both piHPSDR
+  calibration knobs, taken in their common/default form (Richard's call: start
+  from the proven version, refine later):
   - **Per-band `pa_calibration` table** — `App.band_pacal[NBANDS]`, default 53 dB
-    (piHPSDR's, live-validated on this G2E), **clamped to the safe [38.8, 70.0]
-    range** (the 38.8 dB floor is the safety limit — a lower value raises the
-    drive byte for a given watts request, band.c:571-577). Flows through
+    (piHPSDR's, live-validated on this G2E), **clamped to a safe range whose
+    floor is PER RADIO** (`radio_tx_profile`: 38.8 dB for the 100 W-class G2E/G2 —
+    piHPSDR's clamp, band.c:571-577 — and 25 for the ANAN 10E and the HL2, which
+    reach rated power only near DAC full scale; ceiling 70.0). The floor is the
+    safety limit — a lower value raises the drive byte for a given watts request. Flows through
     `tx_run_cfg.pa_calibration` for the **current** band and is **re-pushed on
     every band change** (`band_apply` → `tx_push_cfg`) so the drive byte tracks
     the band's PA gain. Editable per band in Preferences → Radio → Transmit.
@@ -277,13 +270,9 @@ no trips). What landed:
     (band.c table; only HL2 overrides to 40.5), and `pa_trim` = identity for a
     100 W rating (the G2E is `pa_power=PA_100W`, radio.c:1308/1330 → `i*10 W`). A
     non-G2E port must switch these like piHPSDR does.
-  - Both persist in `config.ini` (`[tx] pa_cal`, `[tx] pa_trim`). Offline gates
-    `sdrfl-txgate-test` (15/15) and `sdrfl-swr-test` (8/8) pass; identity curve
-    reproduces the pre-F6b watts (47.34 W @ raw 2000) exactly.
-  - **6m added across the app** (G2E does 6 m; we'd overlooked it) — `BANDS[]`
-    50–54 MHz, footer band button, per-band dB window/stacking/pa_cal. The RF
-    path was already 6 m-ready (RX BPF `alex0=0x08`+preamp, TX 6 m bypass LPF,
-    `tx_meter` 6 m rconstant, band-plan 6 m).
+  - Both persist per radio in `config.ini` (`pa_cal`, `pa_trim`; §9).
+  - 6 m is a full band across the app; the RF path: RX BPF `alex0=0x08`+preamp,
+    TX 6 m bypass LPF, `tx_meter` 6 m rconstant, band-plan 6 m.
   - **Full-power TUNE** — the TUNE drive slider now spans 0–100 W like Drive (was
     capped 30 W): a wattmeter-calibration pass needs a full-range carrier. With
     that, the safety gate was tightened (docs/TX-SAFETY.md): the **open-antenna
@@ -292,14 +281,10 @@ no trips). What landed:
     during TUNE** (deliberate ATU-mismatch tuning) but now raises a warn-only flag
     (`tx_gate_result.high_swr` → amber "⚠ HIGH SWR" on the TX panadapter, in TUNE
     and MOX). New gate cases in `sdrfl-txgate-test`.
-  - **Live-validated on the G2E (OK1BR, 2026-07-09).** 20 m TUNE into a dummy load,
-    swept to full power (drive 41 → app 108 W), SWR ~1.05, no false trips,
-    open-antenna guard silent into the matched load. **The power + SWR readout
-    matched Richard's tuner wattmeter on 20 m** — i.e. the default calibration
-    (`C1 = 5.0` + identity `pa_trim`) is already accurate on HF, vindicating
-    keeping our measured `C1` over piHPSDR's 3.3. 6 m keys fine and the sensor
-    reads (drive 51 → app ~19 W; the 6 m PA is much weaker per drive), but the app
-    **over-reads ~25 % on 6 m** vs the external meter — a **safe-direction** error
+  - **Calibration status on this G2E:** on 20 m the power + SWR readout matches
+    Richard's tuner wattmeter — the default calibration (`C1 = 5.0` + identity
+    `pa_trim`) is accurate on HF, vindicating our measured `C1` over piHPSDR's 3.3.
+    6 m **over-reads ~25 %** vs the external meter — a **safe-direction** error
     (true power lower than shown → SWR protection stays conservative).
   - **★ NEXT / known limitation — per-band, nonlinear wattmeter calibration.** The
     6 m +25 % is the ceiling of the piHPSDR model we cloned: a **single global**
@@ -314,57 +299,38 @@ no trips). What landed:
     load for the rev curve.
 - **F6c** — Mic path for SSB voice → **host soundcard (PipeWire)**, same as RX
   (Richard's call; not the radio's mic jack). Enables MOX. TUNE needs neither.
-  - **F6c-1 done + live-validated** — `src/engine/mic_pw.[ch]` PipeWire capture
-    (mirror of `audio_pw.c`, `PW_DIRECTION_INPUT`, mono, SPSC ring, mic_pull for
-    the TX feed) + `sdrfl-micprobe` VU meter. Reads the mic live (SPL Marc One,
-    peak 0.16). **`PW_STREAM_FLAG_AUTOCONNECT` did NOT reliably hit the default
-    mic** — it landed on a silent node; pinning `PW_KEY_TARGET_OBJECT` to the
-    source node fixes it. So `mic_start(rate, lat, target)` takes an explicit node.
-  - **Device + sample-rate picker done** — the settings dialog enumerates PW
-    capture sources (`mic_list_sources`) and persists the chosen node
-    (`mic_device`) + shared audio rate; restart-to-apply. Note the WDSP TX input
-    is fixed at 48 kHz (`tx_dsp_in_rate()`), so the mic is *captured* at 48 kHz
-    regardless of the RX-output rate — PipeWire resamples the device for us.
-  - **F6c-2 done (offline-verified)** — live mic wired into the TX worker.
-    `tx_run.c`'s feed loop now pulls `mic_pull()` and feeds it to
-    `tx_dsp_feed_mic()` **only while MOX is keyed** (`keyed_mox`), padding any
-    underrun with silence so the 10.667 ms real-time cadence never stalls; TUNE
-    still feeds a post-gen carrier (mic muted). `mic_flush()` fires on the MOX
-    key-down edge so voice starts fresh, not on the stale idle backlog.
-    **Mic lifecycle is mode-gated** (Richard's call): the GUI opens the capture
-    at TX-runtime start / on switching *into* a voice mode (USB/LSB/AM — future
-    FM/DSB/SAM) so there's no warm-up lag, and closes it for CW/data modes (no
-    "recording" while listening). `gui.c` `mode_is_voice()`/`tx_update_mic()`.
-    The mic can only reach the exciter through `tx_gate`/MOX, and the MOX button
-    is still disabled — so this is **dormant until F6c-3**. Ring producer drops
-    on full (never blocks), so an undrained mic while MOX-off is harmless.
-    Offline: builds, all TX gates pass; live mic-opens-per-mode + first voice
-    are the F6c-3 test (needs the radio free).
-  - **F6c-3a done (offline-verified)** — the non-hazardous GUI, MOX still
-    disabled. **Mic-gain** slider on the footer next to Drive (`fmt_db`,
-    −12…+40 dB, default 0; `Settings.mic_gain` persisted; live via
-    `tx_run_set_mic_gain` → `SetTXAPanelGain1`). **TX level meter** top-right of
-    the TX panadapter, in the RX S-meter's geometry: Mic-input-peak bar (dBFS,
-    green with a red clip zone past −6 dB) + ALC-gain-reduction bar (amber) —
-    Richard's "level bars now, ALC later", both from `GetTXAMeter` (`TXA_MIC_PK`
-    / `TXA_ALC_GAIN`) published into `tx_run_status.mic_pk/alc_gain` from the TX
-    thread. Meaningful only while keyed. Builds; all TX gates pass.
-  - **F6c-3b — MOX enabled; first voice keyed — WORKS (ANAN G2E, OK1BR,
-    2026-07-09).** MOX is enabled only in a voice mode (`tx_update_mic` greys it for
-    CW/data alongside the mic) — same `tx_gate` path as TUNE, SWR protection ACTIVE
-    for MOX. Live checks on the G2E: mic lifecycle RX-only (USB → `mic: capture open
-    @ 48000 Hz … voice mode`; CWU → mic stays closed), then **first voice into a
-    50 Ω dummy load on ANT1**: keyed clean (`KEY MOX PA=ON ANT1 drive=35/255`),
-    SWR 1.00, and — after raising Mic gain — produced real SSB power that tracks the
-    voice.
-    **★ Gotcha found live:** at the default `mic_gain = 0 dB` the output was ~0 W
-    (a few 0.07 W blips on peaks, `fwd_raw` 9→121). The host mic chain (SPL Marc One
-    preamp) is quiet, so the WDSP TXA input sat far below full scale → the SSB IQ was
-    ~-30 dB down. Same log had TUNE at drive 30 = 53 W, proving the RF path was fine
-    — purely a mic-level/gain-staging issue; the footer Mic slider fixes it.
-    **Still open:** audio *quality* / over-drive (needs a monitor RX — judge from the
-    ALC meter + TX-panadapter splatter meanwhile), and whether to raise the default
-    mic gain. Phase-1 stays plain SSB (ALC only; no speech compressor/EQ).
+  - **Capture** — `src/engine/mic_pw.[ch]` (mirror of `audio_pw.c`,
+    `PW_DIRECTION_INPUT`, mono, SPSC ring, `mic_pull` for the TX feed) +
+    `sdrfl-micprobe` VU meter. **`PW_STREAM_FLAG_AUTOCONNECT` did NOT reliably
+    hit the default mic** — it landed on a silent node; pinning
+    `PW_KEY_TARGET_OBJECT` to the source node fixes it. So
+    `mic_start(rate, lat, target)` takes an explicit node.
+  - **Device + sample-rate picker** — the settings dialog enumerates PW capture
+    sources (`mic_list_sources`) and persists the chosen node (`mic_device`) +
+    shared audio rate; restart-to-apply. The WDSP TX input is fixed at 48 kHz
+    (`tx_dsp_in_rate()`), so the mic is *captured* at 48 kHz regardless of the
+    RX-output rate — PipeWire resamples the device for us.
+  - **Feed** — `tx_run.c`'s feed loop pulls `mic_pull()` into `tx_dsp_feed_mic()`
+    **only while MOX is keyed** (`keyed_mox`), padding any underrun with silence
+    so the 10.667 ms real-time cadence never stalls; TUNE feeds a post-gen
+    carrier (mic muted). `mic_flush()` fires on the MOX key-down edge so voice
+    starts fresh, not on the stale idle backlog. The ring producer drops on full
+    (never blocks), so an undrained mic while MOX-off is harmless.
+  - **Mic lifecycle is mode-gated** (Richard's call): the GUI opens the capture
+    at TX-runtime start / on switching *into* a voice mode (USB/LSB/AM) so there
+    is no warm-up lag, and closes it for CW/data modes (no "recording" while
+    listening) — `gui.c` `mode_is_voice()`/`tx_update_mic()`. The mic can only
+    reach the exciter through `tx_gate`/MOX, and MOX is enabled only in a voice
+    mode — the same `tx_gate` path as TUNE, SWR protection ACTIVE.
+  - **TX level meter** top-right of the TX panadapter, in the RX S-meter's
+    geometry: Mic-input-peak bar (dBFS) + ALC-gain-reduction bar, both from
+    `GetTXAMeter` (`TXA_MIC_PK` / `TXA_ALC_GAIN`), published into
+    `tx_run_status` from the TX thread. Meaningful only while keyed.
+  - **★ Gotcha found live (first voice, 2026-07-09):** at `mic_gain = 0 dB` the
+    output was ~0 W. The host mic chain (studio preamp) is quiet, so the WDSP TXA
+    input sat far below full scale → the SSB IQ was ~-30 dB down, while the same
+    log had TUNE at drive 30 = 53 W: the RF path was fine — purely a
+    mic-level/gain-staging issue (see §8 for why: the chain is unity gain).
 - **F6d** — CW (Morse) transmit. **Digital keying from an external contest/logging
   program (TCI, Richard's choice); no physical paddle, no in-app text window.**
   - **Approach = host-generated shaped carrier** (piHPSDR's CAT-CW path). The
@@ -374,64 +340,39 @@ no trips). What landed:
     not involved. The FPGA keyer + the P2 host-CW HP[5] mode stay OFF. Timing is
     carried in SAMPLE COUNTS (locked to the radio's IQ clock), so the rhythm is
     jitter-free at any WPM. See the memory note `cw-research-f6d`.
-  - **F6d-1a done (offline-verified)** — `src/engine/cw_gen.[ch]`: a pure Morse
-    envelope generator (text → sample-accurate keyed envelope with a raised-cosine
-    ramp, capped inside a dot at high WPM). Gate `sdrfl-cw-test` proves the timing
-    with no radio: dot = sr·1.2/WPM and the **PARIS word rate = exactly 50 dots**
-    (0 sample error) at 12/20/25/30/40 WPM. NEVER keys — pure generator.
-  - **F6d-1b done (offline-verified) — cw_gen wired into the TX runtime.** In a CW
-    mode, a break-in state machine in the tx_run feed thread derives "want key" from
-    the generator's activity (content → key; hang after the last element), the gate
-    turns it into a real MOX assertion (drive, ANT, LPF, atten-31, SWR protection —
-    identical to voice MOX, already verified), and the feed loop emits the shaped
-    carrier IQ directly (`I = 0.896·env, Q = 0`, no WDSP). 20 s continuous-key
-    cutoff. API: `tx_run_cw_send/abort/set_cw`. **Dev trigger for live tests,
-    ENV-GATED:** with `SDRFL_CW_TEST=1` in the environment, **Ctrl+Shift+K** in a
-    CW mode queues "V V V TEST DE OK1BR" (Esc aborts). Without the env var no
-    key can key the radio (the plain-'k' hotkey was removed by the 2026-07-09
-    audit); the real CW source is TCI (F6d-2). Builds; all offline gates pass (cw
-    timing, txprobe OFF-state clean, txgate, swr, txdsp). **Live-verified
-    2026-07-10** into a 50 Ω dummy load: first dit intact (kick + 30 ms RF hold),
-    break-in feel OK, wattmeter + SWR sane.
-  - **F6d-1c done — CW controls.** Preferences → Radio → "CW" group, all live +
+  - **Generator** — `src/engine/cw_gen.[ch]`: a pure Morse envelope generator
+    (text → sample-accurate keyed envelope with a raised-cosine ramp, capped
+    inside a dot at high WPM). Gate `sdrfl-cw-test` proves the timing with no
+    radio: dot = sr·1.2/WPM and the **PARIS word rate = exactly 50 dots** (0
+    sample error). NEVER keys — pure generator.
+  - **Keying** — in a CW mode, a break-in state machine in the tx_run feed
+    thread derives "want key" from the generator's activity (content → key; hang
+    after the last element), the gate turns it into a real MOX assertion (drive,
+    ANT, LPF, atten-31, SWR protection — identical to voice MOX), and the feed
+    loop emits the shaped carrier IQ directly (`I = 0.896·env, Q = 0`, no WDSP).
+    20 s continuous-key cutoff. API: `tx_run_cw_send/abort/set_cw`.
+  - **Dev trigger, ENV-GATED:** with `SDRFL_CW_TEST=1` in the environment,
+    **Ctrl+Shift+K** in a CW mode queues "V V V TEST DE OK1BR" (Esc aborts).
+    Without the env var no key can key the radio (a plain-'k' hotkey was removed
+    by the 2026-07-09 audit: one keypress = real RF).
+  - **CW controls.** Preferences → Radio → "CW" group, all live +
     persisted: keyer speed (WPM), sidetone pitch (Hz), sidetone level, break-in
     hang (ms). The sidetone level is its OWN trim (dBFS before the shared
     Monitor level), default −20 dBFS ≈ piHPSDR's sidetone volume 50/127
     (0.00196·vol·env, transmitter.c:1491) — the first live test played the
     sidetone at FULL scale through the voice-calibrated monitor gain and
     audibly overdrove the speaker.
-  - **F6d-2** — **TCI** server endpoint as the CW source (bootstraps a slice of the
-    otherwise-deferred TCI transport); the contest program sends CW over TCI.
-
----
-
-## 6. TX-SAFETY.md checklist → where it lands
-
-| Checklist item (`TX-SAFETY.md`) | Phase |
-|---|---|
-| PA gating (General[58] + `TX_RELAY` gated, drive-0 if PA off) | F1/F4 |
-| ADC protection (atten → 31 on TX) | F1/F4 |
-| LPF tracks DUC freq in both alex words | F1 |
-| Out-of-band lockout (band-plan fed) | F4 |
-| SWR protection (2-consec, drop-MOX, not during tune) | F3/F4 |
-| Open-antenna detection (Thetis) | F3/F4 |
-| Per-band drive limits / PA calibration | F6 (cal live) |
-| TX/RX transition muting (`txrxmax`) | F6 |
-| CW rules hold for hardware-keyed CW | F6 |
+  - The real CW source is **TCI** — `docs/TCI-SCOPE.md`.
 
 ---
 
 ## 7. F5 live-keying results + calibration (ANAN G2E, OK1BR, 2026-07-08)
 
-First keying done with `sdrfl-txkey` into a 50 Ω dummy load on ANT1 (20 m), piHPSDR
-disconnected, operator at the wattmeter. Staged, and each keying watched:
-
-| Step | Sent | Result |
-|---|---|---|
-| Dry key | PA **off**, drive 0 | T/R relay clicked (radio entered TX), **wattmeter 0** — keying mechanism proven with no RF |
-| First RF | PA on, byte 5 | fwd sensor 0.12 W (wattmeter didn't resolve it) |
-| Ramp | byte 20 | **wattmeter 16 W** |
-| Watts path | request 10 W (pa_cal 53 → byte 16) | **wattmeter 10 W**, SWR 1.00 |
+First keying was done with `sdrfl-txkey` into a 50 Ω dummy load on ANT1 (20 m),
+piHPSDR disconnected, operator at the wattmeter, staged: dry key (PA off, drive 0
+— T/R relay clicked, wattmeter 0: the keying mechanism proven with no RF), first
+RF at byte 5, a ramp to byte 20 (16 W), then the watts path (request 10 W →
+byte 16 → 10 W measured, SWR 1.00).
 
 **Calibration findings (this G2E):**
 - **`pa_calibration` = 53 dB (the piHPSDR default) is CORRECT here.** The watts path
@@ -440,7 +381,7 @@ disconnected, operator at the wattmeter. Staged, and each keying watched:
 - **Forward-power sensor was 2.3× low** with the Thetis constant `C1 = 3.3`; the fix
   is `C1 = 5.0` in `tx_meter.c` (this G2E's slow-ADC ref is 5.0 V; `(5.0/3.3)² = 2.29
   ≈ 2.26` measured; scales fwd+rev together so **SWR is unchanged**). Still ~18 % low
-  at 10 W → refine with a multi-point per-radio calibration in **F6b**.
+  at 10 W → that is what the `pa_trim` curve (§5, F6b) is for.
 
 **Safety lessons (do not forget):**
 - **Never trust the uncalibrated sensor to lower a safety margin.** The agent
@@ -451,7 +392,7 @@ disconnected, operator at the wattmeter. Staged, and each keying watched:
 - **Raw drive bytes are dangerous** — rated 100 W ≈ byte 51 at `pa_cal 53`, so a
   byte near 255 ≈ 25× overdrive. Drive the PA only through `tx_calc_drive_byte`
   (watts). The `sdrfl-txkey` raw-byte ramp exists only for calibration, hard-capped.
-- `pa_calibration` is **per-band** — F6b must store it per band.
+- `pa_calibration` is **per-band** — stored per band since F6b.
 
 ---
 
@@ -459,7 +400,7 @@ disconnected, operator at the wattmeter. Staged, and each keying watched:
 
 A full audit of the TX path against piHPSDR @974acba (SSB focus) plus a live
 USB-into-dummy-load session produced this wave. Commits 9f29479..63468b0; every
-item below is offline-gated by `sdrfl-txdsp-test` (18 checks) unless noted.
+item below is offline-gated by `sdrfl-txdsp-test` unless noted.
 
 **Root cause of "USB voice puts out ~no power":** the TX chain is UNITY GAIN end
 to end and the WDSP ALC only attenuates (`out_targ=1.0, max_gain=1.0`), exactly
@@ -563,21 +504,6 @@ QSOs):**
 - ⚠ `cw_gen_send_text()` skips LEADING whitespace only when the generator is
   idle; mid-queue leading spaces are genuine word gaps between queued macros.
 
-**Live-verified operator config (OK1BR, USB, dummy load, 2026-07-10):**
-`mic_gain=11 dB, gate=1 @ −29.5 dBFS, comp(PROC)=off, filt 40-4000 Hz,
-drive_w=63` — voice peaks 1-24 W on the averaged wattmeter with SWR 1.00,
-gate visibly closing in speech gaps (GATE indicator).
-
-**PROC live-verified (same day, later):** A/B mid-transmission (PROC applies
-live), leveler + COMP at 7 dB — power density audibly up, monitor sound
-credible ("chová se mnohem lépe než Zeus SDR"), gate threshold did NOT need
-re-tuning (room noise stayed below −29.5 dBFS in speech gaps). Operator keeps
-PROC on at 7 dB: `comp=1, comp_db=7`.
-
-*Written F0, updated through F6c-4, 2026-07-10. Byte offsets cross-verified
-against piHPSDR @974acba by first-hand read (MOX/`TX_RELAY`/atten/SWR) +
-three-way audit, then validated by live keying into a dummy load (§7, §8).*
-
 ---
 
 ## 9. Per-radio TX profile — ANAN 10E (HERMES2) bring-up (2026-07-12)
@@ -620,14 +546,10 @@ radio's SAFE defaults: **PA off, ANT1, 1 W drive/tune** — i.e. exactly the
 dry-key step of the live checklist. `pa_calibration` default stays 53.0 dB
 (piHPSDR's generic band table; only the P1 HL2 overrides it).
 
-Offline gates: `sdrfl-txprobe` gained a HERMES2 section (keyed 40 m packet:
-TX bits byte-identical, Hermes HPF 0x20 vs G2E BPF 0x10), `sdrfl-txgate-test`
-the 10 W open-antenna scaling cases. **Live checklist PASSED 2026-07-12**
-(dry key → 1 W → per-band PA cal 40 m 33.6 / 20 m 32.8 dB against the
-external wattmeter, app meter agreeing → SWR 1.05 → CW break-in → voice
-MOX → TCI/SDC skimming with a 384 kHz IQ client). Remaining bands keep the
-53 dB default → they heavily under-drive until walked down (~32-34 dB
-expected) against a wattmeter.
+Per-band PA calibration on this 10E (against the external wattmeter,
+2026-07-12): 40 m 33.6 dB, 20 m 32.8 dB. The remaining bands keep the 53 dB
+default → they heavily under-drive until walked down (~32-34 dB expected)
+against a wattmeter.
 
 **⛔ PureSignal is LOCKED OUT on Hermes-class (`radio_ps_supported()`, G2E
 only).** Live, twice: keying the 10E with PS enabled kills the radio mid-TX
@@ -660,12 +582,13 @@ limitation, a *sequencing* one:
 Lifting the lockout = implement the Thetis ordering (PS RX-specific before
 MOX on key-down, RX restore before un-MOX on key-up, ± quiesce) and re-test
 live — each failed attempt costs a power cycle. Alternative for the 10E:
-PureSignal over Protocol 1 once P1 lands (HL2 milestone).
+PureSignal over Protocol 1 — the P1 PS wire is live on the HL2 since 2026-07-12
+(P1-TX-SCOPE §6).
 
 ## 10. P2 TX transport hardening — continuous DUC stream + TCI key ownership (2026-07-13, live-verified)
 
-Night session after the SSB saga (see CONTEST/saga notes). Three mechanism
-fixes, all live-verified on the G2E into the dummy load; tree gates PASS.
+Three mechanism fixes after the SSB saga, all live-verified on the G2E into the
+dummy load.
 
 **N3 completed — continuous DUC zero stream (Thetis parity).** The P2 feed
 thread now emits zero-IQ blocks to the framer whenever it is NOT keyed, so
@@ -679,44 +602,26 @@ counter (HP status bytes 32-35) is now a TRUE lost-packet tripwire — during
 overs and across key edges it stays at zero (live: R5-R10). ⚠ Any growth
 AFTER stream start = real wire loss — investigate immediately.
 
-*Stream-start signature — revised 2026-08-23 (SDR-4, BACKLOG).* The July
-text here said "a constant +2 right after app start is expected: first packet
-vs the stale `last_sequence_number` + the p2 restart to the configured rate
-(ring reset)". The second half was a guess — the GUI never restarted p2 at
-start (checked in the July tree: one `p2_rx_start` call, the in-app restart
-exec's the binary). What the code DID do: the TX-IQ producer (tx_run's feed
-thread, started by gui.c BEFORE `p2_rx_start`, and continuous on P2 since N3)
-wrote into the paced-sender ring from the moment the data socket existed,
-filled it during the ~310 ms start handshake, and `p2_rx_start` then zeroed
-head/tail UNDER that live producer — an SPSC torn-state hazard (a producer
-that read `h` before the reset publishes `h+1` after it → stale slots with old
-sequence numbers replayed to the radio) plus pre-link ring-full drops counted
-as over statistics. Both are closed: `p2_tx_iq_socket_emit()` refuses packets
+*Stream-start signature (revised 2026-08-23, live-verified on the G2E
+2026-09-06).* The TX-IQ producer (tx_run's feed thread, started before
+`p2_rx_start` and continuous on P2 since N3) used to write into the paced-sender
+ring from the moment the data socket existed, and `p2_rx_start` then zeroed
+head/tail UNDER that live producer — an SPSC torn-state hazard (stale slots with
+old sequence numbers replayed to the radio) plus pre-link ring-full drops
+counted as over statistics. Closed: `p2_tx_iq_socket_emit()` refuses packets
 (counted separately as "pre-link", printed once in the `p2: started` line)
 unless the paced sender exists (`txiq_live`, set after the consumer thread is
 created and cleared first thing in `p2_rx_stop`), so head/tail are only ever
 reset while no producer can be inside the ring; offline gate
-`sdrfl-txiq-ring-test` (loopback "radio" on 127.0.0.1:1029, incl. a stop/start
-in one process). Honest caveat: by timing, the ring was FULL at reset in every
-normal start (160 ms to fill vs 310 ms of handshake), and a full ring has no
-torn window — so this race was real but narrow, and it does NOT by itself
-explain a *deterministic* "2 (+1)" on every run. What remains after the fix
-is exactly ONE discontinuity per link start, the unavoidable one: the first
-DUC packet vs the gateware's stale `last_sequence_number` (survives run
-toggles, byte_to_48bits.v:128) → +1, ~10 ms after `p2: started`. Whether
-that +1 is *printed* depends on whether the radio's first status packet of the
-session was seen before or after that first DUC packet, which is live-only
-knowledge — the listener now prints a baseline line once per link start,
-`p2: DUC sequence-error counter at link start: N (before|after the first DUC
-packet)`, to settle it. **Healthy signature = at most ONE
+`sdrfl-txiq-ring-test`. What remains is exactly ONE discontinuity per link
+start, the unavoidable one: the first DUC packet vs the gateware's stale
+`last_sequence_number` (survives run toggles, byte_to_48bits.v:128) → +1, ~10 ms
+after `p2: started`; the listener prints a baseline line once per link start
+(`p2: DUC sequence-error counter at link start: N (before|after the first DUC
+packet)`). **Healthy signature = at most ONE
 `p2: DUC sequence errors: N (+1)` line, only within ~1 s of `p2: started`,
 and never anything later; a second line at start, or any line during the
-run, is real wire loss.** ✅ Live-verified 2026-09-06 on the G2E (BACKLOG
-SDR-4): baseline `1 (before the first DUC packet)`, then exactly one
-`DUC sequence errors: 2 (+1)` right after `p2: started`, nothing in the
-following ~10 min. So the pre-fix "2" was the gateware's own 1 at run=1 plus
-our unavoidable first-packet +1 — the fix removed nothing visible, and was
-not expected to; what it removed was the torn-ring window.
+run, is real wire loss.**
 
 **Mic-clock pacing is self-healing now.** The one-shot permanent fallback
 (N2 v2) is gone: on timeout the feed falls back to the local timer AND
@@ -744,46 +649,30 @@ hangup at 30 s): a half-open client (died with no close frame — the true
 night scenario) is reaped and unkeyed in ≤ ~30 s (live B: SIGSTOPped keyed
 client → reap + unkey in 28 s). piHPSDR has no such policy — deliberate delta.
 
-**End-to-end voice verification (R9/R10, corrected after Richard's ear
-review):** the WIRE is faithful — mic dump ↔ WDSP output (txre) track 1:1
-(DEXP −45 deepens gaps, zero syllable chopping), transport clean (0 seq
-errors, 0 ring drops/shorts), and txre matches the tx48.wav acceptance
-reference on spectral balance (60-300 vs 300-2700 Hz: +1.0 vs +0.1 dB).
-The IC-705 bench recording of a low-RMS voice over does NOT correspond to
-the wire, and canNOT: spectrograms show it is an AGC-INVERTED image of a
-weak signal over a strong receiver floor (gaps = floor pulled up ~30 dB,
-speech = gain-reduction dark stripes; band-envelope similarity ≈ 0.1).
-An earlier r=0.861 "spectral similarity" claim was a flawed metric
-(flattened spectrogram correlation measures average spectral shape, not
-temporal correspondence) — retracted. ⚠ Bench rules: the 705-USB free-air
-pickup is usable for TONE dBc forensics (R6: 704/1904 Hz + ±100 Hz
-sidebands cleanly resolved) but NOT for voice-quality judgment at
-dummy-load leakage levels — feed it real signal (coupler/attenuator),
-AGC off / manual RF gain, battery + no USB against EMI. Also found:
-config filt_lo had regressed 150→100 via a config-backup restore, so the
-100-300 Hz room rumble (fan-blade lines 106-292 Hz) passed the TX filter
-and WAS transmitted; measured on txre: a 250/300 Hz low edge cuts the
-rumble by 8/38 dB. Restored to the 150 default (250-300 is Richard's
-optional Prefs call against the fans).
-
-**Resolution (R13, 2026-07-13 ~01:15, linear measurement):** Richard turned
-the 705's AGC OFF and the inter-word noise persisted — falsifying the AGC
-theory too. R13 (two overs, drive 10/30 W, 705 recorded linearly) settled
-it: the inter-word level equals the bench's NO-TX floor exactly (−48.5 dBFS
-before/between/after the overs vs −45..−48.5 inside the overs' gaps), and
-the speech-over-floor margin improved exactly by the added TX power — the
-floor does not scale with drive, so it is NOT in the modulation path. The
-wire carries ~40 dB speech/gap contrast; the bench link budget (antenna-to-
-antenna + attenuation at the 705) simply put speech only 12-20 dB above the
-receiver's own floor. With AGC on, that floor is pumped up in every pause
-(the audible "rise"); with AGC off it is constant but still prominent.
+**End-to-end voice verification — what it established.** The WIRE is faithful —
+mic dump ↔ WDSP output track 1:1 (DEXP deepens gaps, zero syllable chopping),
+transport clean (0 seq errors, 0 ring drops/shorts). An IC-705 bench recording
+that seemed to say otherwise did not correspond to the wire: linear
+measurements (AGC off, two overs at 10/30 W) showed the inter-word level equal
+to the bench's NO-TX floor and not scaling with drive — so it is NOT in the
+modulation path; the bench link budget simply put speech only 12-20 dB above
+the receiver's own floor. (An earlier r=0.861 "spectral similarity" claim was a
+flawed metric — flattened spectrogram correlation measures average spectral
+shape, not temporal correspondence — retracted.)
+⚠ Bench rules: the 705-USB free-air pickup is usable for TONE dBc forensics
+(704/1904 Hz + ±100 Hz sidebands cleanly resolved) but NOT for voice-quality
+judgment at dummy-load leakage levels — feed it real signal
+(coupler/attenuator), AGC off / manual RF gain, battery + no USB against EMI.
 ⚠ **Reference bench rule:** off-air voice judgment needs the signal ≥ 40 dB
 above the monitoring receiver's floor (reduce attenuation / tighten
 coupling), else every pause fills with the bench floor regardless of TX
 quality. Ruled out live along the way: ALC (A/B with SDRFL_TX_NOALC — never
-engages, min 0.0 dB), leveler (no call sites since no-knobs; wire gap
-profile flat), PipeWire processors (graph clean), receiver AGC (this test),
-and a 300 Hz TX low edge (made contrast 3.5 dB WORSE — reverted to 150).
+engages, min 0.0 dB), leveler, PipeWire processors (graph clean), receiver AGC,
+and a 300 Hz TX low edge (made contrast 3.5 dB WORSE — reverted to 150). Also
+found: a TX low edge of 100 Hz lets the 100-300 Hz room rumble (fan-blade lines)
+through and it IS transmitted; measured on the wire, a 250/300 Hz low edge cuts
+it by 8/38 dB — 150 is the default, 250-300 is Richard's optional Prefs call
+against the fans.
 
 ## 11. Audio reference layout (2026-07-13, Richard's ask after the saga)
 
