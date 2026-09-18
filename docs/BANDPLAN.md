@@ -1,19 +1,22 @@
 # Amateur band-plan reference (for the region-selectable band display)
 
-**Status:** reference data for a *planned* feature (region-selectable band edges +
-segment overlays on the spectrum; later, an out-of-band TX interlock). Not yet
-implemented.
+**Status:** implemented 2026-07-08 (`src/bandplan.c`, commits 6a858cc + db3c04a):
+region-selectable band edges + segment overlays on the spectrum, and the
+band-edge + national-override tables drive the **hard out-of-band TX refusal**
+in `src/engine/tx_gate.c`. R2/R3 segments are not tabulated — the code falls
+back to the R1 segment table.
 
 **Provenance:** compiled from the official IARU Region 1/2/3 band-plan PDFs, the
 ARRL US allocation chart, and Czech (ČTÚ / Český radioklub) sources. Frequencies
 are *transmitted* frequencies (not suppressed-carrier dial). See the Sources list
 at the end.
 
-> ⚠ **Before any of this drives a TX interlock**, re-verify the volatile values
-> (esp. OK 4 m / 60 m edges + power/permit conditions, and the 2020 Novi Sad R1
-> amendments) against the live regulator notice. The segment table is for
-> **display only**; a hard TX refusal must come from the band-edge + national
-> override tables in integer Hz.
+> ⚠ **These tables now gate TX, and the volatile values have not been
+> re-verified since they were compiled** (esp. OK 4 m / 60 m edges +
+> power/permit conditions, and the 2020 Novi Sad R1 amendments) — check them
+> against the live regulator notice; tracked in issue #7. The segment table is
+> for **display only**; a hard TX refusal must come from the band-edge +
+> national override tables in integer Hz.
 
 ---
 
@@ -183,49 +186,6 @@ FM call**; 145.5625–145.7935 rptr out; 145.806–146.000 **sat excl**.
 | 4 m | **~70.1–70.3 MHz** | secondary, **10 W ERP**, individual permit (annual). ⚠ most volatile — re-check live ČTÚ notice |
 | 2 m | 144–146 | R1 |
 | 70 cm | 430–440 | R1 |
-
----
-
-## 6. Data-model recommendation (C app)
-
-Keep everything in **Hz (int64)** so integer comparisons drive the guard with no
-float error; format kHz/MHz only in the UI.
-
-```c
-typedef enum { R1, R2, R3 } iaru_region_t;
-
-typedef struct { const char *band; int64_t f_lo, f_hi; } band_edge_t;      // per (region, band)
-
-typedef struct {                       // per segment within a band, ordered by seg_lo
-    const char *band;
-    int64_t seg_lo, seg_hi;            // Hz
-    int32_t max_bw;                    // Hz, 0 = unspecified
-    uint16_t usage;                    // CW|NB|DIGI|PHONE|BEACON|SAT|IMAGE|FM|DV|ACDS|EMERGENCY
-    const char *label;                 // human tag / CoA note
-} band_segment_t;
-
-typedef struct {                       // national override, wins over region edges
-    const char *country;               // "US","CZ"
-    const char *lic_class;             // NULL = all; else "E","A","G","T"
-    const char *band;
-    int64_t f_lo, f_hi;
-    uint16_t usage;
-    const char *note;
-} nat_override_t;
-```
-
-Usage bits: `CW=1<<0, NB=1<<1, DIGI=1<<2, PHONE=1<<3, BEACON=1<<4, SAT=1<<5,
-IMAGE=1<<6, FM=1<<7, DV=1<<8, ACDS=1<<9, EMERGENCY=1<<10`.
-
-**TX-guard logic (future):** `f` is TX-legal iff a band row for the active region
-(or a matching national override, which wins) has `f_lo ≤ f ≤ f_hi`, and — where
-class-gated overrides exist — `f` falls in an override row whose mode matches the
-emission and `lic_class` matches the operator. Segment table = display/soft-warning
-only, never the hard interlock.
-
-**Storage:** ship the band-plan as **static compiled-in C tables** (or a bundled
-read-only JSON) — always present, no parser, matches the vendoring ethos. Store
-only the *selection* (`region`, `country`) in the app's mutable `config.ini`.
 
 ---
 

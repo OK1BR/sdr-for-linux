@@ -1,25 +1,13 @@
-# Milestone 1 · Step 3 — Protocol-2 RX + IQ stream: scope plan
+# Protocol-2 RX wire reference
 
-Scope for importing the **RX half** of piHPSDR's Protocol-2 link into
-`sdr-for-linux`. Get the ANAN G2E started over P2, run **one** DDC (receiver), and
-deliver the RX **IQ stream** into a buffer we own. Source of truth:
-`/home/rfa/.local/opt/pihpsdr` @ `974acba`. All upstream line numbers below are in
-`src/new_protocol.c` unless another file is named.
-
-Prepared by mapping `new_protocol.c` / `new_protocol.h` and the state it reads
-(`radio.h`, `receiver.h`, `adc.h`, `vfo.h`, `discovered.h`). **No code written
-yet — this is for consent before the import** (same gate as WDSP).
-
----
-
-## 0. Milestone gate
-
-`sdrfl-rxprobe` (headless, like `sdrfl-discover`): **discover → start radio → set
-one RX (192 kHz @ 14.1 MHz) → collect IQ ~1 s → print sample count, effective
-rate, RMS, a few samples.** Proves live IQ end-to-end. This gate needs **no
-WDSP** — the seam where piHPSDR hands samples to WDSP is replaced by our own
-callback that just accumulates statistics. Step 4 later swaps that callback for
-the WDSP analyzer feed.
+What the P2 receive link puts on the wire, as read out of piHPSDR's
+`src/new_protocol.c` (`~/.local/opt/pihpsdr` @ `974acba` — all upstream line
+numbers below are in that file unless another is named) for the RX-only import
+of 2026-07-06. Implemented as `src/engine/protocol2.c`. The "drop" / "→ 0 for
+RX" markings describe that RX-only scope; the TX side of the same packets is in
+`docs/TX-DESIGN.md` §2. Originally a scope plan — its gate, file list, risks
+and implementation order were removed once done (last full version: commit
+6a48d13).
 
 ---
 
@@ -131,8 +119,7 @@ DDC0 = port 1035** (not DDC2). Comment at `new_protocol.c:376`; G2E absent from 
   (line 784+817). `lo=0` without a transverter but the subtraction is unconditional.
 - Everything else (DUC phase 329, drive 345, ALEX words 1428/1432, attenuators
   1442/1443) → **0** for a bare G2E RX. (On ALEX radios `[1432..1435]`=alex0 selects
-  RX band-pass relays; for the G2E RMS-only probe, default relays are fine — noted
-  as a minor risk, §6.)
+  RX band-pass relays; for the G2E RMS-only probe, default relays are fine.)
 
 ### 3.3 Send order + keepalive
 Start handshake (`new_protocol_menu_start()` 1781, order at 1851–1862):
@@ -183,47 +170,3 @@ Not piHPSDR's `receiver.h`/`radio.h` (those drag WDSP+GTK). A small
 
 `calibrated_frequency()` (radio.h:108, inline) with `frequency_calibration=0` is
 the identity — reimplement as a one-liner.
-
----
-
-## 5. New files & build
-
-| File | Role |
-|---|---|
-| `src/engine/protocol2.c` / `protocol2.h` | P2 RX link: socket, 3 send packets, listener, IQ decode, timer keepalive; public API `p2_rx_start(dev, freq, rate, on_iq_cb)` / `p2_rx_stop()`. |
-| `src/engine/engine_state.{c,h}` | extend with the minimal radio/receiver/adc/vfo state + stubs from §4. |
-| `src/rxprobe_main.c` | gate: discover → `p2_rx_start` @ 192 k/14.1 MHz → 1 s → print stats. |
-| `meson.build` | add `engine_sources += protocol2.c`; new `sdrfl-rxprobe` target (mirror `sdrfl-discover`). |
-
-No WDSP dependency for this gate (`engine_deps = [glib_dep, threads_dep]`).
-
-## 6. Risks & mitigations
-- **Wrong byte offset / phase word → silent socket.** Copy wire-critical bytes
-  verbatim; diff a `sdrfl-rxprobe` hexdump against a Wireshark capture of piHPSDR
-  starting the same radio, before trusting the decode.
-- **G2E DDC/port assumption.** Asserted: DDC0/port 1035 (§3.1). Verify in the live
-  test that packets actually arrive on 1035.
-- **ALEX RX relays** (`filter_board`/alex0). For the RMS probe, default relays
-  suffice; if IQ RMS is implausibly low, set `filter_board` + `adc[0].antenna` to
-  the G2E's real values.
-- **Radio ownership.** The live test opens the P2 data path → **takes the radio
-  from piHPSDR** (one owner). Everything through step 5 is offline (build, hexdump
-  vs. capture). **Ask Richard to free the radio before the live test — do not kill
-  his piHPSDR** (his explicit instruction, 2026-07-06).
-
-## 7. Offline vs. live
-- **Offline (no radio):** §2 decision, all of `protocol2.c` + `engine_state` +
-  `rxprobe_main` + meson, compile, and a static hexdump self-check of the built
-  packets. Can also diff against a passively-captured piHPSDR-start Wireshark trace
-  without owning the radio.
-- **Live (needs free radio):** run `sdrfl-rxprobe` against 192.168.1.247 — the one
-  step that needs Richard to free the TRX.
-
-## 8. Implementation order (after consent)
-1. Extend `engine_state.{c,h}` with the §4 state + stubs.
-2. `protocol2.c`: socket setup + the three send packets; static hexdump self-test.
-3. Listener thread + 24-bit IQ decode + `on_rx_iq` callback; timer keepalive.
-4. `rxprobe_main.c` + meson `sdrfl-rxprobe`; compile clean.
-5. **(live, radio free)** run the probe → sample count / rate / RMS → done.
-
-Then Step 4 swaps `on_rx_iq` for the WDSP analyzer (`Spectrum0` → `pixel_samples`).

@@ -27,24 +27,19 @@ Chosen shape: **libadwaita**, `AdwApplicationWindow` + `AdwHeaderBar`, a **top
 control strip** over the Cairo panadapter/waterfall. First controls: mode,
 filter, AGC, NR/NB/ANF, AF volume, band buttons.
 
-## Files
+## What is kept
 
-| File | What it shows |
-|---|---|
-| `main_window_libadwaita.c` | Main window: headerbar with big VFO readout + top control strip (mode / filter / AGC / NR·NB·ANF / AF / bands) over a faked panadapter+waterfall. Uses `mock_common.h`. |
-| `settings_libadwaita.c` | `AdwPreferencesWindow` — Radio / Audio / Display / DSP / About pages with switch/combo/spin/entry rows. |
-| `parametric_eq_libadwaita.c` | **Richard's favourite.** A parametric EQ: a Cairo-drawn log-freq response curve with draggable orange band nodes (drag = freq×gain, live redraw) — inside a libadwaita window. The template for custom instrument widgets. |
-| `mock_common.h` | Shared helpers for the main-window mock (fake spectrum draw, control strip, VFO, CSS). |
-
-## Build & run (standalone, needs the radio-free — they are fake, no radio)
+`parametric_eq_libadwaita.c` — **Richard's favourite** and the UI seed for the
+RX + TX equalizer milestone: a Cairo-drawn log-frequency response curve with
+draggable band nodes (drag = freq × gain, live redraw) inside a libadwaita
+window; the template for custom instrument widgets. Not part of the meson
+build:
 
 ```sh
 cd docs/mockups
-cc main_window_libadwaita.c   -o /tmp/mw  $(pkg-config --cflags --libs libadwaita-1) -lm
-cc settings_libadwaita.c      -o /tmp/set $(pkg-config --cflags --libs libadwaita-1)
-cc parametric_eq_libadwaita.c -o /tmp/eq  $(pkg-config --cflags --libs libadwaita-1) -lm
-GSK_RENDERER=cairo /tmp/eq      # drag the orange nodes
+cc parametric_eq_libadwaita.c -o /tmp/eq $(pkg-config --cflags --libs libadwaita-1) -lm
+/tmp/eq      # drag the orange nodes
 ```
 
-`GSK_RENDERER=cairo` avoids the NVIDIA+Wayland GTK4 GL crash (same as the app).
-The `GtkImage ... baselines` warnings on stderr are a harmless GTK 4.22 quirk.
+The main-window and settings mockups were removed on 2026-09-18 — that UI has
+long existed in `src/gui.c` (last versions: commit 6a48d13).
