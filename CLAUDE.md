@@ -12,6 +12,31 @@ DSP, audio, CAT/rigctl, TCI, TX/PureSignal) and put a **new GTK4 UI** on it.
 [`pihpsdr-client`](https://github.com/OK1BR/pihpsdr-client) (a GTK4 *remote head*
 for piHPSDR); its pure-Cairo `panadapter`/`waterfall` renderer seeds this UI.
 
+## Work queue — GitHub Issues (since 2026-09-18)
+
+Bugs, ideas, debt and anything still waiting for a live check are **GitHub
+Issues** (`gh issue list -R OK1BR/sdr-for-linux`), not a file in `docs/`.
+`docs/BACKLOG.md` (SDR-1…SDR-21: 18 done, the rest became #4–#6) left the
+tree on 2026-09-18 — every "BACKLOG SDR-N" below and in `docs/` refers to its
+last version, commit 80c9441. Richard's reason: finished and long-verified
+items kept sitting there as "open", and nobody could see what was really left.
+
+- Labels: type `bug` / `enhancement` / `debt`; `severity: high` = wrong data
+  or something that leaves the machine wrong, `medium` = gets in the
+  operator's way, `low` = cosmetic or log noise; `needs-live-check` = done in
+  code, gates green, but the issue **stays open until the behaviour was seen
+  live**; `at-the-radio` = the check needs the rig; `deferred` = parked on
+  purpose.
+- A commit closes its issue with `Fixes #N` only when nothing is left to
+  verify live — otherwise `Refs #N`, and the issue is closed by hand once the
+  check passed. Before filing a "needs live check", look for evidence that
+  real operation already proved it (logs, contest data) — do not park things
+  the radio has long since verified.
+- Issue text is public and goes out under Richard's name: English, never
+  hard-wrapped, shown to him (with a Czech translation) before it is posted.
+- Notes from live operation still start in `docs/CONTEST-NOTES-<date>.md`
+  (no code touched while operating) and are triaged into issues afterwards.
+
 ## Status (2026-07-06)
 
 **v0**: seeded from pihpsdr-client. Builds, and renders the panadapter + waterfall
