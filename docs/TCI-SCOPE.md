@@ -4,6 +4,9 @@ Goal: an ExpertSDR-compatible **TCI server** inside sdr-for-linux, so third-part
 software keys CW, decodes digital modes and runs skimmers against our radio —
 Richard's concrete clients: **Decodium** (digital modes, needs RX+TX audio over
 TCI), **SDC connectors** (UT4LW; CW keyer, skimmer, spots), contest loggers.
+All phases (2a–2e) are implemented; the per-phase live-verification narration
+was removed (last full version: commit d889fde). Still open: the LINE_OUT
+stream and live callsign correction in `cw_msg`.
 
 ## The protocol (official spec, read first-hand)
 
@@ -55,32 +58,22 @@ if needed.
   `PROTOCOL:ExpertSDR3,1.9;` — clients key on that name, keep it verbatim
   (piHPSDR does the same).
 
-## Existing proven code: piHPSDR @974acba
+## Implementation
 
-`src/tci.c` (3875 lines) + `src/tci_audio.[ch]` implement nearly the whole
-protocol **including RX/TX audio streams, IQ streams, cw_msg callsign
-correction, DIGU/DIGL offsets** on GLib + **libwebsockets** (default port
-40001). Per the project vendoring/import policy (prefer proven outside code;
-import engine files milestone by milestone) the plan is to **import and adapt
-tci.c**, not rewrite it. The adaptation is the real work: it is welded to
-piHPSDR globals (`vfo[]`, `receiver[]`, `transmitter`, `schedule_*`) that must
-be remapped onto our engine API (p2 freq, demod, tx_run, tx_meter, settings).
-New distro dependency: **libwebsockets** (packaged on Arch/Debian/Fedora;
-platform-library category — do not vendor).
+`src/tci_server.[ch]` is own code on the piHPSDR libwebsockets pattern —
+piHPSDR's `src/tci.c` @974acba was the reference, not an import (it is welded
+to piHPSDR globals). Distro dependency: **libwebsockets** (packaged on
+Arch/Debian/Fedora; platform-library category — do not vendor). Default port
+40001.
 
 ## Phases (each independently testable; RX-side needs no keying)
 
-- **F6d-2a — server + control + CW. LIVE-VERIFIED 2026-07-10 with Decodium
-  (control) and SDC (CW keying):** SDC's keyer terminal keys the radio via
-  cw_macros — repeated macros queue and send in order (contest style: SDC
-  sends each word as its own cw_macros), cw_macros_stop aborts with an
-  immediate unkey, real exchanges (`OK1BR`, `5NN 15`) verified at drive 0.
-  **Same evening WITH RF into the dummy load (~2 W element peaks, SWR 1.00),
-  signal quality audited off-air on an IC-705: clean tone (no chirp), zero
-  backwave between elements, first dit intact, key clicks normal.** The CW
-  keying path over TCI is production-ready.
-  Note: SDC also pushes its skimmer spots (`spot:<call>,<mode>,<freq>,...`)
-  unprompted — the 2e input data is already flowing (consumed since 2e). `src/tci_server.[ch]` — own code on
+- **F6d-2a — server + control + CW** (live-verified 2026-07-10 with
+  Decodium and SDC; the CW keying audited off-air on an IC-705: clean tone,
+  zero backwave, first dit intact). SDC's keyer terminal keys via cw_macros —
+  repeated macros queue and send in order (contest style: SDC sends each word
+  as its own cw_macros), cw_macros_stop aborts with an immediate unkey; SDC
+  also pushes its skimmer spots unprompted. `src/tci_server.[ch]` — own code on
   the piHPSDR LWS pattern (chat/superchat/tci subprotocols, 1 ms service loop,
   per-client queues, commands g_idle_add-dispatched to the GTK main loop, a
   500 ms reporter broadcasts state diffs so GUI-side changes reach clients
@@ -98,9 +91,9 @@ platform-library category — do not vendor).
   drive/tune_drive, volume/mute, cw_macros(+escapes)/_stop/_speed(_up/_down)/
   _delay, basic cw_msg ($N repeats; live callsign correction NOT yet),
   tx_enable/tx_frequency. Prefs: Radio → TCI (switch live, port 40001,
-  persisted `[tx] tci/tci_port`, off by default). Gate: `sdrfl-tci-test`
-  (13 checks) — real WebSocket client against the server with stub ops.
-- **F6d-2b — RX audio. AUDIO STREAM IMPLEMENTED (offline-verified 2026-07-10).**
+  persisted `[tx] tci/tci_port`, off by default). Gate: `sdrfl-tci-test` —
+  a real WebSocket client against the server with stub ops.
+- **F6d-2b — RX audio** (live with Decodium 2026-07-10).
   Demod tap: volume-compensated mono (pre-mute/pre-monitor — decode must not
   depend on the volume knob), fixed 48 kHz, → SPSC ring → LWS thread fans out
   per client (boxcar to 8/12/24/48 k, float32/int16, 1/2 ch, block size per
@@ -108,14 +101,12 @@ platform-library category — do not vendor).
   `tci_server_audio_push` also kicks lws_cancel_service — lws_service blocks
   otherwise and audio never pumps (the piHPSDR tci_audio_wakeup trick).
   Commands: audio_samplerate/_start/_stop/_stream_sample_type/_channels/
-  _samples; SDRFL_TCI_DEBUG=1 logs every received command. Gate extended to
-  19 checks (12 kHz mono subscription delivers correct Stream blocks).
-  **Sensors done too (LIVE with Decodium 2026-07-10):** RX_CHANNEL_SENSORS
+  _samples; SDRFL_TCI_DEBUG=1 logs every received command.
+  **Sensors:** RX_CHANNEL_SENSORS
   (WDSP S-meter dBm) + TX_SENSORS (mic dBFS, RMS W, PEP W, SWR from
   tx_run_status) on a 100 ms timer honouring each client's
-  RX/TX_SENSORS_ENABLE cadence (100–1000 ms). Decodium end-to-end verified:
-  RX audio decodes, frequency syncs both ways. Compat lessons that unblocked
-  it (each one stalled the client silently): `channels_count:2` (piHPSDR
+  RX/TX_SENSORS_ENABLE cadence (100–1000 ms). Compat lessons that unblocked
+  Decodium (each one stalled the client silently): `channels_count:2` (piHPSDR
   spelling + A/B count, not the spec's CHANNEL_COUNT), `rx_enable:0,true;`,
   per-channel if/vfo state, the full piHPSDR-style init block, `start;`
   after `ready;`, and an **echo layer** — every bidirectional set MUST come
@@ -124,12 +115,9 @@ platform-library category — do not vendor).
   2b:** LINE_OUT stream. ⚠ Locale rule: protocol floats are formatted with
   g_ascii_formatd — the GTK app runs in the user's locale (cs_CZ = decimal
   COMMA) and ',' is a reserved TCI separator.
-- **F6d-2c — TX audio (digital TX). LIVE-VERIFIED ON AIR 2026-07-10:** first
-  complete FT8 QSO made through the app (Decodium → TCI → DIGU, 20 m);
-  PSK Reporter shows OK1BR received by 113 reporters in 32 countries within
-  24 h. Some QSOs unfinished — attributed to band congestion; watch-items:
-  exact system clock (FT8 periods) and key-to-audio latency (~42 ms prime,
-  should be negligible). `trx:0,true,tci` switches the exciter input from
+- **F6d-2c — TX audio (digital TX)** (live on air 2026-07-10: the first FT8
+  QSOs through Decodium → TCI → DIGU). Watch-items: exact system clock (FT8
+  periods) and key-to-audio latency (~42 ms prime). `trx:0,true,tci` switches the exciter input from
   the mic to a TCI SPSC ring (tx_run_set_ext_source/ext_push) **before** the
   key goes down, keys through the same tx_gate as the GUI MOX (SWR trip,
   in-band, PA, power caps — nothing bypassed), and the TX feed loop's block
@@ -140,12 +128,11 @@ platform-library category — do not vendor).
   server stop or gate refusal ⇒ immediate unkey + revert to mic. ⛔ Richard's
   clean-chain rule enforced in the GUI: in DIGU/DIGL, PROC/leveler + DEXP
   gate are forced OFF regardless of the stored voice settings (tx_apply_proc)
-  and the mic stays closed (mode_is_voice). Gate: 23 checks incl. the full
-  key→chrono→audio→unkey round-trip. TODO: drive_digi_max-style power cap
-  for 100 % duty modes (piHPSDR has one, default uncapped).
-- **F6d-2d — IQ stream (skimmer). LIVE-VERIFIED with SDC + CW Skimmer
-  2026-07-10** (skimmer decodes, spectrum centre matches ours exactly,
-  spot-click tunes correctly). Note: piHPSDR's tci.c has iq_start/iq_stop as
+  and the mic stays closed (mode_is_voice). The gate covers the full
+  key→chrono→audio→unkey round-trip. The 100 %-duty power cap exists:
+  `drive_digi_max` (`tx_digi_max`, W; 100 = uncapped).
+- **F6d-2d — IQ stream (skimmer)** (live with SDC + CW Skimmer 2026-07-10).
+  Note: piHPSDR's tci.c has iq_start/iq_stop as
   EMPTY STUBS — the working reference here is **deskHPSDR**
   (github.com/dl1bz/deskhpsdr, tci.c), which however streams at the
   receiver's native rate and *retunes the whole radio* to the client's rate.
@@ -183,8 +170,8 @@ platform-library category — do not vendor).
   No CW ±sidetone IQ phase rotation needed even with the CW BFO offset in
   place: the BFO lives in the WDSP RXA shifter (demod), not in the DDC —
   our DDC centre == reported dds in every mode (deskHPSDR must rotate
-  because piHPSDR shifts the DDC itself). Gate: 35 checks. Prefs TCI page
-  tags streaming clients "· iq".
+  because piHPSDR shifts the DDC itself). Prefs TCI page tags streaming
+  clients "· iq".
   **Spin-off — CW BFO offset (was deferred "after TCI"):** the skimmer flow
   made it acute — spots are carrier frequencies, and clicking one tuned into
   zero-beat silence. Done piHPSDR-style (rx_set_offset + receiver.c:1481) but
@@ -192,8 +179,8 @@ platform-library category — do not vendor).
   shifts spectrum + passband by the sidetone pitch (Prefs → CW, live), GUI
   passbands stay symmetric around the dial. Zero-beat TX now lands on the
   station's frequency.
-- **F6d-2e — spots. IMPLEMENTED (offline-verified; live check with SDC
-  running).** SPOT:call,mode,freq,ARGB,text / SPOT_DELETE:call / SPOT_CLEAR
+- **F6d-2e — spots** (live with SDC since the 2026-07-11 contest).
+  SPOT:call,mode,freq,ARGB,text / SPOT_DELETE:call / SPOT_CLEAR
   → TciOps (spot_add/spot_delete/spot_clear) → a 192-entry main-thread store
   in the GUI (dedup by callsign, re-announce refreshes, 10 min TTL — SDC
   re-announces live spots — oldest evicted when full). draw_spots: callsign
@@ -202,16 +189,18 @@ platform-library category — do not vendor).
   didn't fit), client ARGB colour (near-black → amber fallback), RX spectrum
   only. Click on a label = exact-Hz tune + rx_clicked_on_spot:0,0,call,hz
   (+ legacy clicked_on_spot) broadcast back to clients. Prefs → Display →
-  "DX spots (TCI)" switch, persisted ([display] spots, default on). Gate:
-  40 checks (spot ops round-trip + click broadcast + client-click relay).
+  "DX spots (TCI)" switch, persisted ([display] spots, default on). The gate
+  covers the spot ops round-trip, the click broadcast and the client-click
+  relay.
   **Client-originated clicks relay (2026-08-01):** a client may SEND
   `clicked_on_spot:call,hz;` (or the rx_ form) — skimmer-for-linux does on a
   decoded-callsign click in its pane — and the server rebroadcasts both
   forms to every client, exactly like a local panadapter click, so
   log-for-linux prefills its Call entry from any client's click. The sender
   tunes itself via `vfo`; the relay never touches radio state.
-  **RTTY macros extension (spec'd + IMPLEMENTED 2026-08-15, offline-gated
-  by `sdrfl-tci-test`; live pass pending — docs/RTTY-SCOPE.md):** the RTTY
+  **RTTY macros extension (implemented 2026-08-15, gated by
+  `sdrfl-tci-test`; in live contest use since SARTG WW RTTY 2026-08-15/16 —
+  docs/RTTY-SCOPE.md):** the RTTY
   twin of the CW text family, a family
   extension (ExpertSDR3 has no RTTY text command or modulation name):
   `rtty_macros:<trx>,<text>;` (same escaping + leading-space word-gap
@@ -243,5 +232,5 @@ platform-library category — do not vendor).
 TCI is **just another keying requester**: every TRX/TUNE/CW path lands in the
 same tx_gate (in-band, PA, SWR trip, atten-31, atomic HP state) — no TCI
 command may bypass it. The GUI stays the master: a local unkey/Esc always
-wins; `TX_ENABLE:0,false;` is reported when the gate refuses. TCI server off
-by default until F6d-2a is live-verified.
+wins; `TX_ENABLE:0,false;` is reported when the gate refuses. The TCI server
+is off by default (Prefs → Radio → TCI).

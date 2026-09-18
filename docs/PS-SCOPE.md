@@ -5,7 +5,10 @@ using the WDSP PS engine, exactly the way piHPSDR does it. Study phase done
 2026-07-10 against piHPSDR @974acba (the G2E is known natively to that revision —
 `NEW_DEVICE_G1`, so nothing below is inferred from "similar" boards) and our
 vendored WDSP. File:line refs: `pihpsdr/` = `~/.local/opt/pihpsdr/src`,
-`wdsp/` = `vendor/wdsp`.
+`wdsp/` = `vendor/wdsp`. Implemented (`src/engine/ps.c`) and live-verified on
+the G2E 2026-07-11 and, over Protocol 1, on the HL2 2026-07-12; the
+engine-mapping and phased-plan sections (§4, §5) were removed once done (last
+full version: commit d889fde).
 
 **Headline findings**
 
@@ -17,9 +20,10 @@ vendored WDSP. File:line refs: `pihpsdr/` = `~/.local/opt/pihpsdr/src`,
   feedback needs **no Alex routing bits** at all.
 - The one real safety decision: PS requires the **ADC0 step attenuator to run
   at a controlled 0–31 dB value during TX**, replacing our hard "31/31 on TX"
-  rule for that one ADC. Thetis documents the same exception
-  (TX-SAFETY.md:83-85: forced 31 *"when PureSignal off"*). ⛔ Needs Richard's
-  explicit sign-off before implementation (see §6).
+  rule for that one ADC. Thetis documents the same exception (TX-SAFETY.md,
+  Thetis cross-check, "TX attenuation lives in TX-specific bytes 57-59 too":
+  forced 31 *"when PureSignal off"*). ⛔ Signed off by Richard 2026-07-10 —
+  see §6.
 
 ## 1. The WDSP engine (calcc.c = calibrate, iqc.c = apply)
 
@@ -155,74 +159,21 @@ Sequencing (pihpsdr/radio.c:2046-2103, transmitter.c:2442-2528):
 - Persisted state: PS enable itself persists and is re-armed after startup,
   plus auto_on/setpk/attenuation/all ps_* params (transmitter.c:356-370).
 
-## 4. Mapping onto our engine
-
-Everything lands in already-mapped places; no architectural change:
-
-- **protocol2.c** (single-DDC today, but dispatch is already per-port with
-  per-DDC sequence counters, protocol2.c:636-681): add the PS block to
-  `p2_build_receive_specific()` (second DDC slot + sync `[1363]` + enable
-  bit — builder already addresses slots as `17 + ddc*6`); add the DDC0/1 NCO
-  override + `ALEX_PS_BIT` + feedback-ant cases to `p2_build_high_priority()`;
-  PS attenuation exception to both attenuator sites (HP :290-299, TX-spec
-  :351-353). A feedback-IQ callback next to `on_rx_iq` (the existing
-  `decode_iq` drops the DDC index — extend the callback API). All config
-  changes ride the existing single-sender timer (state + kick, never a
-  packet from another thread — §8 tripwire holds).
-- **p2_tx_state** gets a `ps_attenuation` field so {MOX, ANT, LPF, BPF,
-  attenuators} stay atomic in one builder pass (TX-SAFETY rule intact).
-- **tx_run.c / tx_gate**: `SetPSMox` hooks into the existing key-ON/key-OFF
-  edges in `gate_slot()` (tx_run.c:181-215); PS on/off through the cfg path
-  (timer re-sends RX-specific every 200 ms already). WDSP TXA channel is id 8.
-- **Feedback feed**: accumulate 1024 interleaved pairs (TX-fb / RX-fb split
-  exactly like pihpsdr/new_protocol.c:2554-2571) → `pscc(8, 1024, txfb,
-  rxfb)`. G2E has no `do_scale` — no IQ rescaling of the DAC feedback.
-- **GUI**: PS group in Preferences → Radio → Transmit (enable, feedback ant
-  Internal/Bypass, SetPk, relax tolerance, oneshot, manual TX-att spin,
-  auto-att toggle); a **two-tone toggle** near TUNE in the footer;
-  "Correcting" + feedback-level indicator on the TX panadapter (status
-  fields ride `tx_run_status` — single-consumer telemetry rules respected).
-  MON (feedback spectrum in the TX panadapter, +15.0 dB empirical offset on
-  P2 non-Saturn) is optional polish, not core.
-- **Persistence**: `[tx] ps_*` keys in config.ini (enable, setpk, atten,
-  auto, ant, ptol, oneshot) — every control persists, per the house rule.
-
-## 5. Phased plan (each phase gated, TX phases live only with consent)
-
-1. **PS-1 plumbing (no RF)**: RX-specific PS block, HP NCO/PS-bit/attenuator
-   changes behind a `ps_enabled` flag default-off; feedback demux + counters;
-   offline gate extends `sdrfl-tci-test`-style checks (packet bytes vs
-   piHPSDR reference values).
-2. **PS-2 WDSP wiring**: SetPSFeedbackRate/Control/Mox, pscc feed, GetPSInfo
-   into `tx_run_status`; minimal Prefs UI. Gate: with PS off, byte-identical
-   packets to today (regression tripwire).
-3. **PS-3 calibration UX**: two-tone (through tx_gate!), auto-attenuate state
-   machine, indicators, persistence.
-4. **PS-4 live**: drive into dummy load, watch feedback level + convergence,
-   measure GetPk vs SetPk 0.2899, then on-air two-tone + voice A/B (IMD
-   before/after on the IC-705 as off-air monitor). MON display + oneshot +
-   SaveCorr/RestoreCorr as follow-ups.
-
 ## 6a. Live verification (2026-07-11, G2E, 20/17/40 m — CLOSED, works)
 
-The Thetis-style implementation (a5ed663) was live-verified end-to-end:
-2T → voice → drive changes 10↔41 → band changes mid-QSO → TUNE. Objective
-numbers from ~196 s of keyed PS TX across 32 overs (log analysis):
+The Thetis-style implementation (a5ed663) was live-verified end-to-end (2T →
+voice → drive changes 10↔41 → band changes mid-QSO → TUNE; ~196 s of keyed PS
+TX across 32 overs). What is worth keeping from it:
 
-- **659 calibrations ≈ 3.4/s** — voice calibrates *continuously* once
-  auto-att holds the level; two-tone is only the initial bootstrap.
-- fdbk in-window **92 %** of keyed time, CORRECTING **88 %**; settled
-  fdbk **154 ± 8** (ideal 152.3).
-- **getpk median 0.290** → the P2 default SetPk **0.2899 is confirmed**
-  for the G2E; do not retune.
-- 26 auto-att steps, **0 stalls, 0 manual interventions**; big upward
-  drive jumps go through the clip-slam (fdbk > 256 → 31 dB, 3×) and
+- Voice calibrates *continuously* (≈3.4 calibrations/s) once auto-att holds
+  the level; two-tone is only the initial bootstrap.
+- **getpk median 0.290** → the P2 default SetPk **0.2899 is confirmed** for
+  the G2E; do not retune.
+- Big upward drive jumps go through the clip-slam (fdbk > 256 → 31 dB) and
   reconverge in 2–4 s; a band change mid-voice resolved in one step.
-- `sln ≠ 0` on 5 % of samples only (level transients; every bad fit
-  rejected, correction never permanently dropped). The overnight voice
-  flip-flop did **not** return with STBL = 0 — it was a level problem,
-  not missing stabilization.
-- TUNE park verified 3×: state 0 throughout, cals frozen, instant resume.
+- The overnight voice flip-flop did **not** return with STBL = 0 — it was a
+  level problem, not missing stabilization.
+- TUNE park: state 0 throughout, cals frozen, instant resume.
 
 Known cosmetic wart (deliberately NOT fixed): ~5/26 steps were chases of
 fits completed in quiet passages (fdbk 78–118 at ~0 W fwd) — a down-step
@@ -248,11 +199,11 @@ GetPk confirms SetPk 0.2400, auto-att bidirectional, 14 clean
 enable-edge link restarts — results in P1-TX-SCOPE §6);
 `radio_ps_supported()` includes the HL2 since that test.
 
-## 6. ⛔ TX-safety deltas (require explicit sign-off, then TX-SAFETY.md update)
+## 6. ⛔ TX-safety deltas — signed off by Richard 2026-07-10 (this section is their record)
 
 1. **ADC0 attenuator during PS TX** = `ps_attenuation` (0–31 dB) instead of
    forced 31; ADC1 stays 31. Exactly the piHPSDR/Thetis exception
-   (TX-SAFETY.md:83-85 already records it). PS off ⇒ today's 31/31 behavior,
+   (TX-SAFETY.md, Thetis cross-check, already records it). PS off ⇒ today's 31/31 behavior,
    bit-for-bit.
 2. **Two-tone keys the radio** — it must go through `tx_run_request`/tx_gate
    like MOX/TUNE (out-of-band lockout, SWR trip, whitelist, digi cap all
