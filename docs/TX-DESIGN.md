@@ -546,7 +546,7 @@ What landed (⚠ = regression tripwire — do not undo casually):
   `[tx] drive_digi_max`, default 100 = uncapped.
 
 **Contest-earned tripwires (2026-07-11, first contest deployment — ~130 CW
-QSOs; details in CONTEST-NOTES-2026-07-11.md):**
+QSOs):**
 - ⚠ **The TCI IQ stream keeps carrying the real signal during CW TX** (the
   tap in `on_rx_iq` sits BEFORE the mute/silence branch). CW Skimmer decoding
   the operator's own outgoing Morse is contractual behaviour (note #6) —

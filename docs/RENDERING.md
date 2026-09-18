@@ -24,7 +24,7 @@ the frame log), and the frame clock legitimately stopping while the window is
 fully occluded (mutter suspends frame callbacks — the "frozen when covered"
 look is benign).
 
-## Renderer selection (main.c → `g_setenv`)
+## Renderer selection (gui.c → `g_setenv`)
 
 | Runtime GTK | Default | Why |
 |---|---|---|

@@ -35,7 +35,16 @@ items kept sitting there as "open", and nobody could see what was really left.
 - Issue text is public and goes out under Richard's name: English, never
   hard-wrapped, shown to him (with a Czech translation) before it is posted.
 - Notes from live operation still start in `docs/CONTEST-NOTES-<date>.md`
-  (no code touched while operating) and are triaged into issues afterwards.
+  (no code touched while operating), are triaged into issues afterwards —
+  and then the notes file leaves the tree.
+- `docs/` keeps only what can have value in the future (Richard, 2026-09-18):
+  binding rules, decisions with their rationale, hard-won wire/hardware
+  facts, reference data, plans for work still ahead. Build diaries, finished
+  checklists and old contest notes go; git keeps them. Removed that day
+  (last versions at commit 2aebbfd): AUDIO-SCOPE.md, ENGINE-IMPORT.md,
+  CONTEST-NOTES-2026-07-11.md, CONTEST-NOTES-2026-08-22.md. The remaining
+  scope docs still carry build-diary parts — trimming them is pending, one
+  file at a time, because ~40 source comments cite them by section number.
 
 ## Status (2026-07-06)
 
@@ -52,8 +61,15 @@ native PipeWire sink (`audio_pw.c`) at ~15 ms latency. The app (`sdr-for-linux`)
 defaults to direct radio; `--server` is the v0 network remote head. Gates:
 `sdrfl-wdsp-smoke`, `sdrfl-discover`, `sdrfl-rxprobe`, `sdrfl-panprobe`,
 `sdrfl-audioprobe` (all verified live on the ANAN G2E at 192.168.1.247). Scope
-docs: [`docs/ENGINE-IMPORT.md`](docs/ENGINE-IMPORT.md), `docs/P2-RX-SCOPE.md`,
-`docs/WDSP-ANALYZER-SCOPE.md`, `docs/AUDIO-SCOPE.md`.
+docs: `docs/P2-RX-SCOPE.md`, `docs/WDSP-ANALYZER-SCOPE.md`.
+
+**Why the engine is headless (the founding boundary decision, 2026-07-06):**
+piHPSDR's engine and its GTK3 GUI are intertwined — the engine pushes redraws
+via `g_idle_add()` onto GTK widgets, reads GUI state (`rx->width`,
+`rx->pixels`) and stores results (`rx->pixel_samples`) for the GUI to draw. To
+reuse the engine under a GTK4 UI that boundary was cut: the engine stays
+headless (GLib only — no GTK) and fills its buffers, the GTK4 side reads them
+on a tick. GLib (`g_idle_add`, `g_timeout_add`, `GThread`) works under both.
 
 **Milestone 3 mostly done (2026-07-07)** — the window is a live **libadwaita**
 control surface: scroll/drag tuning, mode toggles + keys, piHPSDR filter presets
@@ -76,7 +92,7 @@ and imports it instantly ever after (verified: 2nd run 0.0 s). Gate:
 (CI builds it on every v* tag), README + screenshot, PKGBUILD ready (AUR
 was blocked by the June 2026 registration freeze — **now published, see
 below**). Same day: **first contest deployment (~130 CW QSOs)**
-→ 10 findings in `docs/CONTEST-NOTES-2026-07-11.md`, 9 closed + live-verified
+→ 10 findings, 9 closed + live-verified
 the same day (right-click threshold, spot/HUD collisions, per-mode AGC,
 **latency batch: CW TCI→RF 320→32-42 ms, turnaround 445→201 ms**, picker
 multi-radio dedup, start-by-picked-IP, SWR stale-reading filter, guards).
@@ -808,10 +824,6 @@ path as hazardous and observe, without exception:
    edit OK1BR/sdr-for-linux --homepage https://rifak.cz`, verified via
    `gh repo view`). The same note stays in the scope of every sibling
    OK1BR repo — set it there too when next working those projects.
-
-**Next concrete step** (does NOT need the radio free): get **WDSP into the meson
-build** + vendor **Protocol-2 discovery** (find the radio on the LAN). See
-[`docs/ENGINE-IMPORT.md`](docs/ENGINE-IMPORT.md).
 
 ## Hardware & dev/test
 

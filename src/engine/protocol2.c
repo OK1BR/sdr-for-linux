@@ -1108,7 +1108,7 @@ static void parse_high_priority_status(const unsigned char *buf, int len) {
    * later. The baseline line below (once per link start, with "before/after
    * the first DUC packet") is the instrument that tells the two cases apart
    * on a live log. Pre-fix the log showed "2 (+1)" once per start on every
-   * run (YO DX HF 2026-08-22/23, CONTEST-NOTES-2026-08-22 §N2); the live
+   * run (the YO DX HF logs of 2026-08-22/23); the live
    * check for this fix is therefore: no SECOND line, and no line at all
    * later in the run.
    *
