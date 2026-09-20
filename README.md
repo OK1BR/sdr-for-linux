@@ -104,8 +104,7 @@ PA off, ANT1, 1 W.
 
 - A supported ANAN radio on your LAN (see above)
 - Linux with **PipeWire** as the sound server (standard on 2024+ distros)
-- For the AppImage: glibc ≥ 2.39 (Ubuntu 24.04+, Fedora 40+, Mint 22,
-  openSUSE, Arch, …)
+- For the AppImage: glibc ≥ 2.43 (Ubuntu 26.04+, Fedora 44+, Arch, …)
 - To build from source: **GTK ≥ 4.10** (enforced by meson) and
   libadwaita ≥ 1.5. GPU rendering additionally wants GTK ≥ 4.22, but the
   app runs fine below it on the Cairo renderer
@@ -123,13 +122,13 @@ chmod +x SDR_for_Linux-*.AppImage
 ./SDR_for_Linux-*.AppImage
 ```
 
-**.deb** (Ubuntu 24.04+ / Debian 13+ / Mint 22+):
+**.deb** (Ubuntu 26.04+):
 
 ```sh
 sudo apt install ./sdr-for-linux_*_amd64.deb
 ```
 
-**.rpm** (Fedora 40+):
+**.rpm** (Fedora 44+):
 
 ```sh
 sudo dnf install ./sdr-for-linux-*.x86_64.rpm
