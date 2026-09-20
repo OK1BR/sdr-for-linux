@@ -115,7 +115,7 @@ Grab the latest from
 [Releases](https://github.com/OK1BR/sdr-for-linux/releases) — three
 formats, pick one:
 
-**AppImage** (any distro, glibc ≥ 2.39):
+**AppImage** (any current distro, glibc ≥ 2.43):
 
 ```sh
 chmod +x SDR_for_Linux-*.AppImage
