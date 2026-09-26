@@ -79,10 +79,13 @@ last consumed frame (`ema_factor_dt`, the S-meter idiom): a frame clock at
 30 f/s no longer doubles the time constants.
 
 **Trace columns** (Preferences → Spectrum → Trace, `[display] trace_cols`,
-default 2048 = the `ENGINE_PIXELS` the trace always had): the trace and the
-fill under it are drawn from the analyzer columns MAX-decimated to this
-count and interpolated back up by `column_value()`; the waterfall always
-uses every pixel. Live on 3350 px Richard found the per-pixel trace hairy
+default 2048): the trace and the fill under it are drawn from the analyzer
+columns MAX-decimated to this count and interpolated back up by
+`column_value()`; the waterfall always uses every pixel. 2048 is not a tuned
+number — it is the historical `ENGINE_PIXELS`, the fixed analyzer width the
+trace had until #15, so the default reproduces the old look exactly at any
+window width and windows up to 2048 px are unchanged. Do not "clean up" the
+constant into something rounder. Live on 3350 px Richard found the per-pixel trace hairy
 even at 300 ms averaging, and an offline three-way render showed the calm
 line he knew was the fixed 2048 columns interpolated up 1.6× — not the
 averaging, and not the cairo stroke (native columns look the same through
