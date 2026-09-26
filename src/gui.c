@@ -151,6 +151,7 @@ typedef struct {
   int         avg_spec_ms;   /* spectrum-trace averaging time constant (ms)        */
   int         avg_wf_ms;     /* waterfall averaging time constant (ms)             */
   int         avg_smeter_ms; /* S-meter ballistics time constant (ms)              */
+  int         trace_cols;    /* trace resolution: columns the trace is drawn from   */
   double      smeter_ema;    /* displayed S-meter level (dBm), display-side only   */
   int         smeter_ema_ok;
   gint64      smeter_prev_us;/* wall-clock EMA — the draw cadence varies           */
@@ -2145,23 +2146,25 @@ static void snapshot_body(GtkSnapshot *snapshot, GtkWidget *widget, App *app,
   int scale = gtk_widget_get_scale_factor(widget);
   int W = w * scale, H = ph * scale;
   if (W < 1 || H < 1 || n < 2 || !dbm) { return; }
-  /* The TRACE keeps the ENGINE_PIXELS (2048) columns it always had; only the
-   * waterfall takes every pixel. At native resolution the trace read as hairy
-   * to Richard (2026-09-26, live on 3350 px): the calm line he knew was the
-   * 2048 columns interpolated up. Decimate by MAX — the PEAK detector's rule,
+  /* Trace resolution (Preferences → Spectrum → Trace columns, default the
+   * ENGINE_PIXELS 2048 the trace always had): only the waterfall takes every
+   * pixel. At native resolution the trace read as hairy to Richard
+   * (2026-09-26, live on 3350 px): the calm line he knew was the 2048
+   * columns interpolated up. Decimate by MAX — the PEAK detector's rule,
    * peaks survive, the floor sits where the old 8-bins-per-column max put
    * it — and column_value() interpolates back up exactly as before. */
-  static float tr[ENGINE_PIXELS];
-  if (n > ENGINE_PIXELS) {
-    for (int j = 0; j < ENGINE_PIXELS; j++) {
-      int a = (int)((long long)j * n / ENGINE_PIXELS), b = (int)((long long)(j + 1) * n / ENGINE_PIXELS);
+  static float tr[ANALYZER_MAX_PIXELS];
+  int tc = app->trace_cols;
+  if (tc >= 2 && n > tc) {
+    for (int j = 0; j < tc; j++) {
+      int a = (int)((long long)j * n / tc), b = (int)((long long)(j + 1) * n / tc);
       if (b <= a) { b = a + 1; }
       float m = dbm[a];
       for (int k = a + 1; k < b && k < n; k++) { if (dbm[k] > m) { m = dbm[k]; } }
       tr[j] = m;
     }
     dbm = tr;
-    n   = ENGINE_PIXELS;
+    n   = tc;
   }
   panadapter_set_range(pan_hi, pan_lo);
   panadapter_set_grid(app->show_db_grid, app->show_db_scale);
@@ -2815,6 +2818,7 @@ static void app_to_settings(const App *app, Settings *s) {
   s->avg_spec   = app->avg_spec_ms;
   s->avg_wf     = app->avg_wf_ms;
   s->avg_smeter = app->avg_smeter_ms;
+  s->trace_cols = app->trace_cols;
   s->palette    = app->palette;
   s->band_edges = app->show_band_edges;
   s->show_spots = app->show_spots;
@@ -4940,6 +4944,11 @@ static void on_pref_avg_smeter(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   app->avg_smeter_ms = (int)adw_spin_row_get_value(r);
   schedule_save(app);
 }
+static void on_pref_trace_cols(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->trace_cols = (int)adw_spin_row_get_value(r);   /* live next frame */
+  schedule_save(app);
+}
 static void on_pref_palette(AdwComboRow *r, GParamSpec *ps, gpointer data) {
   (void)ps; App *app = (App *)data;
   app->palette = (int)adw_combo_row_get_selected(r);
@@ -5908,6 +5917,21 @@ static AdwDialog *build_prefs(App *app) {
       app->auto_level, G_CALLBACK(on_pref_auto_level), app));
   adw_preferences_page_add(p, g);
 
+  /* Trace resolution (issue #15): the analyzer runs one column per pixel for
+   * the waterfall; the trace is drawn from this many MAX-decimated columns —
+   * fewer = a calmer line (Richard's call, 2026-09-26). Step 256. */
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Trace",
+      "description", "The waterfall always uses every pixel", NULL));
+  {
+    GtkAdjustment *a = gtk_adjustment_new(app->trace_cols, 256, ANALYZER_MAX_PIXELS, 256, 1024, 0);
+    GtkWidget *row = g_object_new(ADW_TYPE_SPIN_ROW, "title", "Trace columns",
+        "subtitle", "columns the trace is drawn from · fewer = calmer line · applies live",
+        "adjustment", a, "digits", 0, NULL);
+    g_signal_connect(row, "notify::value", G_CALLBACK(on_pref_trace_cols), app);
+    adw_preferences_group_add(g, row);
+  }
+  adw_preferences_page_add(p, g);
+
   /* Averaging — spectrum and waterfall independently (ms time constant). */
   g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Averaging",
       "description", "Time constant in ms · 0 = none", NULL));
@@ -6269,7 +6293,7 @@ static void start_radio(App *app) {
                   .pan_frac = SPLIT_FRAC_DEFAULT,
                   .db_grid = 1, .db_scale = 1, .freq_grid = 1, .freq_scale = 1,
                   .filter_wf = 1, .filter_op = 60, .avg_spec = -1, .avg_wf = -1,
-                  .avg_smeter = -1,
+                  .avg_smeter = -1, .trace_cols = -1,
                   .palette = 0, .band_edges = 1, .show_spots = 1, .spot_ttl = 10,
                   .tx_pa = 0, .tx_ant = 0, .tx_drive = 25.0, .tx_digi_max = 100.0,
                   .tx_tune = 10.0, .tx_swr = 3.0,
@@ -6497,6 +6521,8 @@ static void start_radio(App *app) {
   app->avg_spec_ms = (st.avg_spec < 0) ? 150 : (st.avg_spec > 2000 ? 2000 : st.avg_spec);
   app->avg_wf_ms   = (st.avg_wf   < 0) ?  40 : (st.avg_wf   > 2000 ? 2000 : st.avg_wf);
   app->avg_smeter_ms = (st.avg_smeter < 0) ? 330 : (st.avg_smeter > 2000 ? 2000 : st.avg_smeter);
+  app->trace_cols = (st.trace_cols <= 0) ? ENGINE_PIXELS
+                  : (st.trace_cols < 256 ? 256 : (st.trace_cols > ANALYZER_MAX_PIXELS ? ANALYZER_MAX_PIXELS : st.trace_cols));
   app->palette = (st.palette < 0 || st.palette >= waterfall_palette_count()) ? 0 : st.palette;
   waterfall_set_palette(app->wf, app->palette);   /* app->wf created in main() before activation */
   waterfall_set_palette(app->tx_wf, app->palette);

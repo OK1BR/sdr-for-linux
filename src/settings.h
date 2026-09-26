@@ -47,6 +47,9 @@ typedef struct {
   int       avg_spec;  /* spectrum-trace averaging time constant (ms) */
   int       avg_wf;    /* waterfall averaging time constant (ms)      */
   int       avg_smeter;/* S-meter ballistics time constant (ms)       */
+  int       trace_cols;/* spectrum-trace columns (MAX-decimated from the
+                          analyzer's per-pixel columns; >= width = every
+                          pixel); the waterfall always uses every pixel   */
   int       palette;   /* colour scheme index (waterfall + spectrum)  */
   char      region[8]; /* band-plan region key: "R1" / "R2" / "R3"    */
   char      country[8];/* band-plan national overlay: "" / "CZ" / "US"*/
