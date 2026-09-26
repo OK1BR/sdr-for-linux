@@ -7,6 +7,7 @@
 #include "waterfall.h"   /* shared amplitude palette */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 
@@ -68,7 +69,31 @@ static double dbm_to_y(double dbm, int h) {
   return t * h;
 }
 
-static void draw_grid(cairo_t *cr, int w, int h) {
+/* The spectrum body (background, grid lines, fill + trace) is drawn here by
+ * default; the GUI's GPU path switches it off and renders the same layers as
+ * GSK nodes from the helpers below (see panadapter.h). Status screens ignore
+ * the flag — they always paint in full. */
+static int p_body = 1;
+void panadapter_set_body(int on) { p_body = on; }
+
+#define GRID_RGBA 0.45, 0.55, 0.65, 0.14
+
+void panadapter_bg_rgb(double *r, double *g, double *b) { waterfall_palette_rgb(0.0, r, g, b); }
+
+int panadapter_grid_rows(int h, double *ys, int max, double *rgba) {
+  rgba[0] = 0.45; rgba[1] = 0.55; rgba[2] = 0.65; rgba[3] = 0.14;
+  if (!show_db_grid) { return 0; }
+  int n = 0;
+  double step = pan_grid_step();
+  double top = floor(pan_high / step) * step;
+  for (double db = top; db >= pan_low && n < max; db -= step) {
+    ys[n++] = dbm_to_y(db, h);   /* the cairo line sits at y+0.5, width 1 → row [y, y+1] */
+  }
+  return n;
+}
+
+/* `lines` = draw the grid lines here (body on, or a status screen). */
+static void draw_grid(cairo_t *cr, int w, int h, int lines) {
   if (!show_db_grid && !show_db_labels) { return; }
   cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
   cairo_set_font_size(cr, 11.0);
@@ -78,8 +103,8 @@ static void draw_grid(cairo_t *cr, int w, int h) {
   double top = floor(pan_high / step) * step;   /* align labels to the step grid */
   for (double db = top; db >= pan_low; db -= step) {
     double y = dbm_to_y(db, h);
-    if (show_db_grid) {
-      cairo_set_source_rgba(cr, 0.45, 0.55, 0.65, 0.14);
+    if (show_db_grid && lines) {
+      cairo_set_source_rgba(cr, GRID_RGBA);
       cairo_move_to(cr, 0, y + 0.5);
       cairo_line_to(cr, w, y + 0.5);
       cairo_stroke(cr);
@@ -187,6 +212,104 @@ static void draw_spectrum(cairo_t *cr, const float *dbm, int n, int w, int h,
   }
 }
 
+int panadapter_fill_stops(double cmap_low, double cmap_span, float *offs, float *rgba, int max) {
+  if (cmap_span < 1.0) { cmap_span = 1.0; }
+  int n = 0;
+  for (int s = 0; s <= 24 && n < max; s++, n++) {   /* the 25 stops of draw_spectrum */
+    double off = s / 24.0;
+    double d = pan_high - off * (pan_high - pan_low);
+    double r, g, b;
+    waterfall_palette_rgb((d - cmap_low) / cmap_span, &r, &g, &b);
+    offs[n] = (float)off;
+    rgba[4 * n] = (float)r; rgba[4 * n + 1] = (float)g; rgba[4 * n + 2] = (float)b;
+    rgba[4 * n + 3] = 0.55f;
+  }
+  return n;
+}
+
+/* Coverage of the vertical interval [lo, hi] over row r ([r, r+1]) → 0..255. */
+static inline uint8_t cov(double lo, double hi, int r) {
+  double a = lo > r ? lo : r, b = hi < r + 1 ? hi : r + 1;
+  double c = b - a;
+  return c <= 0.0 ? 0 : c >= 1.0 ? 255 : (uint8_t)(c * 255.0 + 0.5);
+}
+
+void panadapter_body_masks(const float *dbm, int n, int W, int H,
+                           double cmap_low, double cmap_span,
+                           uint8_t *fill, uint8_t *trace, uint32_t *strip) {
+  if (W < 1 || H < 1) { return; }
+  if (cmap_span < 1.0) { cmap_span = 1.0; }
+  /* Per column: the plotted dBm and its y (scratch, GUI thread only). */
+  static double *yc, *dc; static float *yb; static int cap;
+  if (cap < W + 1) {
+    cap = W + 1;
+    yc = realloc(yc, (size_t)cap * sizeof *yc);
+    dc = realloc(dc, (size_t)cap * sizeof *dc);
+    yb = realloc(yb, (size_t)cap * sizeof *yb);
+  }
+  if (n < 2) {
+    memset(fill, 0, (size_t)W * H); memset(trace, 0, (size_t)W * H); memset(strip, 0, (size_t)W * 4);
+    return;
+  }
+  for (int x = 0; x < W; x++) {
+    dc[x] = column_value(dbm, n, x, W);
+    yc[x] = dbm_to_y(dc[x], H);
+  }
+  /* The polyline is taken through the column CENTRES (x + 0.5, y[x]); column
+   * x then carries the half-segments to both neighbours, i.e. the vertical run
+   * from the midpoint with the left neighbour through y[x] to the midpoint with
+   * the right one. That is how a steep stroke reads in cairo too (a segment
+   * spread over the adjacent columns) — one solid bar per column looked
+   * heavier than the cairo trace on the noisy floor. */
+  for (int x = 0; x < W; x++) {
+    double mL = x > 0     ? 0.5 * (yc[x - 1] + yc[x]) : yc[x];
+    double mR = x + 1 < W ? 0.5 * (yc[x] + yc[x + 1]) : yc[x];
+    yb[x] = (float)(0.25 * (mL + 2.0 * yc[x] + mR));   /* mean height over the column */
+  }
+  /* FILL: everything below the polyline. The exact area under the two
+   * half-segments in the column is the mean height above → one antialiased
+   * boundary row per column. Row-major so the inner loop vectorizes. */
+  for (int r = 0; r < H; r++) {
+    uint8_t *row = fill + (size_t)r * W;
+    const float rr = (float)(r + 1);
+    for (int x = 0; x < W; x++) {
+      float c = rr - yb[x];                       /* rows below the boundary: 1 */
+      c = c < 0.0f ? 0.0f : (c > 1.0f ? 1.0f : c);
+      row[x] = (uint8_t)(c * 255.0f + 0.5f);
+    }
+  }
+  /* TRACE: per column the run [min, max] of {midpoint-left, y[x],
+   * midpoint-right} widened by the half line width (1.2 px, round joins), the
+   * end rows antialiased by their overlap. Sparse: only covered rows written.
+   * Column colour = the brighter of the column and its neighbours — the
+   * per-segment "brighter endpoint" colouring of draw_spectrum. */
+  memset(trace, 0, (size_t)W * H);
+  const double hw = 0.6;
+  for (int x = 0; x < W; x++) {
+    double mL = x > 0     ? 0.5 * (yc[x - 1] + yc[x]) : yc[x];
+    double mR = x + 1 < W ? 0.5 * (yc[x] + yc[x + 1]) : yc[x];
+    double lo = yc[x], hi = yc[x];
+    if (mL < lo) { lo = mL; }  if (mR < lo) { lo = mR; }
+    if (mL > hi) { hi = mL; }  if (mR > hi) { hi = mR; }
+    lo -= hw; hi += hw;
+    int r0 = (int)floor(lo), r1 = (int)ceil(hi);
+    if (r0 < 0) { r0 = 0; }
+    if (r1 > H) { r1 = H; }
+    for (int r = r0; r < r1; r++) { trace[(size_t)r * W + x] = cov(lo, hi, r); }
+    double d = dc[x];
+    if (x > 0     && dc[x - 1] > d) { d = dc[x - 1]; }
+    if (x + 1 < W && dc[x + 1] > d) { d = dc[x + 1]; }
+    double r_, g_, b_;
+    waterfall_palette_rgb((d - cmap_low) / cmap_span, &r_, &g_, &b_);
+    const double a = 0.98;                        /* premultiplied BGRA, lifted 50 % to white */
+    uint32_t R = (uint32_t)((0.5 + 0.5 * r_) * a * 255.0 + 0.5);
+    uint32_t G = (uint32_t)((0.5 + 0.5 * g_) * a * 255.0 + 0.5);
+    uint32_t B = (uint32_t)((0.5 + 0.5 * b_) * a * 255.0 + 0.5);
+    uint32_t A = (uint32_t)(a * 255.0 + 0.5);
+    strip[x] = A << 24 | R << 16 | G << 8 | B;
+  }
+}
+
 static void draw_center_line(cairo_t *cr, int w, int h, double vfo_frac) {
   if (vfo_frac < 0.0 || vfo_frac > 1.0) { return; }   /* VFO panned off-screen */
   double x = floor(vfo_frac * w) + 0.5;   /* pixel-centre snap: ONE column, never
@@ -264,13 +387,18 @@ void panadapter_draw(cairo_t *cr, int w, int h,
                      double cmap_low, double cmap_span,
                      const char *status, const char *band, double vfo_frac) {
   /* Background = the palette's noise-floor colour, so the empty area matches the
-   * fill under the trace at the floor (and the waterfall) — no cool-grey seam. */
-  double br, bg, bb;
-  waterfall_palette_rgb(0.0, &br, &bg, &bb);
-  cairo_set_source_rgb(cr, br, bg, bb);
-  cairo_paint(cr);
+   * fill under the trace at the floor (and the waterfall) — no cool-grey seam.
+   * With the body off (GPU path) the caller's colour node is the background
+   * and this node stays transparent there; status screens always paint. */
+  int body = p_body || status != NULL;
+  if (body) {
+    double br, bg, bb;
+    waterfall_palette_rgb(0.0, &br, &bg, &bb);
+    cairo_set_source_rgb(cr, br, bg, bb);
+    cairo_paint(cr);
+  }
 
-  draw_grid(cr, w, h);
+  draw_grid(cr, w, h, body);
 
   if (status) {
     draw_status(cr, status, w, h);
@@ -293,7 +421,7 @@ void panadapter_draw(cairo_t *cr, int w, int h,
   }
 
   if (cmap_span < 1.0) cmap_span = 1.0;
-  draw_spectrum(cr, vals, n, w, h, cmap_low, cmap_span);
+  if (body) { draw_spectrum(cr, vals, n, w, h, cmap_low, cmap_span); }
   draw_center_line(cr, w, h, vfo_frac);
   if (p_show_readout) { draw_readouts(cr, frame, w, band); }
 }

@@ -12,6 +12,7 @@
 #define PIHPSDR_CLIENT_PANADAPTER_H
 
 #include <cairo.h>
+#include <stdint.h>
 
 /*
  * Canvas fonts. The generic Cairo "monospace" resolves (via fontconfig) to a
@@ -59,6 +60,38 @@ void panadapter_set_range(double high, double low);
  * module state; set before panadapter_draw() each frame). Both default on.
  */
 void panadapter_set_grid(int show_grid, int show_labels);
+
+/*
+ * GPU spectrum body (issue #15). The fill and the trace are the expensive part
+ * of the cairo raster (a per-pixel path fill plus one stroke per column — GTK
+ * rasterizes the whole cairo node on the CPU at render time, 7–13 ms at
+ * 2048–5120 px). On the snapshot path the GUI renders them as GPU nodes
+ * instead, from data this module computes:
+ *   fill  = A8 coverage mask × a vertical gradient (palette by the dBm at
+ *           that row, alpha 0.55 — panadapter_fill_stops);
+ *   trace = A8 coverage mask × a W×1 colour strip stretched vertically
+ *           (per-column colour = the palette at the brighter of the two
+ *           columns the segment joins, lifted 50 % to white, alpha 0.98 —
+ *           exactly draw_spectrum's per-segment colouring).
+ * panadapter_set_body(0) then makes panadapter_draw() leave the background,
+ * the dB grid LINES and the body to the caller's nodes (it still paints the
+ * grid labels, the VFO line and the readout on top). Status screens always
+ * paint in full. The masks are W×H bytes, row-major, in DEVICE pixels.
+ */
+void panadapter_set_body(int on);
+/* Background colour = the palette's noise-floor colour (rgb 0..1). */
+void panadapter_bg_rgb(double *r, double *g, double *b);
+/* dB grid lines: y (px, top of the 1-px line) of each line in an h-px strip;
+ * returns the count (0 when the grid is off). `rgba` = the line colour. */
+int  panadapter_grid_rows(int h, double *ys, int max, double *rgba);
+/* Fill gradient stops, top → bottom: offs[i] in 0..1, rgba[4*i..]. Returns n. */
+int  panadapter_fill_stops(double cmap_low, double cmap_span, float *offs, float *rgba, int max);
+/* Coverage masks for `n` dBm columns rendered into a W×H strip: `fill` and
+ * `trace` are W*H bytes (0 = transparent, 255 = full), `strip` W premultiplied
+ * BGRA pixels (the trace colour per column). Uses the current dB range. */
+void panadapter_body_masks(const float *dbm, int n, int W, int H,
+                           double cmap_low, double cmap_span,
+                           uint8_t *fill, uint8_t *trace, uint32_t *strip);
 
 /*
  * Suppress (0) or restore (1) the built-in top-left readout (VFO frequency +

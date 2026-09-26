@@ -1752,7 +1752,7 @@ static void draw_tx(cairo_t *cr, int w, int h, App *app) {
 }
 
 /* ---- draw-path profiler (SDRFL_DRAW_PROF=1): per-section ms, dumped 1×/s -- */
-enum { PROF_TEX, PROF_CAIRO, PROF_PAN, PROF_NSEC };
+enum { PROF_TEX, PROF_BODY, PROF_CAIRO, PROF_PAN, PROF_NSEC };
 static gint64 prof_sum[PROF_NSEC];
 static int    prof_frames;
 static gint64 prof_next_dump;
@@ -1771,9 +1771,9 @@ static void prof_frame(void) {
   if (!prof_next_dump) { prof_next_dump = now + G_USEC_PER_SEC; return; }
   if (now < prof_next_dump) { return; }
   int n = prof_frames > 0 ? prof_frames : 1;
-  printf("drawprof: tex=%.2f cairo=%.2f (of which pan=%.2f) ms/frame (%d f/s)\n",
-         prof_sum[PROF_TEX] / 1000.0 / n, prof_sum[PROF_CAIRO] / 1000.0 / n,
-         prof_sum[PROF_PAN] / 1000.0 / n, prof_frames);
+  printf("drawprof: tex=%.2f body=%.2f cairo=%.2f (of which pan=%.2f) ms/frame (%d f/s)\n",
+         prof_sum[PROF_TEX] / 1000.0 / n, prof_sum[PROF_BODY] / 1000.0 / n,
+         prof_sum[PROF_CAIRO] / 1000.0 / n, prof_sum[PROF_PAN] / 1000.0 / n, prof_frames);
   fflush(stdout);
   memset(prof_sum, 0, sizeof prof_sum);
   prof_frames = 0;
@@ -2047,6 +2047,95 @@ static GdkTexture *wf_texture_get(App *app, Waterfall *wf, int slot) {
   return t;
 }
 
+/* ---- GPU spectrum body (issue #15) ---------------------------------------
+ * The spectrum strip's background, dB grid lines, fill and trace as GSK
+ * nodes UNDER the cairo node: a colour node, thin colour nodes, and two
+ * mask nodes — mask(fill A8) × vertical gradient, mask(trace A8) × a W×1
+ * per-column colour strip (panadapter.h explains the mapping; the masks are
+ * computed on the CPU in device pixels, ~1 ms, the compose is a GPU op).
+ * Until now the whole strip was ONE cairo node that GTK rasterized on the
+ * CPU at render time — 7–13 ms at 2048–5120 px, the cause of the 30 f/s
+ * cliff — while SDRFL_DRAW_PROF only ever timed the recording (0.9 ms).
+ * With the body gone the cairo node carries labels, ruler, spots, passband,
+ * readouts: a raster that no longer scales with the body. */
+static GdkTexture *tex_take(gpointer buf, gsize size, int W, int H,
+                            GdkMemoryFormat fmt, gsize stride) {
+  GBytes *b = g_bytes_new_take(buf, size);
+  GdkTexture *t = gdk_memory_texture_new(W, H, fmt, b, stride);
+  g_bytes_unref(b);
+  return t;
+}
+
+static void snapshot_body(GtkSnapshot *snapshot, GtkWidget *widget, App *app,
+                          int w, int ph, const float *dbm, int n,
+                          double pan_hi, double pan_lo, double cmap_low, double cmap_span) {
+  int scale = gtk_widget_get_scale_factor(widget);
+  int W = w * scale, H = ph * scale;
+  if (W < 1 || H < 1 || n < 2 || !dbm) { return; }
+  panadapter_set_range(pan_hi, pan_lo);
+  panadapter_set_grid(app->show_db_grid, app->show_db_scale);
+  const graphene_rect_t rect = GRAPHENE_RECT_INIT(0.0f, 0.0f, (float)w, (float)ph);
+
+  double br, bg, bb;
+  panadapter_bg_rgb(&br, &bg, &bb);
+  gtk_snapshot_append_color(snapshot, &(GdkRGBA){ (float)br, (float)bg, (float)bb, 1.0f }, &rect);
+
+  double ys[32], grgba[4];
+  int ng = panadapter_grid_rows(ph, ys, 32, grgba);
+  GdkRGBA gc = { (float)grgba[0], (float)grgba[1], (float)grgba[2], (float)grgba[3] };
+  for (int i = 0; i < ng; i++) {   /* under the fill, as the cairo grid was */
+    gtk_snapshot_append_color(snapshot, &gc,
+                              &GRAPHENE_RECT_INIT(0.0f, (float)ys[i], (float)w, 1.0f));
+  }
+
+  gint64 t0 = g_get_monotonic_time();
+  gsize     sz    = (gsize)W * (gsize)H;
+  uint8_t  *fill  = g_malloc(sz);
+  uint8_t  *trace = g_malloc(sz);
+  uint32_t *strip = g_malloc((gsize)W * 4);
+  panadapter_body_masks(dbm, n, W, H, cmap_low, cmap_span, fill, trace, strip);
+  prof_add(PROF_BODY, t0);
+  GdkTexture *tf = tex_take(fill,  sz, W, H, GDK_MEMORY_A8, (gsize)W);
+  GdkTexture *tt = tex_take(trace, sz, W, H, GDK_MEMORY_A8, (gsize)W);
+  GdkTexture *ts = tex_take(strip, (gsize)W * 4, W, 1, GDK_MEMORY_DEFAULT, (gsize)W * 4);
+
+  float offs[25], rgba[100];
+  GskColorStop stops[25];
+  int ns = panadapter_fill_stops(cmap_low, cmap_span, offs, rgba, 25);
+  for (int i = 0; i < ns; i++) {
+    stops[i].offset = offs[i];
+    stops[i].color  = (GdkRGBA){ rgba[4 * i], rgba[4 * i + 1], rgba[4 * i + 2], rgba[4 * i + 3] };
+  }
+  /* push_mask: the FIRST pop closes the mask child, the SECOND the source. */
+  gtk_snapshot_push_mask(snapshot, GSK_MASK_MODE_ALPHA);
+  gtk_snapshot_append_texture(snapshot, tf, &rect);
+  gtk_snapshot_pop(snapshot);
+  gtk_snapshot_append_linear_gradient(snapshot, &rect, &GRAPHENE_POINT_INIT(0.0f, 0.0f),
+                                      &GRAPHENE_POINT_INIT(0.0f, (float)ph), stops, (gsize)ns);
+  gtk_snapshot_pop(snapshot);
+
+  gtk_snapshot_push_mask(snapshot, GSK_MASK_MODE_ALPHA);
+  gtk_snapshot_append_texture(snapshot, tt, &rect);
+  gtk_snapshot_pop(snapshot);
+  gtk_snapshot_append_scaled_texture(snapshot, ts, GSK_SCALING_FILTER_NEAREST, &rect);
+  gtk_snapshot_pop(snapshot);
+
+  g_object_unref(tf);
+  g_object_unref(tt);
+  g_object_unref(ts);
+}
+
+/* The RX body's dBm columns: the smoothed EMA when it matches the frame, else
+ * the frame's own bytes (network head before the EMA re-seeds). */
+static const float *rx_body_dbm(App *app, int *n) {
+  if (app->ema_w == app->frame.width) { *n = app->ema_w; return app->ema; }
+  static float tmp[SPECTRUM_DATA_SIZE];
+  int nn = app->frame.width > SPECTRUM_DATA_SIZE ? SPECTRUM_DATA_SIZE : app->frame.width;
+  for (int i = 0; i < nn; i++) { tmp[i] = (float)app->frame.dbm[i] - 200.0f; }
+  *n = nn;
+  return tmp;
+}
+
 static void sdrfl_display_snapshot(GtkWidget *widget, GtkSnapshot *snapshot) {
   App *app = SDRFL_DISPLAY(widget)->app;
   int w = gtk_widget_get_width(widget), h = gtk_widget_get_height(widget);
@@ -2071,12 +2160,26 @@ static void sdrfl_display_snapshot(GtkWidget *widget, GtkSnapshot *snapshot) {
     }
   }
 
+  if (live && !app->tx_display) {
+    /* RX: the spectrum body as GPU nodes, then cairo only over the spectrum
+     * strip (+1 px of separator overlap) for what sits on top; the waterfall
+     * region stays pure texture — no software raster/upload of that half —
+     * plus a small overlay node only when the operator wants filter/select
+     * lines carried down. */
+    int n; const float *dbm = rx_body_dbm(app, &n);
+    double low, span; waterfall_range(app->wf, &low, &span);
+    snapshot_body(snapshot, widget, app, w, ph, dbm, n, app->pan_high, app->pan_low, low, span);
+    panadapter_set_body(0);
+  } else if (live && app->tx_display && app->tx_ema_w == app->pixels) {
+    /* TX: same body under the full-surface cairo node (draw_tx's strip). */
+    snapshot_body(snapshot, widget, app, w, ph, app->tx_ema, app->tx_ema_w,
+                  app->tx_pan_high, app->tx_pan_low, app->tx_pan_low,
+                  app->tx_pan_high - app->tx_pan_low);
+    panadapter_set_body(0);
+  }
+
   gint64 tc = g_get_monotonic_time();
   if (live && !app->tx_display) {
-    /* RX: cairo only over the spectrum strip (+1 px of separator overlap);
-     * the waterfall region stays pure texture — no software raster/upload of
-     * that half — plus a small overlay node only when the operator wants
-     * filter/select lines carried down. */
     cairo_t *cr = gtk_snapshot_append_cairo(snapshot,
         &GRAPHENE_RECT_INIT(0.0f, 0.0f, (float)w, (float)(ph + 1)));
     draw_upper(cr, w, ph, app);
@@ -2097,6 +2200,7 @@ static void sdrfl_display_snapshot(GtkWidget *widget, GtkSnapshot *snapshot) {
     draw_all(cr, w, h, app);
     cairo_destroy(cr);
   }
+  panadapter_set_body(1);   /* the cairo-only users (render test) keep the full draw */
   prof_add(PROF_CAIRO, tc);
   prof_frame();
 }
