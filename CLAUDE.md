@@ -512,8 +512,19 @@ without it GApplication activated Richard's running instance, which opened
 a second main window inside itself (shared App state; the only fix is to
 quit the whole app and relaunch); and an EMPTY strip-wide cairo node alone
 costs 2–5 ms — size cairo nodes by their text, never by the strip.
-Acceptance still open: Richard's live run at 5120 px on the G2E
-(`GDK_DEBUG=frames` → 60 f/s held).
+**LIVE-VERIFIED the same day** (Richard's runs, release build,
+`GDK_DEBUG=frames`): 60 f/s held at 3350 and 5120 px, frame_end median
+6–7 ms (was 19–22), 1 % of frames over 20 ms; "ostrost waterfallu je
+mnohem lepší". His one objection — the per-pixel trace was hairy even at
+300 ms averaging — was the resolution, not the averaging or the stroke
+(offline three-way render): the calm line he knew was 2048 columns
+interpolated up. Fix b94907d + 2edeb0d: the trace (and fill) are drawn
+from the columns MAX-decimated to **Trace columns** (Preferences →
+Spectrum → Trace, `[display] trace_cols`, default 2048, live, persisted);
+the waterfall always uses every pixel — "mnohem lepší". ⛔ Restart
+discipline for these live rounds: SIGTERM his instance (clean save), wait
+≥ 5 s, relaunch via a script (nested shell quoting of the perl
+timestamper broke once), keep each run's log aside.
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the

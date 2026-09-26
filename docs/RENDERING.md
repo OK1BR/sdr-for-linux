@@ -78,6 +78,17 @@ The spectrum, waterfall and TX-trace EMAs use the wall-clock gap since the
 last consumed frame (`ema_factor_dt`, the S-meter idiom): a frame clock at
 30 f/s no longer doubles the time constants.
 
+**Trace columns** (Preferences → Spectrum → Trace, `[display] trace_cols`,
+default 2048 = the `ENGINE_PIXELS` the trace always had): the trace and the
+fill under it are drawn from the analyzer columns MAX-decimated to this
+count and interpolated back up by `column_value()`; the waterfall always
+uses every pixel. Live on 3350 px Richard found the per-pixel trace hairy
+even at 300 ms averaging, and an offline three-way render showed the calm
+line he knew was the fixed 2048 columns interpolated up 1.6× — not the
+averaging, and not the cairo stroke (native columns look the same through
+cairo). MAX is the PEAK detector's rule: peaks survive, the floor sits
+where the old 8-bins-per-column maximum put it.
+
 ## The `SdrflDisplay` widget (gui.c) — the scene
 
 A custom `GtkWidget` subclass with a `snapshot()` vfunc. Bottom to top, live
@@ -151,8 +162,19 @@ the trace sits on the column centre (half a column right of the old
 left-edge vertices) and steep runs are the column staircase cairo's
 antialiasing also produces.
 
-**Live, after the fix:** pending Richard's run (the acceptance: 60 f/s held
-at 5120 px on the G2E).
+**Live, after the fix** (Richard's run the same day, release build,
+`GDK_DEBUG=frames`, G2E, 3350 px and maximized 5120 px, TX excluded):
+
+| run | frames | interval median / p90 / p99 | frame_end median / p90 / p99 |
+|---|---|---|---|
+| 3350 px | 1722 | 16.7 / 16.9 / 20.1 ms | 6.1 / 6.7 / 8.8 ms |
+| 5120 px | 1511 | 16.7 / 17.0 / 21.9 ms | 7.4 / 10.9 / 12.4 ms |
+| whole 2nd run (mixed) | 26124 | 16.7 / 16.9 / 21.1 ms | 5.2 / 6.8 / 10.7 ms |
+
+60 f/s held at both widths (16.7 ms = one vblank); 1 % of the frames over
+20 ms, a dozen over 40 ms per run (compositor). Richard's verdict: the
+waterfall "much sharper"; the trace at native resolution read as hairy —
+see Trace columns below.
 
 ## Techniques (reusable)
 
