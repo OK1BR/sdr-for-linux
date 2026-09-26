@@ -119,6 +119,13 @@ static void draw_grid(cairo_t *cr, int w, int h, int lines) {
   }
 }
 
+void panadapter_draw_db_labels(cairo_t *cr, int h) {
+  int g = show_db_grid;
+  show_db_grid = 0;            /* labels only (draw_grid's early-out needs one of the two) */
+  if (show_db_labels) { draw_grid(cr, 0, h, 0); }
+  show_db_grid = g;
+}
+
 /* Linearly interpolated dBm at fractional column position for smooth scaling. */
 static double dbm_lerp(const float *dbm, int n, double colf) {
   if (colf <= 0) {
@@ -227,30 +234,21 @@ int panadapter_fill_stops(double cmap_low, double cmap_span, float *offs, float 
   return n;
 }
 
-/* Coverage of the vertical interval [lo, hi] over row r ([r, r+1]) → 0..255. */
-static inline uint8_t cov(double lo, double hi, int r) {
-  double a = lo > r ? lo : r, b = hi < r + 1 ? hi : r + 1;
-  double c = b - a;
-  return c <= 0.0 ? 0 : c >= 1.0 ? 255 : (uint8_t)(c * 255.0 + 0.5);
-}
+/* Per-column plot of the last panadapter_body_band() call (GUI thread only). */
+static double *yc, *dc;   /* y (px) and dBm per column                         */
+static float  *yb;        /* fill boundary per column (mean height, see below) */
+static int     ycap, yW, yH;
 
-void panadapter_body_masks(const float *dbm, int n, int W, int H,
-                           double cmap_low, double cmap_span,
-                           uint8_t *fill, uint8_t *trace, uint32_t *strip) {
-  if (W < 1 || H < 1) { return; }
-  if (cmap_span < 1.0) { cmap_span = 1.0; }
-  /* Per column: the plotted dBm and its y (scratch, GUI thread only). */
-  static double *yc, *dc; static float *yb; static int cap;
-  if (cap < W + 1) {
-    cap = W + 1;
-    yc = realloc(yc, (size_t)cap * sizeof *yc);
-    dc = realloc(dc, (size_t)cap * sizeof *dc);
-    yb = realloc(yb, (size_t)cap * sizeof *yb);
+int panadapter_body_band(const float *dbm, int n, int W, int H, int *r0, int *r1) {
+  *r0 = *r1 = 0;
+  if (W < 1 || H < 1 || n < 2 || !dbm) { return 0; }
+  if (ycap < W + 1) {
+    ycap = W + 1;
+    yc = realloc(yc, (size_t)ycap * sizeof *yc);
+    dc = realloc(dc, (size_t)ycap * sizeof *dc);
+    yb = realloc(yb, (size_t)ycap * sizeof *yb);
   }
-  if (n < 2) {
-    memset(fill, 0, (size_t)W * H); memset(trace, 0, (size_t)W * H); memset(strip, 0, (size_t)W * 4);
-    return;
-  }
+  yW = W; yH = H;
   for (int x = 0; x < W; x++) {
     dc[x] = column_value(dbm, n, x, W);
     yc[x] = dbm_to_y(dc[x], H);
@@ -260,17 +258,43 @@ void panadapter_body_masks(const float *dbm, int n, int W, int H,
    * from the midpoint with the left neighbour through y[x] to the midpoint with
    * the right one. That is how a steep stroke reads in cairo too (a segment
    * spread over the adjacent columns) — one solid bar per column looked
-   * heavier than the cairo trace on the noisy floor. */
+   * heavier than the cairo trace on the noisy floor. The fill boundary is the
+   * mean height over the column = the exact area under the two half-segments. */
+  double lo = 1e9, hi = -1e9;
   for (int x = 0; x < W; x++) {
     double mL = x > 0     ? 0.5 * (yc[x - 1] + yc[x]) : yc[x];
     double mR = x + 1 < W ? 0.5 * (yc[x] + yc[x + 1]) : yc[x];
-    yb[x] = (float)(0.25 * (mL + 2.0 * yc[x] + mR));   /* mean height over the column */
+    yb[x] = (float)(0.25 * (mL + 2.0 * yc[x] + mR));
+    double a = yc[x] < mL ? yc[x] : mL; if (mR < a) { a = mR; }
+    double b = yc[x] > mL ? yc[x] : mL; if (mR > b) { b = mR; }
+    if (a < lo) { lo = a; }
+    if (b > hi) { hi = b; }
   }
-  /* FILL: everything below the polyline. The exact area under the two
-   * half-segments in the column is the mean height above → one antialiased
-   * boundary row per column. Row-major so the inner loop vectorizes. */
-  for (int r = 0; r < H; r++) {
-    uint8_t *row = fill + (size_t)r * W;
+  /* trace footprint = run ± 0.6 px; the fill's partial row sits within it */
+  int a = (int)floor(lo - 0.6) - 1, b = (int)ceil(hi + 0.6) + 1;
+  if (a < 0) { a = 0; }
+  if (b > H) { b = H; }
+  if (b <= a) { return 0; }
+  *r0 = a; *r1 = b;
+  return 1;
+}
+
+/* Coverage of the vertical interval [lo, hi] over row r ([r, r+1]) → 0..255. */
+static inline uint8_t cov(double lo, double hi, int r) {
+  double a = lo > r ? lo : r, b = hi < r + 1 ? hi : r + 1;
+  double c = b - a;
+  return c <= 0.0 ? 0 : c >= 1.0 ? 255 : (uint8_t)(c * 255.0 + 0.5);
+}
+
+void panadapter_body_masks(int W, int r0, int r1, double cmap_low, double cmap_span,
+                           uint8_t *fill, uint8_t *trace, uint32_t *strip) {
+  int Hb = r1 - r0;
+  if (W != yW || Hb < 1 || r0 < 0 || r1 > yH) { return; }   /* band() must precede */
+  if (cmap_span < 1.0) { cmap_span = 1.0; }
+  /* FILL: everything below the polyline → one antialiased boundary row per
+   * column. Row-major so the inner loop vectorizes. */
+  for (int r = r0; r < r1; r++) {
+    uint8_t *row = fill + (size_t)(r - r0) * W;
     const float rr = (float)(r + 1);
     for (int x = 0; x < W; x++) {
       float c = rr - yb[x];                       /* rows below the boundary: 1 */
@@ -283,7 +307,7 @@ void panadapter_body_masks(const float *dbm, int n, int W, int H,
    * end rows antialiased by their overlap. Sparse: only covered rows written.
    * Column colour = the brighter of the column and its neighbours — the
    * per-segment "brighter endpoint" colouring of draw_spectrum. */
-  memset(trace, 0, (size_t)W * H);
+  memset(trace, 0, (size_t)W * Hb);
   const double hw = 0.6;
   for (int x = 0; x < W; x++) {
     double mL = x > 0     ? 0.5 * (yc[x - 1] + yc[x]) : yc[x];
@@ -292,20 +316,20 @@ void panadapter_body_masks(const float *dbm, int n, int W, int H,
     if (mL < lo) { lo = mL; }  if (mR < lo) { lo = mR; }
     if (mL > hi) { hi = mL; }  if (mR > hi) { hi = mR; }
     lo -= hw; hi += hw;
-    int r0 = (int)floor(lo), r1 = (int)ceil(hi);
-    if (r0 < 0) { r0 = 0; }
-    if (r1 > H) { r1 = H; }
-    for (int r = r0; r < r1; r++) { trace[(size_t)r * W + x] = cov(lo, hi, r); }
+    int a = (int)floor(lo), b = (int)ceil(hi);
+    if (a < r0) { a = r0; }
+    if (b > r1) { b = r1; }
+    for (int r = a; r < b; r++) { trace[(size_t)(r - r0) * W + x] = cov(lo, hi, r); }
     double d = dc[x];
     if (x > 0     && dc[x - 1] > d) { d = dc[x - 1]; }
     if (x + 1 < W && dc[x + 1] > d) { d = dc[x + 1]; }
     double r_, g_, b_;
     waterfall_palette_rgb((d - cmap_low) / cmap_span, &r_, &g_, &b_);
-    const double a = 0.98;                        /* premultiplied BGRA, lifted 50 % to white */
-    uint32_t R = (uint32_t)((0.5 + 0.5 * r_) * a * 255.0 + 0.5);
-    uint32_t G = (uint32_t)((0.5 + 0.5 * g_) * a * 255.0 + 0.5);
-    uint32_t B = (uint32_t)((0.5 + 0.5 * b_) * a * 255.0 + 0.5);
-    uint32_t A = (uint32_t)(a * 255.0 + 0.5);
+    const double al = 0.98;                       /* premultiplied BGRA, lifted 50 % to white */
+    uint32_t R = (uint32_t)((0.5 + 0.5 * r_) * al * 255.0 + 0.5);
+    uint32_t G = (uint32_t)((0.5 + 0.5 * g_) * al * 255.0 + 0.5);
+    uint32_t B = (uint32_t)((0.5 + 0.5 * b_) * al * 255.0 + 0.5);
+    uint32_t A = (uint32_t)(al * 255.0 + 0.5);
     strip[x] = A << 24 | R << 16 | G << 8 | B;
   }
 }
@@ -398,7 +422,7 @@ void panadapter_draw(cairo_t *cr, int w, int h,
     cairo_paint(cr);
   }
 
-  draw_grid(cr, w, h, body);
+  if (body) { draw_grid(cr, w, h, 1); }   /* body off: labels come from panadapter_draw_db_labels */
 
   if (status) {
     draw_status(cr, status, w, h);
@@ -421,7 +445,9 @@ void panadapter_draw(cairo_t *cr, int w, int h,
   }
 
   if (cmap_span < 1.0) cmap_span = 1.0;
-  if (body) { draw_spectrum(cr, vals, n, w, h, cmap_low, cmap_span); }
-  draw_center_line(cr, w, h, vfo_frac);
+  if (body) {
+    draw_spectrum(cr, vals, n, w, h, cmap_low, cmap_span);
+    draw_center_line(cr, w, h, vfo_frac);   /* body off: the GUI's colour node */
+  }
   if (p_show_readout) { draw_readouts(cr, frame, w, band); }
 }

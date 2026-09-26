@@ -270,6 +270,11 @@ typedef struct {
     unsigned  argb;
     gint64    ts;              /* g_get_monotonic_time of (re)announcement    */
     double    hx0, hx1, hy0, hy1;  /* label hit box (px; 0 = not drawn)       */
+    /* Layout of the last frame (spots_layout, issue #15): in view, label
+     * placed, its position, the tick's column and extent. Labels are painted
+     * in the top-band cairo node, ticks are colour nodes. */
+    int       on, lbl;
+    double    x, lx, ly, ty0, ty1;
   }           spots[MAX_SPOTS];
   int         nspots;
   int         show_spots;    /* draw the spot overlay (persisted)              */
@@ -769,34 +774,46 @@ static double vfo_x(App *app, int w) {
   return centre_x(app, w) + (double)(app->freq - app->centre) / hz_per_px;
 }
 
-static void draw_freq_scale(cairo_t *cr, App *app, int w, int ph) {
-  if (w < 2 || app->rate <= 0 || app->zoom <= 0.0) { return; }
-  double span      = (double)app->rate / app->zoom;   /* Hz across the width */
-  double hz_per_px = span / w;
-  double pan_off   = pan_offset_hz(app);
-  double left_hz   = (double)centre_hz(app) + pan_off - span / 2.0;
-  double right_hz  = (double)centre_hz(app) + pan_off + span / 2.0;
-
-  /* Nice tick step (1/2/5·10ⁿ) targeting ~110 px between ticks. */
-  double raw  = hz_per_px * 110.0;
+/* The frequency axis: left edge, px pitch and the nice tick step (1/2/5·10ⁿ
+ * targeting ~110 px between ticks). Shared by the ruler labels (cairo, in the
+ * top band) and the full-height grid lines (colour nodes). 0 = no axis yet. */
+static int freq_axis(App *app, int w, double *left_hz, double *hz_per_px, double *step, int *dec) {
+  if (w < 2 || app->rate <= 0 || app->zoom <= 0.0) { return 0; }
+  double span = (double)app->rate / app->zoom;   /* Hz across the width */
+  *hz_per_px  = span / w;
+  *left_hz    = (double)centre_hz(app) + pan_offset_hz(app) - span / 2.0;
+  double raw  = *hz_per_px * 110.0;
   double mag  = pow(10.0, floor(log10(raw)));
   double nn   = raw / mag;
-  double step = (nn <= 1 ? 1 : nn <= 2 ? 2 : nn <= 5 ? 5 : 10) * mag;
-  int dec = step >= 1000000 ? 1 : step >= 100000 ? 2 : step >= 1000 ? 3 : step >= 100 ? 4 : 5;
+  *step = (nn <= 1 ? 1 : nn <= 2 ? 2 : nn <= 5 ? 5 : 10) * mag;
+  *dec  = *step >= 1000000 ? 1 : *step >= 100000 ? 2 : *step >= 1000 ? 3 : *step >= 100 ? 4 : 5;
+  return 1;
+}
 
+/* Frequency grid: a full-height 1 px line per tick, as colour nodes (the
+ * cairo line sat at x+0.5, 1 px wide = the column [x, x+1]). */
+static void snapshot_freq_grid(GtkSnapshot *snapshot, App *app, int w, int ph) {
+  double left_hz, hz_per_px, step; int dec;
+  if (!app->show_freq_grid || !freq_axis(app, w, &left_hz, &hz_per_px, &step, &dec)) { return; }
+  double right_hz = left_hz + hz_per_px * w;
+  const GdkRGBA c = { 0.5f, 0.6f, 0.7f, 0.11f };
+  for (double f = ceil(left_hz / step) * step; f <= right_hz; f += step) {
+    double x = (f - left_hz) / hz_per_px;
+    gtk_snapshot_append_color(snapshot, &c, &GRAPHENE_RECT_INIT((float)x, 0.0f, 1.0f, (float)ph));
+  }
+}
+
+/* Ruler labels along the top edge: legibility pill + label + the tick under it. */
+static void draw_freq_scale(cairo_t *cr, App *app, int w) {
+  double left_hz, hz_per_px, step; int dec;
+  if (!app->show_freq_scale || !freq_axis(app, w, &left_hz, &hz_per_px, &step, &dec)) { return; }
+  double right_hz = left_hz + hz_per_px * w;
   cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
   cairo_set_font_size(cr, 10.0);
+  cairo_set_line_width(cr, 1.0);
   const double ly = 13.0;   /* label baseline — top edge, above the VFO readout */
   for (double f = ceil(left_hz / step) * step; f <= right_hz; f += step) {
     double x = (f - left_hz) / hz_per_px;
-    if (app->show_freq_grid) {
-      cairo_set_source_rgba(cr, 0.5, 0.6, 0.7, 0.11);        /* full-height line */
-      cairo_set_line_width(cr, 1.0);
-      cairo_move_to(cr, x + 0.5, 0); cairo_line_to(cr, x + 0.5, ph);
-      cairo_stroke(cr);
-    }
-    if (!app->show_freq_scale) { continue; }
-
     char lbl[24];
     snprintf(lbl, sizeof lbl, "%.*f", dec, f / 1e6);
     cairo_text_extents_t ext;
@@ -819,33 +836,32 @@ static void draw_freq_scale(cairo_t *cr, App *app, int w, int ph) {
 /* Band-plan overlay: dashed amber lines at the amateur band edges in view. The
  * band name + recommended mode go in the VFO readout (see bp_mode_at), not on
  * the spectrum. Same freq→x frame as draw_freq_scale. */
-static void draw_band_edges(cairo_t *cr, App *app, int w, int ph) {
-  if (!app->show_band_edges || w < 2 || app->rate <= 0 || app->zoom <= 0.0) { return; }
-  double span      = (double)app->rate / app->zoom;
-  double hz_per_px = span / w;
-  double pan_off   = pan_offset_hz(app);
-  double left_hz   = (double)centre_hz(app) + pan_off - span / 2.0;
-  double right_hz  = (double)centre_hz(app) + pan_off + span / 2.0;
-
+static void snapshot_band_edges(GtkSnapshot *snapshot, App *app, int w, int ph) {
+  double left_hz, hz_per_px, step; int dec;
+  if (!app->show_band_edges || !freq_axis(app, w, &left_hz, &hz_per_px, &step, &dec)) { return; }
+  double right_hz = left_hz + hz_per_px * w;
   bp_edge_t edges[32];
   int n = bp_edges((bp_region_t)app->bp_region, bp_country_key(app->bp_country), edges, 32);
-
-  /* Dashed amber band-edge markers (full height). */
+  /* Dashed amber band-edge markers (full height), each in its own 3-px-wide
+   * cairo node: dashes need cairo, a strip-wide node would cost the whole
+   * strip's raster + upload (issue #15). */
   const double edge_dash[] = { 4.0, 3.0 };
-  cairo_set_line_width(cr, 1.0);
-  cairo_set_dash(cr, edge_dash, 2, 0);
-  cairo_set_source_rgba(cr, 1.0, 0.66, 0.2, 0.45);
   for (int i = 0; i < n; i++) {
     for (int e = 0; e < 2; e++) {
       double f = e ? (double)edges[i].hi : (double)edges[i].lo;
       if (f < left_hz || f > right_hz) { continue; }
       double x = floor((f - left_hz) / hz_per_px) + 0.5;
+      cairo_t *cr = gtk_snapshot_append_cairo(snapshot,
+          &GRAPHENE_RECT_INIT((float)(x - 1.5), 0.0f, 3.0f, (float)ph));
+      cairo_set_line_width(cr, 1.0);
+      cairo_set_dash(cr, edge_dash, 2, 0);
+      cairo_set_source_rgba(cr, 1.0, 0.66, 0.2, 0.45);
       cairo_move_to(cr, x, 0);
       cairo_line_to(cr, x, ph);
       cairo_stroke(cr);
+      cairo_destroy(cr);
     }
   }
-  cairo_set_dash(cr, NULL, 0, 0);
 }
 
 /* Top-right meter geometry — shared by the RX S-meter and the TX power meter so
@@ -932,15 +948,12 @@ static int in_split(const App *app, double y) {
 /* The divider itself: the dark separator over the waterfall's top edge, lit
  * up while the pointer hovers it or drags it (the cursor arrow is the primary
  * cue — Richard 2026-09-06 — this just confirms the grab). */
-static void draw_split_line(cairo_t *cr, int w, int ph, const App *app) {
-  int hot = app->drag_split || app->split_hover;
-  cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.55);
-  cairo_rectangle(cr, 0, ph - 1, w, 2);
-  cairo_fill(cr);
-  if (hot) {
-    cairo_set_source_rgba(cr, COL_NEUTRAL, 0.75);        /* neutral: neither RX nor TX */
-    cairo_rectangle(cr, 0, ph - 1, w, 1);
-    cairo_fill(cr);
+static void snapshot_split_line(GtkSnapshot *snapshot, int w, int ph, const App *app) {
+  gtk_snapshot_append_color(snapshot, &(GdkRGBA){ 0.0f, 0.0f, 0.0f, 0.55f },
+                            &GRAPHENE_RECT_INIT(0.0f, (float)(ph - 1), (float)w, 2.0f));
+  if (app->drag_split || app->split_hover) {
+    gtk_snapshot_append_color(snapshot, &(GdkRGBA){ COL_NEUTRAL, 0.75f },   /* neutral: neither RX nor TX */
+                              &GRAPHENE_RECT_INIT(0.0f, (float)(ph - 1), (float)w, 1.0f));
   }
 }
 
@@ -970,8 +983,20 @@ static int in_rx_filter(App *app, double x, double y) {
   return x > x0 + HANDLE_HIT_PX && x < x1 - HANDLE_HIT_PX;
 }
 
-static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
-  if (!app->show_spots || app->nspots <= 0 || w < 2 || app->rate <= 0 || app->zoom <= 0.0) { return; }
+/* spots_layout() runs once per frame before the nodes: prunes, sorts and
+ * places the spots — labels packed left→right into three rows under the
+ * ruler, pushed under the readout / S-meter where they would overlap — and
+ * keeps the geometry in the spot structs. Then snapshot_spot_ticks() appends
+ * the ticks (down to 45 % of the strip) as colour nodes and
+ * spots_draw_labels() paints the calls in the top-band cairo node, so that
+ * node need not span the strip's height (issue #15). Text is measured on a
+ * scratch context (the same toy-font stack as the node's). */
+static int spots_layout(App *app, int w, int ph) {
+  for (int i = 0; i < app->nspots; i++) {
+    app->spots[i].on = app->spots[i].lbl = 0;
+    app->spots[i].hx0 = app->spots[i].hx1 = 0.0;
+  }
+  if (!app->show_spots || app->nspots <= 0 || w < 2 || app->rate <= 0 || app->zoom <= 0.0) { return 0; }
   gint64 now = g_get_monotonic_time();
   gint64 ttl = (gint64)(app->spot_ttl_min > 0 ? app->spot_ttl_min : 10) * 60000000ll;
   int n = 0;                                   /* prune expired in place */
@@ -982,8 +1007,17 @@ static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
     }
   }
   app->nspots = n;
-  if (n <= 0) { return; }
+  if (n <= 0) { return 0; }
   qsort(app->spots, (size_t)n, sizeof(app->spots[0]), spot_cmp_hz);   /* left→right packing */
+
+  static cairo_t *mcr;                         /* text measurement only */
+  if (!mcr) {
+    cairo_surface_t *ms = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+    mcr = cairo_create(ms);
+    cairo_surface_destroy(ms);
+  }
+  cairo_select_font_face(mcr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_set_font_size(mcr, 13.0);
 
   double span      = (double)app->rate / app->zoom;
   double hz_per_px = span / w;
@@ -992,9 +1026,9 @@ static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
   double right_hz  = left_hz + span;
   double rowend[3] = { -1e9, -1e9, -1e9 };
   const double y0 = 32.0, rh = 17.0;           /* label rows under the ruler */
-  /* HUD exclusion zones. Radio mode: the VFO card (labels overlapping it in x
-   * stack below it). Server mode: the panadapter's own readout extent (left)
-   * and the top-right S-meter block incl. its dBm line. */
+  /* HUD exclusion zones. Radio mode: our readout block (labels overlapping it
+   * in x stack below it). Server mode: the panadapter's own readout extent
+   * (left) and the top-right S-meter block incl. its dBm line. */
   double pr_x1 = 0.0, pr_y1 = 0.0, sm_x0, sm_y1;
   double cd_x0 = 0.0, cd_x1 = -1.0, cd_y1 = 0.0;
   if (app->radio_mode) {                               /* our readout block (last draw) */
@@ -1004,20 +1038,13 @@ static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
   }
   sm_x0 = (double)w - METER_RM - METER_BW - 40.0;      /* S-meter top-right: tick overhang */
   sm_y1 = METER_BY + METER_BH + 26.0;                  /* dBm line bottom */
-  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-  cairo_set_font_size(cr, 13.0);
-  cairo_set_line_width(cr, 1.0);
+  int any = 0;
   for (int i = 0; i < n; i++) {
     struct spot *s = &app->spots[i];
-    s->hx0 = s->hx1 = 0.0;
     if ((double)s->hz < left_hz || (double)s->hz > right_hz) { continue; }
     double x = floor(((double)s->hz - left_hz) / hz_per_px) + 0.5;
-    double r = ((s->argb >> 16) & 0xffu) / 255.0;
-    double g = ((s->argb >>  8) & 0xffu) / 255.0;
-    double b = ( s->argb        & 0xffu) / 255.0;
-    if (r + g + b < 0.25) { r = 1.0; g = 0.85; b = 0.3; }  /* unset/black → amber */
     cairo_text_extents_t te;
-    cairo_text_extents(cr, s->call, &te);
+    cairo_text_extents(mcr, s->call, &te);
     int row = -1;
     for (int k = 0; k < 3; k++) {
       if (x - 2.0 > rowend[k]) { row = k; break; }
@@ -1033,18 +1060,48 @@ static void draw_spots(cairo_t *cr, App *app, int w, int ph) {
       base = fmax(base, cd_y1 + 13.0);         /* under our readout block */
     }
     double ly = base + (row < 0 ? 0 : row) * rh;
+    s->on = 1; any = 1;
+    s->x  = x;
     if (row >= 0) {                            /* label fits in a free row */
       rowend[row] = x + te.width + 8.0;
-      cairo_set_source_rgba(cr, r, g, b, 0.95);
-      cairo_move_to(cr, x + 3.0, ly);
-      cairo_show_text(cr, s->call);
+      s->lbl = 1;
+      s->lx = x + 3.0; s->ly = ly;
       s->hx0 = x - 3.0; s->hx1 = x + te.width + 6.0;
       s->hy0 = ly - 13.0; s->hy1 = ly + 4.0;
     }
-    cairo_set_source_rgba(cr, r, g, b, 0.5);   /* tick even when the label didn't fit */
-    cairo_move_to(cr, x, row >= 0 ? ly + 3.0 : y0);
-    cairo_line_to(cr, x, ph * 0.45);
-    cairo_stroke(cr);
+    s->ty0 = row >= 0 ? ly + 3.0 : y0;         /* tick even when the label didn't fit */
+    s->ty1 = ph * 0.45;
+  }
+  return any;
+}
+
+static void spot_rgb(const struct spot *s, double *r, double *g, double *b) {
+  *r = ((s->argb >> 16) & 0xffu) / 255.0;
+  *g = ((s->argb >>  8) & 0xffu) / 255.0;
+  *b = ( s->argb        & 0xffu) / 255.0;
+  if (*r + *g + *b < 0.25) { *r = 1.0; *g = 0.85; *b = 0.3; }  /* unset/black → amber */
+}
+
+static void snapshot_spot_ticks(GtkSnapshot *snapshot, App *app) {
+  for (int i = 0; i < app->nspots; i++) {
+    const struct spot *s = &app->spots[i];
+    if (!s->on || s->ty1 <= s->ty0) { continue; }
+    double r, g, b; spot_rgb(s, &r, &g, &b);
+    gtk_snapshot_append_color(snapshot, &(GdkRGBA){ (float)r, (float)g, (float)b, 0.5f },
+        &GRAPHENE_RECT_INIT((float)(s->x - 0.5), (float)s->ty0, 1.0f, (float)(s->ty1 - s->ty0)));
+  }
+}
+
+static void spots_draw_labels(cairo_t *cr, App *app) {
+  cairo_select_font_face(cr, FONT_MONO, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_set_font_size(cr, 13.0);
+  for (int i = 0; i < app->nspots; i++) {
+    const struct spot *s = &app->spots[i];
+    if (!s->on || !s->lbl) { continue; }
+    double r, g, b; spot_rgb(s, &r, &g, &b);
+    cairo_set_source_rgba(cr, r, g, b, 0.95);
+    cairo_move_to(cr, s->lx, s->ly);
+    cairo_show_text(cr, s->call);
   }
 }
 
@@ -1612,10 +1669,38 @@ static void draw_tx_filter(cairo_t *cr, App *app, const tx_run_status *ts, int w
   cairo_set_line_width(cr, 1.0);
 }
 
+/* Horizontal extent of draw_tx_filter()'s footprint (+2 px), so the waterfall
+ * overlay node while keyed is as narrow as the RX one (issue #15). */
+static int tx_filter_bounds(App *app, const tx_run_status *ts, int w, double *bx0, double *bx1) {
+  double tx_span = tx_span_hz(app);
+  if (w < 1 || !(tx_span > 0.0)) { return 0; }
+  double lo = 0.0, hi = 0.0;
+  int body = 1;
+  if (ts->tune || app->mode == DEMOD_CWL || app->mode == DEMOD_CWU) { body = 0; }
+  else if (app->mode == DEMOD_RTTY) { lo = -RTTY_SHIFT_HZ / 2.0; hi = RTTY_SHIFT_HZ / 2.0; }
+  else { tx_run_passband(app->mode, app->tx_flo, app->tx_fhi, &lo, &hi); }
+  double pxhz = (double)w / tx_span, cx = w / 2.0;
+  double xc = floor(cx) + 0.5, a = xc, b = xc;
+  if (body && hi > lo) {
+    double x0 = floor(cx + lo * pxhz) + 0.5, x1 = floor(cx + hi * pxhz) + 0.5;
+    a = fmin(a, fmin(x0, x1));
+    b = fmax(b, fmax(x0, x1));
+  }
+  a = floor(a) - 2.0;
+  b = ceil(b)  + 2.0;
+  if (a < 0.0) { a = 0.0; }
+  if (b > w)   { b = w; }
+  *bx0 = a; *bx1 = b;
+  return b > a;
+}
+
+/* The TX display's cairo node: the spectrum strip only (the snapshot puts
+ * the body under it and the waterfall overlay + divider beside it). `h` is
+ * the full widget height (the divider position derives from it). */
 static void draw_tx(cairo_t *cr, int w, int h, App *app) {
   int n = app->pixels;
   if (app->tx_ema_w != n) {
-    panadapter_draw(cr, w, h, NULL, NULL, 0, 1, "TX — keying…", NULL, 0.5);
+    panadapter_draw(cr, w, split_ph(app, h), NULL, NULL, 0, 1, "TX — keying…", NULL, 0.5);
     return;
   }
   tx_run_status ts; tx_run_get_status(&ts);
@@ -1675,11 +1760,9 @@ static void draw_tx(cairo_t *cr, int w, int h, App *app) {
   cairo_restore(cr);
 
   /* TX waterfall (bottom): transmitted-spectrum history — drawn by the widget
-   * snapshot as a GPU-scaled texture UNDER this cairo layer (see
-   * sdrfl_display_snapshot); here the footprint carried down (same "Filter on
-   * waterfall" switch as RX) and the separator on top of it. */
-  if (app->show_filter_wf && h > ph) { draw_tx_filter(cr, app, &ts, w, (double)ph, (double)h); }
-  draw_split_line(cr, w, ph, app);
+   * snapshot as a GPU-scaled texture UNDER this cairo layer; the footprint
+   * carried down (same "Filter on waterfall" switch as RX) and the separator
+   * are the snapshot's own nodes (this node covers only the strip). */
 
   /* Big red power/SWR numbers, top-left — the RX frequency readout's TX sibling.
    * No sub-line: power + SWR appearing is itself the "we're transmitting" cue.
@@ -1784,7 +1867,60 @@ static void prof_frame(void) {
  * spots, passband, badges, S-meter — everything cairo above the waterfall.
  * Rendered into a cairo node that covers ONLY this region, so the per-frame
  * software raster + upload stop scaling with the waterfall area. */
-static void draw_upper(cairo_t *cr, int w, int ph, App *app) {
+/* The RX lines over the body as colour nodes: the VFO hairline (the
+ * panadapter's centre line — green, 0.75 px at 60 %, pixel-centre snapped),
+ * the filter passband (fill + both edges; lit as the CTUN handle) and the
+ * select-mode ghost (amber footprint + aim line at the pointer). The same
+ * geometry as the cairo lines they replace: a 1 px line at x+0.5 = the
+ * rect [x, x+1]. */
+static void snapshot_rx_lines(GtkSnapshot *snapshot, App *app, int w, int ph) {
+  double vf = vfo_x(app, w) / w;
+  if (vf >= 0.0 && vf <= 1.0) {   /* Model A: VFO = span centre (panned away → hidden) */
+    double x = floor(vf * w) + 0.5;
+    gtk_snapshot_append_color(snapshot, &(GdkRGBA){ PANADAPTER_VFO_RGB, 0.60f },
+                              &GRAPHENE_RECT_INIT((float)(x - 0.375), 0.0f, 0.75f, (float)ph));
+  }
+  if (!app->radio_mode || !(app->fhi > app->flo)) { return; }
+  /* Filter passband: just the fill + the two edges — the VFO centre is the
+   * hairline above. Both edges share one colour+alpha (opacity slider). */
+  double op = app->filter_op / 100.0;
+  double hz_per_px = (double)app->rate / app->zoom / w;
+  double cx = vfo_x(app, w);
+  double x0 = floor(cx + app->flo / hz_per_px) + 0.5;
+  double x1 = floor(cx + app->fhi / hz_per_px) + 0.5;
+  float  fa = (float)(op * ((app->rx_hover || app->drag_rx) ? 0.36 : 0.22));   /* RX = green; lit as a CTUN handle */
+  gtk_snapshot_append_color(snapshot, &(GdkRGBA){ COL_RX_FILL, fa },
+                            &GRAPHENE_RECT_INIT((float)x0, 0.0f, (float)(x1 - x0), (float)ph));
+  const GdkRGBA ec = { COL_RX_EDGE, (float)(op * 0.95) };
+  gtk_snapshot_append_color(snapshot, &ec, &GRAPHENE_RECT_INIT((float)(x0 - 0.5), 0.0f, 1.0f, (float)ph));
+  gtk_snapshot_append_color(snapshot, &ec, &GRAPHENE_RECT_INIT((float)(x1 - 0.5), 0.0f, 1.0f, (float)ph));
+  /* Select-mode filter cursor: the passband footprint (amber) at the pointer,
+   * showing where a left-click would place the filter before it recenters —
+   * all one yellowish thing incl. the aim line, no green in it (Richard
+   * 2026-09-06 evening). */
+  if (app->select_mode && app->ptr_x >= 0 && app->ptr_x <= w) {
+    double gx0 = floor(app->ptr_x + app->flo / hz_per_px) + 0.5;
+    double gx1 = floor(app->ptr_x + app->fhi / hz_per_px) + 0.5;
+    double gxc = floor(app->ptr_x) + 0.5;
+    gtk_snapshot_append_color(snapshot, &(GdkRGBA){ 1.0f, 0.82f, 0.28f, (float)(op * 0.22) },
+                              &GRAPHENE_RECT_INIT((float)gx0, 0.0f, (float)(gx1 - gx0), (float)ph));
+    const GdkRGBA gc = { 1.0f, 0.82f, 0.28f, (float)(op * 0.95) };
+    gtk_snapshot_append_color(snapshot, &gc, &GRAPHENE_RECT_INIT((float)(gx0 - 0.5), 0.0f, 1.0f, (float)ph));
+    gtk_snapshot_append_color(snapshot, &gc, &GRAPHENE_RECT_INIT((float)(gx1 - 0.5), 0.0f, 1.0f, (float)ph));
+    gtk_snapshot_append_color(snapshot, &(GdkRGBA){ 1.0f, 0.82f, 0.28f, 0.90f },
+                              &GRAPHENE_RECT_INIT((float)(gxc - 0.375), 0.0f, 0.75f, (float)ph));
+  }
+}
+
+/* The top band of the RX spectrum strip (a BAND_H-tall cairo node): the ruler
+ * labels, spot labels, the ADC-overload badge, the readout block and the
+ * S-meter. Everything full-height is a colour node now (snapshot_rx_lines,
+ * snapshot_freq_grid, snapshot_band_edges, snapshot_spot_ticks) and the dB
+ * labels have their own gutter node, so this raster is a third of the strip
+ * instead of all of it (issue #15: an empty strip-wide cairo node alone cost
+ * 2–5 ms at 2048–5120 px). */
+#define BAND_H 230.0   /* RO_TOP + RO_H + two spot rows under the readout ≈ 220 */
+static void draw_upper_band(cairo_t *cr, int w, int ph, App *app) {
   panadapter_set_range(app->pan_high, app->pan_low);   /* grab-to-move dB window */
   panadapter_set_grid(app->show_db_grid, app->show_db_scale);
 
@@ -1806,65 +1942,16 @@ static void draw_upper(cairo_t *cr, int w, int ph, App *app) {
       bname = bandinfo;
     }
   }
-  cairo_save(cr);
-  cairo_rectangle(cr, 0, 0, w, ph);
-  cairo_clip(cr);
   gint64 tpan = g_get_monotonic_time();
-  if (app->radio_mode) { panadapter_set_readout(0); }   /* the VFO card replaces it */
+  if (app->radio_mode) { panadapter_set_readout(0); }   /* our readout block replaces it */
+  /* Body off: this paints only the panadapter's own readout (server mode). */
   panadapter_draw(cr, w, ph, &app->frame, smoothed, low, span, NULL, bname, vfo_x(app, w) / w);
   panadapter_set_readout(1);
   prof_add(PROF_PAN, tpan);
-  if (app->radio_mode && (app->show_freq_grid || app->show_freq_scale)) {
-    draw_freq_scale(cr, app, w, ph);
-  }
   if (app->radio_mode) {
-    draw_band_edges(cr, app, w, ph);
-    if (!app->tx_display) { draw_spots(cr, app, w, ph); }  /* RX spectrum only */
+    draw_freq_scale(cr, app, w);
+    spots_draw_labels(cr, app);   /* RX spectrum only; laid out by spots_layout */
   }
-  /* Filter passband overlay (Model A: VFO = span centre). Just the fill + the
-   * two edges here — the VFO centre is the amber line panadapter.c already draws
-   * (no second white centre). Both edges share one colour+alpha (opacity slider)
-   * and snap to pixel centres, so they render identically. */
-  if (app->radio_mode && app->fhi > app->flo) {
-    double op = app->filter_op / 100.0;
-    double hz_per_px = (double)app->rate / app->zoom / w;
-    double cx = vfo_x(app, w);
-    double x0 = floor(cx + app->flo / hz_per_px) + 0.5;
-    double x1 = floor(cx + app->fhi / hz_per_px) + 0.5;
-    cairo_set_source_rgba(cr, COL_RX_FILL, op * ((app->rx_hover || app->drag_rx) ? 0.36 : 0.22));   /* passband fill (RX = green; lit as a CTUN handle) */
-    cairo_rectangle(cr, x0, 0, x1 - x0, ph);
-    cairo_fill(cr);
-    cairo_set_source_rgba(cr, COL_RX_EDGE, op * 0.95);       /* both edges */
-    cairo_set_line_width(cr, 1.0);
-    cairo_move_to(cr, x0, 0); cairo_line_to(cr, x0, ph);
-    cairo_move_to(cr, x1, 0); cairo_line_to(cr, x1, ph);
-    cairo_stroke(cr);
-  }
-  /* Select-mode filter cursor: the passband footprint (amber) at the pointer,
-   * showing where a left-click would place the filter before it recenters. */
-  if (app->select_mode && app->fhi > app->flo && app->ptr_x >= 0 && app->ptr_x <= w) {
-    double op = app->filter_op / 100.0;                 /* same transparency as the filter */
-    double hz_per_px = (double)app->rate / app->zoom / w;
-    double gx0 = floor(app->ptr_x + app->flo / hz_per_px) + 0.5;
-    double gx1 = floor(app->ptr_x + app->fhi / hz_per_px) + 0.5;
-    double gxc = floor(app->ptr_x) + 0.5;
-    cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, op * 0.22);   /* ghost fill  */
-    cairo_rectangle(cr, gx0, 0, gx1 - gx0, ph);
-    cairo_fill(cr);
-    cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, op * 0.95);   /* ghost edges (amber = the filter) */
-    cairo_set_line_width(cr, 1.0);
-    cairo_move_to(cr, gx0, 0); cairo_line_to(cr, gx0, ph);
-    cairo_move_to(cr, gx1, 0); cairo_line_to(cr, gx1, ph);
-    cairo_stroke(cr);
-    cairo_set_source_rgba(cr, 1.0, 0.82, 0.28, 0.90);        /* aim line: amber like the ghost —
-                                                                 the select cursor is all one
-                                                                 yellowish thing, no green in it
-                                                                 (Richard 2026-09-06 evening) */
-    cairo_set_line_width(cr, 0.75);
-    cairo_move_to(cr, gxc, 0); cairo_line_to(cr, gxc, ph);
-    cairo_stroke(cr);
-  }
-  cairo_restore(cr);
 
   /* ADC-overload badge, top-left of the panadapter. Warns the input is
    * clipping → add attenuation. Held ADC_OVL_HOLD_US after the last clip. */
@@ -1892,9 +1979,6 @@ static void draw_upper(cairo_t *cr, int w, int ph, App *app) {
   if (app->radio_mode) { draw_vfo_readout(cr, app, w, bname); }   /* readout + the other VFO */
   else                 { app->ro_x1 = app->ro_x0 = 0.0; }
   draw_s_meter(cr, app, w);                                         /* top-right, both paths */
-
-  /* Separator over the waterfall's top edge (the GPU texture sits under us). */
-  draw_split_line(cr, w, ph, app);
 }
 
 /* True when the waterfall region needs a cairo overlay node at all — must
@@ -1983,8 +2067,7 @@ static void draw_wf_overlays(cairo_t *cr, int w, int h, int ph, App *app) {
 }
 
 /* Full-surface cairo fallback: the status screens (no radio / calibrating /
- * network errors) and the TX display. Same content as the old draw func minus
- * the waterfall bitmap, which the snapshot layers under this as a texture. */
+ * network errors) — the live RX and TX displays are the snapshot's nodes. */
 static void draw_all(cairo_t *cr, int w, int h, App *app) {
   panadapter_set_range(app->pan_high, app->pan_low);
   panadapter_set_grid(app->show_db_grid, app->show_db_scale);
@@ -1997,18 +2080,8 @@ static void draw_all(cairo_t *cr, int w, int h, App *app) {
     panadapter_draw(cr, w, h, NULL, NULL, 0, 1, buf, NULL, 0.5);
     return;
   }
-  if (!app->have_frame) {
-    panadapter_draw(cr, w, h, NULL, NULL, 0, 1,
-                    app->radio_mode ? "Radio up — calibrating…" : "Connected — waiting for spectrum…", NULL, 0.5);
-    return;
-  }
-
-  /* While keyed, the whole area is the TX panadapter (no RX trace / waterfall). */
-  if (app->tx_display) { draw_tx(cr, w, h, app); return; }
-
-  int ph = split_ph(app, h);
-  draw_upper(cr, w, ph, app);
-  draw_wf_overlays(cr, w, h, ph, app);
+  panadapter_draw(cr, w, h, NULL, NULL, 0, 1,
+                  app->radio_mode ? "Radio up — calibrating…" : "Connected — waiting for spectrum…", NULL, 0.5);
 }
 
 /* ---- SdrflDisplay: the spectrum/waterfall widget (GSK snapshot path) -------
@@ -2089,15 +2162,22 @@ static void snapshot_body(GtkSnapshot *snapshot, GtkWidget *widget, App *app,
   }
 
   gint64 t0 = g_get_monotonic_time();
-  gsize     sz    = (gsize)W * (gsize)H;
+  int r0, r1;
+  if (!panadapter_body_band(dbm, n, W, H, &r0, &r1)) { return; }
+  /* The masks cover only the rows the polyline spans: above them nothing,
+   * below them the fill is solid (a plain gradient node) — on a quiet band
+   * that is a fraction of the strip's bytes to build and upload. */
+  int   Hb = r1 - r0;
+  gsize sz = (gsize)W * (gsize)Hb;
   uint8_t  *fill  = g_malloc(sz);
   uint8_t  *trace = g_malloc(sz);
   uint32_t *strip = g_malloc((gsize)W * 4);
-  panadapter_body_masks(dbm, n, W, H, cmap_low, cmap_span, fill, trace, strip);
+  panadapter_body_masks(W, r0, r1, cmap_low, cmap_span, fill, trace, strip);
   prof_add(PROF_BODY, t0);
-  GdkTexture *tf = tex_take(fill,  sz, W, H, GDK_MEMORY_A8, (gsize)W);
-  GdkTexture *tt = tex_take(trace, sz, W, H, GDK_MEMORY_A8, (gsize)W);
+  GdkTexture *tf = tex_take(fill,  sz, W, Hb, GDK_MEMORY_A8, (gsize)W);
+  GdkTexture *tt = tex_take(trace, sz, W, Hb, GDK_MEMORY_A8, (gsize)W);
   GdkTexture *ts = tex_take(strip, (gsize)W * 4, W, 1, GDK_MEMORY_DEFAULT, (gsize)W * 4);
+  const graphene_rect_t band = GRAPHENE_RECT_INIT(0.0f, (float)r0 / scale, (float)w, (float)Hb / scale);
 
   float offs[25], rgba[100];
   GskColorStop stops[25];
@@ -2106,18 +2186,23 @@ static void snapshot_body(GtkSnapshot *snapshot, GtkWidget *widget, App *app,
     stops[i].offset = offs[i];
     stops[i].color  = (GdkRGBA){ rgba[4 * i], rgba[4 * i + 1], rgba[4 * i + 2], rgba[4 * i + 3] };
   }
+  const graphene_point_t g0 = GRAPHENE_POINT_INIT(0.0f, 0.0f), g1 = GRAPHENE_POINT_INIT(0.0f, (float)ph);
   /* push_mask: the FIRST pop closes the mask child, the SECOND the source. */
   gtk_snapshot_push_mask(snapshot, GSK_MASK_MODE_ALPHA);
-  gtk_snapshot_append_texture(snapshot, tf, &rect);
+  gtk_snapshot_append_texture(snapshot, tf, &band);
   gtk_snapshot_pop(snapshot);
-  gtk_snapshot_append_linear_gradient(snapshot, &rect, &GRAPHENE_POINT_INIT(0.0f, 0.0f),
-                                      &GRAPHENE_POINT_INIT(0.0f, (float)ph), stops, (gsize)ns);
+  gtk_snapshot_append_linear_gradient(snapshot, &band, &g0, &g1, stops, (gsize)ns);
   gtk_snapshot_pop(snapshot);
+  if (r1 < H) {   /* solid fill under the band (the gradient line spans the strip) */
+    gtk_snapshot_append_linear_gradient(snapshot,
+        &GRAPHENE_RECT_INIT(0.0f, (float)r1 / scale, (float)w, (float)(H - r1) / scale),
+        &g0, &g1, stops, (gsize)ns);
+  }
 
   gtk_snapshot_push_mask(snapshot, GSK_MASK_MODE_ALPHA);
-  gtk_snapshot_append_texture(snapshot, tt, &rect);
+  gtk_snapshot_append_texture(snapshot, tt, &band);
   gtk_snapshot_pop(snapshot);
-  gtk_snapshot_append_scaled_texture(snapshot, ts, GSK_SCALING_FILTER_NEAREST, &rect);
+  gtk_snapshot_append_scaled_texture(snapshot, ts, GSK_SCALING_FILTER_NEAREST, &band);
   gtk_snapshot_pop(snapshot);
 
   g_object_unref(tf);
@@ -2160,30 +2245,36 @@ static void sdrfl_display_snapshot(GtkWidget *widget, GtkSnapshot *snapshot) {
     }
   }
 
+  gint64 tc = 0;
   if (live && !app->tx_display) {
-    /* RX: the spectrum body as GPU nodes, then cairo only over the spectrum
-     * strip (+1 px of separator overlap) for what sits on top; the waterfall
-     * region stays pure texture — no software raster/upload of that half —
-     * plus a small overlay node only when the operator wants filter/select
-     * lines carried down. */
+    /* RX. Bottom to top: the body (GPU nodes), the full-height lines (colour
+     * nodes / 3-px cairo slivers), then cairo only where there is text — the
+     * top band and the dB gutter — the divider, and a small overlay node on
+     * the waterfall when the operator carries the filter down. Nothing left
+     * that rasterizes a strip-wide surface on the CPU. */
     int n; const float *dbm = rx_body_dbm(app, &n);
     double low, span; waterfall_range(app->wf, &low, &span);
     snapshot_body(snapshot, widget, app, w, ph, dbm, n, app->pan_high, app->pan_low, low, span);
+    if (app->radio_mode) {
+      snapshot_freq_grid(snapshot, app, w, ph);
+      snapshot_band_edges(snapshot, app, w, ph);
+      if (spots_layout(app, w, ph)) { snapshot_spot_ticks(snapshot, app); }
+    }
+    snapshot_rx_lines(snapshot, app, w, ph);
     panadapter_set_body(0);
-  } else if (live && app->tx_display && app->tx_ema_w == app->pixels) {
-    /* TX: same body under the full-surface cairo node (draw_tx's strip). */
-    snapshot_body(snapshot, widget, app, w, ph, app->tx_ema, app->tx_ema_w,
-                  app->tx_pan_high, app->tx_pan_low, app->tx_pan_low,
-                  app->tx_pan_high - app->tx_pan_low);
-    panadapter_set_body(0);
-  }
-
-  gint64 tc = g_get_monotonic_time();
-  if (live && !app->tx_display) {
-    cairo_t *cr = gtk_snapshot_append_cairo(snapshot,
-        &GRAPHENE_RECT_INIT(0.0f, 0.0f, (float)w, (float)(ph + 1)));
-    draw_upper(cr, w, ph, app);
+    tc = g_get_monotonic_time();
+    float bh = (float)fmin(BAND_H, (double)(ph + 1));
+    cairo_t *cr = gtk_snapshot_append_cairo(snapshot, &GRAPHENE_RECT_INIT(0.0f, 0.0f, (float)w, bh));
+    draw_upper_band(cr, w, ph, app);
     cairo_destroy(cr);
+    if (app->show_db_scale) {
+      cr = gtk_snapshot_append_cairo(snapshot,
+          &GRAPHENE_RECT_INIT(0.0f, 0.0f, (float)PANADAPTER_GUTTER_W, (float)ph));
+      panadapter_draw_db_labels(cr, ph);
+      cairo_destroy(cr);
+    }
+    prof_add(PROF_CAIRO, tc);
+    snapshot_split_line(snapshot, w, ph, app);
     if (wf_overlays_wanted(app) && h - ph > 0) {
       double bx0, bx1;
       wf_overlay_bounds(app, w, &bx0, &bx1);   /* node = the painted strip only */
@@ -2194,14 +2285,44 @@ static void sdrfl_display_snapshot(GtkWidget *widget, GtkSnapshot *snapshot) {
         cairo_destroy(cr);
       }
     }
+  } else if (live) {
+    /* TX. The body under a strip-only cairo node (draw_tx: ruler, TX filter,
+     * power/SWR, HUD); the filter carried onto the waterfall is a narrow node
+     * and the divider two colour nodes. Before the first TX frame draw_tx
+     * paints the "keying…" status over the strip instead. */
+    int body = app->tx_ema_w == app->pixels;
+    if (body) {
+      snapshot_body(snapshot, widget, app, w, ph, app->tx_ema, app->tx_ema_w,
+                    app->tx_pan_high, app->tx_pan_low, app->tx_pan_low,
+                    app->tx_pan_high - app->tx_pan_low);
+      panadapter_set_body(0);
+    }
+    tc = g_get_monotonic_time();
+    cairo_t *cr = gtk_snapshot_append_cairo(snapshot,
+        &GRAPHENE_RECT_INIT(0.0f, 0.0f, (float)w, (float)(ph + 1)));
+    draw_tx(cr, w, h, app);
+    cairo_destroy(cr);
+    if (body) {
+      tx_run_status ts; tx_run_get_status(&ts);
+      double bx0, bx1;
+      if (app->show_filter_wf && h > ph && tx_filter_bounds(app, &ts, w, &bx0, &bx1)) {
+        cr = gtk_snapshot_append_cairo(snapshot,
+            &GRAPHENE_RECT_INIT((float)bx0, (float)ph, (float)(bx1 - bx0), (float)(h - ph)));
+        draw_tx_filter(cr, app, &ts, w, (double)ph, (double)h);
+        cairo_destroy(cr);
+      }
+      snapshot_split_line(snapshot, w, ph, app);
+    }
+    prof_add(PROF_CAIRO, tc);
   } else {
+    tc = g_get_monotonic_time();
     cairo_t *cr = gtk_snapshot_append_cairo(snapshot,
         &GRAPHENE_RECT_INIT(0.0f, 0.0f, (float)w, (float)h));
     draw_all(cr, w, h, app);
     cairo_destroy(cr);
+    prof_add(PROF_CAIRO, tc);
   }
   panadapter_set_body(1);   /* the cairo-only users (render test) keep the full draw */
-  prof_add(PROF_CAIRO, tc);
   prof_frame();
 }
 

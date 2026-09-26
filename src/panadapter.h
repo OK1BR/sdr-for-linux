@@ -73,12 +73,13 @@ void panadapter_set_grid(int show_grid, int show_labels);
  *           (per-column colour = the palette at the brighter of the two
  *           columns the segment joins, lifted 50 % to white, alpha 0.98 —
  *           exactly draw_spectrum's per-segment colouring).
- * panadapter_set_body(0) then makes panadapter_draw() leave the background,
- * the dB grid LINES and the body to the caller's nodes (it still paints the
- * grid labels, the VFO line and the readout on top). Status screens always
- * paint in full. The masks are W×H bytes, row-major, in DEVICE pixels.
+ * panadapter_set_body(0) then makes panadapter_draw() paint only the readout
+ * block; the background, the dB grid lines and labels, the body and the VFO
+ * line are the caller's nodes (panadapter_draw_db_labels for the gutter, the
+ * VFO line = PANADAPTER_VFO_RGB at 60 %, 0.75 px, pixel-centre snapped).
+ * Status screens always paint in full. The masks are in DEVICE pixels.
  */
-void panadapter_set_body(int on);
+void panadapter_set_body(int on);   /* off: panadapter_draw() paints only the readout */
 /* Background colour = the palette's noise-floor colour (rgb 0..1). */
 void panadapter_bg_rgb(double *r, double *g, double *b);
 /* dB grid lines: y (px, top of the 1-px line) of each line in an h-px strip;
@@ -86,12 +87,20 @@ void panadapter_bg_rgb(double *r, double *g, double *b);
 int  panadapter_grid_rows(int h, double *ys, int max, double *rgba);
 /* Fill gradient stops, top → bottom: offs[i] in 0..1, rgba[4*i..]. Returns n. */
 int  panadapter_fill_stops(double cmap_low, double cmap_span, float *offs, float *rgba, int max);
-/* Coverage masks for `n` dBm columns rendered into a W×H strip: `fill` and
- * `trace` are W*H bytes (0 = transparent, 255 = full), `strip` W premultiplied
- * BGRA pixels (the trace colour per column). Uses the current dB range. */
-void panadapter_body_masks(const float *dbm, int n, int W, int H,
-                           double cmap_low, double cmap_span,
+/* Step 1: plot `n` dBm columns into a W×H strip (current dB range) and return
+ * the row band [r0, r1) the masks need — above r0 both are empty, below r1 the
+ * fill is solid (the caller paints the plain gradient there) and the trace
+ * empty. A weak band keeps the masks a fraction of the strip. Returns 0 (no
+ * band) when n < 2 or the strip is degenerate. */
+int  panadapter_body_band(const float *dbm, int n, int W, int H, int *r0, int *r1);
+/* Step 2 (same thread, right after step 1): the coverage masks for rows
+ * [r0, r1) — `fill` and `trace` are W*(r1-r0) bytes, row-major (0 = clear,
+ * 255 = full) — and `strip`, W premultiplied BGRA pixels (the trace colour per
+ * column). */
+void panadapter_body_masks(int W, int r0, int r1, double cmap_low, double cmap_span,
                            uint8_t *fill, uint8_t *trace, uint32_t *strip);
+/* Body off: the dB grid LABELS alone (the gutter), for a narrow node. */
+void panadapter_draw_db_labels(cairo_t *cr, int h);
 
 /*
  * Suppress (0) or restore (1) the built-in top-left readout (VFO frequency +
