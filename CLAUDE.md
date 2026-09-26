@@ -487,6 +487,34 @@ vše, díky", then "zapiš změny na github" → committed + pushed as
 (Mic/Lev/ALC) still Adwaita Mono (asked, unanswered). Scratch
 `/var/tmp/vfoab` (launch logs, config round-trip) is in the trash.
 
+**★ ISSUE #15 — wide windows, DONE IN CODE 2026-09-26 (27d4539, 7a7ca7c,
+0625210 + RENDERING.md aa4b1d7), `needs-live-check` + `at-the-radio`:**
+above ~2100 px the frame clock fell to 30 f/s and the waterfall had only
+2048 columns. ⛔ Root cause corrected the earlier RENDERING.md reading: the
+spectrum strip was ONE cairo node that GTK rasterizes on the CPU at render
+time (7–13 ms at 2048–5120 px) — `SDRFL_DRAW_PROF` times only the
+recording (0.9 ms), so "12 ms inside GSK GL" was our own raster. Fix, three
+commits: (1) analyzer columns follow the widget width in device pixels
+(`analyzer_set_pixels` / `tx_run_set_pixels`, debounce 300 ms, drop one
+frame after the change, `ANALYZER_MAX_PIXELS` 8192 replaces the vendored
+4096 on the radio path, the waterfall RESAMPLES its history on a width
+change, EMAs on wall-clock dt); (2) the fill + trace as GPU mask nodes
+(A8 coverage masks from panadapter.c, `gtk_snapshot_push_mask` — mask
+first pop, source second — × gradient / per-column colour strip; masks
+limited to the rows the polyline spans); (3) no strip-wide cairo node left:
+lines/rects as colour nodes, text in a 230-px top band + the 46-px gutter,
+spots laid out per frame on a scratch context; TX keeps a strip-only cairo
+node. Offline GL benchmark (scratch `gsk_renderer_render_texture`, matches
+live frame_end within ~1 ms): 10.1 / 16.5 / 23.9 ms → 4.1 / 7.7 / 9.3 ms
+incl. the waterfall at 2048 / 3606 / 5120 px. GTK floor now 4.12. ⛔ Two
+lessons: the headless broadway smoke MUST run under `dbus-run-session` —
+without it GApplication activated Richard's running instance, which opened
+a second main window inside itself (shared App state; the only fix is to
+quit the whole app and relaunch); and an EMPTY strip-wide cairo node alone
+costs 2–5 ms — size cairo nodes by their text, never by the strip.
+Acceptance still open: Richard's live run at 5120 px on the G2E
+(`GDK_DEBUG=frames` → 60 f/s held).
+
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
 red TX filter footprint, AF true mute, 60 m USB, SDR-15 discovery dedup,
