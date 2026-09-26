@@ -59,7 +59,7 @@
  * after PIXELS_DEBOUNCE_MS of no further change (WDSP restarts its dispatcher
  * for it — never per frame during an interactive resize). ENGINE_PIXELS is
  * only the guess before the window exists (the saved width normally wins). */
-#define ENGINE_PIXELS      2048
+#define ENGINE_PIXELS      2048   /* also the trace's column count (snapshot_body) */
 #define PIXELS_MIN         256
 #define PIXELS_DEBOUNCE_MS 300
 #define ENGINE_FPS    25
@@ -2145,6 +2145,24 @@ static void snapshot_body(GtkSnapshot *snapshot, GtkWidget *widget, App *app,
   int scale = gtk_widget_get_scale_factor(widget);
   int W = w * scale, H = ph * scale;
   if (W < 1 || H < 1 || n < 2 || !dbm) { return; }
+  /* The TRACE keeps the ENGINE_PIXELS (2048) columns it always had; only the
+   * waterfall takes every pixel. At native resolution the trace read as hairy
+   * to Richard (2026-09-26, live on 3350 px): the calm line he knew was the
+   * 2048 columns interpolated up. Decimate by MAX — the PEAK detector's rule,
+   * peaks survive, the floor sits where the old 8-bins-per-column max put
+   * it — and column_value() interpolates back up exactly as before. */
+  static float tr[ENGINE_PIXELS];
+  if (n > ENGINE_PIXELS) {
+    for (int j = 0; j < ENGINE_PIXELS; j++) {
+      int a = (int)((long long)j * n / ENGINE_PIXELS), b = (int)((long long)(j + 1) * n / ENGINE_PIXELS);
+      if (b <= a) { b = a + 1; }
+      float m = dbm[a];
+      for (int k = a + 1; k < b && k < n; k++) { if (dbm[k] > m) { m = dbm[k]; } }
+      tr[j] = m;
+    }
+    dbm = tr;
+    n   = ENGINE_PIXELS;
+  }
   panadapter_set_range(pan_hi, pan_lo);
   panadapter_set_grid(app->show_db_grid, app->show_db_scale);
   const graphene_rect_t rect = GRAPHENE_RECT_INIT(0.0f, 0.0f, (float)w, (float)ph);
