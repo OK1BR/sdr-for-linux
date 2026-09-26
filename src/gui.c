@@ -367,6 +367,9 @@ typedef struct {
   float       tx_ema[ANALYZER_MAX_PIXELS]; /* smoothed TX trace (dB)                 */
   int         tx_ema_w;      /* width of tx_ema (0 = no frame yet)                   */
   gint64      tx_ema_prev_us;/* last consumed TX frame (wall-clock EMA)              */
+  float       tx_wf_ema[ANALYZER_MAX_PIXELS]; /* TX waterfall's own averaging (dB),  */
+  int         tx_wf_ema_w;                    /*  the RX wf_ema twin: "Waterfall" ms */
+  gint64      tx_wf_ema_prev_us;
   double      tx_pan_high, tx_pan_low;  /* TX panadapter dB window (manual, draggable)*/
   int         tx_pan_init;   /* one-shot autofit has placed the TX window this run   */
   ClientFrame tx_frame;      /* metadata for the TX readout (carrier freq)           */
@@ -2491,8 +2494,10 @@ static void tick_tx(App *app, GtkWidget *widget) {
   int fresh = tx_run_get_pixels(app->tx_raw, n);
   if (fresh && app->pix_skip > 0) { app->pix_skip--; fresh = 0; }   /* stale after a column change */
   if (fresh) {
-    /* INTERIM: CW needs a fast trace, SSB a smooth one — mode-split for now; a
-     * proper tunable per-mode TX averaging is on the TODO list. */
+    /* The TX trace follows the "Spectrum" constant like RX, except CW, which
+     * keeps a fixed fast EMA: at 150 ms the trace lagged the keying (live,
+     * 2026-07-09), and a 40 ms dot would vanish into the 300 ms Richard runs
+     * on RX. Kept deliberately on 2026-09-26 ("zkusíme nechat, uvidíme"). */
     int cw = (app->mode == DEMOD_CWL || app->mode == DEMOD_CWU);
     gint64 now = g_get_monotonic_time();
     float fs = ema_factor_dt(cw ? TX_TRACE_CW_MS : app->avg_spec_ms, now - app->tx_ema_prev_us);
@@ -2506,12 +2511,23 @@ static void tick_tx(App *app, GtkWidget *widget) {
     /* First TX frame of a fresh window: one-shot-fit the dB scale, then leave it
      * fixed and draggable (unless the operator already has a saved TX window). */
     if (!app->tx_pan_init) { tx_pan_autofit(app); app->tx_pan_init = 1; }
-    /* Feed the TX waterfall (its own auto-range colours the transmitted spectrum;
-     * TX levels aren't dBm-calibrated, so map byte = dB + 200 like the RX path). */
+    /* The TX waterfall has its OWN averaging on the raw TX frame with the same
+     * "Waterfall" constant as RX (until 2026-09-26 it was fed from tx_ema, i.e.
+     * smoothed like the trace — 300 ms on SSB against the RX waterfall's 20).
+     * The colour map is pinned to the manual TX dB window (tx_pan_apply); TX
+     * levels aren't dBm-calibrated, so byte = dB + 200 without soffset. */
     if (app->tx_wf) {
+      if (app->tx_wf_ema_w != n) {
+        memcpy(app->tx_wf_ema, app->tx_raw, n * sizeof(float));
+        app->tx_wf_ema_w = n;
+      } else {
+        float fw = ema_factor_dt(app->avg_wf_ms, now - app->tx_wf_ema_prev_us);
+        for (int i = 0; i < n; i++) { app->tx_wf_ema[i] += fw * (app->tx_raw[i] - app->tx_wf_ema[i]); }
+      }
+      app->tx_wf_ema_prev_us = now;
       static uint8_t bytes[ANALYZER_MAX_PIXELS];
       for (int i = 0; i < n; i++) {
-        double b = (double)app->tx_ema[i] + 200.0;
+        double b = (double)app->tx_wf_ema[i] + 200.0;
         bytes[i] = (uint8_t)(b < 0 ? 0 : (b > 255 ? 255 : b));
       }
       waterfall_push(app->tx_wf, bytes, n);
@@ -4863,6 +4879,7 @@ static void on_pref_fps(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   App *app = (App *)data;
   app->fps = (int)adw_spin_row_get_value(r);
   analyzer_set_fps(app->fps);   /* live */
+  if (app->tx_ready) { tx_run_set_fps(app->fps); }   /* the TX analyzer too (was start-up only) */
   schedule_save(app);
 }
 static void on_pref_gain(AdwSpinRow *r, GParamSpec *ps, gpointer data) {

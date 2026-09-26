@@ -59,6 +59,21 @@ static int clamp_pixels(int pixels) {
   return pixels;
 }
 
+/* Detector + very light averaging so the TX display tracks fast CW keying (the
+ * GUI adds its own EMA on top). navg/backmult are frame counts, so they follow
+ * t_fps — re-applied by tx_analyzer_set_fps(). The NONE-then-mode dance avoids
+ * a switch artifact (receiver.c:1978-1980). Must hold t_lock. */
+static void tx_ana_averaging(void) {
+  double t    = 0.008;
+  int    navg = (int)fmax(2.0, fmin(60.0, (double)t_fps * t));
+  double avb  = exp(-1.0 / ((double)t_fps * t));
+  SetDisplayDetectorMode(TXA_DISP, 0, DETECTOR_MODE_PEAK);
+  SetDisplayAverageMode(TXA_DISP, 0, AVERAGE_MODE_NONE);
+  SetDisplayNumAverage(TXA_DISP, 0, navg);
+  SetDisplayAvBackmult(TXA_DISP, 0, avb);
+  SetDisplayAverageMode(TXA_DISP, 0, AVERAGE_MODE_LOG_RECURSIVE);
+}
+
 int tx_analyzer_create(int pixels, int iq_rate, int bf_size, int fps) {
   int rc = -1;
   if (pixels <= 0 || iq_rate <= 0 || bf_size <= 0) { return -1; }
@@ -81,16 +96,7 @@ int tx_analyzer_create(int pixels, int iq_rate, int bf_size, int fps) {
   tx_ana_configure((double)iq_rate);   /* default: full TX IQ; the GUI sets the zoomed span */
   SetDisplayNormOneHz(TXA_DISP, 0, 1);
   SetDisplaySampleRate(TXA_DISP, iq_rate);
-  /* Detector + very light averaging so the TX display tracks fast CW keying (the
-   * GUI adds a short EMA on top). Small time constant = snappy on/off. */
-  double t    = 0.008;
-  int    navg = (int)fmax(2.0, fmin(60.0, (double)fps * t));
-  double avb  = exp(-1.0 / ((double)fps * t));
-  SetDisplayDetectorMode(TXA_DISP, 0, DETECTOR_MODE_PEAK);
-  SetDisplayAverageMode(TXA_DISP, 0, AVERAGE_MODE_NONE);
-  SetDisplayNumAverage(TXA_DISP, 0, navg);
-  SetDisplayAvBackmult(TXA_DISP, 0, avb);
-  SetDisplayAverageMode(TXA_DISP, 0, AVERAGE_MODE_LOG_RECURSIVE);
+  tx_ana_averaging();
   t_ready = 1;
   g_mutex_unlock(&t_lock);
   return 0;
@@ -132,6 +138,21 @@ void tx_analyzer_set_pixels(int pixels) {
   if (t_ready && pixels != t_pixels) {
     t_pixels = pixels;
     tx_ana_configure(t_span);   /* afft follows pixels/span, same rule as set_span */
+  }
+  g_mutex_unlock(&t_lock);
+}
+
+/* Frame rate live (the Preferences "Frame rate" row, which until now reached
+ * only the RX analyzer — the TX one kept its start-up fps until a restart).
+ * overlap/max_w in SetAnalyzer and navg/backmult in the averaging all derive
+ * from the fps, so both are re-applied under the lock, like set_span. */
+void tx_analyzer_set_fps(int fps) {
+  if (fps < 1) { fps = 1; }
+  g_mutex_lock(&t_lock);
+  if (t_ready && fps != t_fps) {
+    t_fps = fps;
+    tx_ana_configure(t_span);
+    tx_ana_averaging();
   }
   g_mutex_unlock(&t_lock);
 }

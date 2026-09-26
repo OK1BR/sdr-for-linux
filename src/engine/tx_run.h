@@ -154,6 +154,9 @@ void tx_run_set_span(double span_hz);
 /* TX panadapter column count (follows the display width, issue #15); the
  * caller debounces. Safe if TX isn't up. */
 void tx_run_set_pixels(int pixels);
+/* TX panadapter frame rate (the Preferences "Frame rate" row, live — the same
+ * value the RX analyzer gets from analyzer_set_fps). Safe if TX isn't up. */
+void tx_run_set_fps(int fps);
 
 /* The TX audio passband the TXA chain filters with, as SIGNED edges relative
  * to the carrier — USB (lo,hi), LSB/DIGL/RTTY (-hi,-lo), AM (-hi,hi), CW ±150

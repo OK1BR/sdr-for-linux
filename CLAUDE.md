@@ -526,6 +526,22 @@ discipline for these live rounds: SIGTERM his instance (clean save), wait
 ≥ 5 s, relaunch via a script (nested shell quoting of the perl
 timestamper broke once), keep each run's log aside.
 
+**★ TX DISPLAY PARITY — 2026-09-26 (Richard's question: does the TX view
+follow the Spectrum/Overlays settings like RX?):** audit in memory
+`tx-display-parity-audit`. Fixed the same day: **Frame rate** now reaches the
+TX analyzer live (`tx_analyzer_set_fps` → `tx_run_set_fps` from `on_pref_fps`;
+it used to keep its start-up fps until a restart — offline check 30.0 / 60.0 /
+15.0 f/s exact on a real-time-paced feed), and the **TX waterfall has its own
+EMA on the "Waterfall" constant** (`tx_wf_ema`; it was fed from the trace EMA,
+i.e. 300 ms on SSB against the RX waterfall's 20 ms — THAT was the "slow TX",
+not the frame rate: his config has fps=60, so the TX analyzer ran at 60 from
+start-up). Trace columns already applied to both views. Kept by Richard's
+call ("zkusíme nechat, uvidíme"): the CW TX-trace exception, 12 ms fixed.
+Knowingly different and left so: colour map pinned to the manual TX dB window,
+Auto level RX-only, Scale top/bottom rows = RX window, the TX ruler ignoring
+"Frequency scale". ⛔ The TX waterfall change still wants a live look (RTTY or
+SSB: as crisp as RX now).
+
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
 red TX filter footprint, AF true mute, 60 m USB, SDR-15 discovery dedup,

@@ -38,6 +38,10 @@ void   tx_analyzer_set_span(double span_hz);
 void   tx_analyzer_set_pixels(int pixels);
 double tx_analyzer_base_span(void);   /* the full (zoom-1) span, Hz */
 
+/* Change the target frame rate live (clamped to >= 1); re-applies the
+ * SetAnalyzer overlap and the fps-derived averaging. Safe while keyed. */
+void   tx_analyzer_set_fps(int fps);
+
 void tx_analyzer_destroy(void);
 
 #endif /* SDRFL_ENGINE_TX_ANALYZER_H */
