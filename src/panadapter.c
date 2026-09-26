@@ -289,7 +289,8 @@ static inline uint8_t cov(double lo, double hi, int r) {
 void panadapter_body_masks(int W, int r0, int r1, double cmap_low, double cmap_span,
                            uint8_t *fill, uint8_t *trace, uint32_t *strip) {
   int Hb = r1 - r0;
-  if (W != yW || Hb < 1 || r0 < 0 || r1 > yH) { return; }   /* band() must precede */
+  if (W < 1 || W != yW || Hb < 1 || r0 < 0 || r1 > yH) { return; }   /* band() must precede */
+  const size_t nbytes = (size_t)(unsigned)W * (size_t)(unsigned)Hb;
   if (cmap_span < 1.0) { cmap_span = 1.0; }
   /* FILL: everything below the polyline → one antialiased boundary row per
    * column. Row-major so the inner loop vectorizes. */
@@ -307,7 +308,7 @@ void panadapter_body_masks(int W, int r0, int r1, double cmap_low, double cmap_s
    * end rows antialiased by their overlap. Sparse: only covered rows written.
    * Column colour = the brighter of the column and its neighbours — the
    * per-segment "brighter endpoint" colouring of draw_spectrum. */
-  memset(trace, 0, (size_t)W * Hb);
+  memset(trace, 0, nbytes);
   const double hw = 0.6;
   for (int x = 0; x < W; x++) {
     double mL = x > 0     ? 0.5 * (yc[x - 1] + yc[x]) : yc[x];
