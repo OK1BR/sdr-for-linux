@@ -2303,6 +2303,14 @@ static void sdrfl_display_snapshot(GtkWidget *widget, GtkSnapshot *snapshot) {
     draw_tx(cr, w, h, app);
     cairo_destroy(cr);
     if (body) {
+      if (app->show_db_scale) {   /* the dB labels: the same gutter node as RX */
+        panadapter_set_range(app->tx_pan_high, app->tx_pan_low);
+        panadapter_set_grid(app->show_db_grid, app->show_db_scale);
+        cr = gtk_snapshot_append_cairo(snapshot,
+            &GRAPHENE_RECT_INIT(0.0f, 0.0f, (float)PANADAPTER_GUTTER_W, (float)ph));
+        panadapter_draw_db_labels(cr, ph);
+        cairo_destroy(cr);
+      }
       tx_run_status ts; tx_run_get_status(&ts);
       double bx0, bx1;
       if (app->show_filter_wf && h > ph && tx_filter_bounds(app, &ts, w, &bx0, &bx1)) {
