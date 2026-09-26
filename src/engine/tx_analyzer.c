@@ -12,6 +12,7 @@
 
 #include "wdsp.h"
 #include "tx_analyzer.h"
+#include "analyzer.h"   /* ANALYZER_MAX_PIXELS — one ceiling for both analyzers */
 
 #define TXA_DISP   1        /* WDSP analyzer/disp id (RX analyzer uses 0) */
 #define TXA_SPAN   24000.0  /* TX display span (Hz) — piHPSDR fixed 24 kHz */
@@ -52,10 +53,16 @@ static void tx_ana_configure(double span_hz) {
               overlap, 0, clipf, clipf, t_pixels, 1, 0, 0.0, 0.0, max_w);
 }
 
+static int clamp_pixels(int pixels) {
+  if (pixels < 2) { return 2; }
+  if (pixels > ANALYZER_MAX_PIXELS) { return ANALYZER_MAX_PIXELS; }
+  return pixels;
+}
+
 int tx_analyzer_create(int pixels, int iq_rate, int bf_size, int fps) {
   int rc = -1;
   if (pixels <= 0 || iq_rate <= 0 || bf_size <= 0) { return -1; }
-  t_pixels  = pixels;
+  t_pixels  = clamp_pixels(pixels);
   t_bf      = bf_size;
   t_iq_rate = iq_rate;
   if (fps < 1) { fps = 1; }
@@ -116,6 +123,16 @@ int tx_analyzer_get_pixels(float *out, int pixels) {
 void tx_analyzer_set_span(double span_hz) {
   g_mutex_lock(&t_lock);
   if (t_ready && span_hz > 0.0) { tx_ana_configure(span_hz); }
+  g_mutex_unlock(&t_lock);
+}
+
+void tx_analyzer_set_pixels(int pixels) {
+  pixels = clamp_pixels(pixels);
+  g_mutex_lock(&t_lock);
+  if (t_ready && pixels != t_pixels) {
+    t_pixels = pixels;
+    tx_ana_configure(t_span);   /* afft follows pixels/span, same rule as set_span */
+  }
   g_mutex_unlock(&t_lock);
 }
 

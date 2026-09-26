@@ -173,26 +173,44 @@ void waterfall_free(Waterfall *wf) {
   free(wf);
 }
 
+/* Size the bitmap to `n` columns. A width change RESAMPLES the stored history
+ * (nearest column) instead of wiping it: since the column count follows the
+ * window width (issue #15) a resize would otherwise blank 256 rows of
+ * waterfall the operator never lost before. No history yet → clear to the
+ * palette's lowest colour. */
 static void ensure_surface(Waterfall *wf, int n) {
   if (wf->surf && wf->cols == n) {
     return;
   }
+  uint8_t *old_idx  = wf->idx;
+  int      old_cols = wf->cols;
   if (wf->surf) {
     cairo_surface_destroy(wf->surf);
   }
   wf->surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, n, WF_ROWS);
   wf->cols = n;
-  free(wf->idx);
   wf->idx = calloc((size_t)n * WF_ROWS, 1);   /* all-zero = palette index 0 */
-  /* Clear to the palette's lowest colour. */
   cairo_surface_flush(wf->surf);
   uint32_t *data = (uint32_t *)cairo_image_surface_get_data(wf->surf);
   int stride = cairo_image_surface_get_stride(wf->surf) / 4;
-  for (int r = 0; r < WF_ROWS; r++) {
-    for (int x = 0; x < n; x++) {
-      data[r * stride + x] = wf->lut[0];
+  if (old_idx && old_cols > 0 && wf->idx) {
+    for (int r = 0; r < WF_ROWS; r++) {
+      const uint8_t *src = old_idx + (size_t)r * old_cols;
+      uint8_t       *dst = wf->idx + (size_t)r * n;
+      for (int x = 0; x < n; x++) {
+        int sx = (int)(((long long)x * old_cols) / n);   /* nearest: same as the GPU's NEAREST scale */
+        dst[x] = src[sx];
+        data[r * stride + x] = wf->lut[dst[x]];
+      }
+    }
+  } else {
+    for (int r = 0; r < WF_ROWS; r++) {
+      for (int x = 0; x < n; x++) {
+        data[r * stride + x] = wf->lut[0];
+      }
     }
   }
+  free(old_idx);
   cairo_surface_mark_dirty(wf->surf);
 }
 

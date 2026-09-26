@@ -80,10 +80,16 @@ static void apply_averaging(void) {
   SetDisplayAverageMode(a_id, 0, AVERAGE_MODE_LOG_RECURSIVE);
 }
 
+static int clamp_pixels(int pixels) {
+  if (pixels < 2) { return 2; }
+  if (pixels > ANALYZER_MAX_PIXELS) { return ANALYZER_MAX_PIXELS; }
+  return pixels;
+}
+
 int analyzer_create(int id, int pixels, int sample_rate, int fps) {
   int rc = -1;
   a_id     = id;
-  a_pixels = pixels;
+  a_pixels = clamp_pixels(pixels);
   a_afft   = clamp_afft(pixels);
   a_rate   = sample_rate;
   a_fps    = fps;
@@ -141,6 +147,17 @@ void analyzer_set_fps(int fps) {
     a_fps = fps;
     apply_analyzer();   /* keeps current zoom+pan; overlap/max_w recompute from a_fps */
     apply_averaging();  /* navg/backmult recompute from a_fps */
+  }
+  g_mutex_unlock(&a_lock);
+}
+
+void analyzer_set_pixels(int pixels) {
+  pixels = clamp_pixels(pixels);
+  g_mutex_lock(&a_lock);
+  if (a_ready && pixels != a_pixels) {
+    a_pixels = pixels;
+    a_afft   = clamp_afft((int)ceil((double)a_pixels * a_zoom));   /* same rule as set_zoom */
+    apply_analyzer();                                              /* keeps zoom + pan */
   }
   g_mutex_unlock(&a_lock);
 }

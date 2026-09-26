@@ -151,6 +151,9 @@ void tx_run_set_monitor_raw(int on);
 
 /* TX panadapter zoom: set the displayed span (Hz). Safe if TX isn't up. */
 void tx_run_set_span(double span_hz);
+/* TX panadapter column count (follows the display width, issue #15); the
+ * caller debounces. Safe if TX isn't up. */
+void tx_run_set_pixels(int pixels);
 
 /* The TX audio passband the TXA chain filters with, as SIGNED edges relative
  * to the carrier — USB (lo,hi), LSB/DIGL/RTTY (-hi,-lo), AM (-hi,hi), CW ±150

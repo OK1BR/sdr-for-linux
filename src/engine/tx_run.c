@@ -1155,6 +1155,7 @@ void tx_run_set_monitor(int on) { g_atomic_int_set(&s_monitor, on ? 1 : 0); }
 void tx_run_set_monitor_raw(int on) { g_atomic_int_set(&s_mon_raw, on ? 1 : 0); }
 
 void tx_run_set_span(double span_hz) { tx_analyzer_set_span(span_hz); }   /* TX zoom (analyzer locks) */
+void tx_run_set_pixels(int pixels)   { tx_analyzer_set_pixels(pixels); }  /* columns (analyzer locks) */
 
 /* Two-tone test (⛔ delta #2, PS-SCOPE §6): a keying INTENT like MOX — the
  * safety gate still decides. Runs at the current drive; not persisted (a test

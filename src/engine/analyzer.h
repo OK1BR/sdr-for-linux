@@ -13,6 +13,16 @@
 #define SDRFL_ENGINE_ANALYZER_H
 
 /*
+ * Our own ceiling on the analyzer column count (RX and TX alike). The column
+ * count follows the display width (issue #15), so it is no longer the vendored
+ * piHPSDR SPECTRUM_DATA_SIZE (4096 — the network protocol's cap, which stays
+ * for the network head only). WDSP itself allows dMAX_PIXELS = 16384; 8192
+ * covers a 5120-px monitor at scale 1 and 4 K at scale 2. Every GUI buffer
+ * that holds analyzer columns is sized by this.
+ */
+#define ANALYZER_MAX_PIXELS 8192
+
+/*
  * Create the analyzer `id` producing `pixels` output columns from a
  * `sample_rate` Hz complex IQ stream, targeting `fps` frames/s. Configures FFT
  * size, window, overlap, averaging and detector. Returns 0 on success.
@@ -51,6 +61,16 @@ void analyzer_set_pan(double pan);
 /* Change the target frame rate live (recomputes overlap + averaging; thread-safe).
  * The redraw gate follows automatically as the analyzer emits more/fewer frames. */
 void analyzer_set_fps(int fps);
+
+/*
+ * Change the output column count live (clamped to [2, ANALYZER_MAX_PIXELS]);
+ * thread-safe. Keeps zoom + pan; the FFT size follows pixels*zoom as in
+ * analyzer_set_zoom. WDSP stops and restarts its dispatcher for this, so the
+ * caller debounces (a resize in progress must not call it per frame). The
+ * first frame after the change may still carry the old column count's data —
+ * skip it. analyzer_get_pixels() needs `pixels` >= the new count.
+ */
+void analyzer_set_pixels(int pixels);
 
 /* Destroy the analyzer and free buffers. */
 void analyzer_destroy(void);

@@ -277,18 +277,23 @@ void panadapter_draw(cairo_t *cr, int w, int h,
     return;
   }
 
-  /* Use the caller's smoothed dBm if provided; else derive raw dBm from bytes. */
+  /* Use the caller's smoothed dBm if provided; else derive raw dBm from bytes.
+   * The byte array is the network frame's (vendored SPECTRUM_DATA_SIZE); the
+   * radio path can carry more columns than that, but always with `dbm` set —
+   * the clamp keeps a transient mismatch (a column-count change) in bounds. */
   const float *vals = dbm;
+  int n = frame->width;
   float tmp[SPECTRUM_DATA_SIZE];
   if (!vals) {
-    for (int i = 0; i < frame->width; i++) {
+    if (n > SPECTRUM_DATA_SIZE) { n = SPECTRUM_DATA_SIZE; }
+    for (int i = 0; i < n; i++) {
       tmp[i] = (float)frame->dbm[i] - 200.0f;
     }
     vals = tmp;
   }
 
   if (cmap_span < 1.0) cmap_span = 1.0;
-  draw_spectrum(cr, vals, frame->width, w, h, cmap_low, cmap_span);
+  draw_spectrum(cr, vals, n, w, h, cmap_low, cmap_span);
   draw_center_line(cr, w, h, vfo_frac);
   if (p_show_readout) { draw_readouts(cr, frame, w, band); }
 }

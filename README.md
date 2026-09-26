@@ -105,7 +105,7 @@ PA off, ANT1, 1 W.
 - A supported ANAN radio on your LAN (see above)
 - Linux with **PipeWire** as the sound server (standard on 2024+ distros)
 - For the AppImage: glibc ≥ 2.43 (Ubuntu 26.04+, Fedora 44+, Arch, …)
-- To build from source: **GTK ≥ 4.10** (enforced by meson) and
+- To build from source: **GTK ≥ 4.12** (enforced by meson) and
   libadwaita ≥ 1.5. GPU rendering additionally wants GTK ≥ 4.22, but the
   app runs fine below it on the Cairo renderer
 
@@ -151,7 +151,7 @@ ubiquitous platform libraries come from your distribution:
 
 | Need | Arch | Debian/Ubuntu | Fedora |
 |---|---|---|---|
-| GTK4 ≥ 4.10 + libadwaita ≥ 1.5 | `gtk4 libadwaita` | `libgtk-4-dev libadwaita-1-dev` | `gtk4-devel libadwaita-devel` |
+| GTK4 ≥ 4.12 + libadwaita ≥ 1.5 | `gtk4 libadwaita` | `libgtk-4-dev libadwaita-1-dev` | `gtk4-devel libadwaita-devel` |
 | FFTW (single + double) | `fftw` | `libfftw3-dev` | `fftw-devel` |
 | PipeWire client | `libpipewire` | `libpipewire-0.3-dev` | `pipewire-devel` |
 | libwebsockets (TCI) | `libwebsockets` | `libwebsockets-dev` | `libwebsockets-devel` |

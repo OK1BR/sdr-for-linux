@@ -30,6 +30,12 @@ int  tx_analyzer_get_pixels(float *out, int pixels);
 /* Re-zoom the TX window to `span_hz` wide (clamped to [300, base]); reconfigures
  * the WDSP analyzer (afft chosen for sharpness). Safe to call live from the GUI. */
 void   tx_analyzer_set_span(double span_hz);
+
+/* Change the column count live (clamped to [2, ANALYZER_MAX_PIXELS]); keeps the
+ * span. Same contract as analyzer_set_pixels(): debounced by the caller, the
+ * first frame after the change may carry stale data. Safe while keyed (the
+ * feed and this serialize on the analyzer lock, like set_span). */
+void   tx_analyzer_set_pixels(int pixels);
 double tx_analyzer_base_span(void);   /* the full (zoom-1) span, Hz */
 
 void tx_analyzer_destroy(void);

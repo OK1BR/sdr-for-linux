@@ -54,7 +54,14 @@
 #include "tx.h"   /* tx_dsp_in_rate() — mic capture rate must match the WDSP TX input */
 #include "ps.h"   /* PureSignal runtime — enable/att/SetPk from Preferences (F7/PS-2) */
 
-#define ENGINE_PIXELS 2048
+/* Analyzer column count = the display width in device pixels (issue #15),
+ * clamped to [PIXELS_MIN, ANALYZER_MAX_PIXELS]; a width change is applied
+ * after PIXELS_DEBOUNCE_MS of no further change (WDSP restarts its dispatcher
+ * for it — never per frame during an interactive resize). ENGINE_PIXELS is
+ * only the guess before the window exists (the saved width normally wins). */
+#define ENGINE_PIXELS      2048
+#define PIXELS_MIN         256
+#define PIXELS_DEBOUNCE_MS 300
 #define ENGINE_FPS    25
 /* Frames to average before locking the display offset (~1 s at ENGINE_FPS). */
 #define SETTLE_FRAMES 15
@@ -119,8 +126,11 @@ typedef struct {
   char        radio_ip[64]; /* resolved radio IP (for persistence)            */
   guint       save_timer_id;/* debounced settings save (0 = none pending)     */
   long long   drag_base_freq; /* app->freq at drag-begin (pan is absolute)     */
-  int         pixels;
-  float       eng_raw[SPECTRUM_DATA_SIZE];
+  int         pixels;       /* analyzer columns in use (RX + TX analyzers)     */
+  int         pixels_want;  /* columns the widget width asks for (debounced)   */
+  gint64      pixels_want_us;/* when pixels_want last changed (monotonic µs)   */
+  int         pix_skip;     /* frames to drop after a column-count change      */
+  float       eng_raw[ANALYZER_MAX_PIXELS];
   double      soffset;
   int         soffset_locked;
   int         cal_frames;
@@ -132,10 +142,12 @@ typedef struct {
   int         have_frame;
 
   /* Time-averaged trace, held in dBm (so the renderer is source-agnostic). */
-  float       ema[SPECTRUM_DATA_SIZE];
+  float       ema[ANALYZER_MAX_PIXELS];
   int         ema_w;
-  float       wf_ema[SPECTRUM_DATA_SIZE];   /* separate averaging for the waterfall */
+  gint64      ema_prev_us;   /* last consumed frame (wall-clock EMA, issue #15)    */
+  float       wf_ema[ANALYZER_MAX_PIXELS];  /* separate averaging for the waterfall */
   int         wf_ema_w;
+  gint64      wf_ema_prev_us;
   int         avg_spec_ms;   /* spectrum-trace averaging time constant (ms)        */
   int         avg_wf_ms;     /* waterfall averaging time constant (ms)             */
   int         avg_smeter_ms; /* S-meter ballistics time constant (ms)              */
@@ -345,9 +357,10 @@ typedef struct {
   /* TX panadapter: while keyed we show the transmitted spectrum (24 kHz span,
    * full area, no waterfall) in place of the RX view — like piHPSDR non-duplex. */
   int         tx_display;    /* currently showing the TX panadapter (keyed)         */
-  float       tx_raw[SPECTRUM_DATA_SIZE];  /* latest TX analyzer pixels (dB)         */
-  float       tx_ema[SPECTRUM_DATA_SIZE];  /* smoothed TX trace (dB)                 */
+  float       tx_raw[ANALYZER_MAX_PIXELS]; /* latest TX analyzer pixels (dB)         */
+  float       tx_ema[ANALYZER_MAX_PIXELS]; /* smoothed TX trace (dB)                 */
   int         tx_ema_w;      /* width of tx_ema (0 = no frame yet)                   */
+  gint64      tx_ema_prev_us;/* last consumed TX frame (wall-clock EMA)              */
   double      tx_pan_high, tx_pan_low;  /* TX panadapter dB window (manual, draggable)*/
   int         tx_pan_init;   /* one-shot autofit has placed the TX window this run   */
   ClientFrame tx_frame;      /* metadata for the TX readout (carrier freq)           */
@@ -518,12 +531,15 @@ static void band_apply(App *app) {
 #define SPLIT_HIT_PX       5.0
 #define EMA_FACTOR 0.55f   /* network-path trace EMA (fixed) */
 
-/* EMA weight for a time constant `ms` at `fps` frames/s (log-domain, on dBm).
- * ms <= 0 → no averaging (weight 1). */
-static float ema_factor_ms(int ms, int fps) {
+/* EMA weight for a time constant `ms` over the WALL-CLOCK gap since the last
+ * consumed frame (log-domain, on dBm) — the S-meter idiom (issue #15). The
+ * frame clock's real rate varies (a 30 f/s tick on a wide window would double
+ * a per-frame constant), so the constant is anchored to time, not to frames.
+ * ms <= 0 → no averaging; dt <= 0 or > 1 s (first frame, a TX over) → snap. */
+static float ema_factor_dt(int ms, gint64 dt_us) {
   if (ms <= 0) { return 1.0f; }
-  double dt = 1000.0 / (fps > 0 ? fps : 25);
-  double f = 1.0 - exp(-dt / (double)ms);
+  if (dt_us <= 0 || dt_us > G_USEC_PER_SEC) { return 1.0f; }
+  double f = 1.0 - exp(-(double)dt_us / 1000.0 / (double)ms);
   if (f > 1.0) { f = 1.0; }
   if (f < 0.01) { f = 0.01; }
   return (float)f;
@@ -1887,6 +1903,34 @@ static int wf_overlays_wanted(const App *app) {
   return app->radio_mode && app->show_filter_wf && app->fhi > app->flo;
 }
 
+/* Horizontal extent of what draw_wf_overlays() paints (passband + VFO line,
+ * plus the select-mode ghost), with a 2 px margin for line width and
+ * antialiasing. The overlay node is a CPU-rasterized cairo node; sized to
+ * this instead of the full window it stops costing 9.5–13.5 MB of raster +
+ * upload per frame at 3606–5120 px (issue #15). Must cover everything the
+ * draw function touches, or the clip cuts it. */
+static void wf_overlay_bounds(App *app, int w, double *bx0, double *bx1) {
+  double hz_per_px = (double)app->rate / app->zoom / w;
+  double cx = vfo_x(app, w);
+  double x0 = floor(cx + app->flo / hz_per_px) + 0.5;
+  double x1 = floor(cx + app->fhi / hz_per_px) + 0.5;
+  double xc = floor(cx) + 0.5;
+  double lo = fmin(fmin(x0, x1), xc), hi = fmax(fmax(x0, x1), xc);
+  if (app->select_mode && app->ptr_x >= 0 && app->ptr_x <= w) {
+    double gx0 = floor(app->ptr_x + app->flo / hz_per_px) + 0.5;
+    double gx1 = floor(app->ptr_x + app->fhi / hz_per_px) + 0.5;
+    double gxc = floor(app->ptr_x) + 0.5;
+    lo = fmin(lo, fmin(fmin(gx0, gx1), gxc));
+    hi = fmax(hi, fmax(fmax(gx0, gx1), gxc));
+  }
+  lo = floor(lo) - 2.0;
+  hi = ceil(hi)  + 2.0;
+  if (lo < 0.0) { lo = 0.0; }
+  if (hi > w)   { hi = w; }
+  *bx0 = lo;
+  *bx1 = hi;
+}
+
 /* Overlays ON the waterfall (filter edges / VFO line / select-mode cursor
  * carried down): a small cairo node over the texture, only when enabled. */
 static void draw_wf_overlays(cairo_t *cr, int w, int h, int ph, App *app) {
@@ -2038,10 +2082,14 @@ static void sdrfl_display_snapshot(GtkWidget *widget, GtkSnapshot *snapshot) {
     draw_upper(cr, w, ph, app);
     cairo_destroy(cr);
     if (wf_overlays_wanted(app) && h - ph > 0) {
-      cr = gtk_snapshot_append_cairo(snapshot,
-          &GRAPHENE_RECT_INIT(0.0f, (float)ph, (float)w, (float)(h - ph)));
-      draw_wf_overlays(cr, w, h, ph, app);
-      cairo_destroy(cr);
+      double bx0, bx1;
+      wf_overlay_bounds(app, w, &bx0, &bx1);   /* node = the painted strip only */
+      if (bx1 > bx0) {
+        cr = gtk_snapshot_append_cairo(snapshot,
+            &GRAPHENE_RECT_INIT((float)bx0, (float)ph, (float)(bx1 - bx0), (float)(h - ph)));
+        draw_wf_overlays(cr, w, h, ph, app);
+        cairo_destroy(cr);
+      }
     }
   } else {
     cairo_t *cr = gtk_snapshot_append_cairo(snapshot,
@@ -2086,8 +2134,10 @@ static void tick_network(App *app, GtkWidget *widget) {
  * that the incoming relative-dB pixels are offset on the fly. */
 static void tick_radio(App *app, GtkWidget *widget) {
   if (!analyzer_get_pixels(app->eng_raw, app->pixels)) { return; }
+  if (app->pix_skip > 0) { app->pix_skip--; return; }   /* stale frame after a column change */
   const float *raw = app->eng_raw;
   int n = app->pixels;
+  gint64 now = g_get_monotonic_time();
 
   if (app->ema_w != n) {
     memcpy(app->ema, raw, n * sizeof(float));
@@ -2096,17 +2146,18 @@ static void tick_radio(App *app, GtkWidget *widget) {
   } else {
     /* Analyzer uses 1 Hz PSD norm → floor is zoom-invariant; no compensation. */
     double so = app->soffset_locked ? app->soffset : 0.0;
-    float fs = ema_factor_ms(app->avg_spec_ms, app->fps);   /* spectrum averaging */
+    float fs = ema_factor_dt(app->avg_spec_ms, now - app->ema_prev_us);   /* spectrum averaging */
     for (int i = 0; i < n; i++) {
       app->ema[i] += fs * ((float)(raw[i] + so) - app->ema[i]);
     }
   }
+  app->ema_prev_us = now;
   app->cal_frames++;
 
   if (!app->soffset_locked) {
     if (app->cal_frames < SETTLE_FRAMES) { return; }   /* still calibrating */
     /* Lock: measure the ~20th-percentile noise floor and shift EMA to dBm. */
-    static float sorted[SPECTRUM_DATA_SIZE];
+    static float sorted[ANALYZER_MAX_PIXELS];
     memcpy(sorted, app->ema, n * sizeof(float));
     qsort(sorted, n, sizeof(float), cmp_float);
     double floor_db = sorted[(int)(n * 0.20)];
@@ -2131,7 +2182,7 @@ static void tick_radio(App *app, GtkWidget *widget) {
     gint64 now = g_get_monotonic_time();
     if (now >= dbg_next) {
       dbg_next = now + G_USEC_PER_SEC;
-      static float dsort[SPECTRUM_DATA_SIZE];
+      static float dsort[ANALYZER_MAX_PIXELS];
       memcpy(dsort, raw, n * sizeof(float));
       qsort(dsort, n, sizeof(float), cmp_float);
       int   pk_i = 0;
@@ -2153,16 +2204,17 @@ static void tick_radio(App *app, GtkWidget *widget) {
     memcpy(app->wf_ema, raw, n * sizeof(float));
     app->wf_ema_w = n;
   } else {
-    float fw = ema_factor_ms(app->avg_wf_ms, app->fps);
+    float fw = ema_factor_dt(app->avg_wf_ms, now - app->wf_ema_prev_us);
     for (int i = 0; i < n; i++) { app->wf_ema[i] += fw * (raw[i] - app->wf_ema[i]); }
   }
+  app->wf_ema_prev_us = now;
 
   /* EMA now in dBm. Build metadata + waterfall bytes. */
   app->frame.width      = n;
   app->frame.vfo_a_freq      = centre_hz(app);   /* the span centre           */
   app->frame.vfo_a_ctun_freq = app->freq;        /* the dial (the card shows it) */
   double peak = app->ema[0];
-  static uint8_t bytes[SPECTRUM_DATA_SIZE];
+  static uint8_t bytes[ANALYZER_MAX_PIXELS];
   for (int i = 0; i < n; i++) {
     if (app->ema[i] > peak) { peak = app->ema[i]; }
     double b = (double)app->wf_ema[i] + app->soffset + 200.0;
@@ -2182,11 +2234,15 @@ static void tx_pan_autofit(App *app);   /* fwd: one-shot TX dB-window fit (below
 #define TX_TRACE_CW_MS 12   /* CW TX trace: fast so it tracks keying (SSB keeps the RX avg) */
 static void tick_tx(App *app, GtkWidget *widget) {
   int n = app->pixels;
-  if (tx_run_get_pixels(app->tx_raw, n)) {
+  int fresh = tx_run_get_pixels(app->tx_raw, n);
+  if (fresh && app->pix_skip > 0) { app->pix_skip--; fresh = 0; }   /* stale after a column change */
+  if (fresh) {
     /* INTERIM: CW needs a fast trace, SSB a smooth one — mode-split for now; a
      * proper tunable per-mode TX averaging is on the TODO list. */
     int cw = (app->mode == DEMOD_CWL || app->mode == DEMOD_CWU);
-    float fs = ema_factor_ms(cw ? TX_TRACE_CW_MS : app->avg_spec_ms, app->fps);
+    gint64 now = g_get_monotonic_time();
+    float fs = ema_factor_dt(cw ? TX_TRACE_CW_MS : app->avg_spec_ms, now - app->tx_ema_prev_us);
+    app->tx_ema_prev_us = now;
     if (app->tx_ema_w != n) {
       memcpy(app->tx_ema, app->tx_raw, n * sizeof(float));
       app->tx_ema_w = n;
@@ -2199,7 +2255,7 @@ static void tick_tx(App *app, GtkWidget *widget) {
     /* Feed the TX waterfall (its own auto-range colours the transmitted spectrum;
      * TX levels aren't dBm-calibrated, so map byte = dB + 200 like the RX path). */
     if (app->tx_wf) {
-      static uint8_t bytes[SPECTRUM_DATA_SIZE];
+      static uint8_t bytes[ANALYZER_MAX_PIXELS];
       for (int i = 0; i < n; i++) {
         double b = (double)app->tx_ema[i] + 200.0;
         bytes[i] = (uint8_t)(b < 0 ? 0 : (b > 255 ? 255 : b));
@@ -2232,9 +2288,32 @@ static void update_tx_label(App *app, const tx_run_status *ts, gint64 now) {
   }
 }
 
+/* Analyzer columns follow the display width in DEVICE pixels (issue #15): one
+ * column per pixel, so the waterfall and the trace are never stretched. The
+ * request is debounced — WDSP restarts its dispatcher on every SetAnalyzer —
+ * and the first frame after the change is dropped (it may carry the old
+ * count's data). The RX and TX analyzers change together; the EMAs reseed on
+ * their own width check and the waterfall resamples its history. */
+static void pixels_follow_width(App *app, GtkWidget *widget, gint64 now) {
+  if (!app->radio_mode || !app->engine_ok) { return; }
+  int want = gtk_widget_get_width(widget) * gtk_widget_get_scale_factor(widget);
+  if (want < PIXELS_MIN)           { want = PIXELS_MIN; }
+  if (want > ANALYZER_MAX_PIXELS)  { want = ANALYZER_MAX_PIXELS; }
+  if (want != app->pixels_want) { app->pixels_want = want; app->pixels_want_us = now; return; }
+  if (want == app->pixels || now - app->pixels_want_us < (gint64)PIXELS_DEBOUNCE_MS * 1000) { return; }
+  analyzer_set_pixels(want);
+  if (app->tx_ready) { tx_run_set_pixels(want); }
+  app->pixels   = want;
+  app->pix_skip = 1;
+  printf("display: analyzer columns → %d (widget %d px × scale %d)\n", want,
+         gtk_widget_get_width(widget), gtk_widget_get_scale_factor(widget));
+  fflush(stdout);
+}
+
 static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) {
   (void)clock;
   App *app = (App *)data;
+  pixels_follow_width(app, widget, g_get_monotonic_time());
   if (app->radio_mode && app->zoom_dirty) {   /* coalesce slider events: ≤1 reconfig/frame */
     analyzer_set_zoom(app->pending_zoom);
     app->zoom = app->pending_zoom;
@@ -2696,7 +2775,7 @@ static int in_gutter(App *app, double x, double y) {
 static void pan_autofit(App *app) {
   int n = app->ema_w;
   if (n < 8) { return; }
-  static float srt[SPECTRUM_DATA_SIZE];
+  static float srt[ANALYZER_MAX_PIXELS];
   memcpy(srt, app->ema, n * sizeof(float));
   qsort(srt, n, sizeof(float), cmp_float);
   double floor_db = srt[(int)(n * 0.20)];
@@ -2715,7 +2794,7 @@ static void pan_autofit(App *app) {
 static void tx_pan_autofit(App *app) {
   int n = app->tx_ema_w;
   if (n < 8) { app->tx_pan_high = -40.0; app->tx_pan_low = -130.0; tx_pan_apply(app); return; }
-  static float srt[SPECTRUM_DATA_SIZE];
+  static float srt[ANALYZER_MAX_PIXELS];
   memcpy(srt, app->tx_ema, n * sizeof(float));
   qsort(srt, n, sizeof(float), cmp_float);
   double floor_db = srt[(int)(n * 0.20)];
@@ -6178,7 +6257,13 @@ static void start_radio(App *app) {
   app->win_w   = st.win_w   > 0 ? st.win_w : 1320;
   app->win_h   = st.win_h   > 0 ? st.win_h : 720;
   app->win_max = st.win_max ? 1 : 0;
-  app->pixels = ENGINE_PIXELS;
+  /* Column count: the saved window width is the best guess before the widget
+   * exists (the display spans the window); pixels_follow_width() corrects it
+   * once the window is up (maximized / HiDPI). */
+  app->pixels = app->win_w > 0 ? app->win_w : ENGINE_PIXELS;
+  if (app->pixels < PIXELS_MIN)          { app->pixels = PIXELS_MIN; }
+  if (app->pixels > ANALYZER_MAX_PIXELS) { app->pixels = ANALYZER_MAX_PIXELS; }
+  app->pixels_want = app->pixels;
   app->tune_step = TUNE_STEP_DEFAULT;   /* keep only known step values */
   for (guint i = 0; i < G_N_ELEMENTS(TUNE_STEPS); i++) {
     if (TUNE_STEPS[i] == st.step) { app->tune_step = st.step; break; }

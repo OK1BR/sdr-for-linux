@@ -20,7 +20,8 @@ void       waterfall_free(Waterfall *wf);
 
 /*
  * Add one spectrum row. `dbm` holds `n` raw column bytes (dBm = dbm[i] - 200).
- * The waterfall auto-sizes to `n` columns; a width change clears the history.
+ * The waterfall auto-sizes to `n` columns; a width change resamples the
+ * stored history to the new width (nearest column), it does not clear it.
  */
 void waterfall_push(Waterfall *wf, const uint8_t *dbm, int n);
 
