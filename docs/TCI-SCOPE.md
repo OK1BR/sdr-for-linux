@@ -5,8 +5,9 @@ software keys CW, decodes digital modes and runs skimmers against our radio —
 Richard's concrete clients: **Decodium** (digital modes, needs RX+TX audio over
 TCI), **SDC connectors** (UT4LW; CW keyer, skimmer, spots), contest loggers.
 All phases (2a–2e) are implemented; the per-phase live-verification narration
-was removed (last full version: commit d889fde). Still open: the LINE_OUT
-stream and live callsign correction in `cw_msg`.
+was removed (last full version: commit d889fde). Not implemented and not
+planned (issue #11, closed 2026-09-28 — no client of ours uses them): the
+LINE_OUT stream and live callsign correction in `cw_msg`.
 
 ## The protocol (official spec, read first-hand)
 
@@ -89,7 +90,7 @@ Arch/Debian/Fedora; platform-library category — do not vendor). Default port
   until F6d-2c. Covered: handshake (protocol:ExpertSDR3,1.9 … ready;),
   dds/if/vfo, modulation (ExpertSDR "cw" ↔ our CWU; cwl kept), rx_filter_band,
   drive/tune_drive, volume/mute, cw_macros(+escapes)/_stop/_speed(_up/_down)/
-  _delay, basic cw_msg ($N repeats; live callsign correction NOT yet),
+  _delay, basic cw_msg ($N repeats; no live callsign correction),
   tx_enable/tx_frequency. Prefs: Radio → TCI (switch live, port 40001,
   persisted `[tx] tci/tci_port`, off by default). Gate: `sdrfl-tci-test` —
   a real WebSocket client against the server with stub ops.
@@ -111,8 +112,8 @@ Arch/Debian/Fedora; platform-library category — do not vendor). Default port
   per-channel if/vfo state, the full piHPSDR-style init block, `start;`
   after `ready;`, and an **echo layer** — every bidirectional set MUST come
   back as a broadcast, so backend-less commands (split/RIT/XIT/squelch/
-  noise/agc/rx_mute…) are accepted, stored and echoed. **Still pending in
-  2b:** LINE_OUT stream. ⚠ Locale rule: protocol floats are formatted with
+  noise/agc/rx_mute…) are accepted, stored and echoed. **Not implemented,
+  not planned:** LINE_OUT stream. ⚠ Locale rule: protocol floats are formatted with
   g_ascii_formatd — the GTK app runs in the user's locale (cs_CZ = decimal
   COMMA) and ',' is a reserved TCI separator.
 - **F6d-2c — TX audio (digital TX)** (live on air 2026-07-10: the first FT8
