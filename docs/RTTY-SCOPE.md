@@ -217,5 +217,9 @@ alternative was dial = MARK, the convention of Icom and RBN, which reads
 skimmer spots the pair centre, a spot click tunes the centre, and no app of
 the family takes spots from outside (log-for-linux has no cluster client).
 A switch would touch three apps, the TX path among them, and change what
-every stored frequency means. Should outside spots ever come in or go out,
-convert the 85 Hz at that boundary — do not move the dial.
+every stored frequency means. The one boundary to the outside that exists
+today is the skimmer's local telnet feed (cluster-format lines for outside
+loggers, 0.1 kHz steps, no uplink to the RBN network): it carries the pair
+centre, so a consumer that expects MARK adds 85 Hz there — a
+skimmer-for-linux matter. The same holds for any boundary to come: convert
+there, do not move the dial.

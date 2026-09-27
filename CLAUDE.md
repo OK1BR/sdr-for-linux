@@ -760,8 +760,9 @@ decoded with the call complete (the rest = skimmer-for-linux #6); the
 RTTY level matches CW at the same drive byte (internal wattmeter, no
 external meter); SDC was never checked and is not in the RTTY chain.
 ⛔ **The dial stays on the FSK pair CENTRE (Richard, 2026-09-28)** — do
-not re-open dial = MARK; if outside spots ever come in or go out, convert
-the 85 Hz at that boundary (RTTY-SCOPE §7). RX decoding stays in
+not re-open dial = MARK; the 85 Hz is converted at the boundary to the
+outside (today only the skimmer's local telnet feed, which carries the
+centre), never by moving the dial (RTTY-SCOPE §7). RX decoding stays in
 skimmer-for-linux by design.
 
 ## Approach (decided with Richard)
