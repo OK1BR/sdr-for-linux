@@ -1,31 +1,27 @@
 # RTTY mode — scope plan (zadání, 2026-08-15)
 
-> **⏸ DEFERRED 2026-08-16 (Richard): everything still open below is PARKED
-> until later — no RTTY contest is coming up for a long while, so there is
-> no way to verify it properly. Not a candidate for the next milestone;
-> pick it back up before the next RTTY contest.** The parked list, complete:
+> **Status 2026-09-28: nothing is parked any more (issue #10).** What was
+> deferred on 2026-08-16 was settled by operation, not by a bench pass: two
+> contests keyed from the logbook's F-key macros over `rtty_macros` — SARTG
+> WW RTTY 2026-08-15/16 (73 QSOs) and CQ WW RTTY 2026-09-26/27 (81 QSOs).
+> The numbers below are from the run logs of 2026-09-26 (44 of those QSOs):
 >
-> - **Live family gate at the radio, with Richard (what is left of it):**
->   (a) the decode loop — skimmer decoding around our own TX needs BOTH new
->   binaries running at once (sdr `cc470af`: `trx` reports the real keyed
->   state; skimmer `01c72c8`: TX-hold) and a live check that the other
->   station's reply decodes from the 1st character after an over; at the
->   0.36 W test drive our own leak-through sat below the skimmer threshold
->   (T/R relay + 31 dB TX attenuators), so it needs real drive;
->   (b) wattmeter/duty check at 5-10 W (verifies `RTTY_IQ_AMP` at 100 % duty
->   — so far only 1 W: fwd constant, SWR 1.00);
->   (c) SDC compatibility look at `modulations_list` with `rtty` advertised.
-> - **Dial convention — UNDECIDED (Richard's call):** we tune the FSK pair
->   CENTRE, the world (Icom/RBN) tunes MARK → a standing 85 Hz offset.
->   Proposal on the table: switch to dial = MARK (touches sdr + skimmer +
->   §7 A here).
-> - **log-for-linux live pass — DONE in practice:** the SARTG WW RTTY
->   contest of 2026-08-15/16 was worked with the logbook's F-key macros
->   keying `rtty_macros` (73 RTTY QSOs; Richard, 2026-09-18 — tracked and
->   closed as log-for-linux #4).
->
-> The mode itself is usable and live-proven (first QSOs 2026-08-15; the
-> IC-705 decodes us since the wire-conjugation fix 5e7bbcb).
+> - **Decode around our own TX — works.** 169 `KEY RTTY` overs here, 169 TX
+>   holds in the skimmer (`trx` = the real keyed state, `cc470af`; skimmer
+>   TX-hold, `01c72c8`), at about 80 W. Of the 90 replies that carried our
+>   call, 74 had the complete call at their head. The rest lost their first
+>   characters — the skimmer's acquisition after an over, tracked as
+>   skimmer-for-linux #6.
+> - **`RTTY_IQ_AMP` at 100 % duty — consistent with CW.** Internal
+>   wattmeter, 458 readings: mean 80.9 W (66.9–84.5), SWR 1.00–1.12; CW at
+>   the same drive byte (36/255) reads 72–80 W key-down. Not compared
+>   against an external meter. That drive byte is a 50 W set-point at the
+>   default `pa_calibration` of 53 dB — the gap to the 80 W read is
+>   calibration (issue #8) and the same in both modes.
+> - **SDC and `rtty` in `modulations_list` — not checked, not planned.** SDC
+>   is not part of the RTTY chain; the contest ran on skimmer-for-linux and
+>   log-for-linux.
+> - **Dial convention — decided, the dial stays on the pair centre** (§7).
 
 > **⛔ LIVE-CAUGHT LESSON (2026-08-15 evening, first QSO attempts): the HPSDR
 > wire IQ convention is spectrally INVERTED — in BOTH directions.** The DDC
@@ -181,9 +177,11 @@ band stacking) rides the existing plumbing; the four mode-name converters
 
 - **`modulations_list` with `rtty`**: a third-party TCI client may reject
   the unknown name → appended last; the server already echoes
-  `get_mode()` on unsupported sets; verify against SDC in the live pass.
+  `get_mode()` on unsupported sets. Never checked against SDC (status
+  block above).
 - **P2 CFIR gain at ±85 Hz** — a wrong `RTTY_IQ_AMP` is wrong power →
-  measured in the gate + on the wattmeter at the dummy-load gate.
+  measured in the gate; on the air the level matches CW at the same drive
+  byte (status block above).
 - **100 % duty on the PA** → the digi drive cap applies; add the RTTY
   line to the TX-SAFETY pre-flight notes.
 - **Four scattered mode-name converters** + the audioprobe copy — a
@@ -212,3 +210,12 @@ family's decoder).
   to `modulations_list`.
 - **D.** `FILT_RTTY` ladder as in §2, default 500.
 - **E.** 45.45 Bd / 170 Hz fixed (no baud/shift UI).
+
+**A stands — decided by Richard 2026-09-28, after two contests on it.** The
+alternative was dial = MARK, the convention of Icom and RBN, which reads
+85 Hz above our dial. Inside the family nothing sees that offset: the
+skimmer spots the pair centre, a spot click tunes the centre, and no app of
+the family takes spots from outside (log-for-linux has no cluster client).
+A switch would touch three apps, the TX path among them, and change what
+every stored frequency means. Should outside spots ever come in or go out,
+convert the 85 Hz at that boundary — do not move the dial.

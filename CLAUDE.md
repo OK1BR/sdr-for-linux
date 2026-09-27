@@ -708,9 +708,8 @@ test away (its wire bytes ride along, gated in the same test).
 there is something concrete to test (a request with nothing to test has no
 value);
 10E PS via Thetis sequencing (TX-DESIGN §9, risky). (TX EQ folded into
-the equalizer milestone above. RTTY leftovers DEFERRED 2026-08-16 —
-parked in docs/RTTY-SCOPE.md, see the status entry below; needs an RTTY
-contest window to verify, none coming for a long while.)
+the equalizer milestone above. RTTY leftovers: closed 2026-09-28, see
+the status entry below.)
 Tonight (2026-07-13): audio-chain tuning with the Heil PR 40 + SPL
 Channel One mk3 (baseline: tube/EQ/de-esser out, gain ~55-60 dB,
 judged via SDRFL_TX_DUMP, NOT the 705 bench), plus the TX config
@@ -724,9 +723,9 @@ tap, SaveCorr per band, per-band ps_att), TX display averaging design
 (→ promoted, folded into the RX S-meter ballistics zadání above).
 
 **★ RTTY mode — IMPLEMENTED + live-proven 2026-08-15 (same day as the
-zadání; §7 A-E confirmed by Richard; scope §8 steps 1-4 done). ⏸ The
-remainder is DEFERRED 2026-08-16 (Richard) — parked in the RTTY-SCOPE.md
-status block, revisit before the next RTTY contest.**
+zadání; §7 A-E confirmed by Richard; scope §8 steps 1-4 done). The
+remainder, parked on 2026-08-16, was settled by two contests and CLOSED
+2026-09-28 (issue #10) — nothing RTTY is parked any more.**
 `docs/RTTY-SCOPE.md`: a real new mode (`DEMOD_RTTY = 12`, mapped to DIGL
 at every WDSP boundary — SetRXAMode in demod.c, tx_passband/tx_dsp in
 tx_run) with its own `FILT_RTTY` set (default 500), and the direct-FSK
@@ -754,12 +753,15 @@ immune); our direct FSK went out mark-LOW = reversed = unreadable
 (proven off-air via a KiwiSDR recording + dual-polarity slicer). Fix
 5e7bbcb: tx_run conjugates at the wire boundary; ANY future direct-IQ
 synthesis (PSK…) must conjugate there too. IC-705 decodes us since.
-⏸ DEFERRED (all of it, Richard 2026-08-16): the parked list lives in the
-RTTY-SCOPE.md status block — step 5 remainder (decode loop with both new
-binaries sdr cc470af + skimmer 01c72c8, wattmeter/duty at 5-10 W, SDC
-look), the dial=CENTRE vs dial=MARK decision, and step 6 (log-for-linux
-live pass + on-air macro QSO). No RTTY contest soon = no way to verify;
-not a milestone candidate until one approaches. RX decoding stays in
+**Leftovers closed 2026-09-28 (issue #10), on evidence from CQ WW RTTY
+2026-09-26/27 (81 QSOs; run logs of the 26th):** every one of 169 overs
+has its skimmer TX hold, at ~80 W; 74 of the 90 replies carrying our call
+decoded with the call complete (the rest = skimmer-for-linux #6); the
+RTTY level matches CW at the same drive byte (internal wattmeter, no
+external meter); SDC was never checked and is not in the RTTY chain.
+⛔ **The dial stays on the FSK pair CENTRE (Richard, 2026-09-28)** — do
+not re-open dial = MARK; if outside spots ever come in or go out, convert
+the 85 Hz at that boundary (RTTY-SCOPE §7). RX decoding stays in
 skimmer-for-linux by design.
 
 ## Approach (decided with Richard)
