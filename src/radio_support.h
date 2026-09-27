@@ -49,9 +49,9 @@
  *  - NEW_DEVICE_HERMES2 = ANAN 10E/100B. RX gates (rxprobe/panprobe/
  *    audioprobe) passed live 2026-07-11; Hermes-class HPF knees verified
  *    against piHPSDR np.c default branch.
- *  - DEVICE_HERMES_LITE2 = Hermes Lite 2, Protocol 1, ⛔ RX ONLY (R1+R2
- *    gates passed live 2026-07-12, docs/P1-SCOPE.md; the P1 link module
- *    contains no TX code at all and locks the T/R relay to RX).
+ *  - DEVICE_HERMES_LITE2 = Hermes Lite 2, Protocol 1. R1+R2 gates passed
+ *    live 2026-07-12 (docs/P1-SCOPE.md). TX and PureSignal followed the
+ *    same day — it is on both whitelists below.
  *  - NEW_DEVICE_SATURN = ANAN G2 (and the G2's Saturn board; discovery maps
  *    ids 1010/1011 here). ⛔ The ONE model enabled without a live test on our
  *    own bench — see the sanctioned exception in the header.

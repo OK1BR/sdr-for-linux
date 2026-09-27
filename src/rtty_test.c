@@ -15,7 +15,7 @@
  *      frequency = mark +85 / space −85 Hz, steady-mark preamble before the
  *      first start bit, ~1-bit mark tail before unkey.
  *   4. Abort ramps down within one block; leading-space idle rule
- *      (cw_gen_send_text parity, TX-DESIGN §10); HUD progress bookkeeping.
+ *      (cw_gen_send_text parity, TX-DESIGN §8); HUD progress bookkeeping.
  * NO radio, NO socket, NO WDSP. Exit 0 = pass.
  */
 #include <math.h>

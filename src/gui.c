@@ -342,7 +342,7 @@ typedef struct {
   int         cw_wpm;        /* CW keyer speed, WPM (persisted, F6d-1c)             */
   int         cw_pitch;      /* CW sidetone pitch, Hz (persisted)                   */
   double      cw_st_db;      /* CW sidetone level, dBFS (persisted)                 */
-  int         rtty_pitch;    /* RTTY audio pair centre, Hz (persisted; dflt 2210)   */
+  int         rtty_pitch;    /* RTTY audio pair centre, Hz (persisted; dflt 800)    */
   double      rtty_mon_db;   /* RTTY monitor level, dBFS (persisted; own trim)      */
   int         cw_hang;       /* CW break-in hang, ms (persisted)                    */
   double      band_pacal[NBANDS]; /* per-band PA calibration, dB (F6b, persisted)   */
@@ -1595,8 +1595,8 @@ static void draw_tx_digi_meter(cairo_t *cr, App *app, int w, const tx_run_status
                                   fatigues the ears; decode is IQ-side (skimmer),
                                   so the audio pitch is pure operator comfort. */
 #define RTTY_MON_DB_DFLT (-20.0) /* RTTY monitor level — own trim: the FSK monitor
-                                    is a CONTINUOUS ~2.2 kHz tone, needing a
-                                    different comfort level than keyed CW at 700 */
+                                    is a CONTINUOUS tone, needing a different
+                                    comfort level than keyed CW */
 #define TXF_LO_MIN    20.0     /* TX audio filter edges, Hz (150/2850 default;   */
 #define TXF_LO_MAX   500.0     /* high edge up to 6 kHz covers eSSB widths)      */
 #define TXF_HI_MIN  1500.0
@@ -5187,7 +5187,7 @@ static void on_pref_cw_hang(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
 
 /* RTTY: the audio pair centre — RX offset (demod shifter) + TX monitor pitch —
  * and the monitor's own level trim. One push, all consumers (RTTY-SCOPE §7A:
- * dial = pair centre, heard at 2125/2295 by default). */
+ * dial = pair centre, heard at pitch∓85 — 715/885 at the 800 default). */
 static void rtty_push(App *app) {
   demod_set_rtty_pitch(app->rtty_pitch);
   tx_run_set_rtty(app->rtty_pitch, app->rtty_mon_db);

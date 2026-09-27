@@ -1,12 +1,14 @@
 /*
- * sdr-for-linux — HPSDR Protocol-2 RX link (headless, GLib-only).
+ * sdr-for-linux — HPSDR Protocol-2 link (headless, GLib-only).
  *
- * Lean RX-only reimplementation of piHPSDR's new_protocol.c @ 974acba
- * (Option B — see docs/P2-RX-SCOPE.md). Line references below (np.c:NNNN) point
- * at that file; the wire-critical byte fills and the 24-bit-BE IQ decode are
- * copied faithfully from it. Absent by construction: TX/DUC, mic, PureSignal,
- * diversity, wideband, RX-audio return, Saturn/XDMA, and all the GTK/global
- * entanglement — we keep our own small state instead.
+ * Lean reimplementation of piHPSDR's new_protocol.c @ 974acba (Option B —
+ * see docs/P2-RX-SCOPE.md). Line references below (np.c:NNNN) point at that
+ * file; the wire-critical byte fills and the 24-bit-BE IQ decode are copied
+ * faithfully from it. It began RX-only; the TX side (TX state, TX-specific,
+ * TX-IQ ring, mic clock — docs/TX-DESIGN.md) and the PureSignal feedback DDCs
+ * came later. Still absent: diversity, wideband, RX-audio return, the Saturn's
+ * local XDMA path (the Saturn is driven over the network like every other
+ * radio), and all the GTK/global entanglement — we keep our own small state.
  *
  * Threading model (simpler than upstream): the outgoing packets are sent only
  * from p2_rx_start() (once, before the timer spawns) and thereafter only from
@@ -200,9 +202,9 @@ static int n_adc_for_device(int device) {
  * ([59]: 0x01 = Alex 0 only on the G2E/Hermes class, 0x03 = Alex 0 AND 1 on
  * ORION2/SATURN, which carry two filter boards — np.c:693-697). Byte [58] is the
  * firmware PA-enable (np.c:679-685): piHPSDR sends 1 when its "PA enable" setting
- * is on AND the TX band's disablePA is clear. The LIVE engine hardcodes
- * pa_enabled=0 here (send_general) — one of the three no-TX guarantees
- * (docs/TX-SAFETY.md); only sdrfl-txprobe passes 1, offline, to verify the byte. */
+ * is on AND the TX band's disablePA is clear. The live engine (send_general)
+ * passes the PA-enable of the installed TX state, and 0 when none is installed
+ * — layer 2 of the idle guarantees (docs/TX-SAFETY.md). */
 int p2_build_general(unsigned char *buf, int device, int pa_enabled) {
   memset(buf, 0, GENERAL_LEN);
   buf[0] = (general_sequence >> 24) & 0xFF;
@@ -211,7 +213,7 @@ int p2_build_general(unsigned char *buf, int device, int pa_enabled) {
   buf[3] = (general_sequence      ) & 0xFF;
   buf[37] = 0x08;  // phase word (not frequency)
   buf[38] = 0x01;  // enable hardware timer
-  buf[58] = pa_enabled ? 0x01 : 0x00;  // PA enable (np.c:684). LIVE = 0 (no-TX guarantee)
+  buf[58] = pa_enabled ? 0x01 : 0x00;  // PA enable (np.c:684); 0 with no TX state installed
   /* Alex enable — without it the RX band-pass relays never engage → no signal.
    * ⛔ G1 gap (docs/RADIOS-SCOPE.md §1): Saturn/ORION2 have TWO Alex boards and
    * need both enabled; sending 0x01 there leaves the second board dead. */
@@ -289,17 +291,18 @@ int p2_build_receive_specific(unsigned char *buf, int device, int sample_rate,
  * (the radio's automatic band filter follows DDC0). alex0/alex1 (bytes 1432..1435
  * / 1428..1431) carry the G2E's RX BPF + TX LPF + ANT relay + (TX) T/R relay bits.
  *
- * `tx` is the transmit state (docs/TX-DESIGN.md §F1). The LIVE engine ALWAYS
- * passes tx=NULL → xmit/pa_on are 0, every TX-only byte below is 0, and the
- * packet is byte-identical to the verified RX build (no MOX, no TX_RELAY, drive
- * 0). Only sdrfl-txprobe passes a non-NULL state, offline, to verify the layout.
+ * `tx` is the transmit state (docs/TX-DESIGN.md §F1): the live engine passes
+ * the installed one (p2_set_tx_state) and NULL while none is installed. With
+ * tx=NULL xmit/pa_on are 0, every TX-only byte below is 0, and the packet is
+ * byte-identical to the verified RX build (no MOX, no TX_RELAY, drive 0) —
+ * sdrfl-txprobe pins both states offline.
  * When tx==NULL the DUC / TX-LPF frequency falls back to the RX frequency. */
 int p2_build_high_priority(unsigned char *buf, int device, long long rx_freq_hz,
                            int run, const p2_tx_state *tx, const p2_ps_state *ps) {
   int ddc = ddc_for_device(device);
   long long rx_freq = rx_freq_hz;    // calibrated_frequency() with cal=0 is identity
 
-  /* TX gating — all 0 when tx==NULL (the live path). */
+  /* TX gating — all 0 when tx==NULL (no TX state installed). */
   int ps_on   = ps && ps->enabled;                 // PureSignal enabled (PS-1)
   int xmit    = tx && (tx->mox || tx->tune);       // keyed?
   int pa_on   = tx && tx->pa_enabled;              // PA enabled for the TX band?
@@ -368,8 +371,8 @@ int p2_build_high_priority(unsigned char *buf, int device, long long rx_freq_hz,
    *    path and the radio hears only relay leakage (~46 dB down; the "deaf RX"
    *    bug, c4b9243);
    *  - ALEX_TX_RELAY (0x08000000, T/R to TX): alex0 only when keyed, alex1 always
-   *    — and ONLY when the PA is enabled (np.c:1024-1032). Live (tx=NULL) →
-   *    pa_on=0 → never emitted (a no-TX guarantee).
+   *    — and ONLY when the PA is enabled (np.c:1024-1032). No TX state
+   *    (tx=NULL) → pa_on=0 → never emitted (an idle guarantee).
    *
    * run=0 (shutdown) PARKS the RF path instead: both Alex words stay all-zero,
    * which de-energizes the ANT/BPF/LPF relays and leaves the RX input

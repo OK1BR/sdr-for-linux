@@ -185,7 +185,7 @@ static volatile int      s_want_rtty;      /* g_atomic: RTTY content wants key (
 static volatile int      s_rtty_pitch = 800;  /* g_atomic: monitor audio pair centre (Hz)   */
 static volatile int      s_rtty_cdb = -2000;  /* g_atomic: monitor level (dB × 100) — own
                                                  trim, NOT the CW sidetone level (the FSK
-                                                 monitor is a continuous ~2.2 kHz tone)    */
+                                                 monitor is a continuous tone)             */
 static volatile int      s_cw_hang_ms = 250;   /* g_atomic: break-in hang time (ms)         */
 static gint64            s_cw_hang_deadline;   /* break-in hang end (monotonic µs); written
                                                   by the feed thread under s_cw_lock, read
@@ -776,8 +776,8 @@ static gpointer tx_thread(gpointer u) {
         g_mutex_unlock(&s_rtty_lock);
         if (g_atomic_int_get(&s_monitor)) {
           /* Monitor: the FSK itself, mixed to the RTTY pitch with the
-           * LSB-side mapping (audio = I·cos + Q·sin → mark 2125 / space
-           * 2295 at the 2210 default — exactly what a receiver hears).
+           * LSB-side mapping (audio = I·cos + Q·sin → mark 715 / space
+           * 885 at the 800 default — exactly what a receiver hears).
            * Absolute level = the RTTY monitor trim (its OWN setting — a
            * continuous tone needs a different comfort level than keyed
            * Morse; Richard, live 2026-08-15). */

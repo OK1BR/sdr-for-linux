@@ -737,7 +737,8 @@ mark tail, no hang. Text arrives over the TCI family extension
 `rtty_macros:`/`rtty_macros_stop;` (advertised LAST in
 `modulations_list`), keyed through the same tx_gate, WDSP bypassed like
 CW, 100 % duty joins the digi drive clamp; monitor = FSK mixed to the
-RTTY pitch (pref, default 2210 → 2125/2295), HUD reuses the CW
+RTTY pitch (pref, default 800 → mark 715 / space 885; 2210 = the classic
+2125/2295), HUD reuses the CW
 sent-text strip ("45 Bd"), hotkey `r`. Dial = FSK pair CENTRE (spot
 click stays Hz-exact). Gates: `sdrfl-rtty-test` (ITA2 truth vectors +
 independent in-test slicer round-trip @48k/192k + envelope/phase
@@ -832,8 +833,11 @@ path as hazardous and observe, without exception:
   to the ADC/RX input path.
 - TX-capable code lands **only with Richard's explicit consent** and only with
   the full `docs/TX-SAFETY.md` checklist satisfied — it is the acceptance
-  criteria list, not a suggestion. Until then the three no-TX guarantees
-  (no MOX bit, PA-enable 0, zeroed TX-specific) must never be weakened.
+  criteria list, not a suggestion. TX has landed (G2E 2026-07-08..10, then
+  the 10E, the HL2 and the G2), so the three no-TX guarantees (no MOX bit,
+  PA-enable 0, drive 0) are now the **idle state** — whenever nothing is
+  keyed, and always on a radio outside the TX whitelist — and there they
+  must never be weakened.
 
 ## Roadmap (RX first)
 

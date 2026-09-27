@@ -65,7 +65,8 @@ static int pick_mode(long long freq, double *flo, double *fhi, const char **name
     case DEMOD_AM:  *flo = -4000;     *fhi = 4000;      *name = "AM";  break;
     case DEMOD_RTTY: *flo = -250;     *fhi = 250;       *name = "RTTY"; break;
                     /* GUI-space, symmetric around the dial = the FSK pair
-                       centre; demod shifts to the 2125/2295 audio pair */
+                       centre; demod shifts it to the RTTY pitch (800 →
+                       the 715/885 audio pair) */
     default:        *flo =  150;      *fhi = 2850;      *name = "USB"; break;
   }
   return mode;

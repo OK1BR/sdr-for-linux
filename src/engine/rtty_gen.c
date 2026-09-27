@@ -177,7 +177,7 @@ static void push_char_rec(rtty_gen *g, char ch) {
 void rtty_gen_send_text(rtty_gen *g, const char *text) {
   if (!g || !text) { return; }
   /* A send starting from IDLE: skip leading whitespace (the gap already
-   * elapsed as real silence — TX-DESIGN §10 tripwire), drop the previous
+   * elapsed as real silence — TX-DESIGN §8 tripwire), drop the previous
    * over's HUD record, and open the over with the steady-mark preamble plus
    * one LTRS (parks the receiver's shift; ours resets with it). Mid-queue
    * sends append — whitespace there is genuine (transmitted space chars). */

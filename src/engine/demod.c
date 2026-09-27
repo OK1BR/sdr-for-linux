@@ -91,8 +91,8 @@ static void apply_passband(void) {
     off += (double)d_cw_pitch; lo -= d_cw_pitch; hi -= d_cw_pitch;
   } else if (d_mode == DEMOD_RTTY) {
     /* The CWL branch with the RTTY pitch: dial = FSK pair centre (what the
-     * skimmer spots — a clicked spot lands to the Hz), heard at the classic
-     * 2125/2295 audio pair via the LSB-side (DIGL) mapping. */
+     * skimmer spots — a clicked spot lands to the Hz), heard at pitch∓85
+     * (715/885 at the 800 default) via the LSB-side (DIGL) mapping. */
     off += (double)d_rtty_pitch; lo -= d_rtty_pitch; hi -= d_rtty_pitch;
   }
   SetRXAShiftFreq(d_id, off);

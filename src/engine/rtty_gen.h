@@ -49,7 +49,7 @@ int rtty_encode_char(char c, int *figs, unsigned char out[2]);
 /*
  * Queue `text` (appended to the schedule). Unknown characters are skipped.
  * A send starting from IDLE skips leading whitespace (the word gap already
- * elapsed as real silence — the cw_gen_send_text rule, TX-DESIGN §10) and
+ * elapsed as real silence — the cw_gen_send_text rule, TX-DESIGN §8) and
  * begins a new over: preamble + LTRS + a fresh HUD record. Thread-note: call
  * from the same side as pull() (tx_run serializes under its lock).
  */

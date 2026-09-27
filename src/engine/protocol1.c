@@ -1,11 +1,12 @@
 /*
- * sdr-for-linux — HPSDR Protocol-1 (METIS) RX link. See protocol1.h.
+ * sdr-for-linux — HPSDR Protocol-1 (METIS) link. See protocol1.h.
  *
  * Byte layouts follow piHPSDR old_protocol.c @ 974acba (first-hand audit
- * 2026-07-12, docs/P1-SCOPE.md) with line references at each site. RX-only:
- * one receiver, HL2-focused (the only P1 radio we bring up first). The
+ * 2026-07-12, docs/P1-SCOPE.md) with line references at each site.
+ * HL2-focused (the only P1 radio brought up so far): one receiver, nrx=4
+ * only as the PureSignal feedback link, TX per docs/P1-TX-SCOPE.md. The
  * C&C round-robin, frame layout and start sequence mirror old_protocol.c;
- * TX, diversity, multi-RX and the audio-codec path are simply absent.
+ * diversity and the audio-codec path are simply absent.
  *
  * Threading mirrors protocol2.c: ONE sender thread owns every outgoing
  * packet (fixed 2.625 ms cadence — the packet cadence is also the radio's
@@ -69,8 +70,8 @@ static int              s_fwd_max;             /* PEP max-hold (take-decays)  */
 
 /* ---- live TX state + IQ ring (T2, docs/P1-TX-SCOPE.md) --------------------
  * ⛔ s_tx_on with a mox state is the ONLY thing that puts the MOX bit on the
- * wire. It is set exclusively by p1_set_tx_state (tx_run's gate path); the
- * RX-only build never calls that, so everything below stays inert. */
+ * wire. It is set exclusively by p1_set_tx_state (tx_run's gate path);
+ * until that is called everything below stays inert. */
 #define TXRING_SAMPLES  8192          /* power of two, ~170 ms @ 48 k          */
 #define TXRING_BYTES    (TXRING_SAMPLES * 8)
 #define PKT_SAMPLES     126           /* TX IQ samples per EP2 packet (2×63)   */
@@ -166,13 +167,14 @@ static void cc_general(unsigned char *c) {
   long long f;
   p1_tx_state txb;
   g_mutex_lock(&s_freq_lock); f = s_freq_hz; g_mutex_unlock(&s_freq_lock);
-  /* ⛔ tx is non-NULL only after p1_set_tx_state — never in the RX-only build
-   * (radio_tx_supported excludes P1 until the T4 live checklist). */
+  /* ⛔ tx is non-NULL only after p1_set_tx_state — tx_run's gate path, which
+   * the GUI starts only for a radio that radio_tx_supported() lets through. */
   p1_build_cc_general(c, s_device, s_rate_bits, f, tx_snapshot(&txb), s_nrx);
 }
 
 /* The round-robin C&C registers (old_protocol.c p1_command_loop :2106-2765),
- * reduced to the RX-only/HL2 set from the P1-SCOPE "minimum viable" list.
+ * reduced to the HL2 set: the P1-SCOPE "minimum viable" list plus what TX
+ * and PureSignal need (P1-TX-SCOPE).
  *
  * ⛔ The 0x.. values below are the FINAL C0 bytes exactly as piHPSDR sends
  * them — the register address is already in bits [7:1] and bit 0 is MOX

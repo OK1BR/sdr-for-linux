@@ -188,8 +188,8 @@ void tx_run_set_sidetone(int pitch_hz, double level_db);
  * TX drops at message end after the mark tail — no hang time (Esc/stop aborts
  * within one block; the 20 s continuous-key backstop applies). WDSP is
  * bypassed like CW; the monitor plays the FSK at the RTTY pitch (LSB-side:
- * mark 2125 / space 2295 at the 2210 default) on the CW sidetone level.
- * set_rtty_pitch sets the monitor pitch (the RX offset lives in demod). All
+ * mark 715 / space 885 at the 800 default) at its own level trim.
+ * set_rtty sets the monitor pitch + level (the RX offset lives in demod). All
  * safe if TX isn't up (no-ops); keying only happens in RTTY mode + gated.
  */
 void tx_run_rtty_send(const char *text);
@@ -197,8 +197,8 @@ void tx_run_rtty_abort(void);
 void tx_run_rtty_progress(tx_cw_view *out);  /* HUD twin; hang_frac always 0 */
 /* Monitor pitch (Hz) + level (dBFS, absolute like the CW sidetone — its own
  * trim, independent of the voice monitor gain AND of the CW sidetone level:
- * the FSK monitor is a CONTINUOUS tone at ~2.2 kHz where the ear is most
- * sensitive, so the comfortable level differs from keyed Morse at 700 Hz). */
+ * the FSK monitor is a CONTINUOUS tone, so the comfortable level differs
+ * from keyed Morse). */
 void tx_run_set_rtty(int pitch_hz, double level_db);
 
 /*

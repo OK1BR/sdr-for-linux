@@ -1,16 +1,16 @@
 /*
- * sdr-for-linux — HPSDR Protocol-2 RX link (headless, GLib-only).
+ * sdr-for-linux — HPSDR Protocol-2 link (headless, GLib-only).
  *
- * A lean, RX-only reimplementation of piHPSDR's new_protocol.c @ 974acba
- * (Option B, decided with Richard — see docs/P2-RX-SCOPE.md). It starts one
- * radio over Protocol 2, runs a single DDC (RX1), and delivers the decoded IQ
- * stream to a caller-supplied callback. The wire-critical byte layouts (the
- * three outgoing packets and the 24-bit-BE IQ decode) are copied verbatim from
- * upstream with line references; everything TX / PureSignal / diversity /
- * Saturn is simply absent.
+ * A lean reimplementation of piHPSDR's new_protocol.c @ 974acba (Option B,
+ * decided with Richard — see docs/P2-RX-SCOPE.md). It starts one radio over
+ * Protocol 2, runs a single DDC (RX1), and delivers the decoded IQ stream to a
+ * caller-supplied callback. The wire-critical byte layouts (the outgoing
+ * packets and the 24-bit-BE IQ decode) are copied verbatim from upstream with
+ * line references. It began RX-only; the TX state, TX-IQ and PureSignal API
+ * further down came with docs/TX-DESIGN.md. Diversity and wideband are absent.
  *
- * The WDSP analyzer feed (piHPSDR's rx_add_iq_samples -> Spectrum0) is the next
- * milestone; here the IQ meets our own callback instead.
+ * The IQ meets our own callback instead of piHPSDR's rx_add_iq_samples; the
+ * caller feeds the WDSP analyzer and the demod from it.
  */
 #ifndef SDRFL_ENGINE_PROTOCOL2_H
 #define SDRFL_ENGINE_PROTOCOL2_H

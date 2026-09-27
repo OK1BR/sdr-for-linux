@@ -25,7 +25,7 @@ does the heavy lifting.
   quantisation, no column cap; 6 colour palettes, adjustable averaging & FPS
 - SSB / CW / AM / DIGU / DIGL / RTTY demodulation with piHPSDR filter
   presets, passband drawn on the spectrum (RTTY: dial = FSK pair centre,
-  heard on the classic 2125/2295 Hz pair)
+  audio pitch adjustable — 800 Hz by default, 2210 = the classic 2125/2295)
 - **Filter and AGC dialogs** behind two header-bar icons: a passband graph
   you drag (edges or the whole band), the mode's presets + Var1/Var2,
   Low/High rows; AGC Off/Long/Slow/Med/Fast with a live gain bar and the

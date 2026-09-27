@@ -1,23 +1,25 @@
 /*
- * sdr-for-linux — HPSDR Protocol-1 (METIS) RX link (headless, GLib-only).
+ * sdr-for-linux — HPSDR Protocol-1 (METIS) link (headless, GLib-only).
  *
- * The P1 twin of protocol2.h: a lean, RX-only implementation of piHPSDR's
- * old_protocol.c @ 974acba, scoped to ONE receiver on a Hermes Lite 2
- * (docs/P1-SCOPE.md, R1). Everything is multiplexed on one UDP socket
+ * The P1 twin of protocol2.h: a lean implementation of piHPSDR's
+ * old_protocol.c @ 974acba for the Hermes Lite 2. It began as ONE receiver,
+ * RX only (docs/P1-SCOPE.md, R1); TX and the nrx=4 PureSignal link came with
+ * docs/P1-TX-SCOPE.md. Everything is multiplexed on one UDP socket
  * against radio port 1024:
  *
  *   host→radio : EF FE 04 <cmd>  start/stop (bit0 = EP6 IQ stream)
  *                EF FE 01 02 <seq32> + 2×512 B USB frames ("EP2"): 7F 7F 7F
- *                sync, C0..C4 command bytes, 63×(4 B audio + 4 B TX IQ,
- *                all-zero here). The continuous EP2 stream IS the keepalive —
- *                the HL2 watchdog stops streaming ~10 s after the last packet.
+ *                sync, C0..C4 command bytes, 63×(4 B audio + 4 B TX IQ;
+ *                all-zero unless keyed). The continuous EP2 stream IS the
+ *                keepalive — the HL2 watchdog stops streaming ~10 s after the
+ *                last packet.
  *   radio→host : EF FE 01 06 <seq32> + 2×512 B frames ("EP6"): sync, 5 status
  *                bytes, then 63×(24-bit BE I, 24-bit BE Q, 16-bit mic) at 1 RX.
  *
- * ⛔ No-TX guarantees (the P1 analogue of the three P2 layers, P1-SCOPE §3):
- * the MOX bit (C0[0]) is never set, the drive byte (0x12-C1) is always 0, and
- * on HL-class radios 0x12-C2 = 0x04 locks the T/R relay to RX. There is no
- * TX-capable code in this module at all.
+ * ⛔ Idle guarantees (the P1 analogue of the three P2 layers, P1-SCOPE §3):
+ * with no TX state installed the MOX bit (C0[0]) is never set, the drive byte
+ * (0x12-C1) is 0, and on HL-class radios 0x12-C2 = 0x04 locks the T/R relay
+ * to RX. Only p1_set_tx_state — tx_run's gate path — installs a TX state.
  */
 #ifndef SDRFL_ENGINE_PROTOCOL1_H
 #define SDRFL_ENGINE_PROTOCOL1_H

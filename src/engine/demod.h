@@ -121,8 +121,8 @@ void demod_set_ctun_offset(double hz);
 
 /* RTTY audio pitch = the FSK pair centre in audio, Hz (live; thread-safe).
  * The dial reads the pair CENTRE (what the skimmer spots); the LSB-side
- * mapping puts mark/space at pitch∓85 — default 2210 = the classic
- * 2125/2295 pair (RTTY-SCOPE §7A). */
+ * mapping puts mark/space at pitch∓85 — default 800 = 715/885; 2210 is the
+ * classic 2125/2295 pair (RTTY-SCOPE §7A). */
 void demod_set_rtty_pitch(int hz);
 
 void demod_destroy(void);

@@ -4,9 +4,10 @@
  * The P1 twin of sdrfl-rxprobe: discover the radio (default the HL2 at
  * $SDRFL_RADIO_IP or 192.168.1.21), start ONE receiver, count the IQ stream
  * for a few seconds and sanity-check it: sample-rate accuracy, DC/RMS level,
- * EP6 sequence/sync errors, telemetry (temperature). RX only — the link
- * module has no TX code at all; on HL-class radios the C&C locks the T/R
- * relay to RX (⛔ no-TX guarantees, P1-SCOPE §3).
+ * EP6 sequence/sync errors, telemetry (temperature). RX only — the probe
+ * never installs a TX state, so the link stays idle: no MOX, drive 0, and on
+ * HL-class radios the C&C locks the T/R relay to RX (⛔ idle guarantees,
+ * P1-SCOPE §3).
  *
  * Exit 0 = IQ flows at the expected rate with a clean stream.
  */
