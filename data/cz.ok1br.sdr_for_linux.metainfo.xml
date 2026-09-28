@@ -37,6 +37,26 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.5.2" date="2026-09-28">
+      <description>
+        <p>
+          Wide windows: above about 2100 px the display fell to 30 frames per
+          second and the waterfall had only 2048 columns stretched across the
+          window. The analyzer now produces one column per display pixel (up
+          to 8192), the spectrum fill and trace are drawn by the GPU, and the
+          display was measured at 60 frames per second at 3350 and 5120 px on
+          the development machine. A new preference, Spectrum → Trace columns
+          (default 2048), sets how fine the trace is drawn; the waterfall
+          always uses every pixel. The transmit view follows the Frame rate
+          setting live, and the transmit waterfall is averaged by the
+          Waterfall constant like the receive one. The packages are now built
+          on current distributions: the AppImage needs glibc 2.43 and carries
+          GTK 4.22, the .deb is for Ubuntu 26.04 and newer, the .rpm is
+          compiled on Fedora and is for Fedora 44 and newer. Building from
+          source needs GTK 4.12.
+        </p>
+      </description>
+    </release>
     <release version="0.5.1" date="2026-09-12">
       <description>
         <p>

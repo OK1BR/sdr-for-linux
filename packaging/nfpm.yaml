@@ -9,11 +9,11 @@
 # The DSP stack (WDSP, rnnoise, libspecbleach) is vendored and statically
 # linked — only ubiquitous platform libraries appear as dependencies.
 #
-# Dependency names are verified against Ubuntu 24.04 (noble) + Debian 13
-# (trixie) for the .deb and Fedora 40+ for the .rpm; CI installs both
-# packages in fresh containers and ldd-checks the binary before a release
-# artifact is attached, so a renamed distro package fails the pipeline
-# instead of the user.
+# Dependency names are those of Ubuntu 26.04 for the .deb and Fedora 44 for
+# the .rpm (whose payload is compiled inside fedora:44); CI installs both
+# packages in fresh containers, ldd-checks the binary and brings the window
+# up under xvfb before a release artifact is attached, so a renamed distro
+# package fails the pipeline instead of the user.
 
 name: sdr-for-linux
 arch: amd64

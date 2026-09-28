@@ -118,9 +118,10 @@ jobs:
           # inherit: GNOME 50 (X11 backend removed) fails to match XWayland
           # windows' WM_CLASS to the .desktop entry, so the app shows a generic
           # gear in the dash/Alt-Tab. Our GTK4 app runs Wayland natively (the
-          # NVIDIA GL crash the hook worked around is already covered by the
-          # GSK_RENDERER=cairo default in main()); GDK autodetects x11 on X11
-          # sessions.
+          # NVIDIA GL crash the hook worked around belonged to GTK 4.14;
+          # main() picks the renderer by the runtime GTK — gl on >= 4.22,
+          # which is what this base bundles, cairo below); GDK autodetects
+          # x11 on X11 sessions.
           sed -i '/^export GDK_BACKEND=x11/d' AppDir/apprun-hooks/linuxdeploy-plugin-gtk.sh
           # Phase 2: pack the AppImage
           ./linuxdeploy-x86_64.AppImage --appimage-extract-and-run \

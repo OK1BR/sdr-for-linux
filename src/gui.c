@@ -6831,12 +6831,13 @@ int main(int argc, char **argv) {
   }
 
   /* Renderer default by runtime GTK. The GL renderer crashed on NVIDIA+Wayland
-   * in the GTK-4.14 era (the AppImage still bundles 4.14), so those stay on
-   * cairo; on ≥ 4.22 GL is live-verified (2026-08-01, RTX 5070 + Wayland) and
-   * kills the frame-present jitter of the software path — the drawing-area
-   * content is still Cairo-rasterized, but composition/upload move to the GPU.
-   * FALSE = an operator's explicit GSK_RENDERER always wins. Must precede any
-   * GTK init (the picker's too). */
+   * in the GTK-4.14 era, so anything below 4.22 stays on cairo; on ≥ 4.22 GL
+   * is live-verified (2026-08-01, RTX 5070 + Wayland) and kills the
+   * frame-present jitter of the software path. The AppImage bundled 4.14 up
+   * to 0.5.1 and carries the runner's 4.22 since the CI moved to
+   * ubuntu-26.04 — it takes the GL branch now. What is drawn where:
+   * docs/RENDERING.md. FALSE = an operator's explicit GSK_RENDERER always
+   * wins. Must precede any GTK init (the picker's too). */
   gboolean gl_ok = gtk_get_major_version() > 4 ||
                    (gtk_get_major_version() == 4 && gtk_get_minor_version() >= 22);
   g_setenv("GSK_RENDERER", gl_ok ? "gl" : "cairo", FALSE);

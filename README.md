@@ -22,7 +22,9 @@ does the heavy lifting.
 
 **Receive**
 - Full-float panadapter + waterfall straight from the WDSP analyzer — no
-  quantisation, no column cap; 6 colour palettes, adjustable averaging & FPS
+  quantisation, one column per display pixel (up to 8192, so a wide window
+  gets a sharper waterfall, not a stretched one); trace resolution
+  adjustable; 6 colour palettes, adjustable averaging & FPS
 - SSB / CW / AM / DIGU / DIGL / RTTY demodulation with piHPSDR filter
   presets, passband drawn on the spectrum (RTTY: dial = FSK pair centre,
   audio pitch adjustable — 800 Hz by default, 2210 = the classic 2125/2295)
@@ -192,11 +194,13 @@ select mode / abort a TX over.
 
 **Display rendering** is chosen automatically: on GTK ≥ 4.22 the app uses
 GTK's GPU (GL) renderer — the waterfall history is scaled by the graphics
-card and the frame pacing is much steadier at high FPS; on older GTK
-(including the AppImage's bundled 4.14) it stays on the proven CPU Cairo
-renderer. The startup log prints the choice (`renderer: GSK_RENDERER=…`),
-and setting `GSK_RENDERER` yourself always wins. Details in
-[`docs/RENDERING.md`](docs/RENDERING.md).
+card, the spectrum fill and trace are drawn by it, and the frame pacing is
+much steadier at high FPS; on older GTK it stays on the CPU Cairo renderer.
+The AppImage carries its own GTK (4.22 since 0.5.2), so it uses the GPU
+renderer too. The startup log prints the choice
+(`renderer: GSK_RENDERER=…`), and setting `GSK_RENDERER` yourself always
+wins — `GSK_RENDERER=cairo` is the fallback if the GPU path misbehaves on
+your graphics stack. Details in [`docs/RENDERING.md`](docs/RENDERING.md).
 
 ## Known limitations
 
@@ -209,9 +213,9 @@ and setting `GSK_RENDERER` yourself always wins. Details in
   not wired up
 - Wattmeter uses a single per-band calibration factor — accurate on HF,
   over-reads ~25 % on 6 m (a guided nonlinear calibration is planned)
-- GPU rendering needs GTK ≥ 4.22; on older GTK (e.g. the AppImage's bundled
-  4.14, where GL crashed on NVIDIA + Wayland) the display stays on the CPU
-  Cairo renderer (set `GSK_RENDERER` yourself to override — see
+- GPU rendering needs GTK ≥ 4.22; on older GTK (source builds on an older
+  distribution) the display stays on the CPU Cairo renderer (set
+  `GSK_RENDERER` yourself to override — see
   [`docs/RENDERING.md`](docs/RENDERING.md))
 
 ## Reporting a bug
