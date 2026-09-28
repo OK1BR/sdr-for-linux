@@ -573,10 +573,16 @@ away; an AppImage started with `--appimage-extract-and-run` has to be ended
 by process group (`setsid` + `kill -TERM -- -$pid`), TERM on the wrapper
 leaves `AppRun.wrapped` alive; on broadway do NOT force
 `GSK_RENDERER=cairo` (gtk4-broadwayd aborts in `append_node_ops`), and a
-dialog shows up only on the third screenshot or so. AUR 0.5.2-1: built
-from the tag tarball with `makepkg -C -f` (sha256 `7903a5bc…a149`, packaged
-binary 0.5.2, namcap clean bar the implicit deps), commit staged — the push
-waits for Richard's consent.
+dialog shows up only on the third screenshot or so. **AUR 0.5.2-1 DONE
+the same day** (AUR commit `11cd076`, pushed with Richard's consent — a
+third "ano", which also covered the SSH connection to
+`aur@aur.archlinux.org`): built from the tag tarball with `makepkg -C -f`
+(sha256 `7903a5bc…a149`, packaged binary 0.5.2, namcap clean bar the
+implicit deps), the pinned ed25519 host key still matched
+(`StrictHostKeyChecking=yes` on both `list-repos` and the push), verified
+by `git ls-remote`, a fresh clone and the AUR page. The SSH-log hook
+matches the word `ssh` followed by a space: a bare `git push ssh://…` is
+NOT logged, the same push with `GIT_SSH_COMMAND="ssh -o …"` is.
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
