@@ -542,6 +542,42 @@ Auto level RX-only, Scale top/bottom rows = RX window, the TX ruler ignoring
 "Frequency scale". ⛔ The TX waterfall change still wants a live look (RTTY or
 SSB: as crisp as RX now).
 
+**★ RELEASED 2026-09-28: v0.5.2 — the wide-window release, and the first
+tag on the current-distribution CI.** Issue #15 (columns follow the width,
+GPU mask nodes, Trace columns), the TX view following Frame rate + the
+Waterfall constant, and the package floors glibc 2.43 / Ubuntu 26.04+ /
+Fedora 44+ (the .rpm compiled inside fedora:44), GTK ≥ 4.12 from source.
+Checklist walked in one session: 12 offline gates (the CI's 11 +
+`sdrfl-wisdom-test`), headless About = 0.5.2, CI dry-run green (run
+36482488278 — the first `main` run on ubuntu-26.04), the PKGBUILD
+test-built from a `git archive` of the tree BEFORE the tag, notes EN + CZ
+approved, then a second explicit "ano" for `gh release create` itself
+(notes approval and publishing are two consents), tag CI (36484617977)
+attached AppImage/.deb/.rpm, the public AppImage reports 0.5.2, `~/.local`
+refreshed. ⛔ **The AppImage bundles GTK 4.22.4 now, not 4.14** — so it
+takes the GL branch of the renderer default for the first time. Verified in
+the headless GNOME Shell lab on the dry-run AND the public artifact:
+`renderer: GSK_RENDERER=gl (GTK 4.22)`, `Using renderer 'GskGLRenderer' for
+surface 'GdkWaylandToplevel'`, tracker match (app "SDR for Linux",
+`is_window_backed=false`, icon in the dash), no theme-parser warnings with a
+copy of Richard's gtk.css. README, the gui.c comment, build.yml and
+nfpm.yaml said "bundled 4.14" / "Ubuntu 24.04" until this release — all
+corrected in 0ac6e01. ⛔ **Shipped unverified, and said so in the notes:**
+the TX waterfall averaging (81ed291) was never looked at live — the contest
+of 2026-09-26 ran a binary older than that commit — and the AppImage was
+never run with live radio data on the GL path (the lab window has no
+radio). Lab lessons: take the headless shell's Wayland socket from its log
+(it got `wayland-0`, Richard's live session is `wayland-1`); run the app
+under `stdbuf -oL` or the `renderer:` line is lost when the compositor goes
+away; an AppImage started with `--appimage-extract-and-run` has to be ended
+by process group (`setsid` + `kill -TERM -- -$pid`), TERM on the wrapper
+leaves `AppRun.wrapped` alive; on broadway do NOT force
+`GSK_RENDERER=cairo` (gtk4-broadwayd aborts in `append_node_ops`), and a
+dialog shows up only on the third screenshot or so. AUR 0.5.2-1: built
+from the tag tarball with `makepkg -C -f` (sha256 `7903a5bc…a149`, packaged
+binary 0.5.2, namcap clean bar the implicit deps), commit staged — the push
+waits for Richard's consent.
+
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
 red TX filter footprint, AF true mute, 60 m USB, SDR-15 discovery dedup,
