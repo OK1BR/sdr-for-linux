@@ -21,6 +21,22 @@ PRs will be closed without review, regardless of quality.
   board that isn't supported yet and can lend it (or run tests with a dummy
   load), open an issue; that's the single most valuable contribution.
 
+## Questions and conversation: Discussions
+
+Not everything is a bug report. For the rest, use
+[Discussions](https://github.com/OK1BR/sdr-for-linux/discussions):
+
+- **Q&A** — setup and operating questions: which radio and protocol, audio
+  routing, TCI clients, "is this expected?". Not sure whether something is a
+  bug? Start here. An answered question stays findable for the next operator
+  with the same problem.
+- **Ideas** — something you'd like to talk through before it becomes a
+  concrete feature request.
+- **Show and tell** — your station, your screenshots, the contest you ran
+  with it.
+
+Issues stay for concrete bugs and requests.
+
 ## Why so strict?
 
 The project follows piHPSDR's engine philosophy with a deliberately small
