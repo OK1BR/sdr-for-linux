@@ -711,7 +711,21 @@ complete: nothing the library offers is left unfiled except what the G2E cannot
 use (diversity needs two ADCs — the G2E has one, both receivers share one
 antenna; EER; FM broadcast stereo). Late additions: #41 live RX audio in the
 Filter dialog + XY/phase scope (RX audio siphon), #42 spectrum detector /
-averaging mode selection. Not for the G2E: diversity (one
+averaging mode selection.
+**TCI 2.1 audit the same evening (spec of September 2026, ExpertSDR3/TCI repo
+pushed 2026-10-22; we built against 2.0):** 44 commands accepted, 34 emitted;
+format rules already met (case-insensitive names, `true`/`1`, unknown commands
+ignored, rate lists match). ⛔ Finding: 2.1 defines stream header word 8 as
+`count` (per-stream packet counter) — our `iq_stamp` extension writes the DDC
+centre into words 8–10 and skimmer-for-linux reads them there → **#43** (sdr:
+counter in word 8, stamps to 9–11, handshake `iq_stamp:2`, `iq_stamp:1` kept
+one release) + **skimmer-for-linux#38**, both in one release. **#44**: 2.1
+notifications/controls served from existing state (TX_FOOTSWITCH, HW_SENSORS,
+CW_MON, CW_MACROS_EMPTY, MON, AGC, RX_*_ENABLE, RX_MUTE/VOLUME/BALANCE set,
+TX_STREAM_AUDIO_BUFFERING; KEYER / CW_TERMINAL / RX_CHANNEL_ENABLE named as
+gaps). **#45**: RIT/XIT + VFO lock with their TCI commands. Notes on #24 (APF),
+#26 (SQL), #28 (RX_NB_PARAM), #34 (RX_NF_ENABLE). ExpertSDR3-specific (ECODER,
+APP_FOCUS, LINE_OUT) and reserved commands stay unimplemented on purpose. Not for the G2E: diversity (one
 ADC), EER, FM broadcast stereo.
 **16:31 the same day — TUNE / Ethernet-drop LOOP, fixed in code:** TUNE at ~74 W on
 15 m (gateware 11.0.5 makes ~1 dB more per drive byte) knocked the PC's
