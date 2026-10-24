@@ -667,6 +667,11 @@ GitHub issue to TAPR/OpenHPSDR-Firmware — **FILED with Richard's "ano":
 https://github.com/TAPR/OpenHPSDR-Firmware/issues/4** (OK1BR account,
 2026-10-24 15:4x; offers to test intermediate builds). Watch it for N1GP's
 reply; answers go out only after Richard approves the text.
+**Work queue for all of the above (filed 2026-10-24 with Richard's "ano"):**
+#16 footswitch guard live check (high), #17 SWR 5 % floor live check, #18 gate
+hold 0.3 s by ear, #19 remove the blind diagnostics (rxtx probe, ex_raw, RF
+mute decision), #20 README: run log + G2E gateware note, #21 track TAPR#4 and
+re-test a fixed gateware; calibration numbers appended to #8.
 
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
