@@ -314,6 +314,7 @@ typedef struct {
   double      tx_swr_alarm;  /* SWR trip threshold (persisted)                      */
   int         tx_ptt_enabled;/* footswitch: radio PTT input = MOX (persisted)       */
   int         tx_ptt_tip;    /* PTT contact on mic-jack tip vs ring (persisted)     */
+  int         debug_log;     /* Preferences: write the run log (opt-in; restart)     */
   int         ps_enable;     /* PureSignal on/off (persisted)                       */
   int         ps_att;        /* PS feedback attenuator during TX, dB (persisted per
                                 radio: P2 = ADC0 step att, P1 = LNA 31−att)         */
@@ -2776,6 +2777,7 @@ static void app_to_settings(const App *app, Settings *s) {
   s->tx_pa    = app->tx_pa_enabled;
   s->tx_ptt   = app->tx_ptt_enabled;
   s->tx_ptt_tip = app->tx_ptt_tip;
+  s->debug_log  = app->debug_log;
   s->ps_enable = app->ps_enable;
   s->ps_att    = app->ps_att;
   s->ps_setpk  = app->ps_setpk;
@@ -5064,6 +5066,14 @@ static void on_pref_tx_swr(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   app->tx_swr_alarm = adw_spin_row_get_value(r);
   tx_push_cfg(app); schedule_save(app);
 }
+/* Run log (opt-in, Richard 2026-10-24: "nobody who downloads it should have it
+ * on"): persisted only — logfile_init() reads the key at the next start. */
+static void on_pref_debug_log(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->debug_log = adw_switch_row_get_active(r) ? 1 : 0;
+  schedule_save(app);
+}
+
 /* Footswitch PTT (Richard's contest ask): the radio's PTT input keys like the
  * MOX button — intent only, tx_gate still decides. Applies live: the gate polls
  * p2_ptt_get() each slot, and the byte-50 PTT-enable rides the next TX-specific. */
@@ -5807,6 +5817,14 @@ static AdwDialog *build_prefs(App *app) {
   g_signal_connect(app->tci_client_row, "destroy", G_CALLBACK(on_tci_row_destroy), app);
   adw_preferences_group_add(g, app->tci_client_row);
   adw_preferences_page_add(p, g);
+  /* Diagnostics: the run log is OFF by default — a desktop launch otherwise
+   * drops stdout/stderr into /dev/null, which is fine for everyone who is not
+   * chasing a bug. Path: ~/.local/state/sdr-for-linux/sdr-for-linux.log. */
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Diagnostics", NULL));
+  adw_preferences_group_add(g, pref_switch("Run log",
+      "Write the engine log to ~/.local/state/sdr-for-linux/ (last 5 runs, timestamped) · restart to apply",
+      app->debug_log, G_CALLBACK(on_pref_debug_log), app));
+  adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);
   tci_clients_tick(app);            /* fill immediately, then 1 s refresh */
   if (!app->tci_timer) { app->tci_timer = g_timeout_add(1000, tci_clients_tick, app); }
@@ -6405,6 +6423,7 @@ static void start_radio(App *app) {
   app->tx_swr_alarm  = st.tx_swr   < 2.0 ? 2.0 : (st.tx_swr   > 5.0   ? 5.0   : st.tx_swr);
   app->tx_ptt_enabled = st.tx_ptt ? 1 : 0;
   app->tx_ptt_tip     = st.tx_ptt_tip ? 1 : 0;
+  app->debug_log      = st.debug_log ? 1 : 0;
   p2_set_ptt_input(app->tx_ptt_enabled, app->tx_ptt_tip);  /* atomics; safe pre-connect */
   app->ps_enable = st.ps_enable ? 1 : 0;
   app->ps_att    = st.ps_att < 0 ? 0 : (st.ps_att > 31 ? 31 : st.ps_att);

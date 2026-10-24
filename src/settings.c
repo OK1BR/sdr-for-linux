@@ -15,6 +15,7 @@
 #define GROUP_DISPLAY "display"
 #define GROUP_WINDOW  "window"
 #define GROUP_TX      "tx"
+#define GROUP_DEBUG   "debug"
 
 static char cfg_path[1024];
 
@@ -175,6 +176,8 @@ int settings_load(Settings *s) {
       s->tx_ptt = g_key_file_get_integer(kf, GROUP_TX, "ptt_pedal", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "ptt_tip", NULL))
       s->tx_ptt_tip = g_key_file_get_integer(kf, GROUP_TX, "ptt_tip", NULL);
+    if (g_key_file_has_key(kf, GROUP_DEBUG, "log", NULL))
+      s->debug_log = g_key_file_get_integer(kf, GROUP_DEBUG, "log", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "ps_enable", NULL))
       s->ps_enable = g_key_file_get_integer(kf, GROUP_TX, "ps_enable", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "ps_att", NULL))
@@ -362,6 +365,7 @@ int settings_save(const Settings *s) {
   g_key_file_set_double (kf, GROUP_TX,     "gate_depth", s->tx_gate_depth);
   g_key_file_set_integer(kf, GROUP_TX,     "ptt_pedal", s->tx_ptt);
   g_key_file_set_integer(kf, GROUP_TX,     "ptt_tip",   s->tx_ptt_tip);
+  g_key_file_set_integer(kf, GROUP_DEBUG,  "log",       s->debug_log);
   g_key_file_set_integer(kf, GROUP_TX,     "ps_enable", s->ps_enable);
   g_key_file_set_integer(kf, txdev,        "ps_att",    s->ps_att);   /* ⛔ PS cal  */
   g_key_file_set_double (kf, txdev,        "ps_setpk",  s->ps_setpk); /* per radio */

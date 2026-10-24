@@ -601,11 +601,12 @@ button cannot help (ORed in); the Footswitch PTT pref off clears it at
 once (`cfg.ptt_enabled` is pushed live). What the radio itself did during
 the 5 s is unverified for the G2E on gateware 11.1.0 (the TX-SAFETY
 watchdog audit is Saturn p2app). Landed the same day: **persistent run
-log** `src/logfile.c` — when fd 2 is /dev/null (app-grid launch)
-stdout/stderr go to `~/.local/state/sdr-for-linux/sdr-for-linux.log`
-(.1 … .4 kept), every line stamped HH:MM:SS.mmm so it lines up with
-`journalctl`; terminal/redirect runs untouched; `SDRFL_LOG=0` off; path in
-About → Debug Info. Trace lines: `p2: PTT input pressed/released` (edge),
+log** `src/logfile.c` — ⛔ OPT-IN (Richard, same day: nobody who
+installs it gets a log file): Preferences → TCI → Diagnostics → "Run log"
+(`[debug] log=1`, restart to apply) or `SDRFL_LOG=1`; stdout/stderr then
+go to `~/.local/state/sdr-for-linux/sdr-for-linux.log` (.1 … .4 kept),
+every line stamped HH:MM:SS.mmm so it lines up with `journalctl`;
+`SDRFL_LOG=0` wins; path in About → Debug Info. Trace lines: `p2: PTT input pressed/released` (edge),
 `tx: KEY PTT` (pedal-sourced over), `tx: request mox=… tune=…`
 (button/TCI), `tx: keyed, no radio status for N s` + `tx: radio status
 back` (`p2_status_age_us`). Verified headless (broadway, isolated

@@ -28,12 +28,6 @@
 
 static char *s_path;        /* NULL = not redirected */
 
-static int fd_is_devnull(int fd) {
-  struct stat n, f;
-  if (stat("/dev/null", &n) != 0 || fstat(fd, &f) != 0) { return 0; }
-  return f.st_dev == n.st_dev && f.st_ino == n.st_ino;
-}
-
 static void write_all(int fd, const char *p, size_t n) {
   while (n > 0) {
     ssize_t w = write(fd, p, n);
@@ -81,9 +75,23 @@ static FILE *ts_open(int fd, int mode) {
 #endif
 
 const char *logfile_init(const char *appname, const char *version) {
+  /* OPT-IN (Richard, 2026-10-24): nobody who just installs the app gets a log
+   * file. On = SDRFL_LOG=1 in the environment, or the Preferences switch
+   * (config.ini [debug] log=1, read here directly — settings are loaded
+   * later). SDRFL_LOG=0 wins over the switch. */
   const char *env = g_getenv("SDRFL_LOG");
-  if (env && strcmp(env, "0") == 0) { return NULL; }
-  if (!fd_is_devnull(2)) { return NULL; }   /* terminal or an operator redirect */
+  int on = 0;
+  if (env && *env) {
+    on = strcmp(env, "0") != 0;
+  } else {
+    char *cfg = g_build_filename(g_get_user_config_dir(), appname, "config.ini", NULL);
+    GKeyFile *kf = g_key_file_new();
+    if (g_key_file_load_from_file(kf, cfg, G_KEY_FILE_NONE, NULL)) {
+      on = g_key_file_get_integer(kf, "debug", "log", NULL) != 0;
+    }
+    g_key_file_unref(kf); g_free(cfg);
+  }
+  if (!on) { return NULL; }
 
   char *dir = g_build_filename(g_get_user_state_dir(), appname, NULL);
   if (g_mkdir_with_parents(dir, 0755) != 0) { g_free(dir); return NULL; }

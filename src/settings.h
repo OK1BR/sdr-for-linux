@@ -92,6 +92,7 @@ typedef struct {
   double    tx_gate_depth; /* below-threshold cut, dB (0/unset → default 10)      */
   int       tx_ptt;     /* footswitch: radio PTT input keys like MOX (0/1)        */
   int       tx_ptt_tip; /* PTT contact on mic-jack tip (0 = ring, Apache default) */
+  int       debug_log;  /* [debug] log: write the run log (opt-in, restart to apply)  */
   int       ps_enable;  /* PureSignal on/off (F7/PS-2)                            */
   int       ps_att;     /* PS ADC0 feedback attenuator during TX (dB, 0-31)       */
   double    ps_setpk;   /* PS SetPk (0.01-1.01; 0 = unset → default 0.2899)       */
