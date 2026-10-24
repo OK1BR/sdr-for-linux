@@ -708,7 +708,10 @@ generators (noise/sweep/pulsed), #37 up-slew for TUNE/two-tone/AM, #38 varsamp
 drift resampler (mic ring, TCI audio), #39 FM mode (`deferred` — descoped
 post-alpha, Richard decides), #40 AM carrier level + DSB. The WDSP inventory is
 complete: nothing the library offers is left unfiled except what the G2E cannot
-use. Not for the G2E: diversity (one
+use (diversity needs two ADCs — the G2E has one, both receivers share one
+antenna; EER; FM broadcast stereo). Late additions: #41 live RX audio in the
+Filter dialog + XY/phase scope (RX audio siphon), #42 spectrum detector /
+averaging mode selection. Not for the G2E: diversity (one
 ADC), EER, FM broadcast stereo.
 **16:31 the same day — TUNE / Ethernet-drop LOOP, fixed in code:** TUNE at ~74 W on
 15 m (gateware 11.0.5 makes ~1 dB more per drive byte) knocked the PC's
