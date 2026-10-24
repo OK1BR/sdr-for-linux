@@ -658,8 +658,10 @@ the 11.0.10 "3 stage CDC multi-clock transfer per AI recommendations"
 rewrite of the FPGA data transfer (TAPR Release_notes_11.0.10.txt). **The
 radio stays on 11.0.5**; 11.1.0 is `Hermes_Protocol_2_C10_v11.1.0_Mk2PA.rbf`
 in the TAPR repo (git sha ea27523c…), procedure in the work memory
-`g2e-firmware-update-postup`. One stream restart was seen 1 min after the
-flash (15:31:37, DDC sequence from 0) after a 100 ms key — none since; watch.
+`g2e-firmware-update-postup`. The one stream restart 1 min after the flash (15:31:37) was a PC NIC link
+drop too (journal 15:31:34), not the gateware. All day: not one lost packet
+from the radio outside the PC link drops; every radio outage starts 3 s after
+one — the radio↔switch segment is clean, the PC↔switch one is the problem.
 Side lesson: `sdrfl-tci-send -w` counted loop iterations, not time (fixed:
 wall clock) — a one-shot `trx:0,true` unkeys the instant the client
 disconnects (the server's keying-client safety), so hold with `-w N`. Next:
