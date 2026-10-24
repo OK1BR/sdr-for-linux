@@ -576,18 +576,25 @@ static int s_engine_rate;
  * strongest peaks elsewhere as offsets from the dial. Runs on the listener
  * thread; log only. */
 #define RXTX_N 8192
+static fftw_complex *rxtx_in, *rxtx_out;
+static fftw_plan     rxtx_plan;
+/* Planned ONCE on the main thread at start-up, before any WDSP channel exists:
+ * the FFTW planner is not thread-safe and the probe runs on the listener
+ * thread (Arch's libfftw3 has no fftw_make_planner_thread_safe — that lives in
+ * the separate threads library). FFTW_ESTIMATE: no wisdom needed. */
+static void rxtx_probe_init(void) {
+  rxtx_in  = fftw_alloc_complex(RXTX_N);
+  rxtx_out = fftw_alloc_complex(RXTX_N);
+  rxtx_plan = fftw_plan_dft_1d(RXTX_N, rxtx_in, rxtx_out, FFTW_FORWARD, FFTW_ESTIMATE);
+}
 static void rxtx_probe(const double *iq, int n_pairs) {
-  static fftw_complex *in, *out; static fftw_plan plan;
+  fftw_complex *in = rxtx_in, *out = rxtx_out;
   static float db[RXTX_N];
   static int fill; static gint64 last;
+  if (!rxtx_plan) { return; }
   if (!tx_run_keyed()) { fill = 0; return; }
   gint64 now = g_get_monotonic_time();
   if (fill == 0 && now - last < G_USEC_PER_SEC) { return; }
-  if (!in) {
-    fftw_make_planner_thread_safe();      /* WDSP plans on other threads */
-    in = fftw_alloc_complex(RXTX_N); out = fftw_alloc_complex(RXTX_N);
-    plan = fftw_plan_dft_1d(RXTX_N, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
-  }
   for (int i = 0; i < n_pairs && fill < RXTX_N; i++, fill++) {
     double w = 0.5 - 0.5 * cos(2.0 * M_PI * fill / (RXTX_N - 1));   /* Hann */
     in[fill][0] =  iq[2 * i]     * w;
@@ -595,7 +602,7 @@ static void rxtx_probe(const double *iq, int n_pairs) {
   }
   if (fill < RXTX_N) { return; }
   fill = 0; last = now;
-  fftw_execute(plan);
+  fftw_execute(rxtx_plan);
   double norm = (double)RXTX_N * RXTX_N / 4.0;      /* Hann coherent gain 0.5 */
   for (int k = 0; k < RXTX_N; k++) {
     int kk = (k + RXTX_N / 2) % RXTX_N;             /* index 0 = -rate/2 */
@@ -6930,6 +6937,7 @@ int main(int argc, char **argv) {
    * XDG state dir with timestamps (src/logfile.c). First, so the renderer
    * line below is the first line of the log. */
   logfile_init("sdr-for-linux", SDRFL_VERSION);
+  rxtx_probe_init();                 /* FFTW plan on the main thread, before WDSP */
 
   /* Renderer default by runtime GTK. The GL renderer crashed on NVIDIA+Wayland
    * in the GTK-4.14 era, so anything below 4.22 stays on cairo; on ≥ 4.22 GL
