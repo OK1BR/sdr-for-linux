@@ -228,6 +228,13 @@ static long   s_iqlvl_n;
  * fed, so no onset is lost. Live-mic voice overs only: not TCI audio, not
  * two-tone, not TUNE/CW/RTTY (those never enter the mic branch). */
 #define RF_MUTE_AFTER_US 400000      /* TX_GATE_HOLD_S 0.3 + DEXP release 0.1 */
+/* ⛔ DISABLED 2026-10-24, same hour, live: the tuner liked the zero/word bursts
+ * even less — it treated every onset as a fresh key-down, started tuning
+ * mid-word and got stuck in its tune cycle ("to SSB funguje totálně na…").
+ * The floor itself is the radio's; whether it is continuous (mute off) or
+ * bursty (mute on), an auto-tuner trips on it. Kept for the day the floor
+ * is gone or understood; the measurement (rf-muted n/m) keeps reporting. */
+#define RF_MUTE_ENABLED 0
 static gint64 s_gate_open_us;        /* last mic block at/above threshold, or key-on */
 static int    s_rf_mute;             /* 1 = zeros to the radio (tx thread only) */
 
@@ -971,7 +978,7 @@ static gpointer tx_thread(gpointer u) {
             for (int i = 0; i < FEED_BLOCK; i++) { float a = fabsf(mic[i]); if (a > pk) { pk = a; } }
             double pk_db = 20.0 * log10((double)pk + 1e-12) + mg;   /* Mic-METER scale */
             if (pk_db >= thr) { s_gate_open_us = now; }
-            s_rf_mute = (now - s_gate_open_us) > RF_MUTE_AFTER_US;
+            s_rf_mute = RF_MUTE_ENABLED && (now - s_gate_open_us) > RF_MUTE_AFTER_US;
           } else {
             s_rf_mute = 0;
           }
