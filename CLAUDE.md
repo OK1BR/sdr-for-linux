@@ -267,7 +267,8 @@ Arch news first — the 2026-06 maintenance was a migration with new host
 keys and another one may rotate them again.
 
 **★ NEXT MILESTONE (Richard's pick, 2026-08-01): RX + TX equalizer —
-parametric, with a graphical display.** Both directions (RX audio chain +
+parametric, with a graphical display.** ⛔ Prerequisite since 2026-10-24: issue #22 (WDSP
+1.29 → 2.11; 2.00 ships a free-curve EQ with graphical response data). Both directions (RX audio chain +
 TX mic chain), parametric control (per-band freq/gain/Q, not just fixed
 graphic-EQ sliders), and a graphical curve view in the UI. Step 1 is the
 WDSP capability audit: what the vendored RXA/TXA EQ stages actually offer
@@ -673,7 +674,11 @@ reply; answers go out only after Richard approves the text.
 #16 footswitch guard live check (high), #17 SWR 5 % floor live check, #18 gate
 hold 0.3 s by ear, #19 remove the blind diagnostics (rxtx probe, ex_raw, RF
 mute decision), #20 README: run log + G2E gateware note, #21 track TAPR#4 and
-re-test a fixed gateware; calibration numbers appended to #8.
+re-test a fixed gateware; calibration numbers appended to #8. **#22 (same
+evening): re-sync vendored WDSP 1.29 → 2.11** — upstream (TAPR/OpenHPSDR-wdsp,
+NR0V) is at 2.11 since 2026-10-15, piHPSDR carries it since 2026-10-16
+(5d46aff); 2.00 brings PureSignal 3.0 and the free-curve EQ with graphical
+response data, which is the natural base for the EQ milestone — do #22 first.
 **16:31 the same day — TUNE / Ethernet-drop LOOP, fixed in code:** TUNE at ~74 W on
 15 m (gateware 11.0.5 makes ~1 dB more per drive byte) knocked the PC's
 10GBASE-T link down within a second, every time (13 link drops that day, no CRC
