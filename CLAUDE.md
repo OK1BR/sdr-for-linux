@@ -679,6 +679,15 @@ evening): re-sync vendored WDSP 1.29 → 2.11** — upstream (TAPR/OpenHPSDR-wds
 NR0V) is at 2.11 since 2026-10-15, piHPSDR carries it since 2026-10-16
 (5d46aff); 2.00 brings PureSignal 3.0 and the free-curve EQ with graphical
 response data, which is the natural base for the EQ milestone — do #22 first.
+Component audit the same evening (memory `komponenty-audit-2026-10-24`):
+piHPSDR 3.1 DROPPED its vendored rnnoise (WDSP 2.10+ replaces it with its
+own neural NNR) — the NR3 decision is noted on #22; the `vendor/pihpsdr` wire
+contract is still 3.0 (`CLIENT_SERVER_VERSION 0x01300005`) while piHPSDR 3.1
+(tag 2026-10-02) speaks 0x01310001 and `client.c` refuses a mismatch, so the
+`--server` remote head cannot join a 3.1 server — ticket after #22. Verified
+NOT stale: the G2E wattmeter `c1 = 5.0` (ours since July, piHPSDR followed on
+2026-08-05), TX filter linear phase (we never call `TXASetMP`), the TCI queue
+(all 16 send sites under `s_lock`), CI actions/runners, distro floors.
 **16:31 the same day — TUNE / Ethernet-drop LOOP, fixed in code:** TUNE at ~74 W on
 15 m (gateware 11.0.5 makes ~1 dB more per drive byte) knocked the PC's
 10GBASE-T link down within a second, every time (13 link drops that day, no CRC
