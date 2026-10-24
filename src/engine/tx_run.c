@@ -486,6 +486,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   static double over_mic_min, over_mic_max, over_lvl_max;   /* mic peak dBFS, leveler dB */
   static double over_iq_min, over_iq_max;    /* slot IQ RMS min / slot IQ peak max, dBFS */
   static int    over_mute_n;                 /* slots with the RF mute engaged */
+  static int    over_ex_min, over_ex_max;    /* exciter sensor word, raw */
   static int    over_fwd_n;
   double tt_sign = (wmode == DEMOD_LSB || wmode == DEMOD_DIGL) ? -1.0 : 1.0;
   int tt_want_now = want_tt && keyed && r.state.mox && !r.state.tune && !gen_key;
@@ -563,6 +564,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     over_fwd_min = 1e9; over_fwd_max = 0.0; over_fwd_n = 0;
     over_mic_min = 1e9; over_mic_max = -1e9; over_lvl_max = -1e9;
     over_iq_min = 1e9; over_iq_max = -1e9; over_mute_n = 0;
+    over_ex_min = 1 << 30; over_ex_max = -1;
     s_iqlvl_sum2 = 0.0; s_iqlvl_pk2 = 0.0; s_iqlvl_n = 0;
   } else if (!keyed && *prev_keyed) {
     /* KEY OFF (operator release OR protection trip): drop MOX first, stop the
@@ -604,10 +606,10 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
       s_alc_min_over = 0.0;
       if (over_fwd_n > 0) {
         fprintf(stderr, "tx: over fwd min=%.2f W max=%.1f W, mic %.0f..%.0f dBFS, leveler max %+.1f dB, "
-                "sent IQ slot-rms min %.0f dBFS peak max %.0f dBFS, rf-muted %d/%d slots "
-                "(after the first 200 ms)\n",
+                "sent IQ slot-rms min %.0f dBFS peak max %.0f dBFS, rf-muted %d/%d slots, "
+                "exciter raw %d..%d (after the first 200 ms)\n",
                 over_fwd_min, over_fwd_max, over_mic_min, over_mic_max, over_lvl_max,
-                over_iq_min, over_iq_max, over_mute_n, over_fwd_n);
+                over_iq_min, over_iq_max, over_mute_n, over_fwd_n, over_ex_min, over_ex_max);
       }
 
       if (s_dump_mic) { fflush(s_dump_mic); }
@@ -630,6 +632,10 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
       }
       if (lvl > over_lvl_max) { over_lvl_max = lvl; }
       if (s_rf_mute) { over_mute_n++; }
+      if (!s_p1) {
+        if (t.exciter_raw < over_ex_min) { over_ex_min = t.exciter_raw; }
+        if (t.exciter_raw > over_ex_max) { over_ex_max = t.exciter_raw; }
+      }
       if (s_iqlvl_n > 0) {                 /* what we sent since the last slot */
         double rms_db = 10.0 * log10(s_iqlvl_sum2 / (double)s_iqlvl_n + 1e-30);
         double pk_db  = 10.0 * log10(s_iqlvl_pk2 + 1e-30);
@@ -661,8 +667,10 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
                 pl.state, pl.fdbk, pl.cals, pl.sln, pl.getpk,
                 pl.correcting ? "CORRECTING" : "-");
       } else {
-        fprintf(stderr, "tx: fwd=%.2f W  rev=%.2f W  SWR=%.2f  (fwd_raw=%d rev_raw=%d)\n",
-                tx_meter_fwd_w(), tx_meter_rev_w(), tx_meter_swr(), t.fwd_raw, t.rev_raw);
+        /* ex_raw = the exciter (DAC output, before the PA) sensor word, HP-status
+         * bytes 6-7 — 2026-10-24: does the ~1.4 W idle floor exist before the PA? */
+        fprintf(stderr, "tx: fwd=%.2f W  rev=%.2f W  SWR=%.2f  (fwd_raw=%d rev_raw=%d ex_raw=%d)\n",
+                tx_meter_fwd_w(), tx_meter_rev_w(), tx_meter_swr(), t.fwd_raw, t.rev_raw, t.exciter_raw);
       }
       fflush(stderr);
     }
