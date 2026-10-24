@@ -742,10 +742,24 @@ static void send_packet(const unsigned char *buf, int len,
                                             then the usual link-down verdict */
     rc = sendto(data_socket, buf, len, 0, (struct sockaddr *)addr, addrlen);
   } while (rc < 0 && errno == EINTR && ++tries < 4);
+  /* ⛔ A failed send is NOT a dead link (2026-10-24): NetworkManager
+   * re-activating the interface (1 Gbps test) removed the address for ~3 s,
+   * sendto returned ENETUNREACH, and p2running = 0 here tore the whole link
+   * down — timer, listener and TX-IQ threads gone, RX dead, process alive —
+   * although the radio re-arms on the next run=1 keepalive the moment the
+   * network is back (seen all day across 17 NIC link drops, where sendto
+   * kept "succeeding" into a carrier-less interface). Log the episode once
+   * and keep sending; the keyed-TX side is covered by the link-loss release
+   * in tx_run (no HP-status for 1 s → MOX/TUNE/pedal dropped). */
+  static int send_fail_n;
   if (rc < 0) {
-    t_perror("p2 sendto");
-    t_print("p2: send %s failed\n", what);
-    p2running = 0;
+    if (send_fail_n++ == 0) {
+      t_perror("p2 sendto");
+      t_print("p2: send %s failed — keeping the link, retrying every tick\n", what);
+    }
+  } else if (send_fail_n) {
+    t_print("p2: send ok again after %d failed sends\n", send_fail_n);
+    send_fail_n = 0;
   } else if (rc != len) {
     t_print("p2: send %s short: %zd of %d\n", what, rc, len);
   }
