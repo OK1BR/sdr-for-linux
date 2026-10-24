@@ -685,6 +685,17 @@ while keyed releases MOX/TUNE/two-tone + flushes the CW/RTTY queues
 key again"; TX-SAFETY bullet). Only ever removes keying. The physical side (RF
 into the Ethernet: ferrite/choke, 1 Gbps link) is Richard's call — the 1 Gbps
 NetworkManager test was proposed, not done.
+**RESOLVED 16:43-16:55 the same day:** the X540 profile pinned to 1 Gbps
+(`nmcli con modify "Drátové připojení 4" 802-3-ethernet.auto-negotiate yes
+802-3-ethernet.speed 1000 802-3-ethernet.duplex full`) survived four TUNEs at
+60-64 W; then Richard moved the cable to the onboard Realtek RTL8125 (2.5 GbE,
+`enp132s0`, new DHCP address 192.168.1.12), which survived three TUNEs at
+74-81 W incl. an 11 s one — no link drop, no radio outage. Verdict: the
+10GBASE-T link's RF susceptibility, not the switch, radio or app. Side
+catch: NM re-activation = ~3 s without an address → sendto ENETUNREACH killed
+the P2 link (piHPSDR parity) → acfa3aa keeps sending and recovers (verified
+live twice: the re-activation test and the cable move, 421 failed sends then
+"send ok again").
 
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
@@ -1036,7 +1047,10 @@ path as hazardous and observe, without exception:
 
 - **Radio:** Apache Labs **ANAN G2E** (piHPSDR device "G1", id 20 — not the
   Saturn/G2), HPSDR **Protocol 2**, at **192.168.1.247**
-  on the LAN. Richard's dev machine: 192.168.1.18.
+  on the LAN. Richard's dev machine: **192.168.1.12** since 2026-10-24 (onboard
+  Realtek RTL8125, 2.5 GbE, `enp132s0`; the Intel X540 10GBASE-T link
+  `enp134s0f1` = 192.168.1.18 dropped under TX on 15 m — see the 2026-10-24
+  record; its NM profile is pinned to 1 Gbps, cable unplugged).
 - **piHPSDR source** (the engine reference to import from):
   `/home/rfa/.local/opt/pihpsdr`, git **974acba** (github.com/dl1ycf/pihpsdr),
   `CLIENT_SERVER_VERSION 0x01300005`. A prebuilt `pihpsdr` binary runs there, so
