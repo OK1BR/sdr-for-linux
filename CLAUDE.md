@@ -702,10 +702,13 @@ mark/space, #26 voice/AM squelch, #27 TX CFC + post-EQ (after #22), #28 expose
 NR2/NR4/NB2/ANR/ANF parameters (Noise page, NNR rows from #22 join it), #29 NOB
 interpolating blanker as NB mode 3, #30 SAM with sideband select + fade, #31
 click-to-peak via the analyzer max-bin detector, #32 siphon TX tap. Second batch
-still to file (texts pending Richard's approval): VOX in the DEXP, manual notch
-filters (RXANBP), real filter curve in the Filter dialog (getFilterCurve), RX/TX
-test generators (noise/sweep/pulsed), up-slew, varsamp drift resampler, FM
-(descoped post-alpha), AM carrier level, DSB. Not for the G2E: diversity (one
+FILED the same evening: #33 VOX in the DEXP, #34 manual notch filters (RXANBP),
+#35 real filter curve in the Filter dialog (getFilterCurve), #36 RX/TX test
+generators (noise/sweep/pulsed), #37 up-slew for TUNE/two-tone/AM, #38 varsamp
+drift resampler (mic ring, TCI audio), #39 FM mode (`deferred` — descoped
+post-alpha, Richard decides), #40 AM carrier level + DSB. The WDSP inventory is
+complete: nothing the library offers is left unfiled except what the G2E cannot
+use. Not for the G2E: diversity (one
 ADC), EER, FM broadcast stereo.
 **16:31 the same day — TUNE / Ethernet-drop LOOP, fixed in code:** TUNE at ~74 W on
 15 m (gateware 11.0.5 makes ~1 dB more per drive byte) knocked the PC's
