@@ -663,8 +663,10 @@ flash (15:31:37, DDC sequence from 0) after a 100 ms key — none since; watch.
 Side lesson: `sdrfl-tci-send -w` counted loop iterations, not time (fixed:
 wall clock) — a one-shot `trx:0,true` unkeys the instant the client
 disconnects (the server's keying-client safety), so hold with `-w N`. Next:
-GitHub issue to TAPR/OpenHPSDR-Firmware (N1GP) with these numbers — text
-EN+CZ for Richard's approval.
+GitHub issue to TAPR/OpenHPSDR-Firmware — **FILED with Richard's "ano":
+https://github.com/TAPR/OpenHPSDR-Firmware/issues/4** (OK1BR account,
+2026-10-24 15:4x; offers to test intermediate builds). Watch it for N1GP's
+reply; answers go out only after Richard approves the text.
 
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
