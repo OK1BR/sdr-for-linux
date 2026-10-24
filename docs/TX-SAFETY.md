@@ -46,13 +46,18 @@ While transmitting with the setting on, TX-specific byte 50 keeps the PTT
 input enabled (np.c:1553-1558) so the pedal *release* is still reported
 mid-over; with the setting off the TX-time packet keeps PTT disabled and
 the status bit is ignored (today's behavior, bit-for-bit).
-⛔ Known gap (2026-10-24, two live events): the pedal state is a level with
-no staleness check — when HP-status packets stop (a 5 s NIC link drop,
-both times during an SSB over) the gate holds the last pedal state and
-re-keys the radio the moment the link returns. A staleness guard is pending
-consent; until then the Footswitch PTT setting is the emergency stop (the
-MOX button is ORed with the pedal and cannot clear it). The run log
-(`src/logfile.c`) now records the episode.
+⛔ Freshness guard (2026-10-24, three live stuck-TX events, each a 5 s NIC
+link drop during an SSB over): the pedal state is a level re-read from every
+HP-status packet, so without the status stream it would hold — and the host
+would re-assert MOX the moment the link returns. `tx_gate_ptt_usable()` lets
+the pedal act only while a status packet arrived within the last 0.5 s
+(`TX_PTT_STALE_US`; status runs about 20/s on RX, 1 kHz on TX), so a
+pedal-keyed over drops within 0.5 s of the stream stopping and after the
+link returns the first real status packet decides. P1 is not guarded (no
+status-age plumbing). The Footswitch PTT setting remains the manual stop
+(the MOX button is ORed with the pedal and cannot clear it); the run log
+(`src/logfile.c`) records every episode. What the radio itself does during
+the outage is its watchdog (above) — unverified on the G2E / gateware 11.1.0.
 
 ## The checklist (piHPSDR references)
 

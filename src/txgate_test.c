@@ -199,6 +199,15 @@ int main(void) {
     i.temp_c = 90.0; tx_gate_reset(); tx_gate_evaluate(&c, &i, &r); }
   ok("limit 0 (P2, no telemetry) never trips", r.keyed && !r.tripped, "");
 
+  /* 11. footswitch freshness guard (2026-10-24 NIC link drops): the pedal is
+   * a level re-read from HP-status packets — usable only while they arrive. */
+  printf("\n[footswitch] HP-status freshness guard (TX_PTT_STALE_US):\n");
+  ok("no status packet yet (-1) -> pedal unusable", !tx_gate_ptt_usable(-1), "");
+  ok("fresh status (20 ms) -> usable", tx_gate_ptt_usable(20000), "");
+  ok("just under the limit -> usable", tx_gate_ptt_usable(TX_PTT_STALE_US - 1), "");
+  ok("at the limit (0.5 s) -> unusable", !tx_gate_ptt_usable(TX_PTT_STALE_US), "");
+  ok("5 s link drop -> unusable", !tx_gate_ptt_usable(5000000), "");
+
   printf("\n=== %d checks, %d failures ===\n", g_checks, g_fail);
   if (g_fail == 0) { printf("PASS — every safety guard behaves; the gate never keys out of band or through a trip.\n"); }
   else             { printf("FAIL — %d mismatch(es) above.\n", g_fail); }

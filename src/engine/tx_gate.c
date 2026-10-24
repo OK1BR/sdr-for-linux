@@ -17,6 +17,10 @@ static int s_tripped  = 0;   /* latched: refuse keying until release */
 static int s_pre_high = 0;   /* saw one over-limit reading (2-consecutive filter) */
 static const char *s_trip_reason = "SWR/antenna protection — release to reset";
 
+int tx_gate_ptt_usable(long long status_age_us) {
+  return status_age_us >= 0 && status_age_us < TX_PTT_STALE_US;
+}
+
 void tx_gate_reset(void) {
   s_tripped  = 0;
   s_pre_high = 0;

@@ -80,6 +80,19 @@ typedef struct {
 /* Clear the protection latch + SWR history. Call on unkey / RX->TX entry. */
 void tx_gate_reset(void);
 
+/*
+ * Footswitch freshness guard (2026-10-24: three stuck-TX events, each a 5 s
+ * NIC link drop during an SSB over). The radio's PTT input is a LEVEL re-read
+ * from every HP-status packet; with the status stream gone the last value seen
+ * would keep keying the radio and re-key it the moment the link returns. The
+ * pedal may act only while a status packet arrived within TX_PTT_STALE_US
+ * (status runs about 20/s on RX, 1 kHz on TX; 0.5 s = ten missed RX-rate
+ * packets, never a jitter). status_age_us -1 = no status packet yet.
+ * Pure; pinned by sdrfl-txgate-test.
+ */
+#define TX_PTT_STALE_US 500000LL
+int tx_gate_ptt_usable(long long status_age_us);
+
 /* Evaluate one control tick. Pure decision — no side effects beyond the internal
  * trip latch. Writes the result into *out. */
 void tx_gate_evaluate(const tx_gate_cfg *cfg, const tx_gate_in *in, tx_gate_result *out);

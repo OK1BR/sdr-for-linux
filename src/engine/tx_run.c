@@ -315,8 +315,33 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
    * mic path (the is_voice tripwire, RTTY-SCOPE §6). */
   int is_voice  = !is_cw && !is_rtty &&
                   cfg.mode != DEMOD_DIGU && cfg.mode != DEMOD_DIGL;
-  int want_ptt  = cfg.ptt_enabled && is_voice &&
+  int ptt_raw   = cfg.ptt_enabled && is_voice &&
                   (s_p1 ? p1_ptt_get() : p2_ptt_get());
+  /* ⛔ Freshness guard (TX-SAFETY "Footswitch PTT"): on P2 the pedal counts
+   * only while HP-status packets are arriving — otherwise the level is the
+   * LAST one seen (2026-10-24: three stuck-TX events, each a 5 s NIC link
+   * drop during an SSB over; the host kept MOX up and re-keyed the radio when
+   * the link came back). After the link returns the first real status packet
+   * decides. P1 is not guarded (no status-age plumbing; the pedal is on the
+   * G2E). One log line per episode — this runs on the TX thread only. */
+  long long ptt_age = s_p1 ? 0 : p2_status_age_us();
+  int ptt_fresh = s_p1 ? 1 : tx_gate_ptt_usable(ptt_age);
+  int want_ptt  = ptt_raw && ptt_fresh;
+  {
+    static int ptt_ignored;
+    if (ptt_raw && !ptt_fresh) {
+      if (!ptt_ignored) {
+        fprintf(stderr, "tx: footswitch ignored — no radio status for %.1f s (link lost?)\n",
+                ptt_age < 0 ? 0.0 : ptt_age / 1e6);
+        fflush(stderr);
+        ptt_ignored = 1;
+      }
+    } else if (ptt_ignored) {
+      fprintf(stderr, "tx: footswitch live again (pedal %s)\n", ptt_raw ? "pressed" : "released");
+      fflush(stderr);
+      ptt_ignored = 0;
+    }
+  }
   /* Two-tone test (PS calibration / IMD check) — keys exactly like MOX through
    * the gate (⛔ approved delta #2); excluded in CW/RTTY (the feed loop would
    * emit the generator IQ instead of the WDSP chain). */

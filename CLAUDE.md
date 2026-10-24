@@ -610,10 +610,16 @@ About → Debug Info. Trace lines: `p2: PTT input pressed/released` (edge),
 (button/TCI), `tx: keyed, no radio status for N s` + `tx: radio status
 back` (`p2_status_age_us`). Verified headless (broadway, isolated
 XDG_STATE_HOME): log + rotation + an operator `2>file` left alone; 11 gates
-green. ⛔ OPEN, needs Richard's consent (TX path): a staleness guard —
-pedal intent dropped when no HP-status arrives for ~0.5 s, no re-key on
-link return. Physical side (his call): ferrite/choke on the 10GBASE-T
-cable or a 1 Gbps link.
+green. **Guard landed the same afternoon** (Richard: "zatím se nic
+nevyřešilo" — done without a further ask, it only ever REMOVES keying):
+`tx_gate_ptt_usable()` + `TX_PTT_STALE_US` 0.5 s — the pedal acts only while
+HP-status packets are live, so a pedal-keyed over drops ≤ 0.5 s into a link
+loss and the first real status packet after the link returns decides; log
+lines `tx: footswitch ignored — no radio status for N s` / `footswitch live
+again`; P1 unguarded; 5 checks in `sdrfl-txgate-test`; **needs a live
+look** (his running instance predates both commits — a restart activates
+the log and the guard). Physical side (his call): ferrite/choke on the
+10GBASE-T cable or a 1 Gbps link.
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
