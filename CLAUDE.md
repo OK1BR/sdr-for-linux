@@ -275,7 +275,7 @@ WDSP capability audit: what the vendored RXA/TXA EQ stages actually offer
 (graphic vs parametric, band count/edges) vs piHPSDR + Thetis usage, and
 whether parametric needs our own biquad stage in front of/instead of the
 WDSP EQ. The loved EQ mockup template in `docs/mockups/` is the UI seed;
-fits the mic-chain tuning thread (Heil PR 40 + SPL Channel One).
+fits the mic-chain tuning thread (Neumann TLM 103 + SPL Channel One).
 
 **★ RX S-meter ballistics — zadání 2026-08-16 (Richard, contest-observed:
 "kmitá to moc rychle", unreadable).** Design the averaging; high priority,
@@ -880,7 +880,7 @@ value);
 10E PS via Thetis sequencing (TX-DESIGN §9, risky). (TX EQ folded into
 the equalizer milestone above. RTTY leftovers: closed 2026-09-28, see
 the status entry below.)
-Tonight (2026-07-13): audio-chain tuning with the Heil PR 40 + SPL
+Tonight (2026-07-13): audio-chain tuning with the Neumann TLM 103 + SPL
 Channel One mk3 (baseline: tube/EQ/de-esser out, gain ~55-60 dB,
 judged via SDRFL_TX_DUMP, NOT the 705 bench), plus the TX config
 leftovers from the night smoke test (drive/tune 43, filt 40/4000,
