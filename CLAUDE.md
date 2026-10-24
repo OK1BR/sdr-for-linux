@@ -725,7 +725,15 @@ CW_MON, CW_MACROS_EMPTY, MON, AGC, RX_*_ENABLE, RX_MUTE/VOLUME/BALANCE set,
 TX_STREAM_AUDIO_BUFFERING; KEYER / CW_TERMINAL / RX_CHANNEL_ENABLE named as
 gaps). **#45**: RIT/XIT + VFO lock with their TCI commands. Notes on #24 (APF),
 #26 (SQL), #28 (RX_NB_PARAM), #34 (RX_NF_ENABLE). ExpertSDR3-specific (ECODER,
-APP_FOCUS, LINE_OUT) and reserved commands stay unimplemented on purpose. Not for the G2E: diversity (one
+APP_FOCUS, LINE_OUT) and reserved commands stay unimplemented on purpose.
+**#46 (Richard, same evening): TCI transport** — the server listens on
+`0.0.0.0`/`[::]:40001` only; add a Unix-socket listener (default on,
+`$XDG_RUNTIME_DIR/sdr-for-linux/tci.sock`, 0600) and make TCP optional with an
+all-interfaces / localhost-only scope (libwebsockets 4.5: server
+`LWS_SERVER_OPTION_UNIX_SOCK` + `iface` path, client `path` with the `+`
+prefix). Richard: the network must stay possible (skimmer on another machine),
+but a local setup should not occupy a port. Mirrors: skimmer-for-linux#39,
+log-for-linux#32; one release for all three. Not for the G2E: diversity (one
 ADC), EER, FM broadcast stereo.
 **16:31 the same day — TUNE / Ethernet-drop LOOP, fixed in code:** TUNE at ~74 W on
 15 m (gateware 11.0.5 makes ~1 dB more per drive byte) knocked the PC's
