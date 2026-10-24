@@ -316,6 +316,7 @@ typedef struct {
   int         tx_ptt_enabled;/* footswitch: radio PTT input = MOX (persisted)       */
   int         tx_ptt_tip;    /* PTT contact on mic-jack tip vs ring (persisted)     */
   int         debug_log;     /* Preferences: write the run log (opt-in; restart)     */
+  int         link_release_seen; /* last tx_run_status.link_release_seq acted upon   */
   int         ps_enable;     /* PureSignal on/off (persisted)                       */
   int         ps_att;        /* PS feedback attenuator during TX, dB (persisted per
                                 radio: P2 = ADC0 step att, P1 = LNA 31−att)         */
@@ -2761,6 +2762,20 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
           g_strlcpy(app->tx_reason, ts.reason[0] ? ts.reason : "TX refused", sizeof app->tx_reason);
           app->tx_reason_until = now + 4 * G_USEC_PER_SEC;
           gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->tt_btn), FALSE);
+        }
+        /* Radio link lost while keyed: the engine released MOX/TUNE/two-tone
+         * (it never re-keys by itself when the link returns — 2026-10-24, the
+         * 15 m TUNE / Ethernet-link-drop loop). Pop the buttons and say why;
+         * the operator keys again. seq 0 = nothing happened since start-up. */
+        if (ts.link_release_seq != app->link_release_seen) {
+          app->link_release_seen = ts.link_release_seq;
+          if (app->link_release_seen) {
+            g_strlcpy(app->tx_reason, "radio link lost — TX released, key again", sizeof app->tx_reason);
+            app->tx_reason_until = now + 6 * G_USEC_PER_SEC;
+            if (app->tune_btn) { gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->tune_btn), FALSE); }
+            if (app->mox_btn)  { gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->mox_btn),  FALSE); }
+            if (app->tt_btn)   { gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->tt_btn),   FALSE); }
+          }
         }
         /* Footswitch keys without the MOX toggle — paint the button red while the
          * pedal transmits (red = transmitting, same as .txkey:checked). The intent

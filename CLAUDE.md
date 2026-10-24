@@ -672,6 +672,17 @@ reply; answers go out only after Richard approves the text.
 hold 0.3 s by ear, #19 remove the blind diagnostics (rxtx probe, ex_raw, RF
 mute decision), #20 README: run log + G2E gateware note, #21 track TAPR#4 and
 re-test a fixed gateware; calibration numbers appended to #8.
+**16:31 the same day — TUNE / Ethernet-drop LOOP, fixed in code:** TUNE at ~74 W on
+15 m (gateware 11.0.5 makes ~1 dB more per drive byte) knocked the PC's
+10GBASE-T link down within a second, every time (13 link drops that day, no CRC
+errors — the PHY loses sync: RF in the cable); the radio's watchdog stopped
+TX and restarted its streams from sequence 0, the link came back after 5 s and
+the still-pressed TUNE re-keyed it — a 5 s loop. Fix: > 1 s without HP-status
+while keyed releases MOX/TUNE/two-tone + flushes the CW/RTTY queues
+(`link_release_seq` → GUI pops the buttons, "radio link lost — TX released,
+key again"; TX-SAFETY bullet). Only ever removes keying. The physical side (RF
+into the Ethernet: ferrite/choke, 1 Gbps link) is Richard's call — the 1 Gbps
+NetworkManager test was proposed, not done.
 
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two

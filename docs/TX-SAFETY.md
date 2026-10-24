@@ -176,6 +176,14 @@ Thetis implements the same protections differently; adopt the best of both:
   style), so the radio auto-stops streaming AND transmitting if the host
   dies. Thetis runs [38]=0 and relies on its 750 pkt/s audio stream —
   do NOT copy that model; keep the watchdog armed.
+- **Host side of a link loss** (2026-10-24): more than 1 s without an
+  HP-status packet while keyed releases EVERY key intent — MOX, TUNE,
+  two-tone, the CW/RTTY queues — and the GUI pops the buttons with "radio
+  link lost — TX released, key again". The host never re-keys by itself
+  when the link returns (the 15 m TUNE / Ethernet-drop loop: watchdog stops
+  TX, link back after 5 s, still-pressed TUNE re-keys, repeat). The pedal
+  has its own 0.5 s freshness guard. Seen live the same day: the radio
+  restarts its streams from sequence 0 after such an outage.
 
 ## Firmware-side facts (Saturn p2app + FPGA + proto spec v4.4, audited 2026-07-07)
 

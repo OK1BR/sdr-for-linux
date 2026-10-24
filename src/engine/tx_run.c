@@ -213,6 +213,7 @@ static int               s_log_ctr;         /* ~1 Hz keyed power log throttle */
  * (2026-10-24): is the floor in what we send, or made by the radio? */
 static double s_iqlvl_sum2, s_iqlvl_pk2;
 static long   s_iqlvl_n;
+static volatile gint s_link_release_seq;   /* see tx_run_status.link_release_seq */
 
 /* ⛔ RF MUTE on a closed noise gate (2026-10-24, live on the G2E, gateware
  * 11.1.0): the radio puts out a steady ~1.3-1.5 W at drive 41/255 for ANY
@@ -608,7 +609,9 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
         fprintf(stderr, "tx: over fwd min=%.2f W max=%.1f W, mic %.0f..%.0f dBFS, leveler max %+.1f dB, "
                 "sent IQ slot-rms min %.0f dBFS peak max %.0f dBFS, rf-muted %d/%d slots, "
                 "exciter raw %d..%d (after the first 200 ms)\n",
-                over_fwd_min, over_fwd_max, over_mic_min, over_mic_max, over_lvl_max,
+                over_fwd_min, over_fwd_max,
+                over_mic_min <= over_mic_max ? over_mic_min : -99.0,   /* no mic readings (TUNE) */
+                over_mic_min <= over_mic_max ? over_mic_max : -99.0, over_lvl_max,
                 over_iq_min, over_iq_max, over_mute_n, over_fwd_n, over_ex_min, over_ex_max);
       }
 
@@ -692,6 +695,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   st.tune    = keyed && r.state.tune;
   st.mox     = keyed && r.state.mox;
   st.tripped = r.tripped;
+  st.link_release_seq = g_atomic_int_get(&s_link_release_seq);
   st.allowed = r.allowed;
   st.high_swr = r.high_swr;
   st.swr_valid = tx_meter_fwd_w() >= 0.05 * (cfg.pa_watts > 0.0 ? cfg.pa_watts : 100.0);
@@ -803,17 +807,27 @@ static gpointer tx_thread(gpointer u) {
       if (!keyed && s_p1) { next_feed = 0; }   /* P2 paces continuously (N3) */
     }
 
-    /* Footswitch forensics (2026-10-24, NIC link drop during an SSB over): the
-     * pedal is a level re-read from every HP-status packet, so a keyed over
-     * with no status packets keeps acting on the LAST pedal state seen. Log
-     * the episode once and its end — log only; the intent is unchanged (a
-     * staleness guard would be a TX-path change under TX-SAFETY). */
+    /* ⛔ Radio link lost while keyed (> 1 s without HP-status on P2): release
+     * EVERY key intent — MOX, TUNE, two-tone, and the CW/RTTY queues — and
+     * tell the GUI (link_release_seq) so the buttons pop. The host must never
+     * re-key by itself when the link returns: 2026-10-24, TUNE at ~74 W on
+     * 15 m knocked the PC's Ethernet link down within a second, the radio's
+     * watchdog stopped TX, the link came back after 5 s and the still-pressed
+     * TUNE re-keyed it — round and round every 5 s (13 link drops that day).
+     * The pedal has its own freshness guard in gate_slot. Only ever REMOVES
+     * keying (TX-SAFETY). The radio side of the outage is its watchdog. */
     if (!s_p1) {
       gint64 age = p2_status_age_us();
       int stale = keyed && age > 1000000;        /* status: about 20/s on RX, 1 kHz on TX */
       if (stale && !stale_since) {
         stale_since = now;
-        fprintf(stderr, "tx: keyed, no radio status for %.1f s — footswitch state is stale (link lost?)\n",
+        g_atomic_int_set(&s_want_mox, 0);
+        g_atomic_int_set(&s_want_tune, 0);
+        g_atomic_int_set(&s_want_tt, 0);
+        g_mutex_lock(&s_cw_lock);   if (s_cw)   { cw_gen_flush(s_cw); }     g_mutex_unlock(&s_cw_lock);
+        g_mutex_lock(&s_rtty_lock); if (s_rtty) { rtty_gen_flush(s_rtty); } g_mutex_unlock(&s_rtty_lock);
+        g_atomic_int_inc(&s_link_release_seq);
+        fprintf(stderr, "tx: radio link lost while keyed (no HP-status for %.1f s) — MOX/TUNE/two-tone released, key again\n",
                 age / 1e6);
         fflush(stderr);
       } else if (!stale && stale_since) {
