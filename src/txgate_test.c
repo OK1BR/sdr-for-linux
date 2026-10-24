@@ -199,6 +199,18 @@ int main(void) {
     i.temp_c = 90.0; tx_gate_reset(); tx_gate_evaluate(&c, &i, &r); }
   ok("limit 0 (P2, no telemetry) never trips", r.keyed && !r.tripped, "");
 
+  /* 10b. low-power SWR floor (2026-10-24): garbage SWR below 5 % of the PA
+   * rating neither lights the flag nor trips; the same SWR at 6 W does. */
+  printf("\n[swr floor] garbage SWR under 5 %% of the rating is ignored:\n");
+  tx_gate_reset();
+  { tx_gate_cfg c = base_cfg(); tx_gate_in i = base_in(); i.swr = 5.0; i.fwd_w = 2.0; i.rev_w = 0.5;
+    tx_gate_evaluate(&c, &i, &r); tx_gate_evaluate(&c, &i, &r); tx_gate_evaluate(&c, &i, &r); }
+  ok("SWR 5.0 at 2 W: no flag, no trip, still keyed", r.keyed && !r.tripped && !r.high_swr, r.reason);
+  tx_gate_reset();
+  { tx_gate_cfg c = base_cfg(); tx_gate_in i = base_in(); i.swr = 5.0; i.fwd_w = 6.0; i.rev_w = 2.0;
+    tx_gate_evaluate(&c, &i, &r); tx_gate_evaluate(&c, &i, &r); }
+  ok("SWR 5.0 at 6 W: trips on the second reading", r.tripped && !r.keyed, r.reason);
+
   /* 11. footswitch freshness guard (2026-10-24 NIC link drops): the pedal is
    * a level re-read from HP-status packets — usable only while they arrive. */
   printf("\n[footswitch] HP-status freshness guard (TX_PTT_STALE_US):\n");

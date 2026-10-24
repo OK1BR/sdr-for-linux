@@ -70,6 +70,7 @@ typedef struct {
   int    tripped;   /* protection latched                                   */
   int    allowed;   /* TX permitted at the current frequency (in band)      */
   int    high_swr;  /* SWR >= alarm now (indicator; set in TUNE + MOX)      */
+  int    swr_valid; /* fwd >= 5 % of the PA rating: the SWR number means something */
   double fwd_w, rev_w, swr;
   double fwd_pep_w; /* forward PEP (raw packet max, decaying) — display power  */
   double mic_pk;    /* mic-input peak, dBFS (≤ 0; -99 floor); valid while keyed */

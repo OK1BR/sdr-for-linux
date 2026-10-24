@@ -69,12 +69,19 @@ void tx_gate_evaluate(const tx_gate_cfg *cfg, const tx_gate_in *in, tx_gate_resu
    *    able to tune an ATU through a deliberate mismatch) but is still flagged so
    *    the operator sees it. */
   if (cfg->swr_protect) {
-    int high_swr     = in->swr >= cfg->swr_alarm;
+    double rating    = cfg->pa_watts > 0.0 ? cfg->pa_watts : 100.0;
+    /* Low-power SWR floor (2026-10-24): below ~5 % of the PA rating the
+     * coupler's reverse channel is detector floor, not reflection — on the
+     * G2E the radio's own ~1.3 W idle output read SWR 1.7-4 and the ramp
+     * through 0.3-3 W at every key-on spiked to the clamp. Garbage there must
+     * neither light the indicator nor count toward the 2-consecutive trip;
+     * at 5 W on a 100 W PA a real mismatch is harmless anyway. The
+     * open-antenna test keeps its own 10 % floor below. */
+    int high_swr     = in->swr >= cfg->swr_alarm && in->fwd_w >= 0.05 * rating;
     /* Thetis open-antenna test, scaled to the PA rating: the original 10 W /
      * 1 W constants are for a 100 W PA (console.cs:25968) — on a 10 W ANAN
      * 10E they would never arm at legal power. 10 % / 1 % of the rating keeps
      * the G2E behaviour bit-identical (10.0 / 1.0). */
-    double rating    = cfg->pa_watts > 0.0 ? cfg->pa_watts : 100.0;
     int open_antenna = in->fwd_w > 0.10 * rating &&
                        (in->fwd_w - in->rev_w) < 0.01 * rating;
     out->high_swr    = high_swr;                       /* indicator: TUNE + MOX */

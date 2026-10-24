@@ -641,7 +641,11 @@ release (0.4 s); opens before the first above-threshold block is fed. Not
 for TCI audio / two-tone / TUNE / CW / RTTY. The UNKEY over line carries fwd
 min/max, mic range, leveler max, sent-IQ level and `rf-muted n/m slots`.
 The three NIC link drops stopped once the tuner was switched off — the
-tuner's relay bank, not RF, is now the prime suspect for those.
+tuner's relay bank, not RF, is now the prime suspect for those. Follow-up the
+same hour (Richard: the SWR jumps to max at every RX→TX transition): **SWR
+floor** — indicator, 2-consecutive trip and the display act only at ≥ 5 % of
+the PA rating (`swr_valid`; 2 checks in `sdrfl-txgate-test`); below that the
+number is held.
 
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two

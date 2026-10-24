@@ -679,6 +679,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   st.tripped = r.tripped;
   st.allowed = r.allowed;
   st.high_swr = r.high_swr;
+  st.swr_valid = tx_meter_fwd_w() >= 0.05 * (cfg.pa_watts > 0.0 ? cfg.pa_watts : 100.0);
   st.fwd_w     = tx_meter_fwd_w();
   st.fwd_pep_w = tx_meter_fwd_pep_w();
   st.rev_w     = tx_meter_rev_w();

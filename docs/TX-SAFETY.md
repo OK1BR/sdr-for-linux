@@ -154,6 +154,12 @@ Thetis implements the same protections differently; adopt the best of both:
   near-zero until un-MOX (console.cs:26046-26069). piHPSDR uses 2
   consecutive readings → drive 0. Either way: never trip on one sample
   (artifacts), never TUNE-trip.
+- **Low-power SWR floor** (2026-10-24): the high-SWR indicator and the
+  2-consecutive trip count only readings with forward power ≥ 5 % of the PA
+  rating (`tx_gate.c`) — below that the reverse channel is detector floor
+  (the G2E's own ~1.3 W idle output read 1.7-4, the key-on ramp spiked to
+  the clamp); the display holds the last valid value (`swr_valid`). The
+  open-antenna test keeps its own 10 % floor.
 - **Refuse the T/R relay when PA is disabled** — Thetis guards
   `SetTRXrelay` with `if (!pa_enabled) return` (netInterface.c:374-385).
   Port this: the relay must not move without a PA that can be keyed.

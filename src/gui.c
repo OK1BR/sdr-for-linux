@@ -1779,10 +1779,12 @@ static void draw_tx(cairo_t *cr, int w, int h, App *app) {
    * attack, ~0.5 s decay half-life); the EMA-averaged ts.fwd_w under-reads
    * voice by ~6 dB (measured 4× vs an external PEP wattmeter, 2026-07-10).
    * On a steady carrier both are equal. SWR only updates while real power
-   * flows (> 0.5 W) and is lightly smoothed — between syllables the coupler
+   * flows (ts.swr_valid = >= 5 % of the PA rating; the 0.3-3 W ramp at every
+   * key-on read garbage and jumped the number to the clamp, 2026-10-24) and
+   * is lightly smoothed — between syllables the coupler
    * reads ~nothing and the computed SWR is meaningless jitter, so hold the
    * last valid reading instead. */
-  if (ts.fwd_w > 0.5) {
+  if (ts.swr_valid) {
     app->tx_swr_disp = app->tx_swr_disp > 0.0
                        ? app->tx_swr_disp + 0.3 * (ts.swr - app->tx_swr_disp)
                        : ts.swr;
