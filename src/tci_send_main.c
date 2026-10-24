@@ -20,6 +20,11 @@
  */
 #include <libwebsockets.h>
 #include <stdio.h>
+#include <time.h>
+static long long now_us(void) {
+  struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ts.tv_sec * 1000000LL + ts.tv_nsec / 1000;
+}
 #include <stdlib.h>
 #include <string.h>
 
@@ -112,15 +117,18 @@ int main(int argc, char **argv) {
 
   /* Service until connected (or failed), then until all commands are out plus
    * the listen window (echoes/broadcasts land on stdout as they arrive). */
-  long deadline_ms = -1;
+  /* Wall-clock deadline (2026-10-24): lws_service returns at once on traffic,
+   * so counting iterations made "-w 6" last ~90 ms against a chatty server —
+   * and a trx:0,true keyed over the disconnect-unkey safety. */
+  long long deadline_us = -1;
   while (1) {
     lws_service(ctx, 50);
     if (!s_done_connecting) { continue; }
     if (!s_up) { break; }                          /* failed or server closed */
     if (s_next >= s_argc) {
-      if (deadline_ms < 0) { deadline_ms = wait_s * 1000; }
-      deadline_ms -= 50;
-      if (deadline_ms <= 0) { break; }
+      long long now = now_us();
+      if (deadline_us < 0) { deadline_us = now + (long long)wait_s * 1000000LL; }
+      if (now >= deadline_us) { break; }
     } else {
       lws_callback_on_writable(s_wsi);
     }

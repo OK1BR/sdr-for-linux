@@ -647,6 +647,25 @@ floor** — indicator, 2-consecutive trip and the display act only at ≥ 5 % of
 the PA rating (`swr_valid`; 2 checks in `sdrfl-txgate-test`); below that the
 number is held.
 
+**★ RESOLVED THE SAME AFTERNOON — IT IS THE GATEWARE (A/B flash, 15:30; Richard:
+"zkus otestovat starší gateware"):** the G2E was flashed back to **11.0.5**
+(p2flash, checksum 0x8387 OK, 12 s) and the identical silent-SSB condition
+re-run over TCI (`sdrfl-tci-send -w 6 'trx:0,true;'`, mic -62..-43 dBFS, sent
+IQ -57 dBFS rms): **0.00 W for 10 s** (fwd_raw 9-16, rev_raw 2) where 11.1.0
+gave 1.4-1.7 W all day. TUNE at the same drive byte 22: 13.3 W, rev 0.00,
+SWR 1.02 on 11.0.5 vs 10.8 W, rev 0.03, SWR 1.10 on 11.1.0. Prime suspect:
+the 11.0.10 "3 stage CDC multi-clock transfer per AI recommendations"
+rewrite of the FPGA data transfer (TAPR Release_notes_11.0.10.txt). **The
+radio stays on 11.0.5**; 11.1.0 is `Hermes_Protocol_2_C10_v11.1.0_Mk2PA.rbf`
+in the TAPR repo (git sha ea27523c…), procedure in the work memory
+`g2e-firmware-update-postup`. One stream restart was seen 1 min after the
+flash (15:31:37, DDC sequence from 0) after a 100 ms key — none since; watch.
+Side lesson: `sdrfl-tci-send -w` counted loop iterations, not time (fixed:
+wall clock) — a one-shot `trx:0,true` unkeys the instant the client
+disconnects (the server's keying-client safety), so hold with `-w N`. Next:
+GitHub issue to TAPR/OpenHPSDR-Firmware (N1GP) with these numbers — text
+EN+CZ for Richard's approval.
+
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
