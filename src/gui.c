@@ -54,6 +54,7 @@
 #include "tx_meter.h"   /* tx_meter_set_cal — per-radio wattmeter bridge constants */
 #include "tx.h"   /* tx_dsp_in_rate() — mic capture rate must match the WDSP TX input */
 #include "ps.h"   /* PureSignal runtime — enable/att/SetPk from Preferences (F7/PS-2) */
+#include <fftw3.h> /* rxtx_probe: RX spectrum during TX (2026-10-24 idle-floor hunt) */
 
 /* Analyzer column count = the display width in device pixels (issue #15),
  * clamped to [PIXELS_MIN, ANALYZER_MAX_PIXELS]; a width change is applied
@@ -566,9 +567,81 @@ static const char * const TUNE_STEP_LABELS[] = { "1 Hz", "10 Hz", "100 Hz", "1 k
  * diverge live (the preference is restart-to-apply). */
 static int s_engine_rate;
 
+/* RX-during-TX spectrum probe (2026-10-24, the radio's ~1.4 W idle floor):
+ * the RX DDC keeps streaming during TX (31 dB attenuators + T/R isolation), so
+ * the ±rate/2 window around the DDC centre shows every TX product that lands
+ * inside it. Once per second while keyed: 8192-point FFT of the raw IQ
+ * (conjugated — the HPSDR wire IQ is spectrally inverted, cf. tci_server),
+ * the level at the dial (our own carrier leak), the floor, and the three
+ * strongest peaks elsewhere as offsets from the dial. Runs on the listener
+ * thread; log only. */
+#define RXTX_N 8192
+static void rxtx_probe(const double *iq, int n_pairs) {
+  static fftw_complex *in, *out; static fftw_plan plan;
+  static float db[RXTX_N];
+  static int fill; static gint64 last;
+  if (!tx_run_keyed()) { fill = 0; return; }
+  gint64 now = g_get_monotonic_time();
+  if (fill == 0 && now - last < G_USEC_PER_SEC) { return; }
+  if (!in) {
+    fftw_make_planner_thread_safe();      /* WDSP plans on other threads */
+    in = fftw_alloc_complex(RXTX_N); out = fftw_alloc_complex(RXTX_N);
+    plan = fftw_plan_dft_1d(RXTX_N, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
+  }
+  for (int i = 0; i < n_pairs && fill < RXTX_N; i++, fill++) {
+    double w = 0.5 - 0.5 * cos(2.0 * M_PI * fill / (RXTX_N - 1));   /* Hann */
+    in[fill][0] =  iq[2 * i]     * w;
+    in[fill][1] = -iq[2 * i + 1] * w;                                /* conjugate */
+  }
+  if (fill < RXTX_N) { return; }
+  fill = 0; last = now;
+  fftw_execute(plan);
+  double norm = (double)RXTX_N * RXTX_N / 4.0;      /* Hann coherent gain 0.5 */
+  for (int k = 0; k < RXTX_N; k++) {
+    int kk = (k + RXTX_N / 2) % RXTX_N;             /* index 0 = -rate/2 */
+    double p = out[kk][0] * out[kk][0] + out[kk][1] * out[kk][1];
+    db[k] = (float)(10.0 * log10(p / norm + 1e-30));
+  }
+  int rate = s_engine_rate > 0 ? s_engine_rate : 1536000;
+  double hzb = (double)rate / RXTX_N;
+  long long dial = tci_app ? tci_app->freq : 0, centre = tci_app ? tci_app->centre : 0;
+  int kd = (int)lround((double)(dial - centre) / hzb) + RXTX_N / 2;
+  int w3 = (int)(3000.0 / hzb), w10 = (int)(10000.0 / hzb), w20 = (int)(20000.0 / hzb);
+  float dial_db = -300.0f;
+  for (int k = kd - w3; k <= kd + w3; k++) {
+    if (k >= 0 && k < RXTX_N && db[k] > dial_db) { dial_db = db[k]; }
+  }
+  double floor_sum = 0.0; int floor_n = 0;         /* mean dB outside ±10 kHz */
+  for (int k = 8; k < RXTX_N - 8; k++) {
+    if (k < kd - w10 || k > kd + w10) { floor_sum += db[k]; floor_n++; }
+  }
+  float floor_db = floor_n ? (float)(floor_sum / floor_n) : -300.0f;
+  int pk[3] = { -1, -1, -1 };                       /* top-3 local maxima, ≥20 kHz apart */
+  for (int j = 0; j < 3; j++) {
+    float best = -300.0f; int bk = -1;
+    for (int k = 8; k < RXTX_N - 8; k++) {
+      if (k >= kd - w10 && k <= kd + w10) { continue; }
+      if (db[k] <= db[k - 1] || db[k] < db[k + 1]) { continue; }
+      int near = 0;
+      for (int q = 0; q < j; q++) { if (pk[q] >= 0 && abs(k - pk[q]) < w20) { near = 1; } }
+      if (near) { continue; }
+      if (db[k] > best) { best = db[k]; bk = k; }
+    }
+    pk[j] = bk;
+  }
+  fprintf(stderr, "rxtx: span %d kHz, dial %+.0f kHz from centre: dial %.0f dBFS, floor %.0f dBFS, "
+          "peaks %+.0f kHz %.0f / %+.0f kHz %.0f / %+.0f kHz %.0f dBFS\n",
+          rate / 1000, (double)(dial - centre) / 1000.0, dial_db, floor_db,
+          pk[0] >= 0 ? (pk[0] - kd) * hzb / 1000.0 : 0.0, pk[0] >= 0 ? db[pk[0]] : -300.0,
+          pk[1] >= 0 ? (pk[1] - kd) * hzb / 1000.0 : 0.0, pk[1] >= 0 ? db[pk[1]] : -300.0,
+          pk[2] >= 0 ? (pk[2] - kd) * hzb / 1000.0 : 0.0, pk[2] >= 0 ? db[pk[2]] : -300.0);
+  fflush(stderr);
+}
+
 static void feed_cb(const double *iq, int n_pairs, void *user) {
   (void)user;
   analyzer_feed(iq, n_pairs);   /* panadapter — always live */
+  rxtx_probe(iq, n_pairs);      /* RX spectrum during TX, 1 Hz, log only */
   /* Raw IQ → TCI skimmers (F6d-2d); no-op while nobody iq_start'ed. Fed the
    * real signal even during the post-TX silence window — a skimmer copes.
    * ⚠ CONTRACT (contest note #6): this tap stays BEFORE the mute/silence
