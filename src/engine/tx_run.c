@@ -436,6 +436,13 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
    * steady spectrum. */
   static int tt_applied;
   static int over_mic;             /* key-on: this over pulls the mic ring (SDR-9) */
+  /* Per-over forward-power envelope (2026-10-24, auto-tuner hunting between
+   * words on 10/15 m): min/max of the coupler reading after the first 200 ms
+   * of the over, printed at UNKEY. In a voice over the min IS what leaves the
+   * radio in the gaps between words — the number the tuner reacts to. */
+  static gint64 over_key_us;
+  static double over_fwd_min, over_fwd_max;
+  static int    over_fwd_n;
   double tt_sign = (wmode == DEMOD_LSB || wmode == DEMOD_DIGL) ? -1.0 : 1.0;
   int tt_want_now = want_tt && keyed && r.state.mox && !r.state.tune && !gen_key;
   if (keyed && !*prev_keyed) {
@@ -507,6 +514,8 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
      * drops/shorts say nothing about the over (BACKLOG SDR-9: a TUNE over
      * printed tens of thousands of "mic drops" that never were speech). */
     over_mic = r.state.mox && !gen_key && !g_atomic_int_get(&s_ext_src);
+    over_key_us = g_get_monotonic_time();
+    over_fwd_min = 1e9; over_fwd_max = 0.0; over_fwd_n = 0;
   } else if (!keyed && *prev_keyed) {
     /* KEY OFF (operator release OR protection trip): drop MOX first, stop the
      * tone, flush a little audio, then stop the channel. */
@@ -545,6 +554,10 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
         fprintf(stderr, "tx: over ALC min %.1f dB\n", s_alc_min_over);
       }
       s_alc_min_over = 0.0;
+      if (over_fwd_n > 0) {
+        fprintf(stderr, "tx: over fwd min=%.2f W max=%.1f W (%d readings after the first 200 ms)\n",
+                over_fwd_min, over_fwd_max, over_fwd_n);
+      }
 
       if (s_dump_mic) { fflush(s_dump_mic); }
       if (s_dump_tx)  { fflush(s_dump_tx); }
@@ -553,6 +566,12 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     fflush(stderr);
   } else if (keyed) {
     engine_set_tx_state(&r.state);   /* refresh (frequency/antenna may have changed) */
+    if (fresh_meter && g_get_monotonic_time() - over_key_us >= 200000) {
+      double fw = tx_meter_fwd_w();
+      if (fw < over_fwd_min) { over_fwd_min = fw; }
+      if (fw > over_fwd_max) { over_fwd_max = fw; }
+      over_fwd_n++;
+    }
     tx_dsp_set_mode(wmode, flo, fhi);      /* live TX-filter change while keyed —
                                               WDSP setters no-op when unchanged */
     {   /* voice-chain knobs live too (same no-op-when-unchanged contract) */
