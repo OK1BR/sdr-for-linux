@@ -688,6 +688,13 @@ contract is still 3.0 (`CLIENT_SERVER_VERSION 0x01300005`) while piHPSDR 3.1
 NOT stale: the G2E wattmeter `c1 = 5.0` (ours since July, piHPSDR followed on
 2026-08-05), TX filter linear phase (we never call `TXASetMP`), the TCI queue
 (all 16 send sites under `s_lock`), CI actions/runners, distro floors.
+**#23 (same evening, Richard: "musíme implementovat"): TX phase rotator** — WDSP
+PHROT (all-pass cascade after the mic gain, makes speech symmetric → lower
+peak-to-average, more average power; WDSP Guide 2.1.1 §6.3.10/§12.2). We never
+call `SetTXAPHROT*`. Scope: Preferences → TX switch + corner (default 338 Hz),
+voice modes only, bypassed for digi/CW/TUNE/TCI; auto-optimizer + asymmetry
+display need WDSP 2.00+ (after #22). Verify offline via SDRFL_TX_DUMP replay
+before keying. Mic chain is Neumann TLM 103 + SPL Channel One.
 **16:31 the same day — TUNE / Ethernet-drop LOOP, fixed in code:** TUNE at ~74 W on
 15 m (gateware 11.0.5 makes ~1 dB more per drive byte) knocked the PC's
 10GBASE-T link down within a second, every time (13 link drops that day, no CRC
