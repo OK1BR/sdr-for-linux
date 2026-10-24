@@ -34,6 +34,16 @@ static int       t_dexp_up;       /* create_dexp ran (WDSP dexp id 0 is per-proc
 static int       t_gate_on;       /* stored gate state — see gate_apply()           */
 static double    t_gate_db;       /* threshold, OPERATOR scale (post-mic-gain dBFS) */
 static double    t_gate_depth_db = 20.0;   /* below-threshold attenuation           */
+/* Gate HOLD: how long the expander stays fully open after the mic drops below
+ * the threshold, before the 100 ms release. piHPSDR creates its DEXP with
+ * 0.800 s (transmitter.c:1281) and we took the args 1:1 — but 0.8 s is longer
+ * than nearly every pause inside a sentence, so the gate never closed between
+ * words and the room/fan noise went out at full processor gain: 1.4-1.7 W
+ * steady on 15 m in every gap (run log 2026-10-24, 0.00 W with the mic muted),
+ * enough for Richard's auto-tuner to re-tune on the garbage SWR it read at
+ * that level. 0.3 s still bridges syllables and short word gaps; sentence
+ * pauses now close the gate. */
+#define TX_GATE_HOLD_S 0.300
 static double    t_mic_gain_db;   /* mirrors SetTXAPanelGain1, for the gate rescale */
 
 /* Last values actually pushed into the DEXP. ⛔ DEXP setters are NOT no-ops on
@@ -123,7 +133,7 @@ int tx_dsp_create(int mode, double flo, double fhi, int p1, tx_iq_cb cb, void *u
                 TX_IN_RATE,
                 0.01,             /* detector tau                               */
                 0.025, 0.100,     /* attack, release                            */
-                0.800,            /* hold                                       */
+                TX_GATE_HOLD_S,   /* hold — 0.3 s, NOT piHPSDR's 0.8 (see above) */
                 10.0,             /* expansion ratio = 20 dB                    */
                 0.75,             /* hysteresis ratio                           */
                 0.05,             /* trigger ≈ −26 dB; set_gate overrides       */

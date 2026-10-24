@@ -442,6 +442,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
    * radio in the gaps between words — the number the tuner reacts to. */
   static gint64 over_key_us;
   static double over_fwd_min, over_fwd_max;
+  static double over_mic_min, over_mic_max, over_lvl_max;   /* mic peak dBFS, leveler dB */
   static int    over_fwd_n;
   double tt_sign = (wmode == DEMOD_LSB || wmode == DEMOD_DIGL) ? -1.0 : 1.0;
   int tt_want_now = want_tt && keyed && r.state.mox && !r.state.tune && !gen_key;
@@ -516,6 +517,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     over_mic = r.state.mox && !gen_key && !g_atomic_int_get(&s_ext_src);
     over_key_us = g_get_monotonic_time();
     over_fwd_min = 1e9; over_fwd_max = 0.0; over_fwd_n = 0;
+    over_mic_min = 1e9; over_mic_max = -1e9; over_lvl_max = -1e9;
   } else if (!keyed && *prev_keyed) {
     /* KEY OFF (operator release OR protection trip): drop MOX first, stop the
      * tone, flush a little audio, then stop the channel. */
@@ -555,8 +557,9 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
       }
       s_alc_min_over = 0.0;
       if (over_fwd_n > 0) {
-        fprintf(stderr, "tx: over fwd min=%.2f W max=%.1f W (%d readings after the first 200 ms)\n",
-                over_fwd_min, over_fwd_max, over_fwd_n);
+        fprintf(stderr, "tx: over fwd min=%.2f W max=%.1f W, mic %.0f..%.0f dBFS, leveler max %+.1f dB "
+                "(%d readings after the first 200 ms)\n",
+                over_fwd_min, over_fwd_max, over_mic_min, over_mic_max, over_lvl_max, over_fwd_n);
       }
 
       if (s_dump_mic) { fflush(s_dump_mic); }
@@ -571,6 +574,13 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
       if (fw < over_fwd_min) { over_fwd_min = fw; }
       if (fw > over_fwd_max) { over_fwd_max = fw; }
       over_fwd_n++;
+      double mpk, alc, lvl;                /* what the gate saw + leveler makeup */
+      tx_dsp_get_meters(&mpk, &alc, &lvl);
+      if (mpk > -98.0) {
+        if (mpk < over_mic_min) { over_mic_min = mpk; }
+        if (mpk > over_mic_max) { over_mic_max = mpk; }
+      }
+      if (lvl > over_lvl_max) { over_lvl_max = lvl; }
     }
     tx_dsp_set_mode(wmode, flo, fhi);      /* live TX-filter change while keyed —
                                               WDSP setters no-op when unchanged */
