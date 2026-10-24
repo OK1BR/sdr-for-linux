@@ -60,7 +60,10 @@ void tx_dsp_set_compressor(int on, double gain_db);
  * Mic noise gate (downward expander) — WDSP TXA AMSQ, positioned after the mic
  * gain and BEFORE the leveler/COMP, so PROC has nothing to pump up in speech
  * gaps. thresh_db is on the post-mic-gain signal (dBFS); below it the mic drops
- * 20 dB (piHPSDR DEXP expansion default), it is not a hard mute.
+ * by the gate depth (default 10 dB) — and tx_run additionally hands the radio
+ * EXACT ZEROS once the mic has stayed below the threshold for hold + release
+ * (RF_MUTE_AFTER_US), because the G2E puts ~1.5 W on the air for any non-zero
+ * DUC data (2026-10-24).
  */
 /* thresh_db is in Mic-METER dBFS (post-mic-gain — what the TX HUD bar shows);
  * the engine rescales the DEXP trigger by the current mic gain internally. */

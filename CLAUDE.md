@@ -622,6 +622,28 @@ look** (his running instance predates both commits — a restart activates
 the log and the guard). Physical side (his call): ferrite/choke on the
 10GBASE-T cable or a 1 Gbps link.
 
+**★ THE SWR/TUNER PROBLEM — same afternoon, root cause MEASURED, fix in
+code (`needs-live-check`):** Richard's auto-tuner re-tuned between words on
+10/15 m SSB. Run log + offline replay of the real chain: in every pause the
+radio put out a steady 1.3-1.7 W (0.00 W with the mic muted at the PipeWire
+source), the chain itself is linear (-60 dBFS in → -60 dBFS out, scratch
+replay against the engine objects), and the decisive over had our IQ at
+**-57 dBFS rms (peak -33) while the radio emitted 1.2-1.5 W** — the G2E on
+gateware 11.1.0 adds ~1.3 W at drive 41/255 for ANY non-zero DUC data,
+exact zeros give 0 W. 11.0.5 unverified. Both bridges then read garbage SWR
+at that level (ours 1.7 = the 0.1 W reverse floor at 1.5 W; 1.15 at 19 W
+TUNE — the operator's "1.1"), the tuner's 5-12. Fixes: gate hold 0.8 s
+(piHPSDR 1:1) → 0.3 s (`TX_GATE_HOLD_S`, a2a5b50 — it never closed inside a
+sentence, but alone it changed nothing: the floor is the radio's) and the
+**RF mute** (`s_rf_mute`, tx_run.c): live-mic voice overs hand the radio
+exact zeros once the mic has been below the gate threshold for hold +
+release (0.4 s); opens before the first above-threshold block is fed. Not
+for TCI audio / two-tone / TUNE / CW / RTTY. The UNKEY over line carries fwd
+min/max, mic range, leveler max, sent-IQ level and `rf-muted n/m slots`.
+The three NIC link drops stopped once the tuner was switched off — the
+tuner's relay bank, not RF, is now the prime suspect for those.
+
+
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
 red TX filter footprint, AF true mute, 60 m USB, SDR-15 discovery dedup,

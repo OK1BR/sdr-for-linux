@@ -207,8 +207,42 @@ static int               s_log_ctr;         /* ~1 Hz keyed power log throttle */
 /* TX IQ from the WDSP TX channel → the protocol's wire path (P2: frame →
  * port-1029 socket; P1: EP2 payload ring), and → the TX panadapter analyzer
  * (spectrum of what we transmit). */
+/* Level of the IQ we hand to the radio, per gate slot (tx thread only):
+ * sum of squares + peak since the slot's last read. 0 dBFS = chain full
+ * scale, pre drive-scaling. Forensics for the 1.5 W-in-the-gaps question
+ * (2026-10-24): is the floor in what we send, or made by the radio? */
+static double s_iqlvl_sum2, s_iqlvl_pk2;
+static long   s_iqlvl_n;
+
+/* ⛔ RF MUTE on a closed noise gate (2026-10-24, live on the G2E, gateware
+ * 11.1.0): the radio puts out a steady ~1.3-1.5 W at drive 41/255 for ANY
+ * non-zero DUC data — measured with our IQ at -57 dBFS rms (mic -62 dBFS,
+ * gate closed, PROC on) — and exactly 0.00 W for all-zero data (mic muted at
+ * the PipeWire source). The expander's residue therefore kept ~1.5 W on the
+ * air in every pause between words and Richard's auto-tuner re-tuned on the
+ * garbage SWR its bridge reads at that level. Whether 11.0.5 did the same is
+ * unverified. Fix on our side, independent of the radio: once the live mic
+ * has been below the gate threshold for hold + release, the voice path hands
+ * the radio EXACT ZEROS (framer, analyzer, dump and monitor all see them).
+ * Opens on the first block at/above the threshold — before that block is
+ * fed, so no onset is lost. Live-mic voice overs only: not TCI audio, not
+ * two-tone, not TUNE/CW/RTTY (those never enter the mic branch). */
+#define RF_MUTE_AFTER_US 400000      /* TX_GATE_HOLD_S 0.3 + DEXP release 0.1 */
+static gint64 s_gate_open_us;        /* last mic block at/above threshold, or key-on */
+static int    s_rf_mute;             /* 1 = zeros to the radio (tx thread only) */
+
 static void on_tx_iq(const double *iq, int n_pairs, void *u) {
   (void)u;
+  if (s_rf_mute) {                     /* closed gate → exact zeros on the wire */
+    static double *zb; static int zn;
+    if (n_pairs > zn) { g_free(zb); zb = g_new0(double, 2 * (size_t)n_pairs); zn = n_pairs; }
+    iq = zb;
+  }
+  for (int i = 0; i < n_pairs; i++) {
+    double e = iq[2 * i] * iq[2 * i] + iq[2 * i + 1] * iq[2 * i + 1];
+    s_iqlvl_sum2 += e; if (e > s_iqlvl_pk2) { s_iqlvl_pk2 = e; }
+  }
+  s_iqlvl_n += n_pairs;
 
   if (s_p1) { p1_tx_iq_push(iq, n_pairs); }
   else      { p2_tx_iq_framer_push(&s_framer, iq, n_pairs); }
@@ -443,6 +477,8 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   static gint64 over_key_us;
   static double over_fwd_min, over_fwd_max;
   static double over_mic_min, over_mic_max, over_lvl_max;   /* mic peak dBFS, leveler dB */
+  static double over_iq_min, over_iq_max;    /* slot IQ RMS min / slot IQ peak max, dBFS */
+  static int    over_mute_n;                 /* slots with the RF mute engaged */
   static int    over_fwd_n;
   double tt_sign = (wmode == DEMOD_LSB || wmode == DEMOD_DIGL) ? -1.0 : 1.0;
   int tt_want_now = want_tt && keyed && r.state.mox && !r.state.tune && !gen_key;
@@ -516,8 +552,11 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
      * printed tens of thousands of "mic drops" that never were speech). */
     over_mic = r.state.mox && !gen_key && !g_atomic_int_get(&s_ext_src);
     over_key_us = g_get_monotonic_time();
+    s_gate_open_us = over_key_us; s_rf_mute = 0;   /* every over starts open */
     over_fwd_min = 1e9; over_fwd_max = 0.0; over_fwd_n = 0;
     over_mic_min = 1e9; over_mic_max = -1e9; over_lvl_max = -1e9;
+    over_iq_min = 1e9; over_iq_max = -1e9; over_mute_n = 0;
+    s_iqlvl_sum2 = 0.0; s_iqlvl_pk2 = 0.0; s_iqlvl_n = 0;
   } else if (!keyed && *prev_keyed) {
     /* KEY OFF (operator release OR protection trip): drop MOX first, stop the
      * tone, flush a little audio, then stop the channel. */
@@ -557,9 +596,11 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
       }
       s_alc_min_over = 0.0;
       if (over_fwd_n > 0) {
-        fprintf(stderr, "tx: over fwd min=%.2f W max=%.1f W, mic %.0f..%.0f dBFS, leveler max %+.1f dB "
-                "(%d readings after the first 200 ms)\n",
-                over_fwd_min, over_fwd_max, over_mic_min, over_mic_max, over_lvl_max, over_fwd_n);
+        fprintf(stderr, "tx: over fwd min=%.2f W max=%.1f W, mic %.0f..%.0f dBFS, leveler max %+.1f dB, "
+                "sent IQ slot-rms min %.0f dBFS peak max %.0f dBFS, rf-muted %d/%d slots "
+                "(after the first 200 ms)\n",
+                over_fwd_min, over_fwd_max, over_mic_min, over_mic_max, over_lvl_max,
+                over_iq_min, over_iq_max, over_mute_n, over_fwd_n);
       }
 
       if (s_dump_mic) { fflush(s_dump_mic); }
@@ -581,6 +622,14 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
         if (mpk > over_mic_max) { over_mic_max = mpk; }
       }
       if (lvl > over_lvl_max) { over_lvl_max = lvl; }
+      if (s_rf_mute) { over_mute_n++; }
+      if (s_iqlvl_n > 0) {                 /* what we sent since the last slot */
+        double rms_db = 10.0 * log10(s_iqlvl_sum2 / (double)s_iqlvl_n + 1e-30);
+        double pk_db  = 10.0 * log10(s_iqlvl_pk2 + 1e-30);
+        if (rms_db < over_iq_min) { over_iq_min = rms_db; }
+        if (pk_db  > over_iq_max) { over_iq_max = pk_db; }
+        s_iqlvl_sum2 = 0.0; s_iqlvl_pk2 = 0.0; s_iqlvl_n = 0;
+      }
     }
     tx_dsp_set_mode(wmode, flo, fhi);      /* live TX-filter change while keyed —
                                               WDSP setters no-op when unchanged */
@@ -907,6 +956,25 @@ static gpointer tx_thread(gpointer u) {
           got = mic_pull(mic, FEED_BLOCK);
         }
         for (int i = got; i < FEED_BLOCK; i++) { mic[i] = 0.0f; }
+        /* RF mute decision for THIS block (see s_rf_mute): live mic only. */
+        if (g_atomic_int_get(&s_ext_src) || g_atomic_int_get(&s_want_tt)) {
+          s_rf_mute = 0;
+        } else {
+          g_mutex_lock(&s_cfg_lock);
+          int    gon = s_cfg.gate_on;
+          double thr = s_cfg.gate_db != 0.0 ? s_cfg.gate_db : -45.0;   /* tx_run.h default */
+          double mg  = s_cfg.mic_gain_db;
+          g_mutex_unlock(&s_cfg_lock);
+          if (gon) {
+            float pk = 0.0f;
+            for (int i = 0; i < FEED_BLOCK; i++) { float a = fabsf(mic[i]); if (a > pk) { pk = a; } }
+            double pk_db = 20.0 * log10((double)pk + 1e-12) + mg;   /* Mic-METER scale */
+            if (pk_db >= thr) { s_gate_open_us = now; }
+            s_rf_mute = (now - s_gate_open_us) > RF_MUTE_AFTER_US;
+          } else {
+            s_rf_mute = 0;
+          }
+        }
         if (!s_dump_init) { dump_ensure(); }
         if (s_dump_mic) { fwrite(mic, sizeof(float), FEED_BLOCK, s_dump_mic); }
         tx_dsp_feed_mic(mic, FEED_BLOCK);       /* → IQ → framer → port 1029 */
