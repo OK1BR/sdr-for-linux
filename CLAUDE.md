@@ -584,6 +584,37 @@ by `git ls-remote`, a fresh clone and the AUR page. The SSH-log hook
 matches the word `ssh` followed by a space: a bare `git push ssh://…` is
 NOT logged, the same push with `GIT_SSH_COMMAND="ssh -o …"` is.
 
+**★ FOOTSWITCH STUCK-TX ×2 — 2026-10-24 (13:00:59 and 13:29:38); the cause
+was in the SYSTEM journal, an app log did not exist:** both "TRX stuck,
+keeps transmitting" events happened during SSB overs (85 W drive, 10/15 m)
+and coincide to the second with a 5 s `ixgbe enp134s0f1: NIC Link is
+Down/Up` on the 10GBASE-T link to the radio (Intel X540-AT2; the only link
+events in four boots) and with Richard's auto-tuner re-tuning — one
+physical event, most likely RF on the SSB peaks (TUNE runs 19 W and shows
+SWR 1.1; a hypothesis, not yet discriminated by a full-power TUNE).
+Software side (code read, not logged): the footswitch is a LEVEL re-read
+from every HP-status packet (`tlm_ptt`, protocol2.c) with no staleness
+guard — with the link gone the gate keeps `want_ptt=1` on the last state,
+the timer keeps sending MOX=1 and re-keys the radio the moment the link
+returns; only a status packet showing the pedal released unkeys. The MOX
+button cannot help (ORed in); the Footswitch PTT pref off clears it at
+once (`cfg.ptt_enabled` is pushed live). What the radio itself did during
+the 5 s is unverified for the G2E on gateware 11.1.0 (the TX-SAFETY
+watchdog audit is Saturn p2app). Landed the same day: **persistent run
+log** `src/logfile.c` — when fd 2 is /dev/null (app-grid launch)
+stdout/stderr go to `~/.local/state/sdr-for-linux/sdr-for-linux.log`
+(.1 … .4 kept), every line stamped HH:MM:SS.mmm so it lines up with
+`journalctl`; terminal/redirect runs untouched; `SDRFL_LOG=0` off; path in
+About → Debug Info. Trace lines: `p2: PTT input pressed/released` (edge),
+`tx: KEY PTT` (pedal-sourced over), `tx: request mox=… tune=…`
+(button/TCI), `tx: keyed, no radio status for N s` + `tx: radio status
+back` (`p2_status_age_us`). Verified headless (broadway, isolated
+XDG_STATE_HOME): log + rotation + an operator `2>file` left alone; 11 gates
+green. ⛔ OPEN, needs Richard's consent (TX path): a staleness guard —
+pedal intent dropped when no HP-status arrives for ~0.5 s, no re-key on
+link return. Physical side (his call): ferrite/choke on the 10GBASE-T
+cable or a 1 Gbps link.
+
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
 red TX filter footprint, AF true mute, 60 m USB, SDR-15 discovery dedup,

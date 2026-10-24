@@ -46,6 +46,13 @@ While transmitting with the setting on, TX-specific byte 50 keeps the PTT
 input enabled (np.c:1553-1558) so the pedal *release* is still reported
 mid-over; with the setting off the TX-time packet keeps PTT disabled and
 the status bit is ignored (today's behavior, bit-for-bit).
+⛔ Known gap (2026-10-24, two live events): the pedal state is a level with
+no staleness check — when HP-status packets stop (a 5 s NIC link drop,
+both times during an SSB over) the gate holds the last pedal state and
+re-keys the radio the moment the link returns. A staleness guard is pending
+consent; until then the Footswitch PTT setting is the emergency stop (the
+MOX button is ORed with the pedal and cannot clear it). The run log
+(`src/logfile.c`) now records the episode.
 
 ## The checklist (piHPSDR references)
 

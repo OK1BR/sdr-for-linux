@@ -98,6 +98,14 @@ void p2_get_telemetry(p2_telemetry *out);
 int p2_ptt_get(void);
 
 /*
+ * Age of the last HP-status packet in µs (-1 = none since the link started).
+ * The PTT state above is only as fresh as this: with the status stream gone
+ * (link drop) p2_ptt_get() keeps returning the last value seen. Logging aid
+ * for tx_run; not a wire-state input.
+ */
+long long p2_status_age_us(void);
+
+/*
  * Configure the radio's PTT input (TX-specific byte 50, np.c:1553-1558):
  * `enabled` clears the 0x04 "mic PTT disabled" bit while transmitting, so the
  * release of a footswitch is still reported mid-over; `tip` selects the PTT

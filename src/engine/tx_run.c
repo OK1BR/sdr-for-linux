@@ -456,7 +456,9 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     g_atomic_int_set(&s_keyed_pub, 1);   /* RX mute router keys off this NOW */
     const char *ksrc = r.state.tune ? "TUNE"
                      : cw_key       ? "CW"
-                     : rtty_key     ? "RTTY" : "MOX";
+                     : rtty_key     ? "RTTY"
+                     : (want_ptt && !g_atomic_int_get(&s_want_mox) && !want_tt)
+                                    ? "PTT" : "MOX";   /* footswitch-sourced over */
     LAT("key_on %s", ksrc);
     fprintf(stderr, "tx: KEY %s  freq=%lld Hz  PA=%s  ANT%d  drive=%d/255\n",
             ksrc, freq,
@@ -623,6 +625,7 @@ static gpointer tx_thread(gpointer u) {
   int mic_clock_ok = 0;            /* P2: radio mic stream paces the feed; flips on the
                                       first clock credit, self-heals across link drops */
   gint64 last_gate = 0, next_feed = 0, cw_key_on = 0, rtty_key_on = 0;
+  gint64 stale_since = 0;          /* keyed with no HP-status packets (P2) — log episode */
 
   while (g_atomic_int_get(&s_running)) {
     gint64 now = g_get_monotonic_time();
@@ -679,6 +682,27 @@ static gpointer tx_thread(gpointer u) {
                         &keyed_rtty, fresh);
       if (keyed && next_feed == 0) { next_feed = g_get_monotonic_time(); }
       if (!keyed && s_p1) { next_feed = 0; }   /* P2 paces continuously (N3) */
+    }
+
+    /* Footswitch forensics (2026-10-24, NIC link drop during an SSB over): the
+     * pedal is a level re-read from every HP-status packet, so a keyed over
+     * with no status packets keeps acting on the LAST pedal state seen. Log
+     * the episode once and its end — log only; the intent is unchanged (a
+     * staleness guard would be a TX-path change under TX-SAFETY). */
+    if (!s_p1) {
+      gint64 age = p2_status_age_us();
+      int stale = keyed && age > 1000000;        /* status: about 20/s on RX, 1 kHz on TX */
+      if (stale && !stale_since) {
+        stale_since = now;
+        fprintf(stderr, "tx: keyed, no radio status for %.1f s — footswitch state is stale (link lost?)\n",
+                age / 1e6);
+        fflush(stderr);
+      } else if (!stale && stale_since) {
+        fprintf(stderr, "tx: radio status %s after %.1f s (keyed=%d)\n",
+                age > 1000000 ? "still missing, over ended" : "back", (now - stale_since) / 1e6, keyed);
+        fflush(stderr);
+        stale_since = 0;
+      }
     }
 
     /* 20 s continuous-key hardware backstop: abort the Morse so break-in unkeys. */
@@ -1166,8 +1190,13 @@ void tx_run_set_twotone(int on) {
 }
 
 void tx_run_request(int want_mox, int want_tune) {
-  g_atomic_int_set(&s_want_mox,  want_mox  ? 1 : 0);
-  g_atomic_int_set(&s_want_tune, want_tune ? 1 : 0);
+  int m = want_mox ? 1 : 0, t = want_tune ? 1 : 0;
+  if (m != g_atomic_int_get(&s_want_mox) || t != g_atomic_int_get(&s_want_tune)) {
+    fprintf(stderr, "tx: request mox=%d tune=%d\n", m, t);   /* GUI button / TCI trx */
+    fflush(stderr);
+  }
+  g_atomic_int_set(&s_want_mox,  m);
+  g_atomic_int_set(&s_want_tune, t);
 }
 
 void tx_run_get_status(tx_run_status *out) {

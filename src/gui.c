@@ -46,6 +46,7 @@
 #include "wisdom_gate.h"
 #include "wdsp.h"      /* GetWDSPVersion() — About debug info */
 #include "picker.h"
+#include "logfile.h"  /* desktop-launch run log — the About lists its path */
 #include "radio_support.h"
 #include "tci_server.h"
 #include "tx_run.h"
@@ -6084,7 +6085,8 @@ static void act_about(GSimpleAction *a, GVariant *param, gpointer data) {
         "Radio: %s\n"
         "%s"
         "Config: %s\n"
-        "Wisdom: %s",
+        "Wisdom: %s\n"
+        "Log: %s",
         SDRFL_VERSION,
         gtk_get_major_version(), gtk_get_minor_version(),
         gtk_get_micro_version(),
@@ -6094,7 +6096,7 @@ static void act_about(GSimpleAction *a, GVariant *param, gpointer data) {
         GetWDSPVersion() / 100, GetWDSPVersion() % 100,
         wisdom_fftw_version(), audio_backend_version(),
         radio, tci,
-        cfg, wis);
+        cfg, wis, logfile_path() ? logfile_path() : "stderr (not redirected)");
     adw_about_dialog_set_debug_info(ad, dbg);
     g_free(dbg); g_free(tci); g_free(radio); g_free(wis); g_free(cfg);
   }
@@ -6829,6 +6831,11 @@ int main(int argc, char **argv) {
            SDRFL_VERSION);
     return 0;
   }
+
+  /* A desktop launch has stdout/stderr on /dev/null — route them into the
+   * XDG state dir with timestamps (src/logfile.c). First, so the renderer
+   * line below is the first line of the log. */
+  logfile_init("sdr-for-linux", SDRFL_VERSION);
 
   /* Renderer default by runtime GTK. The GL renderer crashed on NVIDIA+Wayland
    * in the GTK-4.14 era, so anything below 4.22 stays on cairo; on ≥ 4.22 GL

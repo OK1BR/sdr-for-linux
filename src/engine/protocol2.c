@@ -21,6 +21,7 @@
  * upstream's per-DDC ring buffers + semaphores.
  */
 #include <glib.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -97,6 +98,11 @@ static volatile gint tlm_fwd_max  = 0;
 /* Hardware PTT (footswitch): state of HP-status byte [4] bit 0 (np.c:2624).
  * Plain state mirror — no latch; the tx_run gate polls it at ~20 Hz. */
 static volatile gint tlm_ptt      = 0;
+/* Monotonic time of the last HP-status packet (0 = none this link). The
+ * footswitch is a LEVEL re-read from every status packet — when packets stop
+ * (NIC link drop 2026-10-24) the gate keeps acting on the last one; tx_run
+ * logs that episode via p2_status_age_us(). */
+static _Atomic gint64 tlm_status_us;
 /* PTT input config for TX-specific byte 50 (np.c:1553-1558), set by the GUI. */
 static volatile gint cfg_ptt_enable = 0;   /* keep PTT readable during TX      */
 static volatile gint cfg_ptt_tip    = 0;   /* PTT on mic-jack tip (vs ring)    */
@@ -921,6 +927,11 @@ int p2_ptt_get(void) {
   return g_atomic_int_get(&tlm_ptt);
 }
 
+long long p2_status_age_us(void) {
+  gint64 t = atomic_load_explicit(&tlm_status_us, memory_order_relaxed);
+  return t ? (long long)(g_get_monotonic_time() - t) : -1LL;
+}
+
 void p2_set_ptt_input(int enabled, int tip) {
   g_atomic_int_set(&cfg_ptt_enable, enabled ? 1 : 0);
   g_atomic_int_set(&cfg_ptt_tip,    tip     ? 1 : 0);
@@ -1054,7 +1065,13 @@ static void parse_high_priority_status(const unsigned char *buf, int len) {
    * plain state; the tx_run gate turns it into a MOX intent when the operator
    * enabled the footswitch setting. Bits 1/2 (CW dot/dash) stay unused — no
    * physical-key support by decision. */
-  g_atomic_int_set(&tlm_ptt, buf[4] & 0x01);
+  {
+    int ptt = buf[4] & 0x01;
+    if (ptt != g_atomic_int_get(&tlm_ptt)) {      /* edge → one log line */
+      t_print("p2: PTT input %s\n", ptt ? "pressed" : "released");
+    }
+    g_atomic_int_set(&tlm_ptt, ptt);
+  }
 
   /* byte 5: ADC overload (np.c:2642-2643). Latch — a clip may last one 50 ms
    * status packet, shorter than a slow GUI frame; the reader clears it. */
@@ -1165,6 +1182,7 @@ static void parse_high_priority_status(const unsigned char *buf, int len) {
   g_atomic_int_set(&tlm_rev,     rev_acc / 16);
 
   g_atomic_int_set(&tlm_valid, 1);
+  atomic_store_explicit(&tlm_status_us, g_get_monotonic_time(), memory_order_relaxed);
 
   /* SDRFL_DEBUG_LEVELS: ~1 Hz dump of the raw telemetry (status packets arrive
    * ~20/s on RX). Lets a live session read the raw ADC words against a meter. */
@@ -1467,6 +1485,7 @@ int p2_rx_start(const DISCOVERED *dev, long long freq_hz, int sample_rate,
   g_atomic_int_set(&tlm_rev, 0);
   g_atomic_int_set(&tlm_exciter, 0);
   g_atomic_int_set(&tlm_ptt, 0);         /* footswitch state re-learned from status */
+  atomic_store_explicit(&tlm_status_us, 0, memory_order_relaxed);
   fwd_acc = rev_acc = ex_acc = 0;
   g_mutex_lock(&tx_state_lock);          /* start RX-only: no latched TX state */
   memset(&cfg_tx, 0, sizeof(cfg_tx));

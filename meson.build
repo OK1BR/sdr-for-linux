@@ -66,6 +66,7 @@ subdir('vendor/wdsp')  # declares wdsp_dep
 ui_sources = [
   'src/panadapter.c',
   'src/waterfall.c',
+  'src/logfile.c',     # desktop-launch run log (~/.local/state), timestamped
 ]
 
 # --- Application ------------------------------------------------------------
