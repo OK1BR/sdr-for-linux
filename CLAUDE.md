@@ -695,6 +695,18 @@ call `SetTXAPHROT*`. Scope: Preferences → TX switch + corner (default 338 Hz),
 voice modes only, bypassed for digi/CW/TUNE/TCI; auto-optimizer + asymmetry
 display need WDSP 2.00+ (after #22). Verify offline via SDRFL_TX_DUMP replay
 before keying. Mic chain is Neumann TLM 103 + SPL Channel One.
+**#24–#32 (same evening, Richard: "využít WDSP co nejvíce"):** the WDSP
+feature audit (67 of the 305 public 2.11 setters called; guide 2.1.1 read) filed
+as tickets: #24 CW APF (four shapes), #25 RTTY Dolly twin-peak on our
+mark/space, #26 voice/AM squelch, #27 TX CFC + post-EQ (after #22), #28 expose
+NR2/NR4/NB2/ANR/ANF parameters (Noise page, NNR rows from #22 join it), #29 NOB
+interpolating blanker as NB mode 3, #30 SAM with sideband select + fade, #31
+click-to-peak via the analyzer max-bin detector, #32 siphon TX tap. Second batch
+still to file (texts pending Richard's approval): VOX in the DEXP, manual notch
+filters (RXANBP), real filter curve in the Filter dialog (getFilterCurve), RX/TX
+test generators (noise/sweep/pulsed), up-slew, varsamp drift resampler, FM
+(descoped post-alpha), AM carrier level, DSB. Not for the G2E: diversity (one
+ADC), EER, FM broadcast stereo.
 **16:31 the same day — TUNE / Ethernet-drop LOOP, fixed in code:** TUNE at ~74 W on
 15 m (gateware 11.0.5 makes ~1 dB more per drive byte) knocked the PC's
 10GBASE-T link down within a second, every time (13 link drops that day, no CRC
