@@ -771,7 +771,8 @@ preference is gone (row, `ps_set_stbl`, `[tx] ps_stbl`), the `GetPSInfo`
 layout we read (info[4]/[5]/[6]/[14]/[15], LRESET = 0) is unchanged, so the
 Thetis auto-att is untouched. **NR slot 3 is NNR** (Richard, 2026-10-24):
 WDSP's neural NR with the four built-in models (`nnr_model_0..3.c`, ~57 MB of
-generated C — each compiles in < 1 s, 72 MB RSS, no CI risk); the button
+generated C — each compiles in < 1 s, 72 MB RSS, measured locally; CI runs
+only at release time, so the next dry run is the first CI build of them); the button
 reads "NNR", Preferences → Audio → Receive got "NNR model" (Standard /
 Premium, default **Premium**) and "NNR floor" (dB, −50..−10, default −25),
 persisted `[rx] nnr_model` / `nnr_floor`, live via `demod_set_nnr()`; CW
