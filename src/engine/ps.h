@@ -80,7 +80,8 @@ typedef struct {
   int correcting; /* info[14]: correction currently applied               */
   int state;      /* info[15]: calcc state machine (0=Reset..9=TurnOn)    */
   int fdbk;       /* info[4]: feedback level — ideal ~152, good 140-165   */
-  int cals;       /* info[5]: calibration attempts (counts up per calc)   */
+  int cals;       /* info[5]: ACCEPTED calibrations (counts up per calc)  */
+  int tries;      /* info[7]: calibration attempts, accepted or rejected  */
   int sln;        /* info[6]: last correction-sanity bitmask (calcc.c     */
                   /*   scheck: 0x1 NaN, 0x2 empty bin, 0x4 gain>1,        */
                   /*   0x8 endpoint, 0x10/20 neg gain, 0x40 jump)         */
@@ -95,14 +96,13 @@ void ps_get_status(ps_status *out);
  * by the GUI. */
 void ps_set_auto(int on);
 
-/* Auto-attenuate tick — Thetis semantics (PSForm.cs:728-784; the piHPSDR
- * 2T-only variant lives at git tag `ps-auto-att-pihpsdr`): with the auto
- * switch on, the attenuator steps on every NEW calibration during ANY keyed
- * non-CW PS TX (voice included) whose feedback level leaves the (128, 181]
- * window. `keyed` = any keyed non-CW PS TX; `twotone` additionally scopes
- * the too-weak stall detector (4 s without a calibration → hunt restarts at
- * 0 dB — 2T only; voice pauses must never zero the attenuator). Call every
- * gate slot. */
-void ps_auto_tick(int keyed, int twotone);
+/* Auto-attenuate tick — Thetis window + step (PSForm.cs:728-784; the piHPSDR
+ * 2T-only variant lives at git tag `ps-auto-att-pihpsdr`), PS 3.0 trigger:
+ * with the auto switch on, the attenuator steps on every NEW calibration
+ * ATTEMPT (info[7], accepted or rejected — see ps.c) during ANY keyed non-CW
+ * PS TX (voice included) whose feedback level leaves the (128, 181] window.
+ * `keyed` = any keyed non-CW PS TX. No attempt (a voice pause) = no step;
+ * the attenuator is never zeroed by a timeout. Call every gate slot. */
+void ps_auto_tick(int keyed);
 
 #endif /* SDRFL_ENGINE_PS_H */

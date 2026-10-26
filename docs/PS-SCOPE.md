@@ -155,7 +155,10 @@ Sequencing (pihpsdr/radio.c:2046-2103, transmitter.c:2442-2528):
   **gone since the WDSP 2.11 re-sync (issue #22, 2026-10-26)**: PureSignal
   3.0 has no Stabilize/MapMode/PinMode/Ptol/IntsAndSpi controls, the
   parameter set is HWPeak/MoxDelay/TXDelay/LoopDelay (piHPSDR 3.1 parity).
-- **Two-tone test**: WDSP PostGen, 700+1900 Hz (negated for LSB-family
+- **Two-tone test**: WDSP PostGen, 700+1937 Hz since 2026-10-27 (was
+  700+1900: the 1200 Hz spacing divides the 96/192 kHz TX rates, which the
+  WDSP Guide 2.1.1 Appendix D names as a stress for the PS 3.0 calibrator —
+  35 of 59 fits rejected live on 2026-10-26; 1237 Hz divides none) (negated for LSB-family
   modes), each tone at 0.49999 so the pair peaks at full scale
   (transmitter.c:2902-2956). It **keys MOX through the normal gates** and
   runs at the current drive level. Closing the PS menu force-stops it.

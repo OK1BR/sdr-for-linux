@@ -4630,7 +4630,7 @@ static GtkWidget *build_controls(App *app) {
   app->tt_btn = gtk_toggle_button_new_with_label("2T");
   gtk_widget_add_css_class(app->tt_btn, "txkey");
   gtk_widget_set_tooltip_text(app->tt_btn,
-      "Two-tone test: KEYS a 700+1900 Hz two-tone at the current drive (dummy load!)");
+      "Two-tone test: KEYS a 700+1937 Hz two-tone at the current drive (dummy load!)");
   gtk_widget_set_sensitive(app->tt_btn,
       app->tx_ready && app->mode != DEMOD_CWL && app->mode != DEMOD_CWU);
   g_signal_connect(app->tt_btn, "toggled", G_CALLBACK(on_tt_toggled), app);

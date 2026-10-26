@@ -225,7 +225,7 @@ void tx_run_request(int want_mox, int want_tune);
 
 /*
  * Two-tone test (PureSignal calibration / IMD check; ⛔ approved delta #2):
- * on=1 KEYS the transmitter through tx_gate with a 700+1900 Hz two-tone at
+ * on=1 KEYS the transmitter through tx_gate with a 700+1937 Hz two-tone at
  * the current drive (LSB modes mirrored). Toggleable mid-over. Never
  * persisted. Excluded in CW modes.
  */

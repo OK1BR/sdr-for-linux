@@ -473,7 +473,12 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   double flo, fhi;
   tx_passband(wmode, cfg.tx_flo, cfg.tx_fhi, &flo, &fhi);
   /* Two-tone generator follows the keyed state (single tx thread → static is
-   * safe). 700+1900 Hz, negated for the LSB family (piHPSDR transmitter.c:
+   * safe). 700+1937 Hz — piHPSDR uses 700+1900, but a 1200 Hz spacing divides
+   * both the 96 kHz TX dsp rate and the 192 kHz output rate, and the WDSP
+   * Guide 2.1.1 Appendix D says exactly that stresses the PS 3.0 calibrator
+   * (the digitised envelope repeats a few sample values instead of sweeping;
+   * live 2026-10-26: 35 of 59 two-tone fits rejected as "Solution Deviation").
+   * 1237 Hz divides none of 48/96/192 kHz. Negated for the LSB family (piHPSDR transmitter.c:
    * 2918-2928). Toggleable mid-over: the operator A/Bs PureSignal against a
    * steady spectrum. */
   static int tt_applied;
@@ -514,7 +519,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
                     cfg.gate_db != 0.0 ? cfg.gate_db : -45.0);
     tx_dsp_set_mode(wmode, flo, fhi);
     tx_dsp_tune_tone(r.state.tune ? 1 : 0, 0.0);   /* TUNE = post-gen carrier */
-    if (tt_want_now) { tx_dsp_two_tone(1, tt_sign * 700.0, tt_sign * 1900.0); }
+    if (tt_want_now) { tx_dsp_two_tone(1, tt_sign * 700.0, tt_sign * 1937.0); }
     tt_applied = tt_want_now;
     if (r.state.mox && !gen_key) {
       if (g_atomic_int_get(&s_ext_src)) {
@@ -658,16 +663,16 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
                       cfg.gate_db != 0.0 ? cfg.gate_db : -45.0);
     }
     if (tt_want_now != tt_applied) {       /* two-tone toggled mid-over */
-      tx_dsp_two_tone(tt_want_now, tt_sign * 700.0, tt_sign * 1900.0);
+      tx_dsp_two_tone(tt_want_now, tt_sign * 700.0, tt_sign * 1937.0);
       tt_applied = tt_want_now;
     }
     if (fresh_meter && ++s_log_ctr % 20 == 0) {   /* ~1 Hz while keyed (regular slots) */
       ps_status pl; ps_get_status(&pl);
       if (pl.on) {
         fprintf(stderr, "tx: fwd=%.2f W  rev=%.2f W  SWR=%.2f  (fwd_raw=%d rev_raw=%d)"
-                "  PS: state=%d fdbk=%d cals=%d sln=0x%x getpk=%.3f %s\n",
+                "  PS: state=%d fdbk=%d cals=%d/%d sln=0x%x getpk=%.3f %s\n",
                 tx_meter_fwd_w(), tx_meter_rev_w(), tx_meter_swr(), t.fwd_raw, t.rev_raw,
-                pl.state, pl.fdbk, pl.cals, pl.sln, pl.getpk,
+                pl.state, pl.fdbk, pl.cals, pl.tries, pl.sln, pl.getpk,
                 pl.correcting ? "CORRECTING" : "-");
       } else {
         /* ex_raw = the exciter (DAC output, before the PA) sensor word, HP-status
@@ -685,8 +690,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
    * is lock-free. TUNE parks PS (reset, resumed after — piHPSDR radio.c:2728). */
   ps_tune(keyed && r.state.tune);
   ps_key(keyed && !gen_key);
-  ps_auto_tick(keyed && !gen_key, tt_applied);  /* Thetis: att steps on any TX;
-                                                   stall detector 2T-only */
+  ps_auto_tick(keyed && !gen_key);   /* Thetis window, PS 3.0 attempt trigger */
 
   tx_run_status st;
   memset(&st, 0, sizeof st);

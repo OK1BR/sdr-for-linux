@@ -802,6 +802,31 @@ first-start wisdom rebuild on a real desktop. Next WDSP work is in tickets
 (#23 PHROT, #27 CFC, the EQ milestone on the 2.x free-curve EQ, #28 NNR
 tuning setters). The `vendor/pihpsdr` wire contract is still 3.0 — the
 piHPSDR 3.1 remote-head mismatch is a separate ticket.
+**First live look the same night (Richard, 2T on 20 m, 23:53-23:55; Richard:
+"PS se při 2T nějak nechce zafixovat"), diagnosed from the run log + the WDSP
+Guide 2.1.1 (Appendix D, GetPSInfo) and fixed 2026-10-27 00:xx:** (1) at
+clipping feedback (fdbk 355-358) the PS 3.0 NURBS fitter rejects EVERY fit
+(`***** PS: sin²+cos² deviates`), so info[5] (accepted calibrations) never
+advanced and the Thetis auto-att — which stepped only on a completed
+calibration — sat at 0 dB for a whole over; the trigger is now a new
+calibration ATTEMPT, **info[7]** (2.x counts attempts; info[4] is refreshed on
+every attempt, accepted or rejected; the first tick of an over only latches the
+counter; no attempt in a voice pause = no step). (2) The 1.29-era two-tone
+"stall detector" (4 s without a completed calibration → hunt from 0 dB) zeroed
+a correct 17 dB (23:54:23) because PS 3.0 legitimately pauses the accepted
+count (three rejected fits → internal LRESET) — REMOVED; PS 3.0 has its own
+deadlock detector, `info[6] = 2` = "probable severe over-drive" (Guide), now a
+once-per-over log line. (3) In the (128, 181] window 35 of 59 fits were still
+rejected as `Solution Deviation` (successive solutions differ > 0.10 at 40
+points) and every three in a row drop the correction → `CORRECTING` flapping;
+Guide Appendix D: a two-tone spacing that divides the sample rate makes the
+digitised envelope repeat a few sample values instead of sweeping and "can make
+it difficult for the calibration to find all the data it needs" — ours was
+700+1900 (1200 Hz divides 96 k and 192 k) → now **700+1937 Hz** (1237 divides
+none of 48/96/192 k). The log line reads `cals=accepted/attempts` now. piHPSDR
+3.1 additionally calibrates PS with a TX NOISE test signal (PreGen noise, the
+Guide's recommended stimulus) — that is the proper follow-up (issue #36).
+⛔ Still unverified live after these three changes: the next 2T session decides.
 
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two

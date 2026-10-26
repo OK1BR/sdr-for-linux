@@ -296,18 +296,36 @@ void ps_tune(int tune) {
  * calibration the attenuator NEVER moves (a voice pause must never zero it —
  * the "dead voice" lesson of 2026-07-11). Called from the tx_run gate slot
  * (~20 Hz; Thetis ticks this at 100 ms). */
-void ps_auto_tick(int keyed, int twotone) {
-  static int a_state, a_last_cals, a_stuck;
+void ps_auto_tick(int keyed) {
+  static int a_state, a_last_try = -1, a_stuck, a_warned;
   if (!s_started) { return; }
   g_mutex_lock(&s_lock);
   int on = s_enable, att = s_att;
   g_mutex_unlock(&s_lock);
-  if (!on || !keyed) { a_state = 0; a_stuck = 0; return; }
+  if (!on || !keyed) { a_state = 0; a_stuck = 0; a_warned = 0; a_last_try = -1; return; }
 
   int info[16];
   GetPSInfo(s_ch, info);
-  int newcal = info[5] != a_last_cals;
-  a_last_cals = info[5];
+  /* PS 3.0 (WDSP 2.11): info[7] counts calibration ATTEMPTS, info[5] only the
+   * accepted ones, and info[4] (feedback level) is refreshed on every attempt,
+   * accepted or rejected. A new ATTEMPT is the trigger. The 1.29 rule "step on
+   * a completed calibration" dead-locked at clipping feedback (live 2026-10-26
+   * 23:53: fdbk 358, every fit rejected by the sin²+cos² check, info[5] frozen
+   * at 0 for a whole over). piHPSDR 3.1 ps_calibration_timer steps on a
+   * feedback-level change or ~1 s without one; the attempt count is the same
+   * signal without the stale-value hazard — no attempt in a voice pause means
+   * no step. The first tick of an over only latches the counter. */
+  if (a_last_try < 0) { a_last_try = info[7]; return; }
+  int newtry = info[7] != a_last_try;
+  a_last_try = info[7];
+
+  /* WDSP Guide 2.1.1 (GetPSInfo): info[6] = 2 → "probable severe over-drive" —
+   * PS refuses to calibrate on < 6 % of the top-amplitude data. Once per over. */
+  if ((info[6] & 2) && !a_warned) {
+    a_warned = 1;
+    fprintf(stderr, "ps: WDSP reports probable severe over-drive (info[6]=2) — check the drive level\n");
+    fflush(stderr);
+  }
 
   /* Belt-and-braces: automode should never park in LRESET (it re-enters
    * LWAIT by itself), but if the machine ever sits there ~0.5 s while keyed,
@@ -319,34 +337,20 @@ void ps_auto_tick(int keyed, int twotone) {
     a_stuck = 0;
   }
 
-  static int a_nocal;
-  if (!g_atomic_int_get(&s_auto)) { a_state = 0; a_nocal = 0; return; }
+  if (!g_atomic_int_get(&s_auto)) { a_state = 0; return; }
 
-  /* Too-weak stall, 2T-scoped ON PURPOSE: with the attenuator too high the
-   * COLLECT bins never fill, no calibration ever completes and there is no
-   * newcal to step on — the deadlock piHPSDR's Restart button cures by
-   * zeroing the attenuation (ps_menu.c:537-545). Automated here for the
-   * two-tone hunt only: no completed calibration for ~4 s → restart from
-   * 0 dB. It must NOT run on voice — pauses between words legitimately
-   * produce no calibrations, and zeroing the attenuator there floods the
-   * feedback (fdbk > 300) and kills the running correction. */
-  if (newcal) { a_nocal = 0; }
-  else if (twotone && a_state == 0 && ++a_nocal >= 80) {
-    a_nocal = 0;
-    if (att > 0) {
-      SetPSControl(s_ch, 1, 0, 0, 0);
-      g_mutex_lock(&s_lock); s_att = 0; g_mutex_unlock(&s_lock);
-      wire_set(1, 0);
-      fprintf(stderr, "ps: auto-att stall (no cal in 4 s at %d dB) — restarting hunt at 0 dB\n", att);
-      a_state = 1;
-      return;
-    }
-  }
+  /* The 1.29-era "too-weak stall" detector (4 s without a completed
+   * calibration in two-tone → restart the hunt at 0 dB) is GONE: PS 3.0
+   * legitimately pauses the accepted-calibration count (three rejected fits
+   * → internal LRESET → fresh collection) and has its own deadlock detector
+   * (DEADLOCK_MIN_FRAC → info[6] |= 2). Live 2026-10-26 23:54:23 it zeroed a
+   * correct 17 dB and put the feedback back into clipping. */
 
   switch (a_state) {
   case 0: {
-    if (!newcal) { return; }
+    if (!newtry) { return; }
     int f = info[4];
+    if (f <= 0) { return; }                      /* no level measured yet     */
     /* Thetis NeedToRecalibrate: too strong (>181), or too weak (≤128) with
      * attenuation in play. fdbk in (128, 181] = accepted, no move. */
     if (!(f > 181 || (f <= 128 && att > 0))) { return; }
@@ -367,7 +371,8 @@ void ps_auto_tick(int keyed, int twotone) {
     if (na != att) {
       g_mutex_lock(&s_lock); s_att = na; g_mutex_unlock(&s_lock);
       wire_set(1, na);                           /* new level on the wire (kick) */
-      fprintf(stderr, "ps: auto-att %d -> %d dB (fdbk %d)\n", att, na, f);
+      fprintf(stderr, "ps: auto-att %d -> %d dB (fdbk %d, attempt %d)\n", att, na, f, info[7]);
+      fflush(stderr);
     }
     a_state = 1;
     break;
@@ -392,6 +397,7 @@ void ps_get_status(ps_status *out) {
   out->fdbk       = info[4];
   out->cals       = info[5];
   out->sln        = info[6];
+  out->tries      = info[7];
   out->correcting = info[14];
   out->state      = info[15];
   GetPSMaxTX(s_ch, &out->getpk);
