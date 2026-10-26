@@ -27,7 +27,7 @@ glib_dep    = dependency('glib-2.0')  # engine is GLib-only (headless), no GTK
 opus_dep    = dependency('opus')
 openssl_dep = dependency('openssl')
 zlib_dep    = dependency('zlib')
-# WDSP + libspecbleach need single-precision FFTW; rnnoise/WDSP need pthreads + libm.
+# WDSP + libspecbleach need single-precision FFTW; WDSP needs pthreads + libm.
 # WDSP's analyzer/fir also use the double-precision FFTW (fftw_* symbols).
 fftw3f_dep  = dependency('fftw3f')
 fftw3_dep   = dependency('fftw3')
@@ -58,8 +58,7 @@ common_deps = [gtk_dep, opus_dep, openssl_dep, zlib_dep]
 # --- Vendored engine libraries ----------------------------------------------
 # Built from source we keep in-tree (never linked from an external checkout);
 # each dir's VENDOR.md records upstream origin + pinned commit. Order matters:
-# wdsp depends on rnnoise_dep / specbleach_dep declared by the first two.
-subdir('vendor/rnnoise')
+# wdsp depends on specbleach_dep declared by the first.
 subdir('vendor/libspecbleach')
 subdir('vendor/wdsp')  # declares wdsp_dep
 
@@ -234,6 +233,16 @@ executable('sdrfl-txdsp-test',
   ['src/txdsp_test.c', 'src/engine/tx.c'] + engine_sources,
   include_directories : [vendor_inc, src_inc, engine_inc],
   dependencies : engine_deps + [wdsp_dep, m_dep],
+  override_options : ['c_std=gnu11'],
+  install : false,
+)
+
+# Offline NNR gate (issue #22): WDSP's neural noise reduction — every built-in
+# model slot must load at each AF rate we offer; reports CPU cost per model.
+# Links WDSP (GNU dialect). NO radio, NO audio device.
+executable('sdrfl-nnr-test',
+  ['src/nnr_test.c'],
+  dependencies : [glib_dep, wdsp_dep, m_dep],
   override_options : ['c_std=gnu11'],
   install : false,
 )

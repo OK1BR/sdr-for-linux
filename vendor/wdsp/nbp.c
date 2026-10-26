@@ -1,4 +1,4 @@
-/*	nbp.c
+/*  nbp.c
 
 This file is part of a program that implements a Software-Defined Radio.
 
@@ -40,9 +40,9 @@ NOTCHDB create_notchdb (int master_run, int maxnotches)
 	a->nn = 0;
 	a->fcenter = (double *) malloc0 (a->maxnotches * sizeof (double));
 	a->fwidth  = (double *) malloc0 (a->maxnotches * sizeof (double));
-	a->nlow	   = (double *) malloc0 (a->maxnotches * sizeof (double));
+	a->nlow    = (double *) malloc0 (a->maxnotches * sizeof (double));
 	a->nhigh   = (double *) malloc0 (a->maxnotches * sizeof (double));
-	a->active  = (int	 *) malloc0 (a->maxnotches * sizeof (int   ));
+	a->active  = (int    *) malloc0 (a->maxnotches * sizeof (int   ));
 	return a;
 }
 
@@ -199,7 +199,7 @@ void calc_nbp_lightweight (NBP a)
 		{
 			for (i = 0; i < a->numpb; i++)
 			{
-				a->bplow[i]	 -= offset;
+				a->bplow[i]  -=	offset;
 				a->bphigh[i] -= offset;
 			}
 			a->impulse = fir_mbandpass (a->nc, a->numpb, a->bplow, a->bphigh,
@@ -229,7 +229,7 @@ void calc_nbp_impulse (NBP a)
 			min_notch_width (a), a->autoincr, fl, fh, a->bplow, a->bphigh, &a->havnotch);
 		for (i = 0; i < a->numpb; i++)
 		{
-			a->bplow[i]	 -= offset;
+			a->bplow[i]  -=	offset;
 			a->bphigh[i] -= offset;
 		}
 		a->impulse = fir_mbandpass (a->nc, a->numpb, a->bplow, a->bphigh,
@@ -264,7 +264,7 @@ NBP create_nbp(int run, int fnfrun, int position, int size, int nc, int mp, doub
 	a->bplow   = (double *) malloc0 (a->maxpb * sizeof (double));
 	a->bphigh  = (double *) malloc0 (a->maxpb * sizeof (double));
 	calc_nbp_impulse (a);
-	a->p = create_fircore (a->size, a->in, a->out, a->nc, a->mp, a->impulse);
+	a->p = create_fircore (a->size, a->in, a->out, a->nc, a->mp, 16, a->impulse);
 	// print_impulse ("nbp.txt", a->size + 1, impulse, 1, 0);
 	_aligned_free(a->impulse);
 	return a;

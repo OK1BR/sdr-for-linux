@@ -1,8 +1,8 @@
-/*	channel.c
+/*  channel.c
 
 This file is part of a program that implements a Software-Defined Radio.
 
-Copyright (C) 2013 Warren Pratt, NR0V
+Copyright (C) 2013, 2026 Warren Pratt, NR0V
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -20,7 +20,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 The author can be reached by email at
 
-warren@wpratt.com
+warren@pratt.one
 
 */
 
@@ -36,20 +36,20 @@ void start_thread (int channel)
 
 void pre_main_build (int channel)
 {
-	if (ch[channel].in_rate	 >= ch[channel].dsp_rate)
-		ch[channel].dsp_insize	= ch[channel].dsp_size * (ch[channel].in_rate  / ch[channel].dsp_rate);
+	if (ch[channel].in_rate  >= ch[channel].dsp_rate)
+		ch[channel].dsp_insize  = ch[channel].dsp_size * (ch[channel].in_rate  / ch[channel].dsp_rate);
 	else
-		ch[channel].dsp_insize	= ch[channel].dsp_size / (ch[channel].dsp_rate /  ch[channel].in_rate);
+		ch[channel].dsp_insize  = ch[channel].dsp_size / (ch[channel].dsp_rate /  ch[channel].in_rate);
 
 	if (ch[channel].out_rate >= ch[channel].dsp_rate)
 		ch[channel].dsp_outsize = ch[channel].dsp_size * (ch[channel].out_rate / ch[channel].dsp_rate);
 	else
 		ch[channel].dsp_outsize = ch[channel].dsp_size / (ch[channel].dsp_rate / ch[channel].out_rate);
 
-	if (ch[channel].in_rate	 >= ch[channel].out_rate)
-		ch[channel].out_size	= ch[channel].in_size  / (ch[channel].in_rate  / ch[channel].out_rate);
+	if (ch[channel].in_rate  >= ch[channel].out_rate)
+		ch[channel].out_size    = ch[channel].in_size  / (ch[channel].in_rate  / ch[channel].out_rate);
 	else
-		ch[channel].out_size	= ch[channel].in_size  * (ch[channel].out_rate /  ch[channel].in_rate);
+		ch[channel].out_size    = ch[channel].in_size  * (ch[channel].out_rate /  ch[channel].in_rate);
 
 	InitializeCriticalSectionAndSpinCount ( &ch[channel].csDSP, 2500 );
 	InitializeCriticalSectionAndSpinCount ( &ch[channel].csEXCH,  2500 );
@@ -62,7 +62,7 @@ void post_main_build (int channel)
 	InterlockedBitTestAndSet (&ch[channel].run, 0);
 	start_thread (channel);
 	if (ch[channel].state == 1)
-		InterlockedBitTestAndSet (&ch[channel].exchange, 0);
+	 	InterlockedBitTestAndSet (&ch[channel].exchange, 0);
 }
 
 void build_channel (int channel)
@@ -115,7 +115,7 @@ void pre_main_destroy (int channel)
 void post_main_destroy (int channel)
 {
 	destroy_iobuffs (channel);
-	DeleteCriticalSection ( &ch[channel].csEXCH	 );
+	DeleteCriticalSection ( &ch[channel].csEXCH  );
 	DeleteCriticalSection ( &ch[channel].csDSP );
 }
 
@@ -246,7 +246,7 @@ void SetAllRates (int channel, int in_rate, int dsp_rate, int out_rate)
 	{
 		pre_main_destroy (channel);
 		post_main_destroy (channel);
-		ch[channel].in_rate	 = in_rate;
+		ch[channel].in_rate  = in_rate;
 		ch[channel].dsp_rate = dsp_rate;
 		ch[channel].out_rate = out_rate;
 		pre_main_build (channel);
@@ -288,11 +288,37 @@ int SetChannelState (int channel, int state, int dmode)
 			}
 			break;
 		case 1:
+			// if a turn-off is still in progress, wait for it to complete before beginning the turn-on
+			while (_InterlockedAnd (&ch[channel].flushflag, 1) && count < timeout)
+			{
+				Sleep(1);
+				count++;
+			}
+			if (count >= timeout)
+			{
+				InterlockedBitTestAndReset (&ch[channel].exchange, 0);
+				InterlockedBitTestAndReset (&ch[channel].flushflag, 0);
+				InterlockedBitTestAndReset (&a->slew.downflag, 0);
+			}
 			InterlockedBitTestAndSet (&a->slew.upflag, 0);
 			InterlockedBitTestAndSet (&ch[channel].iob.ch_upslew, 0);
 			InterlockedBitTestAndReset (&ch[channel].iob.pc->exec_bypass, 0);
 			InterlockedBitTestAndSet (&ch[channel].exchange, 0);
 			break;
+		}
+	}
+	else if (state == 0 && dmode)
+	{	// already OFF; if a turn-off begun with dmode == 0 is still in progress, wait for it to complete
+		while (_InterlockedAnd (&ch[channel].flushflag, 1) && count < timeout)
+		{
+			Sleep(1);
+			count++;
+		}
+		if (count >= timeout)
+		{
+			InterlockedBitTestAndReset (&ch[channel].exchange, 0);
+			InterlockedBitTestAndReset (&ch[channel].flushflag, 0);
+			InterlockedBitTestAndReset (&a->slew.downflag, 0);
 		}
 	}
 	return prior_state;

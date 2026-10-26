@@ -74,12 +74,6 @@ void ps_key(int keyed);
  * `keyed && tune`. */
 void ps_tune(int tune);
 
-/* STBL (SetPSStabilize) preference — blends successive calibrations into an
- * EMA (alpha 0.9) instead of replacing. Both references ship 0 (default);
- * kept as an escape hatch for the voice fit flip-flop (sln 0x40/0x4) seen
- * 2026-07-11. Applies live. */
-void ps_set_stbl(int on);
-
 /* GetPSInfo subset for the UI/status (poll ~20 Hz; zeros when off). */
 typedef struct {
   int on;         /* PS enabled (operator setting)                        */

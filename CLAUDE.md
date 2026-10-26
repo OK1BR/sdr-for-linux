@@ -53,7 +53,8 @@ over the piHPSDR **client/server network path** (`src/client.c`).
 
 **Milestones 1 & 2 done** — you can **see and hear** the radio, direct from
 the G2E, in the GTK4 window. The headless GLib-only engine under `src/engine/`:
-builds WDSP (vendored `vendor/wdsp` + rnnoise + libspecbleach), discovers the
+builds WDSP (vendored `vendor/wdsp` + libspecbleach; rnnoise until the 2.11
+re-sync of 2026-10-26), discovers the
 radio (`discovery_p2.c`), runs one RX DDC over Protocol 2 and streams IQ
 (`protocol2.c` → `on_rx_iq`), feeds the WDSP analyzer for the float panadapter
 (`analyzer.c`), **and** a WDSP demod channel (`demod.c`) whose audio goes to a
@@ -267,8 +268,8 @@ Arch news first — the 2026-06 maintenance was a migration with new host
 keys and another one may rotate them again.
 
 **★ NEXT MILESTONE (Richard's pick, 2026-08-01): RX + TX equalizer —
-parametric, with a graphical display.** ⛔ Prerequisite since 2026-10-24: issue #22 (WDSP
-1.29 → 2.11; 2.00 ships a free-curve EQ with graphical response data). Both directions (RX audio chain +
+parametric, with a graphical display.** Prerequisite issue #22 (WDSP
+1.29 → 2.11; 2.00 ships a free-curve EQ with graphical response data) is done in code since 2026-10-26, awaiting the live check. Both directions (RX audio chain +
 TX mic chain), parametric control (per-band freq/gain/Q, not just fixed
 graphic-EQ sliders), and a graphical curve view in the UI. Step 1 is the
 WDSP capability audit: what the vendored RXA/TXA EQ stages actually offer
@@ -757,6 +758,49 @@ catch: NM re-activation = ~3 s without an address → sendto ENETUNREACH killed
 the P2 link (piHPSDR parity) → acfa3aa keeps sending and recovers (verified
 live twice: the re-activation test and the cable move, 421 failed sends then
 "send ok again").
+**★ WDSP 2.11 RE-SYNC — issue #22 DONE IN CODE 2026-10-26 (`needs-live-check`
++ `at-the-radio`):** `vendor/wdsp` is piHPSDR's `wdsp/` at **3b63530**
+(2026-10-19; WDSP 2.11, TAPR release 2026-10-15), replacing 1.29 from 974acba.
+Of the 113 WDSP functions the engine calls, 2.11 removed five —
+`SetPSMapMode/PinMode/Ptol/Stabilize` (+ `SetPSIntsAndSpi`) and
+`SetRXARNNRRun` — and changed no signature (audit = function names extracted
+from both `wdsp.h`, intersected with the identifiers `src/` calls, prototypes
+compared). PureSignal 3.0: `ps.c` now sets exactly what piHPSDR 3.1 sets
+(HWPeak/MoxDelay/TXDelay/LoopDelay, same values as before), the STBL
+preference is gone (row, `ps_set_stbl`, `[tx] ps_stbl`), the `GetPSInfo`
+layout we read (info[4]/[5]/[6]/[14]/[15], LRESET = 0) is unchanged, so the
+Thetis auto-att is untouched. **NR slot 3 is NNR** (Richard, 2026-10-24):
+WDSP's neural NR with the four built-in models (`nnr_model_0..3.c`, ~57 MB of
+generated C — each compiles in < 1 s, 72 MB RSS, no CI risk); the button
+reads "NNR", Preferences → Audio → Receive got "NNR model" (Standard /
+Premium, default **Premium**) and "NNR floor" (dB, −50..−10, default −25),
+persisted `[rx] nnr_model` / `nnr_floor`, live via `demod_set_nnr()`; CW
+modes switch to the CW-trained models automatically (piHPSDR 3.1
+`rx_set_mode` parity, set before `SetRXAMode`). `vendor/rnnoise` removed
+(75 MB; About / README / nfpm updated). 2.11 rules followed:
+`SetChannelState(ch,0,1)` before `CloseChannel` in `demod_destroy` /
+`tx_dsp_destroy` (times out after 100 ms once the feed is gone — no
+deadlock); wisdom cache renamed **`wdspWisdom01`** with one more plan per
+size (progress parser updated, a −1 from `WDSPwisdom` is logged) — **every
+install rebuilds its wisdom once on the first start after the update: 8 min
+on the dev machine** (`sdrfl-wisdom-test` 483.6 s, second run 0.0 s). New
+gate `sdrfl-nnr-test` (in CI): every model slot loads at 48/96/192 kHz AF;
+CPU per RX channel, release build, AF-rate independent: Standard ≈ 10 %,
+Premium ≈ 20 % of one core. ⛔ Two things to know: (1) without an imported
+wisdom the first RXA `OpenChannel` at 48 kHz takes **49 s** (FFTW_PATIENT
+filter planning, not the models — the app is covered by `wisdom_ensure`,
+a gate that opens a channel is not); (2) every RXA `OpenChannel` parses the
+four models and prints ~28 `nnio:`/`nnet:` lines (WDSP's dprintf = printf)
+— expect them in the run log at start and at every AF-rate change. 12
+offline gates green, headless broadway smoke OK. **Unverified (live,
+Richard):** RX NNR by ear (Premium default — the speech-trained models
+flatten a steady tone in white noise by ~20 dB, which says nothing about
+speech), TX into the dummy load, PureSignal 3.0 recalibration on the G2E
+(TX-SAFETY applies — the calibrator is new code), the CW model switch, the
+first-start wisdom rebuild on a real desktop. Next WDSP work is in tickets
+(#23 PHROT, #27 CFC, the EQ milestone on the 2.x free-curve EQ, #28 NNR
+tuning setters). The `vendor/pihpsdr` wire contract is still 3.0 — the
+piHPSDR 3.1 remote-head mismatch is a separate ticket.
 
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
@@ -997,7 +1041,8 @@ Third-party code we depend on comes in one of two ways, and the line is
 deliberate:
 
 - **Domain / niche libraries** (things that could vanish from GitHub or that we
-  need a *specific* version of): WDSP, rnnoise, libspecbleach, and — as they are
+  need a *specific* version of): WDSP, libspecbleach (rnnoise until 2026-10-26),
+  and — as they are
   imported — piHPSDR engine files. These are **vendored in-tree as source** under
   `vendor/`, **built from that source** (never linked from an external checkout
   or a prebuilt `.a`), and **not modified**. Each `vendor/<lib>/` carries a

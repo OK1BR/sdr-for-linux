@@ -115,6 +115,8 @@ typedef struct {
   int         agc_by_group[4]; /* per-mode-group AGC memory (SSB/CW/AM/digi)   */
   double      agc_gain;     /* AGC-T threshold/gain (dB)                       */
   int         nr, nb, anf;  /* noise reduction / blanker / auto-notch on-off   */
+  int         nnr_model;    /* NNR (NR slot 3) model: 0 Standard / 1 Premium     */
+  int         nnr_floor;    /* NNR mask floor, dB (−50..−10)                     */
   int         binaural;     /* binaural stereo audio output on-off             */
   int         fps;          /* panadapter frame rate                          */
   int         latency;      /* audio target latency (ms)                      */
@@ -323,7 +325,6 @@ typedef struct {
   double      ps_setpk;      /* PS SetPk — expected full-scale envelope (persisted
                                 per radio; default from radio_tx_profile)           */
   int         ps_auto;       /* PS Auto attenuate (Thetis any-TX; persisted)        */
-  int         ps_stbl;       /* PS STBL calibration smoothing (persisted)           */
   DISCOVERED  radio_dev;     /* connected radio's discovery record (copy) — the P1
                                 PS-enable edge restarts the link from it            */
   int         radio_dev_ok;
@@ -2879,6 +2880,8 @@ static void app_to_settings(const App *app, Settings *s) {
   s->ps_att    = app->ps_att;
   s->ps_setpk  = app->ps_setpk;
   s->ps_auto    = app->ps_auto;
+  s->nnr_model  = app->nnr_model;
+  s->nnr_floor  = app->nnr_floor;
   s->tx_ant   = app->tx_antenna;
   s->tx_drive = app->tx_drive_w;
   s->tx_digi_max = app->tx_digi_max_w;
@@ -4414,20 +4417,22 @@ static void on_agct_changed(GtkRange *r, gpointer data) {
 }
 
 /* Noise reduction / blanker / auto-notch toggles. */
-/* NR cycles off/NR/NR2/NR3/NR4 (ANR, EMNR, RNNoise, specbleach); NB cycles
- * off/NB/NB2 (ANB, SNBA). A toggle button cycles; the label shows the algorithm
- * (suffix = the mode number for 2+), :checked shows on. */
+/* NR cycles off/NR/NR2/NNR/NR4 (ANR, EMNR, WDSP neural NNR, specbleach); NB
+ * cycles off/NB/NB2 (ANB, SNBA). A toggle button cycles; the label shows the
+ * algorithm (suffix = the mode number for 2+; slot 3 reads "NNR" — Richard's
+ * call on #22), :checked shows on. */
 static void noise_btn_update(GtkButton *b, int mode, const char *base) {
   char lbl[8];
   char suf[2] = "";
   if (mode >= 2 && mode <= 9) { suf[0] = (char)('0' + mode); }   /* single-digit mode suffix */
   snprintf(lbl, sizeof lbl, "%s%s", base, suf);
+  if (mode == 3 && strcmp(base, "NR") == 0) { g_strlcpy(lbl, "NNR", sizeof lbl); }
   gtk_button_set_label(b, lbl);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(b), mode > 0);   /* fires "toggled", not "clicked" */
 }
 static void on_nr_clicked(GtkButton *b, gpointer data) {
   App *app = (App *)data;
-  app->nr = (app->nr + 1) % 5;   /* off / NR / NR2 / NR3 / NR4 */
+  app->nr = (app->nr + 1) % 5;   /* off / NR / NR2 / NNR / NR4 */
   demod_set_nr(app->nr);
   noise_btn_update(b, app->nr, "NR");
   schedule_save(app);
@@ -5246,16 +5251,23 @@ static void on_pref_ps_setpk(AdwSpinRow *r, GParamSpec *p, gpointer data) {
   app->ps_setpk = adw_spin_row_get_value(r);
   ps_apply(app); schedule_save(app);
 }
+/* NNR (Audio → Receive): model + mask floor, live (demod_set_nnr), persisted. */
+static void on_pref_nnr_model(AdwComboRow *r, GParamSpec *p, gpointer data) {
+  (void)p; App *app = (App *)data;
+  app->nnr_model = adw_combo_row_get_selected(r) ? 1 : 0;
+  demod_set_nnr(app->nnr_model, app->nnr_floor);
+  schedule_save(app);
+}
+static void on_pref_nnr_floor(AdwSpinRow *r, GParamSpec *p, gpointer data) {
+  (void)p; App *app = (App *)data;
+  app->nnr_floor = (int)adw_spin_row_get_value(r);
+  demod_set_nnr(app->nnr_model, app->nnr_floor);
+  schedule_save(app);
+}
 static void on_pref_ps_auto(AdwSwitchRow *r, GParamSpec *p, gpointer data) {
   (void)p; App *app = (App *)data;
   app->ps_auto = adw_switch_row_get_active(r) ? 1 : 0;
   ps_set_auto(app->ps_auto);
-  schedule_save(app);
-}
-static void on_pref_ps_stbl(AdwSwitchRow *r, GParamSpec *p, gpointer data) {
-  (void)p; App *app = (App *)data;
-  app->ps_stbl = adw_switch_row_get_active(r) ? 1 : 0;
-  ps_set_stbl(app->ps_stbl);
   schedule_save(app);
 }
 static void on_pref_tx_mon_db(GtkRange *r, gpointer data) {
@@ -5858,9 +5870,6 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, pref_switch("Auto attenuate",
       "track the feedback level on every calibration — voice too (Thetis) · live",
       app->ps_auto, G_CALLBACK(on_pref_ps_auto), app));
-  adw_preferences_group_add(g, pref_switch("Stabilize (STBL)",
-      "smooth successive calibrations — try if the correction flip-flops on voice · live",
-      app->ps_stbl, G_CALLBACK(on_pref_ps_stbl), app));
   adw_preferences_page_add(p, g);
   adw_preferences_dialog_add(dlg, p);   /* Drive / Tune drive / Antenna live on the footer bar */
 
@@ -5972,6 +5981,19 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, pref_spin("Digital master gain",
       "× on the demodulated audio after WDSP; 1 = calibrated default · live",
       1, 32, app->gain, G_CALLBACK(on_pref_gain), app));
+  /* NNR — the neural noise reduction behind the NNR button (NR slot 3; WDSP
+   * 2.11, issue #22). Same two knobs as piHPSDR 3.1: model + floor. */
+  { GtkStringList *m = gtk_string_list_new((const char *[]){ "Standard", "Premium", NULL });
+    GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "NNR model",
+        "subtitle", "neural noise reduction (the NNR button) · Premium = better, more CPU "
+                    "· CW modes switch to the CW-trained models · live",
+        "model", m, "selected", (guint)(app->nnr_model ? 1 : 0), NULL);
+    g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_nnr_model), app);
+    adw_preferences_group_add(g, row);
+  }
+  adw_preferences_group_add(g, pref_spin("NNR floor",
+      "dB · deepest attenuation the neural mask may apply (−50..−10) · live",
+      -50, -10, app->nnr_floor, G_CALLBACK(on_pref_nnr_floor), app));
   adw_preferences_page_add(p, g);
 
   /* Transmit — everything you SAY into the radio. The chain itself is fixed
@@ -6221,8 +6243,7 @@ static void act_about(GSimpleAction *a, GVariant *param, gpointer data) {
     "Thetis (PureSignal reference) https://github.com/ramdor/Thetis",
     NULL };
   adw_about_dialog_add_acknowledgement_section(ad, "Engine and references", engine);
-  const char *vendored[] = { "rnnoise — Xiph.Org / Mozilla",
-                             "libspecbleach — Luciano Dato", NULL };
+  const char *vendored[] = { "libspecbleach — Luciano Dato", NULL };
   adw_about_dialog_add_acknowledgement_section(ad, "Vendored libraries", vendored);
   adw_dialog_present(dlg, GTK_WIDGET(win));
 }
@@ -6441,8 +6462,9 @@ static void start_radio(App *app) {
                   /* PS defaults: continuous automode + Thetis-style Auto
                    * attenuate on (Richard's call 2026-07-11 v2, after the
                    * three-way audit; piHPSDR variant = tag ps-auto-att-pihpsdr).
-                   * STBL 0 = both references' shipped default. */
-                  .ps_setpk = 0.2899, .ps_auto = 1, .ps_stbl = 0,
+                   * STBL went with PS 3.0 (WDSP 2.11, issue #22). */
+                  .ps_setpk = 0.2899, .ps_auto = 1,
+                  .nnr_model = -1, .nnr_floor = 0,   /* unset → Premium / −25 dB */
                   .cw_wpm = CW_WPM_DFLT, .cw_pitch = CW_PITCH_DFLT,
                   .cw_st_db = CW_ST_DB_DFLT, .cw_hang = CW_HANG_DFLT,
                   .rtty_pitch = RTTY_PITCH_DFLT, .rtty_mon_db = RTTY_MON_DB_DFLT,
@@ -6505,9 +6527,15 @@ static void start_radio(App *app) {
     app->agc = app->agc_by_group[sg];
   }
   app->agc_gain = st.agc_gain < -20.0 ? -20.0 : (st.agc_gain > 120.0 ? 120.0 : st.agc_gain);
-  app->nr     = st.nr < 0 ? 0 : (st.nr > 4 ? 4 : st.nr);   /* 0 off /1 NR /2 NR2 /3 NR3 /4 NR4 */
+  app->nr     = st.nr < 0 ? 0 : (st.nr > 4 ? 4 : st.nr);   /* 0 off /1 NR /2 NR2 /3 NNR /4 NR4 */
   app->nb     = st.nb < 0 ? 0 : (st.nb > 2 ? 2 : st.nb);   /* 0 off / 1 NB / 2 NB2 */
   app->anf    = st.anf ? 1 : 0;
+  /* NNR: default model Premium, floor −25 dB (Richard's call on #22; Standard
+   * is the fallback for weaker machines, not the default). */
+  app->nnr_model = st.nnr_model < 0 ? 1 : (st.nnr_model ? 1 : 0);
+  app->nnr_floor = st.nnr_floor == 0 ? -25
+                 : (st.nnr_floor < -50 ? -50 : (st.nnr_floor > -10 ? -10 : st.nnr_floor));
+  demod_set_nnr(app->nnr_model, app->nnr_floor);   /* cached; applied at demod_create */
   app->binaural = st.binaural ? 1 : 0;
   /* TX (F6a): PA-enable persists (mirrors piHPSDR). Clamp the rest to safe
    * ranges. G2E-profile defaults here; once discovery identifies the radio the
@@ -6527,8 +6555,6 @@ static void start_radio(App *app) {
   app->ps_setpk  = (st.ps_setpk >= 0.01 && st.ps_setpk <= 1.01) ? st.ps_setpk : 0.2899;
   app->ps_auto = st.ps_auto ? 1 : 0;
   ps_set_auto(app->ps_auto);         /* atomic flag; safe pre-start */
-  app->ps_stbl = st.ps_stbl ? 1 : 0;
-  ps_set_stbl(app->ps_stbl);         /* cached; applied by ps_start's params */
   app->tx_mon        = st.tx_mon ? 1 : 0;
   app->tx_mon_db     = st.tx_mon_db < MON_DB_MIN ? MON_DB_MIN : (st.tx_mon_db > MON_DB_MAX ? MON_DB_MAX : st.tx_mon_db);
   app->tx_flo        = st.tx_flo < TXF_LO_MIN ? TXF_LO_MIN : (st.tx_flo > TXF_LO_MAX ? TXF_LO_MAX : st.tx_flo);

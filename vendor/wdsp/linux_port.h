@@ -28,6 +28,8 @@ john.d.melton@googlemail.com
 #if defined(linux) || defined(__APPLE__)
 
 
+#include <stdlib.h>
+#include <string.h>
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdint.h>
@@ -61,11 +63,9 @@ john.d.melton@googlemail.com
 #define __stdcall
 #define __forceinline
 
-#define _aligned_malloc(x,y) malloc(x)
-#define _aligned_free(x)	 free(x)
 // Activate these for malloc debug
-//#define _aligned_malloc(x,y) my_malloc(x);
-//#define _aligned_free(x) my_free(x);
+//#define posix_memalign(x,y) my_malloc(x);
+//#define free(x) my_free(x);
 
 void *my_malloc(size_t size);
 void my_free(void *p);
@@ -78,12 +78,20 @@ void my_free(void *p);
 #define Sleep(ms) usleep((ms)*1000)
 
 #define CreateSemaphore(a,b,c,d) LinuxCreateSemaphore(a,b,c,d)
+#define CreateSemaphoreW(a,b,c,d) LinuxCreateSemaphore(a,b,c,d)
 #define WaitForSingleObject(x, y) LinuxWaitForSingleObject(x, y)
+#define WaitForMultipleObjects(a, b, c, d) LinuxWaitForMultipleObjects(a, b, c, d)
 #define ReleaseSemaphore(x,y,z) LinuxReleaseSemaphore(x,y,z)
 #define SetEvent(x) LinuxSetEvent(x)
 #define ResetEvent(x) LinuxResetEvent(x)
 
-#define INFINITE -1
+#define INFINITE               -1
+#define WAIT_OBJECT_0   0x0000000
+#define WAIT_TIMEOUT    0x0009999
+#define WAIT_FAILED            -1
+#ifndef INT_MAX
+#define INT_MAX        2147483647
+#endif
 
 void QueueUserWorkItem(void *function,void *context,int flags);
 
@@ -98,16 +106,17 @@ void LeaveCriticalSection(pthread_mutex_t *mutex);
 void DeleteCriticalSection(pthread_mutex_t *mutex);
 
 
-sem_t *LinuxCreateSemaphore(int attributes,int initial_count,int maximum_count,char *name);
+HANDLE LinuxCreateSemaphore(int attributes,int initial_count,int maximum_count,char *name);
 
-int LinuxWaitForSingleObject(sem_t *sem,int x);
+int LinuxWaitForSingleObject(HANDLE handle, int ms);
+int LinuxWaitForMultipleObjects(int num, HANDLE *handles, int waitall, int ms);
 
-void LinuxReleaseSemaphore(sem_t *sem,int release_count, int* previous_count);
+void LinuxReleaseSemaphore(HANDLE handle, int release_count, int* previous_count);
 
-sem_t *CreateEvent(void* security_attributes,int bManualReset,int bInitialState,char* name);
+HANDLE CreateEvent(void* security_attributes,int bManualReset,int bInitialState,char* name);
 
-void LinuxSetEvent(sem_t* sem);
-void LinuxResetEvent(sem_t* sem);
+void LinuxSetEvent(HANDLE sem);
+void LinuxResetEvent(HANDLE sem);
 
 HANDLE _beginthread( void( __cdecl *start_address )( void * ), unsigned stack_size, void *arglist);
 

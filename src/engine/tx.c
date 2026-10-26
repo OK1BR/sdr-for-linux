@@ -300,6 +300,7 @@ int tx_dsp_last_error(void) { return t_err; }
 void tx_dsp_destroy(void) {
   g_mutex_lock(&t_lock);
   if (t_ready) {
+    SetChannelState(t_id, 0, 1);   /* WDSP 2.11: stop + flush before CloseChannel */
     CloseChannel(t_id);
     t_ready = 0;
   }

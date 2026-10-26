@@ -1,4 +1,4 @@
-/*	anf.c
+/*  anf.c
 
 This file is part of a program that implements a Software-Defined Radio.
 
@@ -81,11 +81,11 @@ void destroy_anf (ANF a)
 
 void xanf(ANF a, int position)
 {
-	int i, j, idx;
-	double c0, c1;
-	double y, error, sigma, inv_sigp;
+    int i, j, idx;
+    double c0, c1;
+    double y, error, sigma, inv_sigp;
 	double nel, nev;
-	if (a->run && (a->position == position))
+    if (a->run && (a->position == position))
 	{
 		for (i = 0; i < a->buff_size; i++)
 		{
@@ -170,8 +170,8 @@ SetRXAANFRun (int channel, int run)
 	if (a->run != run)
 	{
 		RXAbp1Check (channel, rxa[channel].amd.p->run, rxa[channel].snba.p->run,
-			rxa[channel].emnr.p->run, run, rxa[channel].anr.p->run,
-			rxa[channel].rnnr.p->run, rxa[channel].sbnr.p->run);  // NR3 + NR4 support
+			rxa[channel].emnr.p->run, getRun_nnr(rxa[channel].nnr.p), run, rxa[channel].anr.p->run,
+			rxa[channel].sbnr.p->run); // NR4
 		EnterCriticalSection (&ch[channel].csDSP);
 		a->run = run;
 		RXAbp1Set (channel);
@@ -234,7 +234,7 @@ SetRXAANFPosition (int channel, int position)
 {
 	EnterCriticalSection (&ch[channel].csDSP);
 	rxa[channel].anf.p->position = position;
-	rxa[channel].bp1.p->position = position;
+	RXAbp1Set (channel);
 	flush_anf (rxa[channel].anf.p);
 	LeaveCriticalSection (&ch[channel].csDSP);
 }

@@ -149,6 +149,24 @@ static void apply_agc(void) {
   SetRXAAGCMode(id, 5);
 }
 
+/* NNR — WDSP 2.10+ neural noise reduction in the NR3 slot (Richard's decision
+ * on issue #22, replacing RNNoise, which WDSP 2.x dropped). Built-in model
+ * slots: 0 Standard / 1 Premium, +2 = the CW-trained variants (2.11). piHPSDR
+ * 3.1 receiver.c:2209-2219 parity: the CW models are picked automatically
+ * whenever the mode is CWU/CWL (set BEFORE SetRXAMode, as there). The mask
+ * floor (dB) is the only other knob exposed — piHPSDR's "NNR Floor". The
+ * model switch returns the slot actually active. Caller holds d_lock. */
+static int    d_nnr_model = 1;      /* 0 Standard / 1 Premium (default Premium) */
+static double d_nnr_floor = -25.0;  /* dB (WDSP create_nnr default −25)         */
+static void apply_nnr(void) {
+  int want = d_nnr_model + ((d_mode == DEMOD_CWU || d_mode == DEMOD_CWL) ? 2 : 0);
+  SetRXANNRMaskFloor(d_id, d_nnr_floor);
+  int got = SetRXANNRModel(d_id, want);
+  if (got != want) {
+    fprintf(stderr, "demod: NNR model slot %d not available, running slot %d\n", want, got);
+  }
+}
+
 /* One-time NR/NB/ANF parameter setup + apply the on/off flags (piHPSDR
  * rx_set_noise defaults: ANB slew/lead/lag 1e-5 s, thresh 4.95; ANR
  * 64/16/16e-4/10e-7; ANF 64 taps, 16 delay, -80 dB gain, -20 dB leakage;
@@ -169,15 +187,16 @@ static void setup_noise(void) {
   SetRXAANFGain(id, pow(10.0, 0.05 * -80.0));
   SetRXAANFLeakage(id, pow(10.0, 0.05 * -20.0));
   SetRXAANFPosition(id, 1);
-  /* NR: 0 off / 1 ANR (LMS) / 2 NR2 (EMNR) / 3 NR3 (RNNoise) / 4 NR4 (specbleach).
-   * NB: 0 off / 1 ANB / 2 NB2 (SNBA). RNNR/SBNR are created by OpenChannel (WDSP
-   * RXA.c) with sane defaults (sbnr: 10 dB reduction, 20 ms adaptive frame); we
-   * only flip their run flags. */
+  /* NR: 0 off / 1 ANR (LMS) / 2 NR2 (EMNR) / 3 NNR (WDSP neural) / 4 NR4
+   * (specbleach). NB: 0 off / 1 ANB / 2 NB2 (SNBA). NNR/SBNR are created by
+   * OpenChannel (WDSP RXA.c) with sane defaults (sbnr: 10 dB reduction, 20 ms
+   * adaptive frame); we set the NNR model + floor, then flip the run flags. */
+  apply_nnr();
   SetEXTANBRun(id, d_nb == 1);
   SetRXASNBARun(id, d_nb == 2);
   SetRXAANRRun(id, d_nr == 1);
   SetRXAEMNRRun(id, d_nr == 2);
-  SetRXARNNRRun(id, d_nr == 3);
+  SetRXANNRRun(id, d_nr == 3);
   SetRXASBNRRun(id, d_nr == 4);
   SetRXAANFRun(id, d_anf);
 }
@@ -423,6 +442,7 @@ void demod_set_mode(int mode, double flo, double fhi) {
   g_mutex_lock(&d_lock);
   d_mode = mode; d_flo = flo; d_fhi = fhi;
   if (d_ready) {
+    apply_nnr();                        /* CW ↔ voice NNR model follows the mode */
     SetRXAMode(d_id, wdsp_mode_of(mode));
     apply_passband();
   }
@@ -489,15 +509,22 @@ void demod_set_agc_gain(double db) {
 }
 
 /* Noise reduction (ANR) / noise blanker (ANB) / auto-notch — on-off (thread-safe). */
-void demod_set_nr(int mode) {   /* 0 off / 1 ANR / 2 EMNR(NR2) / 3 RNNoise(NR3) / 4 specbleach(NR4) */
+void demod_set_nr(int mode) {   /* 0 off / 1 ANR / 2 EMNR(NR2) / 3 NNR (neural) / 4 specbleach(NR4) */
   g_mutex_lock(&d_lock);
   d_nr = mode;
   if (d_ready) {
     SetRXAANRRun(d_id, d_nr == 1);
     SetRXAEMNRRun(d_id, d_nr == 2);
-    SetRXARNNRRun(d_id, d_nr == 3);
+    SetRXANNRRun(d_id, d_nr == 3);
     SetRXASBNRRun(d_id, d_nr == 4);
   }
+  g_mutex_unlock(&d_lock);
+}
+void demod_set_nnr(int model, double floor_db) {   /* 0 Standard / 1 Premium; floor dB */
+  g_mutex_lock(&d_lock);
+  d_nnr_model = model ? 1 : 0;
+  d_nnr_floor = floor_db < -50.0 ? -50.0 : (floor_db > -10.0 ? -10.0 : floor_db);
+  if (d_ready) { apply_nnr(); }
   g_mutex_unlock(&d_lock);
 }
 void demod_set_nb(int mode) {   /* 0 off / 1 ANB / 2 SNBA (NB2) */
@@ -593,6 +620,7 @@ void demod_set_audio_tap(void (*cb)(const float *mono48k, int n)) {
 void demod_destroy(void) {
   g_mutex_lock(&d_lock);
   if (d_ready) {
+    SetChannelState(d_id, 0, 1);   /* WDSP 2.11: stop + flush before CloseChannel */
     CloseChannel(d_id);
     destroy_anbEXT(d_id);       /* free the external noise blanker */
     d_ready = 0;

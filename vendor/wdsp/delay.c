@@ -1,4 +1,4 @@
-/*	delay.c
+/*  delay.c
 
 This file is part of a program that implements a Software-Defined Radio.
 
@@ -47,7 +47,7 @@ DELAY create_delay (int run, int size, double* in, double* out, int rate, double
 	a->phnum %= a->L;
 	a->idx_in = 0;
 	a->adelay = a->adelta * (a->snum * a->L + a->phnum);
-	a->h = fir_bandpass (a->ncoef,-a->ft, +a->ft, 1.0, 1, 0, (double)a->L);
+	a->h = fir_bandpass (a->ncoef,-a->ft, +a->ft, 1.0, 1, 0, (double)a->L);	
 	a->rsize = a->cpp + (WSDEL - 1);
 	a->ring = (double *) malloc0 (a->rsize * sizeof (complex));
 	InitializeCriticalSectionAndSpinCount ( &a->cs_update, 2500 );

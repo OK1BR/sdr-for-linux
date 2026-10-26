@@ -147,7 +147,7 @@ paru -S sdr-for-linux      # or: yay -S sdr-for-linux
 Or without a helper: `git clone https://aur.archlinux.org/sdr-for-linux.git &&
 cd sdr-for-linux && makepkg -si`. The AppImage also runs fine on Arch.
 
-**Build from source** — the DSP engine (**WDSP**, plus **rnnoise** and
+**Build from source** — the DSP engine (**WDSP** 2.11, plus
 **libspecbleach**) is vendored in `vendor/` and built from source; only
 ubiquitous platform libraries come from your distribution:
 
@@ -255,7 +255,8 @@ scope, band plans.
   G2/Saturn support on his radio (issue #3): RX probes, per-band PA
   calibration against an LP-100A, PureSignal numbers, and the fixes his two
   test rounds surfaced.
-- Vendored: **rnnoise** (Xiph.Org/Mozilla), **libspecbleach** (Luciano Dato).
+- Vendored: **libspecbleach** (Luciano Dato). (rnnoise left with the WDSP 2.11
+  re-sync — WDSP's own neural NNR took its slot.)
 
 ## License
 

@@ -71,6 +71,8 @@ typedef struct {
   double    agc_gain;  /* AGC-T threshold/gain (dB)                  */
   int       filter;    /* filter-preset index in the mode's table (-1 = default) */
   int       nr, nb, anf; /* noise reduction / blanker / auto-notch on-off        */
+  int       nnr_model;   /* NNR model 0 Standard / 1 Premium; -1 = unset (→ Premium) */
+  int       nnr_floor;   /* NNR mask floor dB (−50..−10); 0 = unset (→ −25)         */
   int       binaural;    /* binaural stereo audio output on-off                  */
   char      mode_filt[128]; /* per-mode filter memory, "modeid=idx;..."          */
   char      var_filt[512];  /* Var1/Var2 per mode, "modeid/v1lo/v1hi/v2lo/v2hi;.."*/
@@ -97,7 +99,6 @@ typedef struct {
   int       ps_att;     /* PS ADC0 feedback attenuator during TX (dB, 0-31)       */
   double    ps_setpk;   /* PS SetPk (0.01-1.01; 0 = unset → default 0.2899)       */
   int       ps_auto;    /* PS Auto attenuate (Thetis-style, any-TX stepping)      */
-  int       ps_stbl;    /* PS STBL (SetPSStabilize) — references default 0        */
   int       tx_mon;     /* TX monitor (self-listen: voice mic / CW sidetone)      */
   double    tx_mon_db;  /* monitor level (dB, -40..0)                             */
   double    tx_flo;     /* TX audio filter low edge (Hz; default 150)             */

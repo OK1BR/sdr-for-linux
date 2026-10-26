@@ -1,4 +1,4 @@
-/*	cblock.c
+/*  cblock.c
 
 This file is part of a program that implements a Software-Defined Radio.
 
@@ -26,10 +26,26 @@ warren@wpratt.com
 
 #include "comm.h"
 
+typedef struct _cbl
+{
+	int run;							//run
+	int buff_size;						//buffer size
+	double* in_buff;					//pointer to input buffer
+	double* out_buff;					//pointer to output buffer
+	int mode;
+	double sample_rate;					//sample rate
+	double prevIin;
+	double prevQin;
+	double prevIout;
+	double prevQout;
+	double tau;							//carrier removal time constant
+	double mtau;						//carrier removal multiplier
+} cbl, * CBL;
+
 void calc_cbl (CBL a)
 {
-	a->prevIin	= 0.0;
-	a->prevQin	= 0.0;
+	a->prevIin  = 0.0;
+	a->prevQin  = 0.0;
 	a->prevIout = 0.0;
 	a->prevQout = 0.0;
 	a->mtau = exp(-1.0 / (a->sample_rate * a->tau));
@@ -65,8 +81,8 @@ void destroy_cbl(CBL a)
 
 void flush_cbl (CBL a)
 {
-	a->prevIin	= 0.0;
-	a->prevQin	= 0.0;
+	a->prevIin  = 0.0;
+	a->prevQin  = 0.0;
 	a->prevIout = 0.0;
 	a->prevQout = 0.0;
 }
@@ -83,8 +99,8 @@ void xcbl (CBL a)
 			tempQ  = a->in_buff[2 * i + 1];
 			a->out_buff[2 * i + 0] = a->in_buff[2 * i + 0] - a->prevIin + a->mtau * a->prevIout;
 			a->out_buff[2 * i + 1] = a->in_buff[2 * i + 1] - a->prevQin + a->mtau * a->prevQout;
-			a->prevIin	= tempI;
-			a->prevQin	= tempQ;
+			a->prevIin  = tempI;
+			a->prevQin  = tempQ;
 			if (fabs(a->prevIout = a->out_buff[2 * i + 0]) < 1.0e-100) a->prevIout = 0.0;
 			if (fabs(a->prevQout = a->out_buff[2 * i + 1]) < 1.0e-100) a->prevQout = 0.0;
 		}

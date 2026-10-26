@@ -1,10 +1,11 @@
 /*
  * wisdom_gate.c — first-run FFTW wisdom builder with a progress window.
  *
- * See wisdom_gate.h for the why. WDSPwisdom(dir) imports <dir>/wdspWisdom00 if
+ * See wisdom_gate.h for the why. WDSPwisdom(dir) imports <dir>/wdspWisdom01 if
  * present (a few ms) or, absent, PATIENT-plans every FFT size WDSP uses (c2c
- * 64..262144 + r2c 64..262144) and writes the cache — tens of seconds of
- * one-time work. It updates a global status string (wisdom_get_status()) as it
+ * forward/backward/backward+1 for 64..262144, then r2c + c2r for 64..262144 —
+ * WDSP 2.11) and writes the cache — minutes of one-time work. It updates a
+ * global status string (wisdom_get_status()) as it
  * goes, which we poll to drive the bar. We run the build on a worker thread and
  * pump a private GMainLoop so the window animates; the app boots afterwards.
  *
@@ -25,7 +26,10 @@
  * only readable by the exact FFTW build that wrote it, and e.g. an AppImage
  * bundles a different FFTW than the distro; per-build dirs stop them from
  * clobbering each other's cache (each build pays its one-time plan). */
-#define WISDOM_FILE "wdspWisdom00"
+/* WDSP 2.11 names its cache wdspWisdom01 (1.29 wrote wdspWisdom00; the 2.x
+ * plan set is different, so a 1.29 cache would not cover it). Old 00 files in
+ * the per-build dirs are left alone. */
+#define WISDOM_FILE "wdspWisdom01"
 
 typedef struct {
   char           *dir;      /* directory passed to WDSPwisdom (trailing sep)   */
@@ -39,7 +43,9 @@ typedef struct {
 /* The heavy, one-time PATIENT planning — off the UI thread. */
 static gpointer wisdom_worker(gpointer data) {
   WisdomJob *j = data;
-  WDSPwisdom(j->dir);
+  if (WDSPwisdom(j->dir) < 0) {        /* 2.11: -1 = bad directory / path too long */
+    g_warning("wisdom: WDSPwisdom refused the cache dir %s", j->dir);
+  }
   g_atomic_int_set(&j->done, 1);
   return NULL;
 }
@@ -54,15 +60,17 @@ static double ladder_sum(void) {
   return s;
 }
 
-/* Fraction complete, from the live WDSP status line. WDSPwisdom plans, in order:
- * phase A = c2c (3 plans/size) for 64..262144, then phase B = r2c (1/size) for
+/* Fraction complete, from the live WDSP status line. WDSPwisdom (2.11) plans,
+ * in order: phase A = c2c (3 plans/size: FORWARD, BACKWARD, BACKWARD size+1)
+ * for 64..262144, then phase B = REAL FORWARD + REAL INVERSE (2/size) for
  * 64..262144. We credit sizes already finished; the current (in-flight) size
  * sits until it completes — the spinner carries liveness through the big ones. */
 static double wisdom_fraction(const char *st) {
   const double SUM = ladder_sum();
-  const double A = 3.0 * SUM, TOTAL = 4.0 * SUM;   /* phase A: 3 plans, B: 1 */
+  const double A = 3.0 * SUM, TOTAL = 5.0 * SUM;   /* phase A: 3 plans, B: 2 */
   if (!st || !*st) { return 0.0; }
   if (strstr(st, "complete")) { return 1.0; }
+  if (strstr(st, "Optimizing")) { return 0.0; }   /* pre-plan banner names maxsize */
 
   /* trailing integer in the status = the size being planned */
   const char *end = st + strlen(st);
@@ -78,8 +86,13 @@ static double wisdom_fraction(const char *st) {
   double below = 0.0;                   /* Σ weight of sizes fully below the current */
   for (long n = 64; n < base; n <<= 1) { below += size_weight((double)n); }
 
-  double frac = strstr(st, "REAL") ? (A + below) / TOTAL   /* phase B */
-                                   : (3.0 * below) / TOTAL; /* phase A */
+  double frac;
+  if (strstr(st, "REAL")) {                       /* phase B: r2c, then c2r per size */
+    double inv = strstr(st, "INVERSE") ? size_weight((double)base) : 0.0;
+    frac = (A + 2.0 * below + inv) / TOTAL;
+  } else {
+    frac = (3.0 * below) / TOTAL;                 /* phase A */
+  }
   return CLAMP(frac, 0.0, 1.0);
 }
 
@@ -211,8 +224,8 @@ void wisdom_ensure(void) {
     g_free(legacy);
   }
 
-  /* WDSPwisdom() does strcat(dir, "wdspWisdom00") with no separator → the
-   * directory string it gets must already end in one. */
+  /* WDSPwisdom() does snprintf("%s%s", dir, "wdspWisdom01") with no separator
+   * → the directory string it gets must already end in one. */
   char *dir_sep = g_strconcat(dir, G_DIR_SEPARATOR_S, NULL);
 
   /* "Fast import, no window" is only honest if THIS FFTW build can read the
@@ -222,7 +235,9 @@ void wisdom_ensure(void) {
   gboolean usable = g_file_test(file, G_FILE_TEST_EXISTS)
                     && fftw_import_wisdom_from_filename(file) != 0;
   if (usable) {
-    WDSPwisdom(dir_sep);                 /* fast import; no window */
+    if (WDSPwisdom(dir_sep) < 0) {       /* fast import; no window */
+      g_warning("wisdom: WDSPwisdom refused the cache dir %s", dir_sep);
+    }
   } else {
     if (g_file_test(file, G_FILE_TEST_EXISTS)) { g_unlink(file); }  /* foreign */
     if (!gtk_is_initialized()) { gtk_init(); }   /* only GTK widgets used here */

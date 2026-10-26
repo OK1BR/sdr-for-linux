@@ -6,7 +6,7 @@
 #   SDRFL_VERSION=x.y.z nfpm package -f packaging/nfpm.yaml -p deb -t dist/
 #   SDRFL_VERSION=x.y.z nfpm package -f packaging/nfpm.yaml -p rpm -t dist/
 #
-# The DSP stack (WDSP, rnnoise, libspecbleach) is vendored and statically
+# The DSP stack (WDSP, libspecbleach) is vendored and statically
 # linked — only ubiquitous platform libraries appear as dependencies.
 #
 # Dependency names are those of Ubuntu 26.04 for the .deb and Fedora 44 for

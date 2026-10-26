@@ -3,7 +3,12 @@
  *
  * References: piHPSDR @974acba transmitter.c (tx_ps_* 2426-2580, feedback
  * accumulation 2068-2132, defaults 1069-1080/1203-1241) and vendored WDSP
- * calcc.c (control 891-1132, state machine 617-799). All WDSP calls target
+ * calcc.c (control 891-1132, state machine 617-799). Since the WDSP 2.11
+ * re-sync (issue #22) the calibrator is PureSignal 3.0 (NURBS): the PS 2.0
+ * knobs MapMode/PinMode/Ptol/Stabilize/IntsAndSpi are gone from the API and
+ * piHPSDR 3.1 (3b63530) sets exactly HWPeak/MoxDelay/TXDelay/LoopDelay —
+ * the GetPSInfo layout (info[4] feedback, [5] cal count, [6] sanity bits,
+ * [14] correcting, [15] state, LRESET = 0) is unchanged. All WDSP calls target
  * the TXA channel (tx_dsp_channel()); pscc runs on the caller's thread and
  * never blocks (the spline solve lives on calcc's own worker thread).
  *
@@ -72,15 +77,9 @@ static void wire_set(int enable, int att) {
 static volatile gint s_keyed;      /* g_atomic: keyed && !CW (feed gate)        */
 static volatile gint s_auto = 1;   /* g_atomic: "Auto attenuate" (Thetis default on) */
 static volatile gint s_tune;       /* g_atomic: TUNE carrier keyed (PS parked)  */
-static int      s_stbl;            /* STBL — both references ship 0 (pref)      */
 
 void ps_set_auto(int on) {
   g_atomic_int_set(&s_auto, on ? 1 : 0);
-}
-
-void ps_set_stbl(int on) {
-  s_stbl = on ? 1 : 0;
-  if (s_started) { SetPSStabilize(s_ch, s_stbl); }   /* picked up by the next cal */
 }
 
 /* Arm continuous calibration (piHPSDR tx_ps_resume automode branch,
@@ -97,22 +96,13 @@ static double s_txacc[2 * PS_BLOCK];
 static double s_rxacc[2 * PS_BLOCK];
 static volatile gint s_fill;
 
-/* piHPSDR default PS 2.0 parameter set (transmitter.c:1069-1080, applied via
- * tx_ps_setparams 2564-2580). ints/spi stay at calcc's own defaults (16/256) —
- * calling SetPSIntsAndSpi is a stop-the-world resize and is skipped on purpose. */
+/* PS 3.0 parameter set — exactly piHPSDR 3.1 tx_ps_setparams (transmitter.c
+ * 2423-2433 @3b63530): HWPeak, MoxDelay, TXDelay, LoopDelay, same values as
+ * the PS 2.0 defaults we ran before (moxdelay 0.2 s, amp delay 150 ns, loop
+ * delay 0). MapMode/PinMode/Ptol/Stabilize (STBL)/IntsAndSpi no longer exist
+ * in WDSP 2.x — the NURBS calibrator has no such controls (issue #22). */
 static void apply_params(void) {
   SetPSHWPeak(s_ch, s_setpk);
-  SetPSMapMode(s_ch, 1);
-  SetPSPtol(s_ch, 0.8);
-  /* STBL — BOTH references ship 0 (piHPSDR transmitter.c:1073, Thetis PSForm
-   * designer default; the 2026-07-11 "Thetis recipe" claim was wrong — audit
-   * ps-three-way). The voice flip-flop we once cured with stbl=1 (sln 0x40/0x4)
-   * is expected to disappear with the Thetis-style any-TX auto-attenuate
-   * keeping the feedback in-window; kept as a Preferences escape hatch.
-   * Stabilize blends each new calibration into an exponential average
-   * (calcc.c:354-357, alpha 0.9) instead of replacing the last one. */
-  SetPSStabilize(s_ch, s_stbl);
-  SetPSPinMode(s_ch, 1);
   SetPSMoxDelay(s_ch, 0.2);
   SetPSTXDelay(s_ch, 150e-9);      /* amp delay 150 ns */
   SetPSLoopDelay(s_ch, 0.0);

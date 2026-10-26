@@ -151,7 +151,10 @@ Sequencing (pihpsdr/radio.c:2046-2103, transmitter.c:2442-2528):
   stays **two-tone-scoped** — voice pauses must never zero the attenuator.
   The piHPSDR-faithful variant is preserved at git tag
   `ps-auto-att-pihpsdr`. STBL ships 0 in *both* references (the "Thetis
-  recipe stbl=1" claim was wrong) → ours defaults 0, Preferences toggle.
+  recipe stbl=1" claim was wrong) → ours defaulted 0, Preferences toggle —
+  **gone since the WDSP 2.11 re-sync (issue #22, 2026-10-26)**: PureSignal
+  3.0 has no Stabilize/MapMode/PinMode/Ptol/IntsAndSpi controls, the
+  parameter set is HWPeak/MoxDelay/TXDelay/LoopDelay (piHPSDR 3.1 parity).
 - **Two-tone test**: WDSP PostGen, 700+1900 Hz (negated for LSB-family
   modes), each tone at 0.49999 so the pair peaks at full scale
   (transmitter.c:2902-2956). It **keys MOX through the normal gates** and

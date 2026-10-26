@@ -1,4 +1,4 @@
-/*	impulse_cache.c
+/*  impulse_cache.c
 
 This file is part of a program that implements a Software-Defined Radio.
 
@@ -29,18 +29,19 @@ mw0lge@grange-lane.co.uk
 //============================================================================================//
 // Dual-Licensing Statement (Applies Only to Author's Contributions, Richard Samphire MW0LGE) //
 // ------------------------------------------------------------------------------------------ //
-// For any code originally written by Richard Samphire MW0LGE, or for any modifications		  //
-// made by him, the copyright holder for those portions (Richard Samphire) reserves the		  //
-// right to use, license, and distribute such code under different terms, including			  //
-// closed-source and proprietary licences, in addition to the GNU General Public License	  //
+// For any code originally written by Richard Samphire MW0LGE, or for any modifications       //
+// made by him, the copyright holder for those portions (Richard Samphire) reserves the       //
+// right to use, license, and distribute such code under different terms, including           //
+// closed-source and proprietary licences, in addition to the GNU General Public License      //
 // granted above. Nothing in this statement restricts any rights granted to recipients under  //
-// the GNU GPL. Code contributed by others (not Richard Samphire) remains licensed under	  //
-// its original terms and is not affected by this dual-licensing statement in any way.		  //
-// Richard Samphire can be reached by email at :  mw0lge@grange-lane.co.uk					  //
+// the GNU GPL. Code contributed by others (not Richard Samphire) remains licensed under      //
+// its original terms and is not affected by this dual-licensing statement in any way.        //
+// Richard Samphire can be reached by email at :  mw0lge@grange-lane.co.uk                    //
 //============================================================================================//
 
 #define _CRT_SECURE_NO_WARNINGS
 #include "comm.h"
+#include <limits.h>
 
 /********************************************************************************************************
 *																										*
@@ -62,8 +63,8 @@ mw0lge@grange-lane.co.uk
 		return hash;
 	}
 #else
-	static const uint32_t FNV_OFFSET_BASIS_32 = 2166136261U;	  // 0x811C9DC5
-	static const uint32_t FNV_PRIME_32 = 16777619U;				  // 0x01000193
+	static const uint32_t FNV_OFFSET_BASIS_32 = 2166136261U;      // 0x811C9DC5
+	static const uint32_t FNV_PRIME_32 = 16777619U;               // 0x01000193
 
 	uint32_t fnv1a_hash32(const void* data, size_t len) {
 		const uint8_t* bytes = (const uint8_t*)data;
@@ -77,7 +78,7 @@ mw0lge@grange-lane.co.uk
 #endif
 
 typedef struct _cache_entry {
-	HASH_T	hash;
+	HASH_T  hash;
 	int		N;							// N complex entries in impulse. Leave as signed int as that is used everywhere
 	double* impulse;
 	struct _cache_entry* next;
@@ -232,21 +233,23 @@ int read_impulse_cache(const char* path)
 	if (buckets != CACHE_BUCKETS) { fclose(fp); return -1; }
 	for (size_t b = 0; b < buckets; b++) {
 		uint32_t count;
-		if (fread(&count, sizeof(count), 1, fp) != 1) { fclose(fp); return -1; }
+		if (fread(&count, sizeof(count), 1, fp) != 1 || count > MAX_CACHE_ENTRIES) { fclose(fp); free_impulse_cache(); return -1; }
 		cache_entry* tail = NULL;
 		for (uint32_t i = 0; i < count; i++) {
 			HASH_T hash;
-			int	   N;
-			if (fread(&hash, sizeof(HASH_T), 1, fp) != 1) { fclose(fp); return -1; }
-			if (fread(&N, sizeof(N), 1, fp) != 1) { fclose(fp); return -1; }
-			double* data = (double*)malloc0(N * sizeof(complex));
-			if (fread(data, sizeof(complex), N, fp) != (size_t)N) { _aligned_free(data); fclose(fp); return -1; }
+			int    N;
+			if (fread(&hash, sizeof(HASH_T), 1, fp) != 1) { fclose(fp); free_impulse_cache(); return -1; }
+			if (fread(&N, sizeof(N), 1, fp) != 1) { fclose(fp); free_impulse_cache(); return -1; }
+			if (N <= 0 || (size_t)N > INT_MAX / sizeof(complex)) { fclose(fp); free_impulse_cache(); return -1; }
+			double* data = (double*)malloc0((size_t)N * sizeof(complex));
+			if (!data) { fclose(fp); free_impulse_cache(); return -1; }
+			if (fread(data, sizeof(complex), N, fp) != (size_t)N) { _aligned_free(data); fclose(fp); free_impulse_cache(); return -1; }
 			cache_entry* e = (cache_entry*)malloc0(sizeof(cache_entry));
 			e->hash = hash;
 			e->N = N;
 			e->impulse = data;
 			e->next = NULL;
-			if (tail)		
+			if (tail)
 				tail->next = e;
 			else
 				_cache_heads[b] = e;

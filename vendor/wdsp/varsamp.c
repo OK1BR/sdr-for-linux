@@ -1,4 +1,4 @@
-/*	varsamp.c
+/*  varsamp.c
 
 This file is part of a program that implements a Software-Defined Radio.
 
@@ -137,7 +137,7 @@ int xvarsamp (VARSAMP a, double var)
 		a->dicvar = (a->inv_cvar - a->old_inv_cvar) / (double)a->size;
 		a->inv_cvar = a->old_inv_cvar;
 	}
-	else			a->dicvar = 0.0;
+	else            a->dicvar = 0.0;
 	if (a->run)
 	{
 		int i, j;

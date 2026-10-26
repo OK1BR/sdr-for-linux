@@ -138,6 +138,10 @@ int settings_load(Settings *s) {
       s->nb = g_key_file_get_integer(kf, GROUP_RX, "nb", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "anf", NULL))
       s->anf = g_key_file_get_integer(kf, GROUP_RX, "anf", NULL);
+    if (g_key_file_has_key(kf, GROUP_RX, "nnr_model", NULL))
+      s->nnr_model = g_key_file_get_integer(kf, GROUP_RX, "nnr_model", NULL);
+    if (g_key_file_has_key(kf, GROUP_RX, "nnr_floor", NULL))
+      s->nnr_floor = g_key_file_get_integer(kf, GROUP_RX, "nnr_floor", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "binaural", NULL))
       s->binaural = g_key_file_get_integer(kf, GROUP_RX, "binaural", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "mode_filters", NULL)) {
@@ -186,8 +190,6 @@ int settings_load(Settings *s) {
       s->ps_setpk = g_key_file_get_double(kf, GROUP_TX, "ps_setpk", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "ps_auto", NULL))
       s->ps_auto = g_key_file_get_integer(kf, GROUP_TX, "ps_auto", NULL);
-    if (g_key_file_has_key(kf, GROUP_TX, "ps_stbl", NULL))
-      s->ps_stbl = g_key_file_get_integer(kf, GROUP_TX, "ps_stbl", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "monitor", NULL))
       s->tx_mon = g_key_file_get_integer(kf, GROUP_TX, "monitor", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "monitor_db", NULL))
@@ -320,6 +322,8 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_RX,    "nr",      s->nr);
   g_key_file_set_integer(kf, GROUP_RX,    "nb",      s->nb);
   g_key_file_set_integer(kf, GROUP_RX,    "anf",     s->anf);
+  g_key_file_set_integer(kf, GROUP_RX,    "nnr_model", s->nnr_model);
+  g_key_file_set_integer(kf, GROUP_RX,    "nnr_floor", s->nnr_floor);
   g_key_file_set_integer(kf, GROUP_RX,    "binaural", s->binaural);
   g_key_file_set_string (kf, GROUP_RX,    "mode_filters", s->mode_filt);
   g_key_file_set_string (kf, GROUP_RX,    "var_filters",  s->var_filt);
@@ -370,7 +374,6 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, txdev,        "ps_att",    s->ps_att);   /* ⛔ PS cal  */
   g_key_file_set_double (kf, txdev,        "ps_setpk",  s->ps_setpk); /* per radio */
   g_key_file_set_integer(kf, GROUP_TX,     "ps_auto",   s->ps_auto);
-  g_key_file_set_integer(kf, GROUP_TX,     "ps_stbl",   s->ps_stbl);
   g_key_file_set_integer(kf, GROUP_TX,     "monitor",   s->tx_mon);
   g_key_file_set_double (kf, GROUP_TX,     "monitor_db", s->tx_mon_db);
   g_key_file_set_integer(kf, GROUP_TX,     "cw_wpm",    s->cw_wpm);

@@ -1,4 +1,4 @@
-/*	wcpAGC.c
+/*  wcpAGC.c
 
 This file is part of a program that implements a Software-Defined Radio.
 
@@ -26,7 +26,7 @@ or by paper mail at
 
 Warren Pratt
 11303 Empire Grade
-Santa Cruz, CA	95060
+Santa Cruz, CA  95060
 
 */
 
@@ -377,30 +377,30 @@ SetRXAAGCMode (int channel, int mode)
 	EnterCriticalSection (&ch[channel].csDSP);
 	switch (mode)
 	{
-		case 0: //agcOFF
+		case 0:	//agcOFF
 			rxa[channel].agc.p->mode = 0;
 			loadWcpAGC ( rxa[channel].agc.p );
 			break;
-		case 1: //agcLONG
+		case 1:	//agcLONG
 			rxa[channel].agc.p->mode = 1;
 			rxa[channel].agc.p->hangtime = 2.000;
 			rxa[channel].agc.p->tau_decay = 2.000;
 			loadWcpAGC ( rxa[channel].agc.p );
 			break;
-		case 2: //agcSLOW
+		case 2:	//agcSLOW
 			rxa[channel].agc.p->mode = 2;
 			rxa[channel].agc.p->hangtime = 1.000;
 			rxa[channel].agc.p->tau_decay = 0.500;
 			loadWcpAGC ( rxa[channel].agc.p );
 			break;
-		case 3: //agcMED
+		case 3:	//agcMED
 			rxa[channel].agc.p->mode = 3;
 			rxa[channel].agc.p->hang_thresh = 1.0;
 			rxa[channel].agc.p->hangtime = 0.000;
 			rxa[channel].agc.p->tau_decay = 0.250;
 			loadWcpAGC ( rxa[channel].agc.p );
 			break;
-		case 4: //agcFAST
+		case 4:	//agcFAST
 			rxa[channel].agc.p->mode = 4;
 			rxa[channel].agc.p->hang_thresh = 1.0;
 			rxa[channel].agc.p->hangtime = 0.000;
@@ -488,14 +488,18 @@ SetRXAAGCHangThreshold (int channel, int hangthreshold)
 	LeaveCriticalSection (&ch[channel].csDSP);
 }
 
+static double agc_noise_bw (int channel)
+{
+	return rxa[channel].nbp0.p->fhigh - rxa[channel].nbp0.p->flow;
+}
+
 PORT void				
 GetRXAAGCThresh(int channel, double *thresh, double size, double rate)
 //for line on bandscope.
 {
 	double noise_offset;
 	EnterCriticalSection (&ch[channel].csDSP);
-	noise_offset = 10.0 * log10((rxa[channel].nbp0.p->fhigh - rxa[channel].nbp0.p->flow)
-		* size / rate);
+	noise_offset = 10.0 * log10(agc_noise_bw (channel) * size / rate);
 	*thresh = 20.0 * log10( rxa[channel].agc.p->min_volts ) - noise_offset;
 	LeaveCriticalSection (&ch[channel].csDSP);
 }
@@ -506,8 +510,7 @@ SetRXAAGCThresh(int channel, double thresh, double size, double rate)
 {
 	double noise_offset;
 	EnterCriticalSection (&ch[channel].csDSP);
-	noise_offset = 10.0 * log10((rxa[channel].nbp0.p->fhigh - rxa[channel].nbp0.p->flow)
-		* size / rate);
+	noise_offset = 10.0 * log10(agc_noise_bw (channel) * size / rate);
 	rxa[channel].agc.p->max_gain = rxa[channel].agc.p->out_target /
 		(rxa[channel].agc.p->var_gain * pow (10.0, (thresh + noise_offset) / 20.0));
 	loadWcpAGC ( rxa[channel].agc.p );

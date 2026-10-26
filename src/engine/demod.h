@@ -61,9 +61,14 @@ void demod_set_agc(int mode);
 void demod_set_agc_gain(double db);
 
 /* Noise reduction: 0 off / 1 ANR (LMS) / 2 NR2 (EMNR spectral) /
- *                  3 NR3 (RNNoise, RNN) / 4 NR4 (libspecbleach, spectral).
+ *                  3 NNR (WDSP neural — the former RNNoise slot, issue #22) /
+ *                  4 NR4 (libspecbleach, spectral).
  * Noise blanker: 0 off / 1 ANB / 2 NB2 (SNBA). Auto-notch: on/off. */
 void demod_set_nr(int mode);
+/* NNR parameters (live, thread-safe): model 0 Standard / 1 Premium (the CW
+ * variants are picked automatically in CWU/CWL), mask floor in dB (−50..−10;
+ * WDSP default −25). Cached before the channel exists. */
+void demod_set_nnr(int model, double floor_db);
 void demod_set_nb(int mode);
 void demod_set_anf(int on);
 
