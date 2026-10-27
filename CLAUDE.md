@@ -801,12 +801,14 @@ without it nothing calibrates), ✅ the CW model switch + NNR on CW by ear
 on weak signals (Richard, same evening: works there too; a loud, clean
 station for a proper A/B had not come by yet — by opportunity, not a task).
 ✅ AM broadcast on 40 m (SAM
-is not in the app — #30). ⛔ **#22 stays open until CW TX through SDC/TCI has
-run under 2.11 in a contest** (Richard, same evening: "to otestujeme v nějakém
-závodu") — the keying itself bypasses WDSP, but MON, the RX mute and the
-turnaround go through the new chain; after that contest, close #22 (closing
-comment drafted 2026-10-27, in the session log). Not yet exercised since the
-re-sync and left to normal operation: NR2/NB/ANF/AGC by ear, FT8 via TCI, AF
+is not in the app — #30). ✅ CW TX through TCI (20:44,
+Richard's idea: `sdrfl-tci-send -w 10 'cw_macros:0,VVV TEST;'` — KEY CW 11 ms
+after the client connected, drive 22 → 17.5 W, SWR 1.1, clean UNKEY after
+2.9 s, PS idle as it must be in CW; Richard: "jo funguje"). Richard's call
+on issue hygiene the same evening: do NOT hold an issue open for a check that
+only happens by opportunity (a contest) — "takhle budeme mít otevřené
+všechno"; close when the deliverable is verified, a contest finding becomes a
+new bug. Left to normal operation: NR2/NB/ANF/AGC by ear, FT8 via TCI, AF
 rate switching at run time, the HL2 and the 10E, the first-start wisdom
 rebuild on a foreign desktop. Next WDSP work is in tickets
 (#23 PHROT, #27 CFC, the EQ milestone on the 2.x free-curve EQ, #28 NNR
