@@ -793,11 +793,13 @@ filter planning, not the models — the app is covered by `wisdom_ensure`,
 a gate that opens a channel is not); (2) every RXA `OpenChannel` parses the
 four models and prints ~28 `nnio:`/`nnet:` lines (WDSP's dprintf = printf)
 — expect them in the run log at start and at every AF-rate change. 12
-offline gates green, headless broadway smoke OK. **Unverified (live,
-Richard):** RX NNR by ear (Premium default — the speech-trained models
-flatten a steady tone in white noise by ~20 dB, which says nothing about
-speech), TX into the dummy load, PureSignal 3.0 recalibration on the G2E
-(TX-SAFETY applies — the calibrator is new code), the CW model switch, the
+offline gates green, headless broadway smoke OK. **Live status
+2026-10-27 evening:** ✅ TX into the dummy load (2T + voice overs 7–65 W),
+✅ PureSignal 3.0 recalibration (with the calcc.c pre-filter patch below —
+without it nothing calibrates), ✅ the CW model switch + NNR on CW by ear
+(Richard: "na CW to funguje krásně, už se těším na závod"). Still unheard:
+RX NNR on SSB by ear (Premium default — the speech-trained models flatten a
+steady tone in white noise by ~20 dB, which says nothing about speech), the
 first-start wisdom rebuild on a real desktop. Next WDSP work is in tickets
 (#23 PHROT, #27 CFC, the EQ milestone on the 2.x free-curve EQ, #28 NNR
 tuning setters). The `vendor/pihpsdr` wire contract is still 3.0 — the
