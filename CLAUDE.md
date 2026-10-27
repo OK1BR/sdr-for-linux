@@ -910,9 +910,13 @@ every over and held (never three rejections in a row, so no LRESET); all 12
 rejections are `cos=0x2` = the PHASE builder's fit-quality gate, the magnitude
 builder (`mag`) passes every time — the same residual the offline replay
 showed (82/87, rest in the phase builders). Auto-att followed the level both
-ways (21→16→18, 18→15, 15→31→20 dB). Still owed: ONE voice over at drive ~60
-with `SDRFL_PS_DUMP` on (restart needed — the dump captures the first keyed
-feedback) for the gain-vs-power question in TAPR#10. TX-SAFETY note: the
+ways (21→16→18, 18→15, 15→31→20 dB). ⛔ The drive ~60 recording for the
+gain-vs-power question is NOT planned (Richard, same evening: "dej mi s tím
+pokoj, pokud o to bude stát, tak si to vyžádá sám") — do it only if Warren asks
+in TAPR#10, then: restart with `SDRFL_PS_DUMP=<raw> SDRFL_PS_DUMP_SECS=15`
+(captures the FIRST keyed feedback — no TUNE/2T before the over), voice over
+at drive ~60, `scripts/amam3.py` + the clean-2.11 replay, and fix the 1.3e8
+figure in the issue in the same edit. TX-SAFETY note: the
 correction is bounded to the low-level part of the curve, peak pinned at 1.0,
 all upstream fit-quality gates unchanged. Step 4: drop the patch + gate +
 VENDOR.md section in one commit once TAPR#10 is resolved.
