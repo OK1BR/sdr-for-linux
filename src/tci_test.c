@@ -439,7 +439,16 @@ static int first_nonloopback_ipv4(char *buf, int len) {
 static int run_suite(const char *label, const TciListen *l, const char *addr, int port) {
   printf("\n--- %s ---\n", label);
   S = S_INIT;
-  if (tci_server_start(l, &STUB_OPS) != 0) {
+  /* The GUI frees its expanded socket path the moment tci_server_start
+   * returns — hand the server a TRANSIENT copy the same way, so a server that
+   * kept the caller's pointer (lws stores info->iface and unlinks it at
+   * destroy) would fail "socket file is removed on stop" here. */
+  TciListen lc = *l;
+  char *transient = l->unix_path ? g_strdup(l->unix_path) : NULL;
+  lc.unix_path = transient;
+  int started = tci_server_start(&lc, &STUB_OPS);
+  if (transient) { memset(transient, 'x', strlen(transient)); g_free(transient); }
+  if (started != 0) {
     printf("  FAIL server would not start (%s)\n", label);
     checks++; fails++;
     return 1;
@@ -919,8 +928,11 @@ int main(void) {
   /* 4. both listeners in one context: a client on each, one state tick */
   printf("\n--- both listeners ---\n");
   S = S_INIT;
-  TciListen both = { .unix_on = 1, .unix_path = sock, .tcp_on = 1, .tcp_local = 1, .tcp_port = 40123 };
-  check("both: server starts", tci_server_start(&both, &STUB_OPS) == 0);
+  char *transient = g_strdup(sock);            /* the GUI's call pattern, see run_suite */
+  TciListen both = { .unix_on = 1, .unix_path = transient, .tcp_on = 1, .tcp_local = 1, .tcp_port = 40123 };
+  int both_started = tci_server_start(&both, &STUB_OPS);
+  memset(transient, 'x', strlen(transient)); g_free(transient);
+  check("both: server starts", both_started == 0);
   tci_server_listeners(lst, sizeof(lst));
   { char *want = g_strdup_printf("unix %s · tcp 127.0.0.1:40123", sock);
     check("both: listeners read \"unix <path> · tcp 127.0.0.1:40123\"", strcmp(lst, want) == 0);

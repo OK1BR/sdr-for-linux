@@ -7,10 +7,12 @@
  * and generally for poking the TCI surface while log-for-linux integration is
  * developed. Text frames only — no audio/IQ streams.
  *
- *   sdrfl-tci-send [-h host] [-p port] [-w wait_s] 'cmd:args;' ...
+ *   sdrfl-tci-send [-h host] [-p port] [-u socket_path] [-w wait_s] 'cmd:args;' ...
  *
  * Defaults: 127.0.0.1:40001, wait 2 s after the last command (collects the
- * echo/broadcast). Exit 0 = connected and sent; 1 = connection failed.
+ * echo/broadcast); -u dials the app's Unix socket instead (issue #46,
+ * default path $XDG_RUNTIME_DIR/sdr-for-linux/tci.sock). Exit 0 = connected
+ * and sent; 1 = connection failed.
  *
  * ⛔ This tool has no keying authority of its own: whatever it sends lands in
  * the same tci_server → ops → tx_gate path as any TCI client. It is exactly

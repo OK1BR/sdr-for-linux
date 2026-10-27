@@ -1465,21 +1465,28 @@ int tci_server_start(const TciListen *listen, const TciOps *ops) {
       if (g_mkdir_with_parents(dir, 0700) != 0) {
         fprintf(stderr, "tci: cannot create %s: %s\n", dir, g_strerror(errno));
       } else {
+        /* ⛔ lws does NOT copy info->iface — the vhost keeps the pointer
+         * (vhost.c: `vh->iface = info->iface`) and unlink()s it at destroy.
+         * The caller's string may be freed the moment we return (the GUI
+         * frees its expanded path right after tci_server_start), so the
+         * vhost must point at OUR copy, which lives until after
+         * lws_context_destroy in tci_server_stop. */
+        g_strlcpy(s_unix_path, path, sizeof(s_unix_path));
         struct lws_context_creation_info vi;
         memset(&vi, 0, sizeof(vi));
         vi.vhost_name = "unix";
         vi.options    = LWS_SERVER_OPTION_UNIX_SOCK;
-        vi.iface      = path;
+        vi.iface      = s_unix_path;
         vi.port       = 0;
         vi.protocols  = s_protocols;
         vi.retry_and_idle_policy = &validity;
         s_vh_unix = lws_create_vhost(s_ctx, &vi);
         if (!s_vh_unix) {
           fprintf(stderr, "tci: unix socket %s: bind failed\n", path);
+          s_unix_path[0] = 0;
         } else if (chmod(path, 0600) != 0) {
           fprintf(stderr, "tci: chmod 0600 %s: %s\n", path, g_strerror(errno));
         } else {
-          g_strlcpy(s_unix_path, path, sizeof(s_unix_path));
           fprintf(stderr, "tci: listening on unix socket %s\n", path);
         }
       }

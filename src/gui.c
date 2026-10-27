@@ -5698,7 +5698,10 @@ static void on_pref_tci_tcp_scope(AdwComboRow *r, GParamSpec *ps, gpointer data)
 static void on_pref_tci_sock(AdwEntryRow *r, gpointer data) {
   App *app = (App *)data;
   char *t = g_strdup(gtk_editable_get_text(GTK_EDITABLE(r)));
-  g_strlcpy(app->tci_sock, g_strstrip(t), sizeof(app->tci_sock));
+  g_strstrip(t);
+  /* an override must be absolute (the loader applies the same rule) —
+   * anything else means "the default" */
+  g_strlcpy(app->tci_sock, t[0] == '/' ? t : "", sizeof(app->tci_sock));
   g_free(t);
   tci_restart(app);
 }

@@ -84,7 +84,13 @@ tick (gate: a `vfo` set from a TCP client is broadcast to a socket client).
   differs per machine). The app creates the directory 0700; lws creates the
   file 0660 (its `unix_socket_perms` feature treats uid/gid −1 as set) and
   the server chmods it to **0600** right after bind; lws unlinks it on
-  `lws_context_destroy`. ⛔ lws also unlinks whatever sits at the path
+  `lws_context_destroy`. ⛔ lws does NOT copy `info->iface` — the vhost keeps
+  the pointer (`vhost.c: vh->iface = info->iface`) and `unlink()`s it at
+  destroy, so the server passes its OWN static copy of the path, never the
+  caller's string (the GUI frees its expanded path right after
+  `tci_server_start`; the gate hands the server a transient copy for the
+  same reason and fails "removed on stop" when the pointer is kept — proven
+  by re-introducing the bug). ⛔ lws also unlinks whatever sits at the path
   BEFORE it binds, so a path that another live server answers on (a plain
   `connect()` succeeds) is refused with a log line — a second instance must
   never silently steal the first one's clients; a stale file from a crash is
