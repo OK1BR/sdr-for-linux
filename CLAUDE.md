@@ -890,13 +890,20 @@ fails when the value is not 4.0 or the marker is gone; in the CI gate list;
 negative check done against a 1.8 copy). Offline: all 13 gates green; the
 five-over recording replayed through the patched tree objects calibrates
 **86/91** (first over 6/11, cond 13.6–341 — identical to the scratch variant).
-`~/.local` refreshed (binary still reports 0.5.2 — no version bump). ⛔ Live
-check on the G2E still owed (step 3): voice + 2T into the dummy load — how
-many calibrations are accepted, whether CORRECTING holds, the HUD state, and
-one over at drive 60-70 for the issue; TX-SAFETY applies (the correction is
-bounded to the low-level part of the curve, peak pinned at 1.0, all upstream
-fit-quality gates unchanged). Step 4: drop the patch + gate + VENDOR.md
-section in one commit once TAPR#10 is resolved.
+`~/.local` refreshed (binary still reports 0.5.2 — no version bump).
+**LIVE-VERIFIED the same evening (19:24-19:30, Richard: "kalibrace se chová
+mnohem lépe"):** nine SSB voice overs into the dummy load on 20 m at drive
+18 / 29 / 36 / 38 (5.5–7 W, 25–31 W, 44–58 W, 48–65 W) — **90 calibrations,
+90 accepted, 0 rejected** (the night before: 0 of 85), CORRECTING within ~1 s
+of keying and held through every over, auto-att followed the level changes
+both ways (19→21→19, 19→12, 12→31→21 dB) with the calibration re-locking
+within 1-2 s after each step; TUNE overs sit at state 0 as always (no
+calibration on a carrier). Still owed: 2T, and ONE voice over at drive ~60
+with `SDRFL_PS_DUMP` on (restart needed — the dump captures the first keyed
+feedback) for the gain-vs-power question in TAPR#10. TX-SAFETY note: the
+correction is bounded to the low-level part of the curve, peak pinned at 1.0,
+all upstream fit-quality gates unchanged. Step 4: drop the patch + gate +
+VENDOR.md section in one commit once TAPR#10 is resolved.
 
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
