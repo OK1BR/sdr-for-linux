@@ -808,7 +808,8 @@ after the client connected, drive 22 → 17.5 W, SWR 1.1, clean UNKEY after
 on issue hygiene the same evening: do NOT hold an issue open for a check that
 only happens by opportunity (a contest) — "takhle budeme mít otevřené
 všechno"; close when the deliverable is verified, a contest finding becomes a
-new bug. Left to normal operation: NR2/NB/ANF/AGC by ear, FT8 via TCI, AF
+new bug — **#22 CLOSED 2026-10-27 20:47** (closing comment lists the live
+checks and the calcc.c patch → TAPR#10). Left to normal operation: NR2/NB/ANF/AGC by ear, FT8 via TCI, AF
 rate switching at run time, the HL2 and the 10E, the first-start wisdom
 rebuild on a foreign desktop. Next WDSP work is in tickets
 (#23 PHROT, #27 CFC, the EQ milestone on the 2.x free-curve EQ, #28 NNR
