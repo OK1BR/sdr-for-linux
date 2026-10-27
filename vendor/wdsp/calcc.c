@@ -242,7 +242,9 @@ void print_EQ_Samples(CALCC a);
 #define PS_NF_ORDERING_MODE       NF_ORDER_BY_X
 #define PS_NF_SPEARMAN_THRESH     0.85
 #define PS_NF_MAG_PREFILT_XMIN    0.04
-#define PS_NF_MAG_PREFILT_YMAX    1.8
+/* sdr-for-linux LOCAL PATCH (upstream 1.8): see vendor/wdsp/VENDOR.md "Local patches"
+   and https://github.com/TAPR/OpenHPSDR-wdsp/issues/10 — pinned by sdrfl-wdsp-patch-test */
+#define PS_NF_MAG_PREFILT_YMAX    4.0
 #define PS_NF_PHS_PREFILT_XMIN    0.02
 #define PS_NF_PHS_PREFILT_YMAX    0.0
 

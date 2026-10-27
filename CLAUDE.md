@@ -879,6 +879,22 @@ fails when a re-sync loses it) — Richard's consent NOT yet given; (d) until
 then, PS on the G2E means WDSP 1.29 = release 0.5.2. Evidence kept:
 `/var/tmp/ok1br-run-2026-10-26/ps-voice.raw`, `/var/tmp/ps-replay/` (harness,
 `scripts/`, `gist/`, `diag-*/`, `issue-draft-*.md`), `/var/tmp/wdsp-guide/`.
+**★ INTERIM PATCH LANDED the same evening (Richard's "ano" for step 2; the
+ONE sanctioned exception to "vendor/wdsp is not modified"):** `calcc.c:245`
+`PS_NF_MAG_PREFILT_YMAX 1.8 → 4.0` with a marker comment, documented in
+VENDOR.md "Local patches" (what / why / report / risk / how to drop), pinned by
+the new gate `sdrfl-wdsp-patch-test` (reads calcc.c from the source tree,
+fails when the value is not 4.0 or the marker is gone; in the CI gate list;
+negative check done against a 1.8 copy). Offline: all 13 gates green; the
+five-over recording replayed through the patched tree objects calibrates
+**86/91** (first over 6/11, cond 13.6–341 — identical to the scratch variant).
+`~/.local` refreshed (binary still reports 0.5.2 — no version bump). ⛔ Live
+check on the G2E still owed (step 3): voice + 2T into the dummy load — how
+many calibrations are accepted, whether CORRECTING holds, the HUD state, and
+one over at drive 60-70 for the issue; TX-SAFETY applies (the correction is
+bounded to the low-level part of the curve, peak pinned at 1.0, all upstream
+fit-quality gates unchanged). Step 4: drop the patch + gate + VENDOR.md
+section in one commit once TAPR#10 is resolved.
 
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two

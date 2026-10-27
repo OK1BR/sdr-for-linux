@@ -151,6 +151,18 @@ executable('sdrfl-discovery-test',
   install : false,
 )
 
+# Pins the ONE deliberate local change in the vendored WDSP (vendor/wdsp/VENDOR.md
+# "Local patches"): calcc.c PS_NF_MAG_PREFILT_YMAX 1.8 -> 4.0, the PS 3.0
+# magnitude pre-filter bound that left the ANAN G2E without any accepted
+# calibration (TAPR/OpenHPSDR-wdsp#10). Reads calcc.c from the source tree so a
+# verbatim re-sync that reverts the line fails here. NO WDSP linked, NO radio.
+executable('sdrfl-wdsp-patch-test',
+  ['src/wdsp_patch_test.c'],
+  c_args : ['-DSDRFL_CALCC_PATH="' + meson.project_source_root() / 'vendor/wdsp/calcc.c' + '"'],
+  dependencies : [m_dep],
+  install : false,
+)
+
 # Headless Protocol-2 RX + IQ probe (starts one DDC, collects IQ, prints stats).
 # Milestone-1 step-3 gate. TAKES THE RADIO — piHPSDR must be disconnected.
 # SDRFL_DRYRUN=1 builds+hexdumps the packets offline (no socket, no radio).

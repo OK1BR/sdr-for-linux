@@ -2,7 +2,8 @@
 
 WDSP is the DSP engine we build & link — **we do not reimplement DSP**, and we
 **do not modify** these sources (warnings are silenced in `meson.build`, never
-patched). We keep the full source in-tree rather than linking a prebuilt
+patched) — with ONE deliberate, documented and test-pinned exception, see
+[Local patches](#local-patches) below. We keep the full source in-tree rather than linking a prebuilt
 `libwdsp.a` from an external checkout, so the build never depends on anything
 that can disappear.
 
@@ -70,6 +71,47 @@ only as the upstream reference for the source list).
   (#27, the EQ milestone), phase rotator + optimizer (#23), CW APF (#24), FM
   (#39, deferred), uSlew (#37), varsamp (#38), VOX in DEXP (#33), NNR tuning
   setters beyond model/floor (#28).
+
+## Local patches
+
+Every entry here is a temporary bridge, not a fork: it exists because upstream
+has been told and has not yet moved, it is pinned by an offline gate so a
+re-sync cannot lose it silently, and it is dropped the moment upstream resolves
+it. Richard's consent for each one is recorded in the project log (CLAUDE.md).
+
+### calcc.c `PS_NF_MAG_PREFILT_YMAX` 1.8 → 4.0 (since 2026-10-27)
+
+- **What:** one `#define` in `calcc.c` (the PureSignal 3.0 calibrator), with a
+  marker comment above it. Nothing else in `vendor/wdsp` differs from piHPSDR
+  `3b63530` / TAPR `wdsp 2.11/Source` (the two are identical modulo trailing
+  whitespace).
+- **Why:** the magnitude pre-filter drops every calibration point whose
+  required correction exceeds this factor. The ANAN G2E's coupler/DAC ratio
+  rises ~6 dB over the top 18 dB of level (measured, five overs at drive 31
+  and 36), so the points below x ≈ 0.2 need 1.9–2.1× and are all discarded;
+  the lowest fifth of the range is left without data, the 20-control-point
+  NURBS fit is ill-conditioned (cond 1.0–1.2e8 against the 1e8 limit) and
+  **no calibration is ever accepted** (0 of 85 live, 12/12 of the first over
+  in the offline replay). With 4.0 the same recording calibrates (first over
+  6/11, whole file 82/87, cond 13–341). WDSP 1.29 (PS 2.0) had no such
+  pre-filter, which is why PureSignal worked on this radio until the 2.11
+  re-sync (#22).
+- **Reported:** https://github.com/TAPR/OpenHPSDR-wdsp/issues/10 (2026-10-27,
+  with Warren's own `print_FitResult_and_Data` output and the gain curve in a
+  linked gist). Warren's precedent for a locally changed PS `#define` is his
+  own answer in TAPR/OpenHPSDR-wdsp#1.
+- **Pinned by:** `sdrfl-wdsp-patch-test` (in the CI gate list) — reads
+  `calcc.c` from the source tree and fails when the value is not 4.0 or the
+  marker is gone.
+- **Risk:** the bound limits only how much magnitude correction the calibrator
+  may apply at LOW level (the curve is pinned to 1.0 at the peak), so peak
+  drive is unaffected; the fit-quality gates (condition number, cross-
+  validation, spline accuracy, extrema, the DEADLOCK over-drive detector) stay
+  as upstream. Live behaviour on the G2E after the patch: see CLAUDE.md.
+- **How to drop:** when #10 is resolved upstream (a changed bound, a data-
+  driven bound or a setter), take the upstream file verbatim, delete this
+  section, `src/wdsp_patch_test.c`, its `meson.build` block and the CI entry —
+  in one commit that cites the upstream release.
 
 ## Gotchas encoded in the build
 
