@@ -297,7 +297,7 @@ void ps_tune(int tune) {
  * the "dead voice" lesson of 2026-07-11). Called from the tx_run gate slot
  * (~20 Hz; Thetis ticks this at 100 ms). */
 void ps_auto_tick(int keyed) {
-  static int a_state, a_last_try = -1, a_stuck, a_warned;
+  static int a_state, a_last_try = -1, a_last_ok, a_stuck, a_warned;
   if (!s_started) { return; }
   g_mutex_lock(&s_lock);
   int on = s_enable, att = s_att;
@@ -315,9 +315,19 @@ void ps_auto_tick(int keyed) {
    * feedback-level change or ~1 s without one; the attempt count is the same
    * signal without the stale-value hazard — no attempt in a voice pause means
    * no step. The first tick of an over only latches the counter. */
-  if (a_last_try < 0) { a_last_try = info[7]; return; }
+  if (a_last_try < 0) { a_last_try = info[7]; a_last_ok = info[5]; return; }
   int newtry = info[7] != a_last_try;
   a_last_try = info[7];
+  /* Diagnostics (2026-10-27 live): most PS 3.0 rejections are SILENT (the
+   * extrapolation / spline-fit paths set info[0..3] bits and bail without a
+   * dprintf; only scheck / identity / top-bucket print). One line per
+   * rejected attempt with the four builder status words. */
+  if (newtry && info[5] == a_last_ok) {
+    fprintf(stderr, "ps: attempt %d rejected — builder status rx_scale=0x%x mag=0x%x cos=0x%x sin=0x%x checks=0x%x (fdbk %d, state %d)\n",
+            info[7], info[0], info[1], info[2], info[3], info[6], info[4], info[15]);
+    fflush(stderr);
+  }
+  a_last_ok = info[5];
 
   /* WDSP Guide 2.1.1 (GetPSInfo): info[6] = 2 → "probable severe over-drive" —
    * PS refuses to calibrate on < 6 % of the top-amplitude data. Once per over. */
@@ -398,6 +408,7 @@ void ps_get_status(ps_status *out) {
   out->cals       = info[5];
   out->sln        = info[6];
   out->tries      = info[7];
+  for (int i = 0; i < 4; i++) { out->st[i] = info[i]; }
   out->correcting = info[14];
   out->state      = info[15];
   GetPSMaxTX(s_ch, &out->getpk);

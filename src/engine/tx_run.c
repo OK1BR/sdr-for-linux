@@ -582,6 +582,10 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     LAT("key_off");
     tx_dsp_tune_tone(0, 0.0);
     if (tt_applied) { tx_dsp_two_tone(0, 0.0, 0.0); tt_applied = 0; }
+    /* WDSP Guide 2.1.1 (SetPSMox): mox = 0 must reach PureSignal BEFORE the
+     * TXA channel state goes to 0, so its end-of-over work completes during
+     * the slew-down. ps_key edge-detects; the slot-end call below is a no-op. */
+    ps_key(0);
     for (int i = 0; i < 4; i++) { tx_dsp_feed_mic(silence, FEED_BLOCK); }
     tx_dsp_run(0);
     fprintf(stderr, "tx: UNKEY (%s)\n", (r.reason && r.reason[0]) ? r.reason : "release");

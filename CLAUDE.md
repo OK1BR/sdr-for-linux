@@ -827,6 +827,41 @@ none of 48/96/192 k). The log line reads `cals=accepted/attempts` now. piHPSDR
 3.1 additionally calibrates PS with a TX NOISE test signal (PreGen noise, the
 Guide's recommended stimulus) — that is the proper follow-up (issue #36).
 ⛔ Still unverified live after these three changes: the next 2T session decides.
+**RESULT THE SAME NIGHT (00:12-02:00) — PS 3.0 CANNOT CALIBRATE THIS G2E, in
+our app AND in piHPSDR 3.1; the cause is inside WDSP:** with the fixes, 2T
+rejections dropped (Solution Deviation 35 → 3 per over) and auto-att behaved,
+but accepted calibrations still stalled and on VOICE 0 of 36 attempts were
+accepted (all `mag=0x2`, logged by the new per-attempt diagnostics line
+`ps: attempt N rejected — builder status rx_scale/mag/cos/sin/checks`). Proof
+chain: (1) `SDRFL_PS_DUMP` captured a 20 s voice over (122 MB raw feedback);
+(2) a scratch harness (`#include "calcc.c"` → the private struct is visible;
+links the release objects minus calcc.c.o; the TXA channel MUST run —
+`SetChannelState(ch,1,0)` + `fexchange0` with silent mic — or
+`SetTXAiqcStart` blocks the calc thread forever; import wisdom first or
+`OpenChannel` plans FFTs for ~45 s) replays the dump through the identical
+WDSP and reproduces 12/12 rejections: magnitude NURBS fit `BAD_CONDNUM`,
+condition number 1.0-1.16e8 against the 1e8 limit; (3) the data: feedback is
+clean (no DC, silence floor 1e-5, peaks = SetPk) but the coupler/DAC ratio
+RISES with level — normalised 0.48 at −30 dB → 1.00 at the peak, i.e. **6.4 dB
+of gain expansion** at drive 31 (~25 W voice peaks), so the correction needed
+at low level is ~2.1×; (4) WDSP's `PS_NF_MAG_PREFILT_YMAX 1.8` (calcc.c)
+pre-filters every point needing > 1.8× before the fit, which empties the low
+quarter of the x range and ill-conditions the 20-point uniform NURBS; (5) the
+same dump through a SCRATCH copy of calcc.c with the limit at 4.0: cond 14-340,
+6 of 11 accepted, correction applied (the rest move to the phase builder);
+(6) a synthetic PA (12 % compression, 8° AM-PM, speech-like or two-tone drive)
+is accepted 100 % — the two-tone per se is not the problem. piHPSDR 3.1 was
+built in `/var/tmp/pihpsdr-31` (git archive 3b63530, `make GPIO=OFF`, isolated
+`HOME` with a copy of his props + our `wdspWisdom01`, cwd = that config dir or
+it ignores it) and run on the G2E by Richard: "chová se to stejně"; its
+`calcc.c` is byte-identical to ours and its feed is the same raw 192 kHz pair.
+PS 2.0 (1.29) had no such pre-filter — that is why PS worked until the
+re-sync. **Open:** (a) report to TAPR/OpenHPSDR-wdsp with the data (Richard's
+"ano" needed for the text); (b) whether the 6.4 dB expansion is a property of
+the G2E PA/exciter at low drive — an over at drive 60-70 was asked for and not
+yet done; (c) until upstream moves, PS on the G2E means WDSP 1.29 = release
+0.5.2. Evidence kept: `/var/tmp/ok1br-run-2026-10-26/ps-voice.raw`,
+`/var/tmp/ps-replay/` (harness + `ps_replay_ymax4`), `/var/tmp/wdsp-guide/`.
 
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
