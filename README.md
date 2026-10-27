@@ -66,11 +66,15 @@ does the heavy lifting.
   TX red)
 
 **Integration**
-- **TCI server** (ExpertSDR3-compatible, port 40001): control, CW macros,
+- **TCI server** (ExpertSDR3-compatible): control, CW macros,
   RX audio, TX audio (digimodes), wideband IQ with optional per-block
   centre stamps for skimmers, spots — verified live with **SDC**,
   **CW Skimmer** and **Decodium** (complete FT8 QSOs on the air); `dds`/`vfo`
-  go out on every tuning step
+  go out on every tuning step. Two listeners, each with its own switch
+  (Preferences → TCI): a **Unix socket** for clients on the same machine
+  (`$XDG_RUNTIME_DIR/sdr-for-linux/tci.sock`, mode 0600, no network port
+  involved) and **TCP port 40001** for third-party clients and other
+  machines, bound to all interfaces or to 127.0.0.1 only
 - CAT/hamlib applications are covered through the third-party
   [tciadapter](https://github.com/ftl/tciadapter) bridge (WSJT-X, fldigi,
   CQRLOG verified by its author) — no serial-port emulation needed here

@@ -114,6 +114,14 @@ typedef struct {
   int       tci_enable; /* TCI server on/off (F6d-2a)                             */
   int       tci_port;   /* TCI server port (ExpertSDR default 40001)              */
   int       tci_iq_rate;/* device-global IQ stream rate (F6d-2d; client-set)      */
+  /* Listeners (issue #46). Absent keys = the defaults below, so a config
+   * from before #46 keeps its TCP port on all interfaces and gains the
+   * socket. tci_sock "" = $XDG_RUNTIME_DIR/sdr-for-linux/tci.sock, expanded
+   * at start (never baked into the file — the uid differs per machine). */
+  int       tci_unix;   /* Unix-socket listener on/off (default 1)                */
+  char      tci_sock[108]; /* socket path override ("" = default)                 */
+  int       tci_tcp;    /* TCP listener on/off (default 1)                        */
+  int       tci_tcp_local; /* 1 = 127.0.0.1 only, 0 = all interfaces (default)    */
   double    tx_pan_high, tx_pan_low; /* TX panadapter dB window (0/0 = autofit)   */
   char      pa_cal[256];  /* per-band PA calibration (dB), "6m=53.0;20m=53.0;.." */
   char      pa_trim[256]; /* wattmeter correction curve, 11 pts "p0;p1;..;p10"   */

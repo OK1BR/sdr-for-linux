@@ -964,6 +964,47 @@ the real app on a pre-#47 config in the broadway lab wrote both tables seeded
 first start. Safety chain unchanged: same `[0, pa_watts]` clamp, same
 `tx_calc_drive_byte(drive_w, pa_cal[band])`.
 
+**★ ISSUE #46 — TCI transport: Unix socket + optional TCP, DONE IN CODE
+2026-10-27 (`needs-live-check`):** one lws context with two explicit vhosts
+sharing the protocol table, the service thread and the 500 ms state tick —
+a **Unix socket** for local clients (default on,
+`$XDG_RUNTIME_DIR/sdr-for-linux/tci.sock`, directory 0700 + file 0600,
+removed on stop; a path another LIVE server answers on is refused instead of
+unlinked — lws unlinks before bind, a second instance must not steal the
+first one's clients) and **TCP** (default on; all interfaces = the old
+dual-stack bind, or 127.0.0.1 only = `iface "127.0.0.1"` + DISABLE_IPV6 on
+that vhost). Preferences → TCI: Server (switch + a live "Listening on" row),
+Unix socket (switch + path entry with apply button, empty = default), TCP
+(switch + Scope + Port); every listener change restarts the server like the
+port always did. Persisted `[tx] tci_unix/tci_sock/tci_tcp/tci_tcp_local`;
+absent keys = socket on + TCP on all interfaces, so nobody loses the port.
+About → Debug Info prints what is actually bound. API:
+`tci_server_start(const TciListen *, ops)`, `tci_server_listeners()`; socket
+peers listed as `unix <comm>[pid]` (SO_PEERCRED). `sdrfl-tci-send -u <path>`.
+⛔ Two lws facts (details: TCI-SCOPE "Transports"): (1) the CLIENT dials a
+socket via `address = "+/path"`, NOT the URL path — the mirror tickets
+skimmer-for-linux#39 / log-for-linux#32 say "path with the + prefix", which
+is wrong (correct them before the sibling sessions start; public text needs
+Richard's OK); (2) `lws_service()` ignores its timeout argument since 3.2 —
+the send tool's `-w` window was a wall clock checked between calls and HUNG
+against a quiet server (the gate's stub; a live radio's chatter had hidden
+it since July): now an `lws_sul` timer whose callback also calls
+`lws_cancel_service()` (a sul fires BEFORE the poll, the flag alone does not
+return). Gate `sdrfl-tci-test` (149 checks): the whole suite over TCP and
+again over the socket, TCP off → nothing accepts, socket 0600 in a 0700 dir
+and gone after stop, scope by raw connects to the LAN address, both
+listeners with a client on each and one broadcast, a foreign live socket
+left alone, `sdrfl-tci-send -u` against the live socket;
+`SDRFL_TCI_TEST_HOLD=<s>` keeps that stub server up for poking a client
+under development (socket + 127.0.0.1:40123). Offline: 14 gates green;
+broadway lab: the TCI page renders, no GTK criticals (⛔ the lab must
+isolate `XDG_STATE_HOME` too — the first run rotated Richard's real run
+logs); the server itself never starts in the lab (discovery fails before
+`tci_apply`). ⛔ Live still owed (Richard, after skimmer#39 / log#32 land):
+skimmer + log over the socket with TCP off (`ss -ltn` without 40001), a
+remote skimmer over TCP on all interfaces, IQ stream rate on the socket.
+TX path untouched.
+
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
 red TX filter footprint, AF true mute, 60 m USB, SDR-15 discovery dedup,

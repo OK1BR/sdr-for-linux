@@ -336,7 +336,12 @@ typedef struct {
   int         tci_enable;    /* TCI server on/off (persisted, F6d-2a)               */
   int         tci_port;      /* TCI server port (persisted; ExpertSDR default 40001)*/
   int         tci_iq_rate;   /* device-global IQ stream rate (persisted; client-set)*/
+  int         tci_unix;      /* Unix-socket listener (persisted; issue #46)         */
+  char        tci_sock[108]; /* socket path override, "" = default (persisted)      */
+  int         tci_tcp;       /* TCP listener (persisted)                            */
+  int         tci_tcp_local; /* TCP bound to 127.0.0.1 only (persisted)             */
   GtkWidget  *tci_client_row; /* live client list on the TCI prefs page             */
+  GtkWidget  *tci_listen_row; /* "Listening on" row, refreshed with the client list */
   guint       tci_timer;     /* 1 s refresh for the client row                      */
   int         tx_mon;        /* TX monitor (self-listen) on/off (persisted)         */
   double      tx_mon_db;     /* monitor level dB (persisted)                        */
@@ -2942,6 +2947,10 @@ static void app_to_settings(const App *app, Settings *s) {
   s->tci_enable = app->tci_enable;
   s->tci_port   = app->tci_port;
   s->tci_iq_rate = app->tci_iq_rate;
+  s->tci_unix   = app->tci_unix;
+  g_strlcpy(s->tci_sock, app->tci_sock, sizeof(s->tci_sock));
+  s->tci_tcp    = app->tci_tcp;
+  s->tci_tcp_local = app->tci_tcp_local;
   s->tx_pan_high = app->tx_pan_high;
   s->tx_pan_low  = app->tx_pan_low;
   /* per-mode filter memory → "modeid=idx;..." */
@@ -5606,12 +5615,34 @@ static const TciOps TCI_OPS = {
   tci_get_centre, tci_set_centre,   /* ⛔ appended LAST — positional init */
 };
 
+/* Default Unix-socket path (issue #46): $XDG_RUNTIME_DIR/sdr-for-linux/tci.sock
+ * (GLib falls back to the cache dir when the runtime dir is unset). Expanded
+ * here, never persisted — the uid in /run/user/<uid> differs per machine. */
+static char *tci_default_sock_path(void) {
+  return g_build_filename(g_get_user_runtime_dir(), "sdr-for-linux", "tci.sock", NULL);
+}
+
+/* The listener set the prefs ask for. *path receives the effective socket
+ * path (owned by the caller) so the TciListen can point at it. */
+static void tci_listen_of(const App *app, TciListen *l, char **path) {
+  *path = app->tci_sock[0] ? g_strdup(app->tci_sock) : tci_default_sock_path();
+  l->unix_on   = app->tci_unix;
+  l->unix_path = *path;
+  l->tcp_on    = app->tci_tcp;
+  l->tcp_local = app->tci_tcp_local;
+  l->tcp_port  = app->tci_port;
+}
+
 /* Start/stop the TCI server to match app->tci_enable (prefs + startup). */
 static void tci_apply(App *app) {
   tci_app = app;
   if (app->tci_enable && !tci_server_running()) {
-    if (tci_server_start(app->tci_port, &TCI_OPS) != 0) {
-      fprintf(stderr, "tci: start failed on port %d\n", app->tci_port);
+    TciListen l; char *path;
+    tci_listen_of(app, &l, &path);
+    int rc = tci_server_start(&l, &TCI_OPS);
+    g_free(path);
+    if (rc != 0) {
+      fprintf(stderr, "tci: start failed (no listener bound)\n");
     } else {
       tci_server_set_iq_rate(app->tci_iq_rate);     /* persisted device IQ rate */
       demod_set_audio_tap(tci_server_audio_push);   /* RX audio → TCI (F6d-2b) */
@@ -5631,20 +5662,60 @@ static void on_pref_tci_enable(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
   tci_apply(app);
   schedule_save(app);
 }
-static void on_pref_tci_port(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
-  (void)ps; App *app = (App *)data;
-  app->tci_port = (int)adw_spin_row_get_value(r);
-  if (tci_server_running()) {          /* live port move: restart the server */
+/* Listener prefs apply live by restarting the server (the port did so all
+ * along): connected clients drop and reconnect — our own clients retry, SDC
+ * reconnects by itself. Nothing restarts while the server is off. */
+static void tci_restart(App *app) {
+  if (tci_server_running()) {
     tci_server_stop();
     tci_apply(app);
   }
   schedule_save(app);
+}
+static void on_pref_tci_port(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->tci_port = (int)adw_spin_row_get_value(r);
+  tci_restart(app);
+}
+static void on_pref_tci_unix(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->tci_unix = adw_switch_row_get_active(r);
+  tci_restart(app);
+}
+static void on_pref_tci_tcp(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->tci_tcp = adw_switch_row_get_active(r);
+  tci_restart(app);
+}
+static void on_pref_tci_tcp_scope(AdwComboRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->tci_tcp_local = adw_combo_row_get_selected(r) == 1 ? 1 : 0;
+  tci_restart(app);
+}
+/* Socket path: an entry row with an apply button — "changed" fires per
+ * keystroke and a restart per keystroke would drop the clients eight times
+ * for one path. Empty = the default. */
+static void on_pref_tci_sock(AdwEntryRow *r, gpointer data) {
+  App *app = (App *)data;
+  char *t = g_strdup(gtk_editable_get_text(GTK_EDITABLE(r)));
+  g_strlcpy(app->tci_sock, g_strstrip(t), sizeof(app->tci_sock));
+  g_free(t);
+  tci_restart(app);
 }
 
 /* Live "who is connected" row on the TCI page (1 s refresh while it exists). */
 static gboolean tci_clients_tick(gpointer data) {
   App *app = (App *)data;
   if (!app->tci_client_row) { app->tci_timer = 0; return G_SOURCE_REMOVE; }
+  if (app->tci_listen_row) {           /* what is actually bound (issue #46) */
+    char lst[200];
+    if (!tci_server_running()) {
+      g_strlcpy(lst, "server is off", sizeof(lst));
+    } else if (tci_server_listeners(lst, sizeof(lst)) == 0) {
+      g_strlcpy(lst, "nothing bound — see the run log", sizeof(lst));
+    }
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(app->tci_listen_row), lst);
+  }
   if (!tci_server_running()) {
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(app->tci_client_row), "Server is off");
     adw_action_row_set_subtitle(ADW_ACTION_ROW(app->tci_client_row), "");
@@ -5669,7 +5740,8 @@ static gboolean tci_clients_tick(gpointer data) {
 }
 static void on_tci_row_destroy(GtkWidget *w, gpointer data) {
   (void)w;
-  ((App *)data)->tci_client_row = NULL;
+  ((App *)data)->tci_client_row = NULL;   /* both rows die with the dialog */
+  ((App *)data)->tci_listen_row = NULL;
 }
 /* TX audio filter edges (Hz). Pushed via tx_push_cfg; applies live even while
  * keyed (gate_slot re-asserts the passband each slot, WDSP no-ops if unchanged). */
@@ -5962,8 +6034,41 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, pref_switch("TCI server",
       "WebSocket for SDC, loggers, Decodium… · live",
       app->tci_enable, G_CALLBACK(on_pref_tci_enable), app));
-  adw_preferences_group_add(g, pref_spin("TCI port",
-      "ExpertSDR default 40001 · applies on server toggle",
+  app->tci_listen_row = g_object_new(ADW_TYPE_ACTION_ROW, "title", "Listening on",
+      "subtitle", "—", "use-markup", FALSE, NULL);   /* filled by tci_clients_tick */
+  adw_preferences_group_add(g, app->tci_listen_row);
+  adw_preferences_page_add(p, g);
+  /* Listeners (issue #46): the socket for local clients, TCP for the rest.
+   * Each change restarts the server (clients reconnect), nothing needs an
+   * app restart. */
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Unix socket",
+      "description", "Local clients on this machine (skimmer-for-linux, log-for-linux, SDC…) connect here — no network port involved; the socket file is 0600 and removed on exit", NULL));
+  adw_preferences_group_add(g, pref_switch("Unix socket",
+      "live · reconnects clients",
+      app->tci_unix, G_CALLBACK(on_pref_tci_unix), app));
+  { char *dflt = tci_default_sock_path();
+    char *title = g_strdup_printf("Socket path (empty = %s)", dflt);
+    GtkWidget *row = g_object_new(ADW_TYPE_ENTRY_ROW, "title", title,
+                                  "show-apply-button", TRUE, NULL);
+    gtk_editable_set_text(GTK_EDITABLE(row), app->tci_sock);
+    g_signal_connect(row, "apply", G_CALLBACK(on_pref_tci_sock), app);
+    adw_preferences_group_add(g, row);
+    g_free(title); g_free(dflt); }
+  adw_preferences_page_add(p, g);
+  g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "TCP",
+      "description", "Third-party clients and other machines (a skimmer elsewhere on the LAN). Off = no open port at all", NULL));
+  adw_preferences_group_add(g, pref_switch("TCP port",
+      "live · reconnects clients",
+      app->tci_tcp, G_CALLBACK(on_pref_tci_tcp), app));
+  { GtkStringList *m = gtk_string_list_new((const char *[]){
+        "All interfaces", "Localhost only (127.0.0.1)", NULL });
+    GtkWidget *row = g_object_new(ADW_TYPE_COMBO_ROW, "title", "Scope",
+        "subtitle", "Localhost only = reachable from this machine only · live",
+        "model", m, "selected", (guint)(app->tci_tcp_local ? 1 : 0), NULL);
+    g_signal_connect(row, "notify::selected", G_CALLBACK(on_pref_tci_tcp_scope), app);
+    adw_preferences_group_add(g, row); }
+  adw_preferences_group_add(g, pref_spin("Port",
+      "ExpertSDR default 40001 · live",
       1024, 65535, app->tci_port, G_CALLBACK(on_pref_tci_port), app));
   adw_preferences_page_add(p, g);
   g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP, "title", "Clients", NULL));
@@ -6259,10 +6364,17 @@ static void act_about(GSimpleAction *a, GVariant *param, gpointer data) {
                           app->radio_name[0] ? app->radio_name : "unknown",
                           app->radio_ip, app->proto_p1 ? 1 : 2)
         : g_strdup("network server mode (--server)");
-    char *tci = app->radio_mode   /* no TCI server on the v0 network path */
-        ? g_strdup_printf("TCI: %s, port %d\n",
-                          app->tci_enable ? "on" : "off", app->tci_port)
-        : g_strdup("");
+    char *tci;                    /* no TCI server on the v0 network path */
+    if (!app->radio_mode) {
+      tci = g_strdup("");
+    } else if (tci_server_running()) {   /* what is ACTUALLY bound (issue #46) */
+      char lst[200];
+      tci_server_listeners(lst, sizeof(lst));
+      tci = g_strdup_printf("TCI: on, %s\n", lst);
+    } else {
+      tci = g_strdup_printf("TCI: %s (port %d)\n",
+                            app->tci_enable ? "on, nothing bound" : "off", app->tci_port);
+    }
     const char *renderer = g_getenv("GSK_RENDERER");
     char *dbg = g_strdup_printf(
         "SDR for Linux %s\n"
@@ -6531,7 +6643,8 @@ static void start_radio(App *app) {
                   .cw_wpm = CW_WPM_DFLT, .cw_pitch = CW_PITCH_DFLT,
                   .cw_st_db = CW_ST_DB_DFLT, .cw_hang = CW_HANG_DFLT,
                   .rtty_pitch = RTTY_PITCH_DFLT, .rtty_mon_db = RTTY_MON_DB_DFLT,
-                  .tci_enable = 0, .tci_port = 40001, .tci_iq_rate = 48000 };
+                  .tci_enable = 0, .tci_port = 40001, .tci_iq_rate = 48000,
+                  .tci_unix = 1, .tci_tcp = 1, .tci_tcp_local = 0 };   /* #46: socket + TCP on */
   g_strlcpy(st.ip, "", sizeof(st.ip));   /* no radio default: the picker (or a
                                             saved config) provides the IP; empty
                                             = discovery falls back to broadcast */
@@ -6642,6 +6755,11 @@ static void start_radio(App *app) {
   app->tci_port      = st.tci_port < 1024 ? 40001 : (st.tci_port > 65535 ? 40001 : st.tci_port);
   app->tci_iq_rate   = (st.tci_iq_rate == 96000 || st.tci_iq_rate == 192000 ||
                         st.tci_iq_rate == 384000) ? st.tci_iq_rate : 48000;
+  app->tci_unix      = st.tci_unix ? 1 : 0;
+  app->tci_tcp       = st.tci_tcp ? 1 : 0;
+  app->tci_tcp_local = st.tci_tcp_local ? 1 : 0;
+  /* an override must be absolute — anything else means "the default" */
+  g_strlcpy(app->tci_sock, st.tci_sock[0] == '/' ? st.tci_sock : "", sizeof(app->tci_sock));
   app->fps    = st.fps;
   app->latency = st.latency;
   /* Clamp to the supported 48-192 k window — a stale >192 k value from an older

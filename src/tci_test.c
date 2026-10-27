@@ -14,16 +14,27 @@
  * test pumps it; the LWS client runs in its own thread.
  */
 #include <glib.h>
+#include <glib/gstdio.h>
 #include <libwebsockets.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <sys/wait.h>
+#include <signal.h>
 
 #include "tci_server.h"
 
 /* ---- stub radio state ------------------------------------------------------ */
 
-static struct {
+typedef struct {
   long long freq;
   char      mode[16];
   int       flo, fhi;
@@ -41,8 +52,12 @@ static struct {
   int       spot_deleted, spot_cleared;
   long long freq_b; int split;   /* VFO B + split (SDR-12) — LAST: positional init */
   long long centre;              /* DDC centre (CTUN, SDR-18) */
-} S = { 14100000, "usb", 150, 2850, 25, 10, -12, 0, 0, 0, 20, "", 0, "", 0,
-        0, 0, "", 0, 0, 0, 0, 0, 0, 14100000 };
+} Stub;
+/* The suite runs once per transport (issue #46) — S is reset from S_INIT
+ * before each pass, or the second pass would inherit the first one's state. */
+static const Stub S_INIT = { 14100000, "usb", 150, 2850, 25, 10, -12, 0, 0, 0, 20, "", 0, "", 0,
+                             0, 0, "", 0, 0, 0, 0, 0, 0, 14100000 };
+static Stub S;
 
 static long long s_get_freq(void) { return S.freq; }
 static void s_set_freq(long long f) { S.freq = f; S.centre = f;   /* Model A: centre follows */ }
@@ -272,15 +287,16 @@ static gpointer pusher_thread(gpointer data) {
   return NULL;
 }
 
-int main(void) {
-  printf("=== TCI server gate (offline) ===\n");
-  c_rx = g_string_new(NULL);
-  c_bin = g_byte_array_new();
-
-  if (tci_server_start(40123, &STUB_OPS) != 0) {
-    printf("FAIL — server would not start on :40123\n");
-    return 1;
-  }
+/* Bring the harness client up on one transport. addr = "127.0.0.1" (TCP) or
+ * "+/path/to/tci.sock" — lws dials a Unix socket when the ADDRESS starts
+ * with '+' (lib/core-net/client/connect2.c; the URL path stays "/"). */
+static GThread *c_thread;
+static void client_start(const char *addr, int port) {
+  g_mutex_lock(&c_lock);
+  g_string_truncate(c_rx, 0);
+  g_byte_array_set_size(c_bin, 0);
+  g_mutex_unlock(&c_lock);
+  c_up = 0; c_run = 1; c_wsi = NULL; c_send_pending = 0; c_bin_pending = 0;
 
   struct lws_context_creation_info info;
   memset(&info, 0, sizeof(info));
@@ -289,20 +305,170 @@ int main(void) {
   info.protocols = c_protocols;
   info.gid = -1;
   info.uid = -1;
-  struct lws_context *cctx = lws_create_context(&info);
-  c_ctx = cctx;
+  c_ctx = lws_create_context(&info);
 
   struct lws_client_connect_info ci;
   memset(&ci, 0, sizeof(ci));
-  ci.context = cctx;
-  ci.address = "127.0.0.1";
-  ci.port = 40123;
+  ci.context = c_ctx;
+  ci.address = addr;
+  ci.port = port;
   ci.path = "/";
-  ci.host = "127.0.0.1";
-  ci.origin = "127.0.0.1";
+  ci.host = "localhost";
+  ci.origin = "localhost";
   ci.protocol = "tci";
   lws_client_connect_via_info(&ci);
-  GThread *ct = g_thread_new("tci-test-client", client_thread, cctx);
+  c_thread = g_thread_new("tci-test-client", client_thread, c_ctx);
+}
+static void client_stop(void) {
+  c_run = 0;
+  g_thread_join(c_thread);
+  c_thread = NULL;
+  lws_context_destroy(c_ctx);
+  c_ctx = NULL;
+}
+
+/* A second, minimal text-only client (issue #46): sits on the OTHER
+ * transport while the harness client runs, to prove both listeners share
+ * one state tick — a set from one must be broadcast to the other. */
+static GMutex   c2_lock;
+static GString *c2_rx;
+static struct lws_context *c2_ctx;
+static GThread *c2_thread;
+static volatile int c2_run;
+static int c2_cb(struct lws *wsi, enum lws_callback_reasons reason,
+                 void *user, void *in, size_t len) {
+  (void)user;
+  if (reason == LWS_CALLBACK_CLIENT_RECEIVE && !lws_frame_is_binary(wsi)) {
+    g_mutex_lock(&c2_lock);
+    g_string_append_len(c2_rx, (const char *)in, (gssize)len);
+    g_mutex_unlock(&c2_lock);
+  } else if (reason == LWS_CALLBACK_CLIENT_CONNECTION_ERROR) {
+    fprintf(stderr, "client2: connection error: %s\n", in ? (char *)in : "?");
+    return -1;
+  }
+  return 0;
+}
+static const struct lws_protocols c2_protocols[] = {
+  { "tci", c2_cb, 0, 8192, 0, NULL, 0 },
+  { NULL, NULL, 0, 0, 0, NULL, 0 }
+};
+static gpointer c2_service(gpointer data) {
+  while (c2_run) { lws_service((struct lws_context *)data, 0); g_usleep(1000); }
+  return NULL;
+}
+static void client2_start(const char *addr, int port) {
+  g_mutex_lock(&c2_lock); g_string_truncate(c2_rx, 0); g_mutex_unlock(&c2_lock);
+  struct lws_context_creation_info info;
+  memset(&info, 0, sizeof(info));
+  info.port = CONTEXT_PORT_NO_LISTEN;
+  info.protocols = c2_protocols;
+  info.gid = -1; info.uid = -1;
+  c2_ctx = lws_create_context(&info);
+  struct lws_client_connect_info ci;
+  memset(&ci, 0, sizeof(ci));
+  ci.context = c2_ctx; ci.address = addr; ci.port = port; ci.path = "/";
+  ci.host = "localhost"; ci.origin = "localhost"; ci.protocol = "tci";
+  lws_client_connect_via_info(&ci);
+  c2_run = 1;
+  c2_thread = g_thread_new("tci-test-client2", c2_service, c2_ctx);
+}
+static void client2_stop(void) {
+  c2_run = 0;
+  g_thread_join(c2_thread);
+  lws_context_destroy(c2_ctx);
+  c2_ctx = NULL;
+}
+static int c2_contains(const char *needle) {
+  g_mutex_lock(&c2_lock);
+  int hit = strstr(c2_rx->str, needle) != NULL;
+  g_mutex_unlock(&c2_lock);
+  return hit;
+}
+static int cond_c2_ready(void) { return c2_contains("ready;"); }
+static int cond_c2_vfo(void)   { return c2_contains("vfo:0,0,7033000;"); }
+static int cond_c1_vfo(void)   { return rx_contains("vfo:0,0,7033000;"); }
+static int cond_freq_both(void) { return S.freq == 7033000; }
+
+/* Does anything accept TCP on ip:port? A raw connect() tells "listening"
+ * from "refused" at the kernel, no WebSocket handshake needed. */
+static int tcp_accepts(const char *ip, int port) {
+  int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  if (fd < 0) { return 0; }
+  struct sockaddr_in sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sin_family = AF_INET;
+  sa.sin_port = htons((uint16_t)port);
+  inet_pton(AF_INET, ip, &sa.sin_addr);
+  int ok = connect(fd, (struct sockaddr *)&sa, sizeof(sa)) == 0;
+  close(fd);
+  return ok;
+}
+/* Same for a Unix socket path. */
+static int unix_accepts(const char *path) {
+  int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  if (fd < 0) { return 0; }
+  struct sockaddr_un sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sun_family = AF_UNIX;
+  g_strlcpy(sa.sun_path, path, sizeof(sa.sun_path));
+  int ok = connect(fd, (struct sockaddr *)&sa, sizeof(sa)) == 0;
+  close(fd);
+  return ok;
+}
+/* First non-loopback IPv4 of this machine ("" if none — e.g. a container
+ * without a network): the scope checks need an address that is NOT
+ * 127.0.0.1 to show "localhost only" really refuses it. */
+static int first_nonloopback_ipv4(char *buf, int len) {
+  struct ifaddrs *ifa = NULL;
+  int found = 0;
+  if (getifaddrs(&ifa) != 0) { return 0; }
+  for (struct ifaddrs *p = ifa; p && !found; p = p->ifa_next) {
+    if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET) { continue; }
+    if (p->ifa_flags & IFF_LOOPBACK) { continue; }
+    if (!(p->ifa_flags & IFF_UP)) { continue; }
+    inet_ntop(AF_INET, &((struct sockaddr_in *)p->ifa_addr)->sin_addr, buf, (socklen_t)len);
+    found = 1;
+  }
+  freeifaddrs(ifa);
+  return found;
+}
+
+/* One full pass of the suite over one transport (issue #46: the same checks
+ * must hold on TCP and on the Unix socket). Returns 0 when the server came
+ * up; the checks themselves count into checks/fails. */
+static int run_suite(const char *label, const TciListen *l, const char *addr, int port) {
+  printf("\n--- %s ---\n", label);
+  S = S_INIT;
+  if (tci_server_start(l, &STUB_OPS) != 0) {
+    printf("  FAIL server would not start (%s)\n", label);
+    checks++; fails++;
+    return 1;
+  }
+  /* The device IQ rate deliberately survives a server restart (SDC sets it
+   * once); the previous pass left it at 96 k — seed 48 k like the GUI does
+   * from its persisted value, so the handshake check holds on every pass. */
+  tci_server_set_iq_rate(48000);
+  /* transport facts, checked while the server is up */
+  if (l->unix_on) {
+    struct stat st;
+    int ok = stat(l->unix_path, &st) == 0;
+    check("socket file exists and is a socket", ok && S_ISSOCK(st.st_mode));
+    check("socket file mode is 0600", ok && (st.st_mode & 07777) == 0600);
+    char *dir = g_path_get_dirname(l->unix_path);
+    struct stat sd;
+    check("socket directory is 0700", stat(dir, &sd) == 0 && (sd.st_mode & 07777) == 0700);
+    g_free(dir);
+  }
+  if (!l->tcp_on) {
+    check("TCP off: nothing accepts on 127.0.0.1:40123", !tcp_accepts("127.0.0.1", 40123));
+  }
+  if (!l->unix_on && l->unix_path) {
+    check("socket off: no socket file at the path", !g_file_test(l->unix_path, G_FILE_TEST_EXISTS));
+  }
+
+  client_start(addr, port);
+  GThread *ct = c_thread;
+  struct lws_context *cctx = c_ctx;
 
   check("client connects + full handshake ends with ready;", wait_for(cond_ready, 3000));
   check("handshake announces protocol:ExpertSDR3", rx_contains("protocol:ExpertSDR3,1.9;"));
@@ -696,10 +862,158 @@ int main(void) {
   client_send("trx:0,false;");
   check("unkey reverts the TX source to mic", wait_for(cond_tci_unkeyed, 2000));
 
-  c_run = 0;
-  g_thread_join(ct);
-  lws_context_destroy(cctx);
+  (void)ct; (void)cctx;
+  client_stop();
   tci_server_stop();
+  if (l->unix_on) {
+    check("socket file is removed on stop", !g_file_test(l->unix_path, G_FILE_TEST_EXISTS));
+  }
+  return 0;
+}
+
+int main(void) {
+  printf("=== TCI server gate (offline) ===\n");
+  c_rx = g_string_new(NULL);
+  c_bin = g_byte_array_new();
+  c2_rx = g_string_new(NULL);
+  /* ⛔ Scratch socket path: lws unlinks whatever sits at the path before it
+   * binds, so the DEFAULT path would steal a running app's socket — the
+   * socket-path counterpart of using port 40123 instead of 40001. */
+  char *dir = g_dir_make_tmp("sdrfl-tci-XXXXXX", NULL);
+  if (!dir) { printf("FAIL — no scratch directory\n"); return 1; }
+  char *sock = g_build_filename(dir, "tci.sock", NULL);
+  char *busy = g_build_filename(dir, "busy.sock", NULL);
+  char  uaddr[256];
+  snprintf(uaddr, sizeof(uaddr), "+%s", sock);
+
+  /* 1. the whole suite over TCP (localhost scope), socket off */
+  TciListen tcp = { .unix_on = 0, .unix_path = sock, .tcp_on = 1, .tcp_local = 1, .tcp_port = 40123 };
+  run_suite("suite over TCP 127.0.0.1:40123 (socket off)", &tcp, "127.0.0.1", 40123);
+  check("after stop nothing accepts on 127.0.0.1:40123", !tcp_accepts("127.0.0.1", 40123));
+
+  /* 2. the whole suite over the Unix socket, TCP off */
+  TciListen ux = { .unix_on = 1, .unix_path = sock, .tcp_on = 0, .tcp_local = 0, .tcp_port = 40123 };
+  run_suite("suite over the Unix socket (TCP off)", &ux, uaddr, 0);
+
+  /* 3. TCP scope: all interfaces vs localhost only, by raw connects */
+  printf("\n--- TCP scope ---\n");
+  char lan[64] = "";
+  int have_lan = first_nonloopback_ipv4(lan, sizeof(lan));
+  if (!have_lan) { printf("  skip  (no non-loopback IPv4 on this machine — LAN-side checks skipped)\n"); }
+  char lst[256];
+  TciListen all = { .unix_on = 0, .unix_path = NULL, .tcp_on = 1, .tcp_local = 0, .tcp_port = 40123 };
+  check("all interfaces: server starts", tci_server_start(&all, &STUB_OPS) == 0);
+  tci_server_listeners(lst, sizeof(lst));
+  check("all interfaces: listeners read \"tcp 0.0.0.0:40123\"", strcmp(lst, "tcp 0.0.0.0:40123") == 0);
+  check("all interfaces: 127.0.0.1 accepts", tcp_accepts("127.0.0.1", 40123));
+  if (have_lan) { check("all interfaces: the LAN address accepts", tcp_accepts(lan, 40123)); }
+  tci_server_stop();
+  TciListen loc = { .unix_on = 0, .unix_path = NULL, .tcp_on = 1, .tcp_local = 1, .tcp_port = 40123 };
+  check("localhost only: server starts", tci_server_start(&loc, &STUB_OPS) == 0);
+  tci_server_listeners(lst, sizeof(lst));
+  check("localhost only: listeners read \"tcp 127.0.0.1:40123\"", strcmp(lst, "tcp 127.0.0.1:40123") == 0);
+  check("localhost only: 127.0.0.1 accepts", tcp_accepts("127.0.0.1", 40123));
+  if (have_lan) { check("localhost only: the LAN address is refused", !tcp_accepts(lan, 40123)); }
+  tci_server_stop();
+
+  /* 4. both listeners in one context: a client on each, one state tick */
+  printf("\n--- both listeners ---\n");
+  S = S_INIT;
+  TciListen both = { .unix_on = 1, .unix_path = sock, .tcp_on = 1, .tcp_local = 1, .tcp_port = 40123 };
+  check("both: server starts", tci_server_start(&both, &STUB_OPS) == 0);
+  tci_server_listeners(lst, sizeof(lst));
+  { char *want = g_strdup_printf("unix %s · tcp 127.0.0.1:40123", sock);
+    check("both: listeners read \"unix <path> · tcp 127.0.0.1:40123\"", strcmp(lst, want) == 0);
+    g_free(want); }
+  client_start("127.0.0.1", 40123);          /* harness client over TCP        */
+  client2_start(uaddr, 0);                    /* second client over the socket  */
+  check("both: TCP client gets its handshake", wait_for(cond_ready, 3000));
+  check("both: socket client gets its handshake", wait_for(cond_c2_ready, 3000));
+  check("both: two clients counted", tci_server_clients() == 2);
+  { char info[192]; int found = 0;
+    for (int i = 0; i < TCI_SERVER_MAX_CLIENTS; i++) {
+      if (tci_server_client_info(i, info, sizeof(info)) && strncmp(info, "unix ", 5) == 0) { found = 1; }
+    }
+    check("both: the socket client is listed as \"unix <process>[pid]\"", found); }
+  client_send("vfo:0,0,7033000;");
+  check("both: a set from the TCP client lands", wait_for(cond_freq_both, 2000));
+  check("both: ...and is broadcast to the socket client", wait_for(cond_c2_vfo, 2000));
+  check("both: ...and echoed to the TCP client", wait_for(cond_c1_vfo, 2000));
+  /* sdrfl-tci-send -u (the dev tool's socket path, issue #46): run the real
+   * binary next to this one against the live socket; its vfo must land. */
+  { char *exe = g_file_read_link("/proc/self/exe", NULL);
+    char *bindir = exe ? g_path_get_dirname(exe) : g_strdup(".");
+    char *tool = g_build_filename(bindir, "sdrfl-tci-send", NULL);
+    if (g_file_test(tool, G_FILE_TEST_IS_EXECUTABLE)) {
+      char *argv[] = { tool, "-u", sock, "-w", "1", "vfo:0,0,7044000;", NULL };
+      GPid pid = 0;
+      int status = -1, exited = 0, landed = 0;
+      /* async + pump: the server dispatches commands on OUR main context,
+       * and a command from a client that has already gone is dropped — a
+       * blocking spawn would let the tool finish before its vfo was run. */
+      gboolean ran = g_spawn_async(NULL, argv, NULL,
+                                   G_SPAWN_DO_NOT_REAP_CHILD | G_SPAWN_STDOUT_TO_DEV_NULL,
+                                   NULL, NULL, &pid, NULL);
+      for (int i = 0; ran && i < 8000 && !(exited && landed); i++) {
+        while (g_main_context_iteration(NULL, FALSE)) {}
+        if (!landed) { landed = S.freq == 7044000; }
+        if (!exited && waitpid(pid, &status, WNOHANG) == pid) { exited = 1; }
+        g_usleep(1000);
+      }
+      if (ran && !exited) { kill(pid, SIGKILL); waitpid(pid, &status, 0); }
+      if (ran) { g_spawn_close_pid(pid); }
+      int tool_ok = ran && exited && WIFEXITED(status) && WEXITSTATUS(status) == 0 && landed;
+      check("both: sdrfl-tci-send -u <socket> connects and its vfo lands", tool_ok);
+      if (!tool_ok) {
+        printf("        (spawned %d, exited %d, status 0x%x, vfo landed %d; S.freq %lld)\n",
+               ran, exited, status, landed, S.freq);
+      }
+    } else {
+      printf("  skip  sdrfl-tci-send not next to the gate (%s) — -u check skipped\n", tool);
+    }
+    g_free(tool); g_free(bindir); g_free(exe); }
+  /* SDRFL_TCI_TEST_HOLD=<s>: keep this stub server (socket + TCP) up for
+   * manual poking — a TCI client under development (skimmer, log, the send
+   * tool) gets a radio-less server over both transports. */
+  { const char *hold = g_getenv("SDRFL_TCI_TEST_HOLD");
+    int secs = hold ? atoi(hold) : 0;
+    if (secs > 0) {
+      printf("  hold  server up for %d s — unix %s · tcp 127.0.0.1:40123\n", secs, sock);
+      fflush(stdout);
+      for (int i = 0; i < secs * 1000; i++) {
+        while (g_main_context_iteration(NULL, FALSE)) {}
+        g_usleep(1000);
+      }
+    } }
+  client2_stop();
+  client_stop();
+  tci_server_stop();
+  check("both: socket file removed on stop", !g_file_test(sock, G_FILE_TEST_EXISTS));
+
+  /* 5. a path another LIVE server answers on is left alone (lws would unlink
+   * it): a raw listener plays the other instance. */
+  printf("\n--- foreign live socket ---\n");
+  { int raw = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    struct sockaddr_un sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sun_family = AF_UNIX;
+    g_strlcpy(sa.sun_path, busy, sizeof(sa.sun_path));
+    int bound = raw >= 0 && bind(raw, (struct sockaddr *)&sa, sizeof(sa)) == 0 && listen(raw, 4) == 0;
+    check("raw listener up at the foreign path", bound);
+    TciListen f = { .unix_on = 1, .unix_path = busy, .tcp_on = 1, .tcp_local = 1, .tcp_port = 40123 };
+    check("foreign: server starts on TCP alone", tci_server_start(&f, &STUB_OPS) == 0);
+    tci_server_listeners(lst, sizeof(lst));
+    check("foreign: the socket listener was NOT bound", strstr(lst, "unix ") == NULL &&
+          strcmp(lst, "tcp 127.0.0.1:40123") == 0);
+    check("foreign: the other server still answers on its socket", unix_accepts(busy));
+    tci_server_stop();
+    check("foreign: its socket file survived our stop", g_file_test(busy, G_FILE_TEST_EXISTS));
+    if (raw >= 0) { close(raw); }
+    g_unlink(busy); }
+
+  g_unlink(sock);
+  g_rmdir(dir);
+  g_free(busy); g_free(sock); g_free(dir);
 
   printf("\n=== %d checks, %d failures ===\n", checks, fails);
   if (fails) {
@@ -709,6 +1023,6 @@ int main(void) {
     printf("FAIL\n");
     return 1;
   }
-  printf("PASS — TCI handshake, control round-trips and CW queueing all behave.\n");
+  printf("PASS — TCI handshake, control round-trips and CW queueing behave over TCP and over the Unix socket.\n");
   return 0;
 }

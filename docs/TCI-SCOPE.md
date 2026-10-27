@@ -67,6 +67,62 @@ to piHPSDR globals). Distro dependency: **libwebsockets** (packaged on
 Arch/Debian/Fedora; platform-library category — do not vendor). Default port
 40001.
 
+### Transports (issue #46, 2026-10-27)
+
+TCI is WebSocket, and WebSocket is framing over any reliable byte stream, so
+the server has **two listeners in one lws context** (`LWS_SERVER_OPTION_
+EXPLICIT_VHOSTS`, one `lws_create_vhost()` each, the same protocol table and
+idle policy on both — those `lws_context_creation_info` members are
+VHOST-scoped, the context itself only carries uid/gid). Clients on either
+transport are served by the same service thread and the same 500 ms state
+tick (gate: a `vfo` set from a TCP client is broadcast to a socket client).
+
+- **Unix socket** (`TciListen.unix_on`, default on): `LWS_SERVER_OPTION_
+  UNIX_SOCK`, `iface` = the path, `port` 0. Default path
+  `$XDG_RUNTIME_DIR/sdr-for-linux/tci.sock` (GLib `g_get_user_runtime_dir()`;
+  expanded at start, the pref stores only an override — `/run/user/<uid>`
+  differs per machine). The app creates the directory 0700; lws creates the
+  file 0660 (its `unix_socket_perms` feature treats uid/gid −1 as set) and
+  the server chmods it to **0600** right after bind; lws unlinks it on
+  `lws_context_destroy`. ⛔ lws also unlinks whatever sits at the path
+  BEFORE it binds, so a path that another live server answers on (a plain
+  `connect()` succeeds) is refused with a log line — a second instance must
+  never silently steal the first one's clients; a stale file from a crash is
+  replaced. Peer naming: `lws_get_peer_simple()` says "(unix skt)", so the
+  client list shows `unix <comm>[pid]` from `SO_PEERCRED` + `/proc/<pid>/comm`.
+- **TCP** (`tcp_on`, default on): `iface` NULL = the pre-#46 bind (dual-stack
+  `[::]` + `0.0.0.0`); **localhost only** = `iface "127.0.0.1"` +
+  `LWS_SERVER_OPTION_DISABLE_IPV6` on that vhost (lws tries the string as an
+  interface name first, then parses it as a numeric address) — 127.0.0.1,
+  not ::1; every client of ours dials 127.0.0.1. The build has
+  `LWS_WITH_BINDTODEVICE`, so lws also tries `SO_BINDTODEVICE("127.0.0.1")`,
+  fails without root and continues (a warn below our LLL_ERR level).
+- `tci_server_start()` returns 0 when at least one listener bound; what is
+  actually bound is readable via `tci_server_listeners()` (prefs "Listening
+  on" row, About → Debug Info). Every listener pref applies by restarting the
+  server (clients reconnect), like the port always did.
+- **Client side** (sdrfl-tci-send `-u`, the test harness, and the mirror
+  tickets skimmer-for-linux#39 / log-for-linux#32): lws dials a Unix socket
+  when `lws_client_connect_info.address` starts with `+` —
+  `address = "+/run/user/1000/sdr-for-linux/tci.sock"`, `path = "/"`, port
+  ignored, `host` still needs a name for the `Host:` header
+  (`lib/core-net/client/connect2.c:279`). ⛔ The mirror tickets say "`path`
+  with the `+` prefix" — that is wrong, it is the **address**.
+- ⛔ lws client loops: `lws_service()` ignores its timeout argument since
+  v3.2 and blocks until the next scheduled event or traffic. A wait is an
+  `lws_sul` timer, and because a sul fires at the top of `lws_service()`
+  before its `poll()`, the sul callback must also call `lws_cancel_service()`
+  or the loop sleeps until the server happens to send something
+  (sdrfl-tci-send hung against the quiet stub server; a live radio's chatter
+  had hidden it).
+- Gate `sdrfl-tci-test` runs the whole suite over TCP and again over the
+  socket, then: TCP off → nothing accepts on the port, socket file 0600 in a
+  0700 directory and gone after stop, scope (all interfaces vs localhost by
+  raw connects to the LAN address), both listeners at once with one client
+  on each, a foreign live socket left alone, and `sdrfl-tci-send -u` against
+  the live socket. `SDRFL_TCI_TEST_HOLD=<s>` keeps that stub server up (socket
+  + TCP 127.0.0.1:40123) for poking a client under development.
+
 ## Phases (each independently testable; RX-side needs no keying)
 
 - **F6d-2a — server + control + CW** (live-verified 2026-07-10 with
@@ -92,7 +148,8 @@ Arch/Debian/Fedora; platform-library category — do not vendor). Default port
   drive/tune_drive, volume/mute, cw_macros(+escapes)/_stop/_speed(_up/_down)/
   _delay, basic cw_msg ($N repeats; no live callsign correction),
   tx_enable/tx_frequency. Prefs: Radio → TCI (switch live, port 40001,
-  persisted `[tx] tci/tci_port`, off by default). Gate: `sdrfl-tci-test` —
+  persisted `[tx] tci/tci_port`, off by default; since #46 also
+  `tci_unix/tci_sock/tci_tcp/tci_tcp_local`, see Transports). Gate: `sdrfl-tci-test` —
   a real WebSocket client against the server with stub ops.
 - **F6d-2b — RX audio** (live with Decodium 2026-07-10).
   Demod tap: volume-compensated mono (pre-mute/pre-monitor — decode must not

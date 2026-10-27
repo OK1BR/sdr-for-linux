@@ -14,6 +14,11 @@
 #include <string.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <errno.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
 
 #include "tci_server.h"
 #include "wdsp.h"                     /* create_resample: IQ decimation (2d) */
@@ -95,6 +100,12 @@ static GMutex              s_lock;        /* clients table + queues          */
  * GUI/pedal unkey), so a stale slot can never unkey someone else's over. */
 static int                 s_trx_client = -1;
 static struct lws_context *s_ctx;
+/* Listeners (issue #46): one context, up to two vhosts. The vhost pointers
+ * tell a connection's transport apart (lws_get_vhost); the strings are what
+ * is ACTUALLY bound, for tci_server_listeners. */
+static struct lws_vhost   *s_vh_unix, *s_vh_tcp;
+static char                s_unix_path[108];     /* sun_path-sized          */
+static char                s_tcp_desc[64];       /* "0.0.0.0:40001" / "127.0.0.1:40001" */
 static GThread            *s_thread;
 static volatile int        s_run;
 static volatile int        s_writable;    /* wake flag → callback_on_writable */
@@ -932,6 +943,31 @@ static gboolean process_payload_idle(gpointer data) {
 
 /* ---- LWS glue (LWS service thread) ---------------------------------------- */
 
+/* Who connected, for the log line and the prefs client list. TCP: "ip:port"
+ * (lws_get_peer_simple). Unix socket: lws would print "(unix skt)", so name
+ * the peer PROCESS instead — SO_PEERCRED gives its pid, /proc its comm —
+ * "unix skimmer-for-linux[1234]". Linux-only, as is the rest of the app. */
+static void peer_label(struct lws *wsi, char *buf, int len) {
+  if (s_vh_unix && lws_get_vhost(wsi) == s_vh_unix) {
+    struct ucred cr; socklen_t cl = sizeof(cr);
+    char comm[32] = "";
+    int fd = lws_get_socket_fd(wsi);
+    if (fd >= 0 && getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cr, &cl) == 0) {
+      char path[48], *txt = NULL;
+      snprintf(path, sizeof(path), "/proc/%d/comm", (int)cr.pid);
+      if (g_file_get_contents(path, &txt, NULL, NULL)) {
+        g_strlcpy(comm, g_strstrip(txt), sizeof(comm));
+        g_free(txt);
+      }
+      snprintf(buf, (size_t)len, "unix %s[%d]", comm[0] ? comm : "?", (int)cr.pid);
+    } else {
+      g_strlcpy(buf, "unix", (gsize)len);
+    }
+    return;
+  }
+  lws_get_peer_simple(wsi, buf, len);
+}
+
 static int lws_cb(struct lws *wsi, enum lws_callback_reasons reason,
                   void *user, void *in, size_t len) {
   int *slot = (int *)user;
@@ -954,7 +990,7 @@ static int lws_cb(struct lws *wsi, enum lws_callback_reasons reason,
       nc->au_ch = 2;
       nc->au_block = 2048;
       nc->iq_rate = atomic_load(&s_iq_rate_dflt);
-      lws_get_peer_simple(wsi, nc->peer, sizeof(nc->peer));
+      peer_label(wsi, nc->peer, sizeof(nc->peer));
       lws_hdr_copy(wsi, nc->agent, sizeof(nc->agent), WSI_TOKEN_HTTP_USER_AGENT);
     }
     g_mutex_unlock(&s_lock);
@@ -1333,7 +1369,23 @@ void tci_server_tx_chrono(int nsamples) {
 
 /* ---- public API ------------------------------------------------------------ */
 
-int tci_server_start(int port, const TciOps *ops) {
+/* Is a server alive behind this socket path? connect() succeeds → yes (another
+ * instance; leave its socket alone), ECONNREFUSED / ENOENT → stale or absent
+ * (lws unlinks a leftover file before it binds). */
+static int unix_sock_alive(const char *path) {
+  struct sockaddr_un sa;
+  if (strlen(path) >= sizeof(sa.sun_path)) { return 0; }
+  int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  if (fd < 0) { return 0; }
+  memset(&sa, 0, sizeof(sa));
+  sa.sun_family = AF_UNIX;
+  g_strlcpy(sa.sun_path, path, sizeof(sa.sun_path));
+  int alive = connect(fd, (struct sockaddr *)&sa, sizeof(sa)) == 0;
+  close(fd);
+  return alive;
+}
+
+int tci_server_start(const TciListen *listen, const TciOps *ops) {
   if (s_run) { return 0; }
   s_ops = *ops;
   memset(&s_cli, 0, sizeof(s_cli));
@@ -1359,12 +1411,17 @@ int tci_server_start(int port, const TciOps *ops) {
   atomic_store(&s_iq_in_rate, 0);
   s_iq_conj = g_getenv("SDRFL_TCI_IQ_RAW") == NULL;
 
+  /* One lws context, explicit vhosts (issue #46): the Unix socket and the TCP
+   * port are two listeners sharing the protocol table, the service thread and
+   * the state tick. info.* members marked VHOST in lws-context-vhost.h —
+   * protocols, iface/port, options UNIX_SOCK/DISABLE_IPV6, the idle policy —
+   * must go on EACH vhost info; the context gets only uid/gid. */
   struct lws_context_creation_info info;
   memset(&info, 0, sizeof(info));
   signal(SIGPIPE, SIG_IGN);
   lws_set_log_level(LLL_ERR, NULL);
-  info.port = port;
-  info.protocols = s_protocols;
+  info.port = CONTEXT_PORT_NO_LISTEN;
+  info.options = LWS_SERVER_OPTION_EXPLICIT_VHOSTS;
   info.gid = -1;
   info.uid = -1;
   /* ⛔ Connection-validity policy (2026-07-12 night, live failure): a client
@@ -1380,18 +1437,118 @@ int tci_server_start(int port, const TciOps *ops) {
     .secs_since_valid_ping   = 10,
     .secs_since_valid_hangup = 30,
   };
-  info.retry_and_idle_policy = &validity;
   s_ctx = lws_create_context(&info);
   if (!s_ctx) {
-    fprintf(stderr, "tci: lws_create_context failed (port %d busy?)\n", port);
+    fprintf(stderr, "tci: lws_create_context failed\n");
+    return -1;
+  }
+  s_vh_unix = s_vh_tcp = NULL;
+  s_unix_path[0] = 0;
+  s_tcp_desc[0] = 0;
+
+  /* Unix socket: 0700 directory, 0600 file. lws unlinks whatever sits at the
+   * path before bind (network.c), so a path another live server answers on
+   * must be refused HERE — else starting a second instance would silently
+   * steal the first one's clients. lws chmods the file 0660 itself (its
+   * "username:groupname" feature, uid/gid −1 count as set); tighten to 0600
+   * right after bind — the 0700 directory closes the window in between. */
+  if (listen->unix_on && listen->unix_path && listen->unix_path[0]) {
+#if defined(LWS_WITH_UNIX_SOCK)
+    const char *path = listen->unix_path;
+    if (strlen(path) >= sizeof(s_unix_path)) {
+      fprintf(stderr, "tci: unix socket path too long (%zu > %zu): %s\n",
+              strlen(path), sizeof(s_unix_path) - 1, path);
+    } else if (unix_sock_alive(path)) {
+      fprintf(stderr, "tci: unix socket %s is served by another instance — not bound\n", path);
+    } else {
+      char *dir = g_path_get_dirname(path);
+      if (g_mkdir_with_parents(dir, 0700) != 0) {
+        fprintf(stderr, "tci: cannot create %s: %s\n", dir, g_strerror(errno));
+      } else {
+        struct lws_context_creation_info vi;
+        memset(&vi, 0, sizeof(vi));
+        vi.vhost_name = "unix";
+        vi.options    = LWS_SERVER_OPTION_UNIX_SOCK;
+        vi.iface      = path;
+        vi.port       = 0;
+        vi.protocols  = s_protocols;
+        vi.retry_and_idle_policy = &validity;
+        s_vh_unix = lws_create_vhost(s_ctx, &vi);
+        if (!s_vh_unix) {
+          fprintf(stderr, "tci: unix socket %s: bind failed\n", path);
+        } else if (chmod(path, 0600) != 0) {
+          fprintf(stderr, "tci: chmod 0600 %s: %s\n", path, g_strerror(errno));
+        } else {
+          g_strlcpy(s_unix_path, path, sizeof(s_unix_path));
+          fprintf(stderr, "tci: listening on unix socket %s\n", path);
+        }
+      }
+      g_free(dir);
+    }
+#else
+    fprintf(stderr, "tci: this libwebsockets build has no Unix-socket support (LWS_UNIX_SOCK) — socket listener unavailable\n");
+#endif
+  }
+
+  /* TCP: all interfaces (iface NULL = the pre-#46 dual-stack [::] + 0.0.0.0
+   * bind) or 127.0.0.1 only. The literal address goes through lws's
+   * iface→sockaddr path (an interface NAME is tried first, then the string
+   * is parsed as a numeric address); IPv6 is disabled on that vhost so the
+   * bind is a plain AF_INET one — "localhost only" means 127.0.0.1, not ::1
+   * (every client of ours dials 127.0.0.1). */
+  if (listen->tcp_on) {
+    struct lws_context_creation_info vi;
+    memset(&vi, 0, sizeof(vi));
+    vi.vhost_name = "tcp";
+    vi.port       = listen->tcp_port;
+    vi.protocols  = s_protocols;
+    vi.retry_and_idle_policy = &validity;
+    if (listen->tcp_local) {
+      vi.iface   = "127.0.0.1";
+      vi.options = LWS_SERVER_OPTION_DISABLE_IPV6;
+    }
+    s_vh_tcp = lws_create_vhost(s_ctx, &vi);
+    if (!s_vh_tcp) {
+      fprintf(stderr, "tci: tcp port %d: bind failed (port busy?)\n", listen->tcp_port);
+    } else {
+      snprintf(s_tcp_desc, sizeof(s_tcp_desc), "%s:%d",
+               listen->tcp_local ? "127.0.0.1" : "0.0.0.0", listen->tcp_port);
+      fprintf(stderr, "tci: listening on tcp %s%s\n", s_tcp_desc,
+              listen->tcp_local ? " (localhost only)" : " (all interfaces)");
+    }
+  }
+
+  if (!s_vh_unix && !s_vh_tcp) {
+    fprintf(stderr, "tci: no listener could be bound — server not started\n");
+    lws_context_destroy(s_ctx);
+    s_ctx = NULL;
     return -1;
   }
   s_run = 1;
   s_thread = g_thread_new("sdrfl-tci", service_thread, NULL);
   s_reporter_id = g_timeout_add(500, tci_reporter, NULL);
   g_timeout_add(100, tci_sensors_tick, NULL);   /* self-removes when !s_run */
-  fprintf(stderr, "tci: server up on port %d\n", port);
   return 0;
+}
+
+int tci_server_listeners(char *buf, int len) {
+  int n = 0;
+  if (len <= 0) { return 0; }
+  buf[0] = 0;
+  if (!s_run) { g_strlcpy(buf, "nothing", (gsize)len); return 0; }
+  if (s_vh_unix) {
+    g_strlcat(buf, "unix ", (gsize)len);
+    g_strlcat(buf, s_unix_path, (gsize)len);
+    n++;
+  }
+  if (s_vh_tcp) {
+    if (n) { g_strlcat(buf, " · ", (gsize)len); }
+    g_strlcat(buf, "tcp ", (gsize)len);
+    g_strlcat(buf, s_tcp_desc, (gsize)len);
+    n++;
+  }
+  if (!n) { g_strlcpy(buf, "nothing", (gsize)len); }
+  return n;
 }
 
 void tci_server_stop(void) {
@@ -1413,8 +1570,11 @@ void tci_server_stop(void) {
   lws_cancel_service(s_ctx);
   g_thread_join(s_thread);
   s_thread = NULL;
-  lws_context_destroy(s_ctx);
+  lws_context_destroy(s_ctx);     /* destroys both vhosts; lws unlinks the socket file */
   s_ctx = NULL;
+  s_vh_unix = s_vh_tcp = NULL;
+  s_unix_path[0] = 0;
+  s_tcp_desc[0] = 0;
   for (int i = 0; i < TCI_MAX_CLIENTS; i++) {
     if (s_cli[i].txq) {
       Msg *m;

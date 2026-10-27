@@ -3,9 +3,9 @@
  *
  * Implements the control + CW slice of the official TCI protocol (Expert
  * Electronics "TCI Protocol.pdf" v2.0; see docs/TCI-SCOPE.md): a WebSocket
- * server (libwebsockets, default port 40001) speaking text commands
- * `name:arg1,arg2;`. Binary streams (audio/IQ) are later phases and are
- * ignored here.
+ * server (libwebsockets; a Unix socket for local clients and/or TCP, default
+ * port 40001 — see TciListen) speaking text commands `name:arg1,arg2;`.
+ * Binary streams (audio/IQ) are later phases and are ignored here.
  *
  * Threading: the LWS service loop runs on its own thread; every received
  * command is dispatched to the GTK main loop (g_idle_add) and executed
@@ -91,17 +91,43 @@ typedef struct {
   void      (*set_centre)(long long hz);
 } TciOps;
 
-/* Start/stop the server. start returns 0 on success (port bound). *ops is
- * copied. Safe to call stop when not running. */
+/* Listeners (issue #46). TCI is WebSocket = framing over any reliable byte
+ * stream, so one lws context serves two transports with the same protocol
+ * handlers — clients on either are synchronized by the same state tick:
+ *   - a Unix-domain socket for local clients (skimmer-for-linux,
+ *     log-for-linux, SDC on the same machine): no open port at all, the
+ *     socket file is 0600 inside a 0700 directory, removed on stop;
+ *   - TCP for third-party clients and other machines, bound to all
+ *     interfaces (0.0.0.0 + [::], the pre-#46 behaviour) or to 127.0.0.1
+ *     only (tcp_local).
+ * Either listener may be off; start fails only when NOTHING could be bound.
+ * ⛔ A unix path that another live server already answers on is left alone
+ * (lws would unlink it) — that listener is skipped with a log line. */
+typedef struct {
+  int         unix_on;    /* bind the Unix socket                               */
+  const char *unix_path;  /* absolute path (must fit sun_path, 107 bytes)       */
+  int         tcp_on;     /* bind the TCP port                                  */
+  int         tcp_local;  /* 1 = 127.0.0.1 only, 0 = all interfaces             */
+  int         tcp_port;   /* ExpertSDR default 40001                            */
+} TciListen;
+
+/* Start/stop the server. start returns 0 when at least one listener bound.
+ * *ops and *listen are copied. Safe to call stop when not running. */
 #define TCI_SERVER_MAX_CLIENTS 8
 
-int  tci_server_start(int port, const TciOps *ops);
+int  tci_server_start(const TciListen *listen, const TciOps *ops);
 void tci_server_stop(void);
 int  tci_server_running(void);
 int  tci_server_clients(void);   /* connected client count (for the GUI)    */
 
+/* What is actually bound right now, for the GUI / About: "unix <path> ·
+ * tcp 0.0.0.0:40001" / "tcp 127.0.0.1:40001" / "nothing". Returns the
+ * number of live listeners (0 while the server is off). */
+int  tci_server_listeners(char *buf, int len);
+
 /* Describe connected client slot i (0..TCI_SERVER_MAX_CLIENTS-1) as
- * "ip:port · user-agent [· audio]". Returns 1 if that slot is connected. */
+ * "ip:port · user-agent [· audio]" (a socket client reads "unix
+ * <process>[pid]"). Returns 1 if that slot is connected. */
 int  tci_server_client_info(int i, char *buf, int len);
 
 /* RX audio input (F6d-2b): push volume-independent mono 48 kHz samples from
