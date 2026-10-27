@@ -90,7 +90,8 @@ it. Richard's consent for each one is recorded in the project log (CLAUDE.md).
   rises ~6 dB over the top 18 dB of level (measured, five overs at drive 31
   and 36), so the points below x ≈ 0.2 need 1.9–2.1× and are all discarded;
   the lowest fifth of the range is left without data, the 20-control-point
-  NURBS fit is ill-conditioned (cond 1.0–1.2e8 against the 1e8 limit) and
+  NURBS fit is ill-conditioned (cond 0.95–1.16e8 against the 1e8 limit; the
+  fits that pass the limit then fail the spline accuracy check) and
   **no calibration is ever accepted** (0 of 85 live, 12/12 of the first over
   in the offline replay). With 4.0 the same recording calibrates (first over
   6/11, whole file 82/87, cond 13–341). WDSP 1.29 (PS 2.0) had no such

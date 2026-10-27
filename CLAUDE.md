@@ -864,7 +864,9 @@ the same attempt with YMAX 4.0, the gain-vs-level CSV — produced by
 `/var/tmp/ps-replay/ps_replay_diag_{211,ymax4} <raw> 1.0 <attempt>`, which
 calls the printers calcc.c ships but never calls). Re-measured that afternoon
 before filing: first over 12/12 rejected (= live), whole file 1/91 vs 82/87
-with YMAX 4.0 (cond 1.0–1.3e8 vs 13–341); WDSP's own attempt-5 data: 99.9 % of
+with YMAX 4.0 (cond 0.95–1.16e8 vs 13–341; the issue text says 1.3e8, an
+upper bound taken from a mis-scaled synthetic run — correct it with the next
+edit); WDSP's own attempt-5 data: 99.9 % of
 the points at x 0–0.1 and 76 % at 0.1–0.2 need > 1.8× → the lowest fifth of
 the range is left without data; TAPR's `wdsp 2.11/Source/calcc.c` = ours
 modulo trailing whitespace; Warren answers issues himself but in batches (the
