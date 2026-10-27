@@ -800,8 +800,15 @@ without it nothing calibrates), ✅ the CW model switch + NNR on CW by ear
 (Richard: "na CW to funguje krásně, už se těším na závod"). ✅ RX NNR on SSB by ear
 on weak signals (Richard, same evening: works there too; a loud, clean
 station for a proper A/B had not come by yet — by opportunity, not a task).
-Left unobserved: the
-first-start wisdom rebuild on a real desktop. Next WDSP work is in tickets
+✅ AM broadcast on 40 m (SAM
+is not in the app — #30). ⛔ **#22 stays open until CW TX through SDC/TCI has
+run under 2.11 in a contest** (Richard, same evening: "to otestujeme v nějakém
+závodu") — the keying itself bypasses WDSP, but MON, the RX mute and the
+turnaround go through the new chain; after that contest, close #22 (closing
+comment drafted 2026-10-27, in the session log). Not yet exercised since the
+re-sync and left to normal operation: NR2/NB/ANF/AGC by ear, FT8 via TCI, AF
+rate switching at run time, the HL2 and the 10E, the first-start wisdom
+rebuild on a foreign desktop. Next WDSP work is in tickets
 (#23 PHROT, #27 CFC, the EQ milestone on the 2.x free-curve EQ, #28 NNR
 tuning setters). The `vendor/pihpsdr` wire contract is still 3.0 — the
 piHPSDR 3.1 remote-head mismatch is a separate ticket.
