@@ -833,7 +833,7 @@ rejections dropped (Solution Deviation 35 → 3 per over) and auto-att behaved,
 but accepted calibrations still stalled and on VOICE 0 of 36 attempts were
 accepted (all `mag=0x2`, logged by the new per-attempt diagnostics line
 `ps: attempt N rejected — builder status rx_scale/mag/cos/sin/checks`). Proof
-chain: (1) `SDRFL_PS_DUMP` captured a 20 s voice over (122 MB raw feedback);
+chain: (1) `SDRFL_PS_DUMP` captured 42 s of raw feedback = FIVE voice overs concatenated (258 MB; three at drive 31 / att 17 dB, two at drive 36 / att 20 dB — the first over alone is the 20 s canonical case);
 (2) a scratch harness (`#include "calcc.c"` → the private struct is visible;
 links the release objects minus calcc.c.o; the TXA channel MUST run —
 `SetChannelState(ch,1,0)` + `fexchange0` with silent mic — or
@@ -841,7 +841,7 @@ links the release objects minus calcc.c.o; the TXA channel MUST run —
 `OpenChannel` plans FFTs for ~45 s) replays the dump through the identical
 WDSP and reproduces 12/12 rejections: magnitude NURBS fit `BAD_CONDNUM`,
 condition number 1.0-1.16e8 against the 1e8 limit; (3) the data: feedback is
-clean (no DC, silence floor 1e-5, peaks = SetPk) but the coupler/DAC ratio
+sane (ratio flat down to 33 dB below the TX peak, DC ≈ −50 dB rel. the feedback peak, peaks = SetPk, over-range only the ~16-sample key-on transients) but the coupler/DAC ratio
 RISES with level — normalised 0.48 at −30 dB → 1.00 at the peak, i.e. **6.4 dB
 of gain expansion** at drive 31 (~25 W voice peaks), so the correction needed
 at low level is ~2.1×; (4) WDSP's `PS_NF_MAG_PREFILT_YMAX 1.8` (calcc.c)
@@ -849,19 +849,36 @@ pre-filters every point needing > 1.8× before the fit, which empties the low
 quarter of the x range and ill-conditions the 20-point uniform NURBS; (5) the
 same dump through a SCRATCH copy of calcc.c with the limit at 4.0: cond 14-340,
 6 of 11 accepted, correction applied (the rest move to the phase builder);
-(6) a synthetic PA (12 % compression, 8° AM-PM, speech-like or two-tone drive)
-is accepted 100 % — the two-tone per se is not the problem. piHPSDR 3.1 was
+(6) a synthetic PA (12 % compression, 8° AM-PM, −70 dB noise, built from the same TX stream at the REAL feedback level with ZERO delay)
+is accepted 88/88 — ⛔ scaled to the over-range spike or offset by 37 samples it fails too (calcc has no delay search, only host-set delay lines), so the control must be built that way. piHPSDR 3.1 was
 built in `/var/tmp/pihpsdr-31` (git archive 3b63530, `make GPIO=OFF`, isolated
 `HOME` with a copy of his props + our `wdspWisdom01`, cwd = that config dir or
 it ignores it) and run on the G2E by Richard: "chová se to stejně"; its
 `calcc.c` is byte-identical to ours and its feed is the same raw 192 kHz pair.
 PS 2.0 (1.29) had no such pre-filter — that is why PS worked until the
-re-sync. **Open:** (a) report to TAPR/OpenHPSDR-wdsp with the data (Richard's
-"ano" needed for the text); (b) whether the 6.4 dB expansion is a property of
-the G2E PA/exciter at low drive — an over at drive 60-70 was asked for and not
-yet done; (c) until upstream moves, PS on the G2E means WDSP 1.29 = release
-0.5.2. Evidence kept: `/var/tmp/ok1br-run-2026-10-26/ps-voice.raw`,
-`/var/tmp/ps-replay/` (harness + `ps_replay_ymax4`), `/var/tmp/wdsp-guide/`.
+re-sync. **FILED 2026-10-27 18:5x with Richard's "ano" (two consents: text, then the
+upload after the classifier block): https://github.com/TAPR/OpenHPSDR-wdsp/issues/10**
++ public gist https://gist.github.com/OK1BR/febdc1277f59c028cdf034bd63730f04
+(Warren's own `print_FitResult_and_Data` / `DataPoints` output of attempt 5,
+the same attempt with YMAX 4.0, the gain-vs-level CSV — produced by
+`/var/tmp/ps-replay/ps_replay_diag_{211,ymax4} <raw> 1.0 <attempt>`, which
+calls the printers calcc.c ships but never calls). Re-measured that afternoon
+before filing: first over 12/12 rejected (= live), whole file 1/91 vs 82/87
+with YMAX 4.0 (cond 1.0–1.3e8 vs 13–341); WDSP's own attempt-5 data: 99.9 % of
+the points at x 0–0.1 and 76 % at 0.1–0.2 need > 1.8× → the lowest fifth of
+the range is left without data; TAPR's `wdsp 2.11/Source/calcc.c` = ours
+modulo trailing whitespace; Warren answers issues himself but in batches (the
+September issues got replies on 2026-10-15 with the release) — and in #1 he
+refused a setter for a PS #define and pointed source builders at changing it
+themselves, which is the precedent for our interim patch. ⛔ The raw recording
+offered "on request" is SSB IQ of Richard's own speech — sharing it is his
+separate decision. **Open:** (a) Warren's reply; (b) whether the ~6 dB
+expansion changes with power — an over at drive 60-70 is still owed; (c) the
+interim YMAX 4.0 patch in `vendor/wdsp/calcc.c` (VENDOR.md note + a gate that
+fails when a re-sync loses it) — Richard's consent NOT yet given; (d) until
+then, PS on the G2E means WDSP 1.29 = release 0.5.2. Evidence kept:
+`/var/tmp/ok1br-run-2026-10-26/ps-voice.raw`, `/var/tmp/ps-replay/` (harness,
+`scripts/`, `gist/`, `diag-*/`, `issue-draft-*.md`), `/var/tmp/wdsp-guide/`.
 
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
