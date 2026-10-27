@@ -892,15 +892,20 @@ five-over recording replayed through the patched tree objects calibrates
 **86/91** (first over 6/11, cond 13.6–341 — identical to the scratch variant).
 `~/.local` refreshed (binary still reports 0.5.2 — no version bump).
 **LIVE-VERIFIED the same evening (19:24-19:30, Richard: "kalibrace se chová
-mnohem lépe"):** nine SSB voice overs into the dummy load on 20 m at drive
-18 / 29 / 36 / 38 (5.5–7 W, 25–31 W, 44–58 W, 48–65 W) — **90 calibrations,
-90 accepted, 0 rejected** (the night before: 0 of 85), CORRECTING within ~1 s
-of keying and held through every over, auto-att followed the level changes
-both ways (19→21→19, 19→12, 12→31→21 dB) with the calibration re-locking
-within 1-2 s after each step; TUNE overs sit at state 0 as always (no
-calibration on a carrier). Still owed: 2T, and ONE voice over at drive ~60
-with `SDRFL_PS_DUMP` on (restart needed — the dump captures the first keyed
-feedback) for the gain-vs-power question in TAPR#10. TX-SAFETY note: the
+mnohem lépe"):** nine **two-tone (2T)** overs into the dummy load on 20 m at
+drive 18 / 29 / 36 / 38 (5.5–7 W, 25–31 W, 44–58 W, 48–65 W) — **90
+calibrations, 90 accepted, 0 rejected** (the night before 2T stalled and
+voice was 0 of 36), CORRECTING within ~1 s of keying and held through every
+over, auto-att followed the level changes both ways (19→21→19, 19→12,
+12→31→21 dB) with the calibration re-locking within 1-2 s after each step;
+TUNE overs sit at state 0 as always (no calibration on a carrier). ⛔ I first
+read those overs as SSB voice — the run log did not distinguish: 2T keys
+through the same `tx: KEY MOX` line and the over line reports the mic level
+regardless (the mic stays open). Fixed the same evening: the two-tone intent
+logs `tx: request two-tone=…` and the KEY line says `KEY 2T`. Still owed:
+VOICE overs (the case that failed 0/36 the night before), and ONE voice over
+at drive ~60 with `SDRFL_PS_DUMP` on (restart needed — the dump captures the
+first keyed feedback) for the gain-vs-power question in TAPR#10. TX-SAFETY note: the
 correction is bounded to the low-level part of the curve, peak pinned at 1.0,
 all upstream fit-quality gates unchanged. Step 4: drop the patch + gate +
 VENDOR.md section in one commit once TAPR#10 is resolved.

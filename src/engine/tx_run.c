@@ -540,6 +540,8 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     const char *ksrc = r.state.tune ? "TUNE"
                      : cw_key       ? "CW"
                      : rtty_key     ? "RTTY"
+                     : (want_tt && !g_atomic_int_get(&s_want_mox) && !want_ptt)
+                                    ? "2T"             /* two-tone test keyed it */
                      : (want_ptt && !g_atomic_int_get(&s_want_mox) && !want_tt)
                                     ? "PTT" : "MOX";   /* footswitch-sourced over */
     LAT("key_on %s", ksrc);
@@ -1346,7 +1348,13 @@ void tx_run_set_fps(int fps)         { tx_analyzer_set_fps(fps); }        /* fra
  * safety gate still decides. Runs at the current drive; not persisted (a test
  * must never re-arm itself at startup). */
 void tx_run_set_twotone(int on) {
-  g_atomic_int_set(&s_want_tt, on ? 1 : 0);
+  int v = on ? 1 : 0;
+  if (v != g_atomic_int_get(&s_want_tt)) {
+    fprintf(stderr, "tx: request two-tone=%d\n", v);   /* GUI 2T toggle — so a 2T over is
+                                                        * tellable from voice in the run log */
+    fflush(stderr);
+  }
+  g_atomic_int_set(&s_want_tt, v);
 }
 
 void tx_run_request(int want_mox, int want_tune) {
