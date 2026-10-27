@@ -151,6 +151,18 @@ executable('sdrfl-discovery-test',
   install : false,
 )
 
+# Offline settings gate (issue #47): the per-band Drive / TUNE memory —
+# "key=W;..." table helpers, the pre-#47 migration seed (scalar → every band),
+# a per-band edit not leaking into other bands, a missing band falling back to
+# the scalar, and ⛔ per-radio isolation of the tables between [tx] and the
+# other radios' groups. Scratch config.ini under a temp XDG_CONFIG_HOME. GLib
+# only — no GTK, no WDSP, no radio.
+executable('sdrfl-settings-test',
+  ['src/settings_test.c', 'src/settings.c'],
+  dependencies : [glib_dep, m_dep],
+  install : false,
+)
+
 # Pins the ONE deliberate local change in the vendored WDSP (vendor/wdsp/VENDOR.md
 # "Local patches"): calcc.c PS_NF_MAG_PREFILT_YMAX 1.8 -> 4.0, the PS 3.0
 # magnitude pre-filter bound that left the ANAN G2E without any accepted

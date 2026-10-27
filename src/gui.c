@@ -312,8 +312,12 @@ typedef struct {
   char        radio_name[64];/* connected radio's discovery name (header status)   */
   int         tx_pa_enabled; /* PA enable — RF impossible when 0 (persisted)        */
   int         tx_antenna;    /* TX/RX antenna 0/1/2 → ANT1/2/3 (persisted)          */
-  double      tx_drive_w;    /* MOX/voice power request, W (persisted)              */
-  double      tx_tune_w;     /* TUNE power request, W (persisted)                   */
+  double      tx_drive_w;    /* MOX/voice power request, W — the CURRENT band's
+                                (persisted per band, issue #47)                     */
+  double      tx_tune_w;     /* TUNE power request, W — the CURRENT band's (ditto)  */
+  double      band_drive_w[NBANDS]; /* per-band Drive memory, W (#47)              */
+  double      band_tune_w[NBANDS];  /* per-band TUNE memory, W (#47)               */
+  GtkWidget  *tune_scale;    /* footer Tune slider (band_apply syncs it)            */
   double      tx_swr_alarm;  /* SWR trip threshold (persisted)                      */
   int         tx_ptt_enabled;/* footswitch: radio PTT input = MOX (persisted)       */
   int         tx_ptt_tip;    /* PTT contact on mic-jack tip vs ring (persisted)     */
@@ -467,6 +471,23 @@ static void pan_store_band(App *app) {
   }
 }
 
+/* Per-band Drive / TUNE memory (issue #47) — the pan_store_band idiom for the
+ * two power requests: tx_drive_w / tx_tune_w ARE the current band's values
+ * (every reader — tx_push_cfg, the HUD, TCI, the digi cap — is untouched);
+ * each writer mirrors them here, band_apply swaps the other band's in. Out
+ * of band nothing is stored (the gate refuses OOB keying anyway). */
+static void tx_drive_store_band(App *app) {
+  if (app->cur_band >= 0) {
+    app->band_drive_w[app->cur_band] = app->tx_drive_w;
+    app->band_tune_w[app->cur_band]  = app->tx_tune_w;
+  }
+}
+
+/* BANDS[].key as the flat key list the settings per-band table helpers take. */
+static void band_keys(const char *keys[NBANDS]) {
+  for (int i = 0; i < NBANDS; i++) { keys[i] = BANDS[i].key; }
+}
+
 /* Light up the button for the current band (none when out of band). The band
  * buttons are toggles so the :checked style matches the mode buttons under the
  * user's theme. set_active fires "toggled" (unconnected), never "clicked", so
@@ -493,16 +514,31 @@ static void band_apply(App *app) {
   if (b >= 0) {
     app->pan_high = app->band_high[b];
     app->pan_low  = app->band_low[b];
+    /* Per-band Drive / TUNE (#47): this band's remembered power requests
+     * become the live ones BEFORE the band-stack mode toggle below, so its
+     * digi clamp acts on the new band's drive under the new band's mode. */
+    if (app->tx_drive_w != app->band_drive_w[b] || app->tx_tune_w != app->band_tune_w[b]) {
+      printf("tx: band %s → drive %.0f W, tune %.0f W\n", BANDS[b].key,
+             app->band_drive_w[b], app->band_tune_w[b]);
+    }
+    app->tx_drive_w = app->band_drive_w[b];
+    app->tx_tune_w  = app->band_tune_w[b];
     /* band stacking: restore the mode last used on this band (activating the
      * grouped toggle drives demod + per-mode filter + stores it back — idempotent). */
     int m = app->band_mode[b];
     if (m >= 0 && m != app->mode && app->mode_btns[m]) {
       gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->mode_btns[m]), TRUE);
     }
+    /* The footer sliders follow AFTER the mode toggle (a slider set re-fires
+     * its handler → digi clamp + push + save; before the toggle that clamp
+     * would run under the OLD band's mode). Same value → no signal. */
+    if (app->drive_scale) { gtk_range_set_value(GTK_RANGE(app->drive_scale), app->tx_drive_w); }
+    if (app->tune_scale)  { gtk_range_set_value(GTK_RANGE(app->tune_scale),  app->tx_tune_w); }
     if (app->area) { gtk_widget_queue_draw(app->area); }
   }
-  /* The new band has its own PA calibration → recompute the drive byte. Guarded
-   * internally by tx_ready; no-op until TX is up. */
+  /* The new band has its own PA calibration (and now its own drive/tune) →
+   * recompute the drive byte. Guarded internally by tx_ready; no-op until TX
+   * is up. */
   tx_push_cfg(app);
 }
 
@@ -2968,6 +3004,13 @@ static void app_to_settings(const App *app, Settings *s) {
     if (n < 0 || (size_t)n >= crem) { break; }
     cp += n; crem -= (size_t)n;
   }
+  /* per-band Drive / TUNE memory → "key=W;..." (#47; the live tx_drive /
+   * tx_tune above are the current band's = the fallback for an older build) */
+  {
+    const char *keys[NBANDS]; band_keys(keys);
+    settings_band_table_format(s->drive_w_band, sizeof(s->drive_w_band), keys, NBANDS, app->band_drive_w);
+    settings_band_table_format(s->tune_w_band,  sizeof(s->tune_w_band),  keys, NBANDS, app->band_tune_w);
+  }
   /* wattmeter-trim curve → 11 semicolon-separated points (W) */
   char *tp = s->pa_trim; size_t trem = sizeof(s->pa_trim); tp[0] = '\0';
   for (int i = 0; i < 11; i++) {
@@ -3056,6 +3099,7 @@ static int digi_drive_clamp(App *app) {
        app->mode == DEMOD_RTTY) &&                 /* RTTY = 100 % duty too */
       app->tx_drive_w > app->tx_digi_max_w) {
     app->tx_drive_w = app->tx_digi_max_w;
+    tx_drive_store_band(app);     /* the band remembers the clamped value (#47) */
     if (app->drive_scale) {
       gtk_range_set_value(GTK_RANGE(app->drive_scale), app->tx_drive_w);
     }
@@ -4772,6 +4816,7 @@ static void on_drive_changed(GtkRange *r, gpointer data) {
   App *app = (App *)data;
   app->tx_drive_w = gtk_range_get_value(r);
   if (digi_drive_clamp(app)) { return; }  /* re-fires with the clamped value */
+  tx_drive_store_band(app);               /* the current band remembers it (#47) */
   tx_push_cfg(app); schedule_save(app);
   /* PS: deliberately nothing here — piHPSDR does nothing on drive changes.
    * Continuous automode refits the level (rx_scale) by itself; zeroing or
@@ -4780,6 +4825,7 @@ static void on_drive_changed(GtkRange *r, gpointer data) {
 static void on_tune_drive_changed(GtkRange *r, gpointer data) {
   App *app = (App *)data;
   app->tx_tune_w = gtk_range_get_value(r);
+  tx_drive_store_band(app);
   tx_push_cfg(app); schedule_save(app);
 }
 static void on_antenna_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data) {
@@ -4875,6 +4921,7 @@ static GtkWidget *build_bottom_controls(App *app) {
   gtk_scale_set_format_value_func(GTK_SCALE(tdrv), fmt_watts, NULL, NULL);
   g_signal_connect(tdrv, "value-changed", G_CALLBACK(on_tune_drive_changed), app);
   gtk_box_append(GTK_BOX(bar), labeled("Tune", tdrv));
+  app->tune_scale = tdrv;               /* band_apply syncs it (#47) */
 
   GtkWidget *antdd = gtk_drop_down_new_from_strings((const char *[]){"ANT 1","ANT 2","ANT 3", NULL});
   gtk_drop_down_set_selected(GTK_DROP_DOWN(antdd),
@@ -5382,6 +5429,7 @@ static void tci_set_drive(double v) {
   if (v > tci_app->pa_watts) { v = tci_app->pa_watts; }   /* per-radio rating */
   tci_app->tx_drive_w = v;
   digi_drive_clamp(tci_app);           /* cap in DIGU/DIGL, slider synced   */
+  tx_drive_store_band(tci_app);        /* TCI edits the current band (#47)  */
   tx_push_cfg(tci_app);
   schedule_save(tci_app);
 }
@@ -5390,6 +5438,7 @@ static void tci_set_tune_drive(double v) {
   if (v < 0.0) { v = 0.0; }
   if (v > tci_app->pa_watts) { v = tci_app->pa_watts; }
   tci_app->tx_tune_w = v;
+  tx_drive_store_band(tci_app);
   tx_push_cfg(tci_app);
   schedule_save(tci_app);
 }
@@ -6407,6 +6456,20 @@ static void tx_cal_from_settings(App *app, const Settings *st) {
   app->tx_drive_w    = st->tx_drive < 0.0 ? 0.0 : (st->tx_drive > w ? w : st->tx_drive);
   app->tx_digi_max_w = (st->tx_digi_max >= 1.0 && st->tx_digi_max <= w) ? st->tx_digi_max : w;
   app->tx_tune_w     = st->tx_tune  < 0.0 ? 0.0 : (st->tx_tune  > w ? w : st->tx_tune);
+  /* Per-band Drive / TUNE memory (#47): every band starts at the scalar just
+   * clamped above — the one-time seed for a file written before #47 (no
+   * table → every band = the old single value, no version marker needed) and
+   * the fallback for a band missing from the table — then the saved table
+   * overrides, clamped to this radio's rating like the scalar. The LIVE
+   * values follow the band app->freq is in: band_apply never runs for the
+   * start-up band (it finds cur_band already set). */
+  {
+    const char *keys[NBANDS]; band_keys(keys);
+    settings_band_table_parse(st->drive_w_band, keys, NBANDS, app->tx_drive_w, 0.0, w, app->band_drive_w);
+    settings_band_table_parse(st->tune_w_band,  keys, NBANDS, app->tx_tune_w,  0.0, w, app->band_tune_w);
+    int b = band_for_freq(app->freq);
+    if (b >= 0) { app->tx_drive_w = app->band_drive_w[b]; app->tx_tune_w = app->band_tune_w[b]; }
+  }
   /* Per-band PA calibration (F6b): default every band to 53 dB, then apply saved
    * "key=dB;..." overrides (clamped to the safe [38.8,70.0] range). */
   for (int i = 0; i < NBANDS; i++) { app->band_pacal[i] = PACAL_DEFAULT; }
@@ -6807,6 +6870,7 @@ static void start_radio(App *app) {
       st.tx_pa = 0; st.tx_ant = 0;
       st.tx_drive = 1.0; st.tx_tune = 1.0; st.tx_digi_max = prof->pa_watts;
       st.pa_cal[0] = '\0'; st.pa_trim[0] = '\0';
+      st.drive_w_band[0] = '\0'; st.tune_w_band[0] = '\0';   /* ⛔ not the G2E's table (#47) */
       /* ⛔ PS calibration is per radio too (SetPk differs: HL2 0.2400 vs G2E
        * 0.2899 — P1-TX-SCOPE §6); this radio's group over its own defaults. */
       st.ps_att = 0; st.ps_setpk = prof->ps_setpk;

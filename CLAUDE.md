@@ -935,6 +935,33 @@ all upstream fit-quality gates unchanged. Step 4: drop the patch + gate +
 VENDOR.md section in one commit once TAPR#10 is resolved.
 
 
+**★ ISSUE #47 — per-band Drive / TUNE memory, DONE IN CODE 2026-10-27
+(`needs-live-check` + `at-the-radio`):** `tx_drive_w` / `tx_tune_w` stay the
+LIVE values = the current band's (every reader untouched: tx_push_cfg, HUD,
+TCI, digi cap); `band_drive_w[]` / `band_tune_w[]` in the App are the memory,
+`tx_drive_store_band()` (the `pan_store_band` idiom) in every writer — footer
+sliders, TCI `drive` / `tune_drive`, the digi clamp — and `band_apply()` swaps
+the band's values in BEFORE the band-stack mode toggle (so the digi clamp acts
+under the new band's mode) and syncs both footer sliders AFTER it (a slider set
+re-fires its handler; `app->tune_scale` is new), logging `tx: band 40m → drive
+30 W, tune 10 W` when they change. Persisted as `drive_w_band` / `tune_w_band`
+("key=W;…", the `pa_cal` idiom) in the radio's TX-cal group; the scalar
+`drive_w` / `tune_w` keep being written with the current band's values = the
+seed for every band on the first start after the update (absent table = the
+marker, no `_v`) and the fallback for a band missing from the table. ⛔ The
+non-G2E branch in `start_radio` clears both tables with `pa_cal` — the G2E's
+100 W table must never seed a 10 W radio. Digi cap `drive_digi_max` stays ONE
+per radio (PA-protection ceiling; per-band digi power = the band's Drive).
+Pure helpers `settings_band_table_parse/format` in settings.c; new gate
+`sdrfl-settings-test` (81 checks: helpers, migration seed, no leak between
+bands, missing band → scalar, ⛔ `[tx]` vs `[tx-hermes2]` isolation; scratch
+config under a temp XDG_CONFIG_HOME; in CI). Verified offline: 14 gates, and
+the real app on a pre-#47 config in the broadway lab wrote both tables seeded
+40/15 W with `[tx-hermes2]` untouched. Live check owed (Richard, the G2E):
+20 m → 40 m → 20 m with different values — sliders, HUD, drive byte in the run
+log. Safety chain unchanged: same `[0, pa_watts]` clamp, same
+`tx_calc_drive_byte(drive_w, pa_cal[band])`.
+
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
 red TX filter footprint, AF true mute, 60 m USB, SDR-15 discovery dedup,

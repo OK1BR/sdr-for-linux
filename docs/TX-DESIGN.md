@@ -537,7 +537,8 @@ wattmeter-trim grid (`pa_trim[i] = i·rating/10`, meter full scale), and the
 and would never arm on a 10 W radio; G2E behaviour is bit-identical).
 
 **⛔ TX calibration is per radio** (`Settings.tx_group`): `pa_enable`,
-`antenna`, `drive_w`, `drive_digi_max`, `tune_w`, `pa_cal`, `pa_trim` live in
+`antenna`, `drive_w`, `drive_digi_max`, `tune_w`, `drive_w_band`,
+`tune_w_band`, `pa_cal`, `pa_trim` live in
 the connected radio's config group and never leak between models — a 10 W
 calibration applied to a 100 W PA (or vice versa) yields a wildly wrong drive
 byte. `settings_save` pre-loads the existing file so the other radios' groups
@@ -545,6 +546,22 @@ survive every save. A first-ever connect of a non-G2E radio starts from that
 radio's SAFE defaults: **PA off, ANT1, 1 W drive/tune** — i.e. exactly the
 dry-key step of the live checklist. `pa_calibration` default stays 53.0 dB
 (piHPSDR's generic band table; only the P1 HL2 overrides it).
+
+**Drive and TUNE power are remembered per band** (issue #47, 2026-10-27):
+`drive_w_band` / `tune_w_band` hold one `key=W` entry per band of the band
+table (the `pa_cal` idiom); `band_apply()` swaps the band's two values in
+(before the band-stack mode toggle, so the digi cap acts on the new band's
+drive under the new band's mode) and syncs the footer sliders, every writer
+(footer sliders, TCI `drive` / `tune_drive`, the digi clamp) stores into the
+current band only. The scalar `drive_w` / `tune_w` keep being written with the
+current band's values: they seed every band on the first start after the
+update (no table → no version marker needed) and are the fallback for a band
+missing from the table, and an older build still reads a sane value. The
+digi cap `drive_digi_max` stays ONE value per radio: it is a PA-protection
+ceiling (100 % duty), per-band digi power is now expressed by the band's Drive
+itself. The safety chain is unchanged — the per-band value takes the same
+`[0, pa_watts]` clamp and the same `tx_calc_drive_byte(drive_w, pa_cal[band])`
+as the scalar did. Gate: `sdrfl-settings-test`.
 
 Per-band PA calibration on this 10E (against the external wattmeter,
 2026-07-12): 40 m 33.6 dB, 20 m 32.8 dB. The remaining bands keep the 53 dB

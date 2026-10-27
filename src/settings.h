@@ -17,6 +17,8 @@
 #ifndef SDRFL_SETTINGS_H
 #define SDRFL_SETTINGS_H
 
+#include <stddef.h>
+
 typedef struct {
   char      ip[64];    /* radio IP                                   */
   long long freq;      /* tuned DDC centre (Hz)                      */
@@ -115,11 +117,18 @@ typedef struct {
   double    tx_pan_high, tx_pan_low; /* TX panadapter dB window (0/0 = autofit)   */
   char      pa_cal[256];  /* per-band PA calibration (dB), "6m=53.0;20m=53.0;.." */
   char      pa_trim[256]; /* wattmeter correction curve, 11 pts "p0;p1;..;p10"   */
+  /* Per-band Drive / TUNE memory (issue #47): "20m=50.0;40m=30.0;..." in W,
+   * same per-band idiom as pa_cal. tx_drive / tx_tune stay the LIVE (current
+   * band's) values: the seed for every band when the table is absent (a file
+   * written before #47) and the fallback for a band missing from it. */
+  char      drive_w_band[256];
+  char      tune_w_band[256];
   int       audio_rate;   /* shared audio sample rate (RX out + TX mic), Hz        */
   char      audio_device[128]; /* RX playback: PW node.name ("" = default)         */
   char      mic_device[128];   /* TX mic capture: PW node.name ("" = default)      */
   /* ⛔ Per-radio TX calibration group. The keys pa_enable/antenna/drive_w/
-   * drive_digi_max/tune_w/pa_cal/pa_trim describe ONE radio's PA and must never
+   * drive_digi_max/tune_w/drive_w_band/tune_w_band/pa_cal/pa_trim describe ONE
+   * radio's PA and must never
    * leak between models (a 10 W calibration applied to a 100 W PA — or the
    * reverse — yields a wildly wrong drive byte). "tx" = the legacy group (G2E);
    * other radios use radio_tx_profile()->cfg_group (e.g. "tx-hermes2"). Set by
@@ -140,7 +149,8 @@ int settings_save(const Settings *s);
 
 /*
  * Overlay ONE radio's TX-calibration keys (pa_enable, antenna, drive_w,
- * drive_digi_max, tune_w, pa_cal, pa_trim) from [group] onto *s — only keys
+ * drive_digi_max, tune_w, drive_w_band, tune_w_band, pa_cal, pa_trim) from
+ * [group] onto *s — only keys
  * present in the file override, so pre-set *s with that radio's safe defaults
  * first. Call after the connected radio is known (settings_load reads the
  * legacy [tx] group, which belongs to the G2E). Returns 1 if the file parsed.
@@ -149,5 +159,22 @@ int settings_load_txdev(Settings *s, const char *group);
 
 /* Absolute path of the config file (static buffer; valid for the process). */
 const char *settings_path(void);
+
+/*
+ * Per-band value table, "key=value;key=value;..." (locale-independent '.'),
+ * the idiom of pa_cal / drive_w_band / tune_w_band. Pure string helpers —
+ * GLib only, no file, no GTK — so the settings gate can pin them.
+ *
+ * parse: every out[i] starts at dflt; a token whose key equals keys[i] sets
+ * out[i] to its value clamped to [lo, hi]. Tokens with an unknown key, no
+ * '=' or no number after it are skipped (that band keeps dflt). str may be
+ * NULL or "".
+ * format: writes n "keys[i]=vals[i]" tokens (one decimal) into buf, ";"
+ * separated, truncating whole tokens when buf is too small.
+ */
+void settings_band_table_parse(const char *str, const char *const *keys, int n,
+                               double dflt, double lo, double hi, double *out);
+void settings_band_table_format(char *buf, size_t len, const char *const *keys,
+                                int n, const double *vals);
 
 #endif /* SDRFL_SETTINGS_H */

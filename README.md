@@ -100,7 +100,9 @@ radio picker rather than left to luck.
 Each radio keeps its **own TX calibration** (PA calibration per band, wattmeter
 trim, drive/antenna/PA-enable) in its own config section — calibrating one
 model never touches another. A newly connected TX-capable model starts safe:
-PA off, ANT1, 1 W.
+PA off, ANT1, 1 W. **Drive and TUNE power are remembered per band**: the
+footer sliders show and edit the current band, a band change restores that
+band's two values.
 
 ## Requirements
 

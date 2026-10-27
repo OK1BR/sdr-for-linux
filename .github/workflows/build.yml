@@ -45,7 +45,7 @@ jobs:
                    sdrfl-txdsp-test sdrfl-swr-test sdrfl-tci-test \
                    sdrfl-cw-test sdrfl-rtty-test sdrfl-p2dev-test \
                    sdrfl-txiq-ring-test sdrfl-discovery-test sdrfl-nnr-test \
-                   sdrfl-wdsp-patch-test; do
+                   sdrfl-wdsp-patch-test sdrfl-settings-test; do
             echo "── $g"
             ./build/$g
           done

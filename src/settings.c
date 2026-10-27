@@ -7,6 +7,8 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include <glib.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "settings.h"
 
@@ -162,6 +164,14 @@ int settings_load(Settings *s) {
       s->tx_digi_max = g_key_file_get_double(kf, GROUP_TX, "drive_digi_max", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "tune_w", NULL))
       s->tx_tune = g_key_file_get_double(kf, GROUP_TX, "tune_w", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "drive_w_band", NULL)) {
+      char *v = g_key_file_get_string(kf, GROUP_TX, "drive_w_band", NULL);
+      if (v) { g_strlcpy(s->drive_w_band, v, sizeof(s->drive_w_band)); g_free(v); }
+    }
+    if (g_key_file_has_key(kf, GROUP_TX, "tune_w_band", NULL)) {
+      char *v = g_key_file_get_string(kf, GROUP_TX, "tune_w_band", NULL);
+      if (v) { g_strlcpy(s->tune_w_band, v, sizeof(s->tune_w_band)); g_free(v); }
+    }
     if (g_key_file_has_key(kf, GROUP_TX, "swr_alarm", NULL))
       s->tx_swr = g_key_file_get_double(kf, GROUP_TX, "swr_alarm", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "mic_gain", NULL))
@@ -264,6 +274,14 @@ int settings_load_txdev(Settings *s, const char *group) {
       s->tx_digi_max = g_key_file_get_double(kf, group, "drive_digi_max", NULL);
     if (g_key_file_has_key(kf, group, "tune_w", NULL))
       s->tx_tune = g_key_file_get_double(kf, group, "tune_w", NULL);
+    if (g_key_file_has_key(kf, group, "drive_w_band", NULL)) {
+      char *v = g_key_file_get_string(kf, group, "drive_w_band", NULL);
+      if (v) { g_strlcpy(s->drive_w_band, v, sizeof(s->drive_w_band)); g_free(v); }
+    }
+    if (g_key_file_has_key(kf, group, "tune_w_band", NULL)) {
+      char *v = g_key_file_get_string(kf, group, "tune_w_band", NULL);
+      if (v) { g_strlcpy(s->tune_w_band, v, sizeof(s->tune_w_band)); g_free(v); }
+    }
     if (g_key_file_has_key(kf, group, "pa_cal", NULL)) {
       char *pc = g_key_file_get_string(kf, group, "pa_cal", NULL);
       if (pc) { g_strlcpy(s->pa_cal, pc, sizeof(s->pa_cal)); g_free(pc); }
@@ -356,6 +374,8 @@ int settings_save(const Settings *s) {
   g_key_file_set_double (kf, txdev,        "drive_w",   s->tx_drive);
   g_key_file_set_double (kf, txdev,        "drive_digi_max", s->tx_digi_max);
   g_key_file_set_double (kf, txdev,        "tune_w",    s->tx_tune);
+  g_key_file_set_string (kf, txdev,        "drive_w_band", s->drive_w_band);  /* #47 */
+  g_key_file_set_string (kf, txdev,        "tune_w_band",  s->tune_w_band);
   g_key_file_set_double (kf, GROUP_TX,     "swr_alarm", s->tx_swr);
   /* monitor_raw stays dead (never applied; old files carried garbage in it —
    * found 2026-07-13: 1667403520). The voice-chain knob keys below are LIVE
@@ -404,3 +424,39 @@ int settings_save(const Settings *s) {
   g_key_file_free(kf);
   return rc;
 }
+
+void settings_band_table_parse(const char *str, const char *const *keys, int n,
+                               double dflt, double lo, double hi, double *out) {
+  for (int i = 0; i < n; i++) { out[i] = dflt; }
+  if (!str || !*str) { return; }
+  char *buf = g_strdup(str);
+  char *sv = NULL;
+  for (char *tok = strtok_r(buf, ";", &sv); tok; tok = strtok_r(NULL, ";", &sv)) {
+    char *eq = strchr(tok, '=');
+    if (!eq) { continue; }
+    *eq = '\0';
+    char *end = NULL;
+    double v = g_ascii_strtod(eq + 1, &end);          /* locale-independent */
+    if (end == eq + 1) { continue; }                   /* no number → skip  */
+    if (v < lo) { v = lo; }
+    if (v > hi) { v = hi; }
+    for (int i = 0; i < n; i++) {
+      if (strcmp(tok, keys[i]) == 0) { out[i] = v; break; }
+    }
+  }
+  g_free(buf);
+}
+
+void settings_band_table_format(char *buf, size_t len, const char *const *keys,
+                                int n, const double *vals) {
+  if (!len) { return; }
+  char *p = buf; size_t rem = len; p[0] = '\0';
+  for (int i = 0; i < n; i++) {
+    char vbuf[G_ASCII_DTOSTR_BUF_SIZE];
+    g_ascii_formatd(vbuf, sizeof vbuf, "%.1f", vals[i]);
+    int w = snprintf(p, rem, "%s%s=%s", i ? ";" : "", keys[i], vbuf);
+    if (w < 0 || (size_t)w >= rem) { *p = '\0'; break; }   /* whole tokens only */
+    p += w; rem -= (size_t)w;
+  }
+}
+
