@@ -935,8 +935,11 @@ all upstream fit-quality gates unchanged. Step 4: drop the patch + gate +
 VENDOR.md section in one commit once TAPR#10 is resolved.
 
 
-**★ ISSUE #47 — per-band Drive / TUNE memory, DONE IN CODE 2026-10-27
-(`needs-live-check` + `at-the-radio`):** `tx_drive_w` / `tx_tune_w` stay the
+**★ ISSUE #47 — per-band Drive / TUNE memory, DONE + LIVE-VERIFIED + CLOSED
+2026-10-27 (eff2f92; Richard on the G2E the same evening: "vypadá to, že to
+funguje" — 16 band changes 30/20/17 m restored 49 vs 19 W on both sliders,
+TUNE on 20 m keyed at the band's 28 W request = drive byte 27/255, 33–35 W
+fwd; closing comment on the issue):** `tx_drive_w` / `tx_tune_w` stay the
 LIVE values = the current band's (every reader untouched: tx_push_cfg, HUD,
 TCI, digi cap); `band_drive_w[]` / `band_tune_w[]` in the App are the memory,
 `tx_drive_store_band()` (the `pan_store_band` idiom) in every writer — footer
@@ -957,9 +960,8 @@ Pure helpers `settings_band_table_parse/format` in settings.c; new gate
 bands, missing band → scalar, ⛔ `[tx]` vs `[tx-hermes2]` isolation; scratch
 config under a temp XDG_CONFIG_HOME; in CI). Verified offline: 14 gates, and
 the real app on a pre-#47 config in the broadway lab wrote both tables seeded
-40/15 W with `[tx-hermes2]` untouched. Live check owed (Richard, the G2E):
-20 m → 40 m → 20 m with different values — sliders, HUD, drive byte in the run
-log. Safety chain unchanged: same `[0, pa_watts]` clamp, same
+40/15 W with `[tx-hermes2]` untouched; his own config seeded 19/28 W on the
+first start. Safety chain unchanged: same `[0, pa_watts]` clamp, same
 `tx_calc_drive_byte(drive_w, pa_cal[band])`.
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
