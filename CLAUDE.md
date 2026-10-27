@@ -902,10 +902,17 @@ TUNE overs sit at state 0 as always (no calibration on a carrier). ⛔ I first
 read those overs as SSB voice — the run log did not distinguish: 2T keys
 through the same `tx: KEY MOX` line and the over line reports the mic level
 regardless (the mic stays open). Fixed the same evening: the two-tone intent
-logs `tx: request two-tone=…` and the KEY line says `KEY 2T`. Still owed:
-VOICE overs (the case that failed 0/36 the night before), and ONE voice over
-at drive ~60 with `SDRFL_PS_DUMP` on (restart needed — the dump captures the
-first keyed feedback) for the gain-vs-power question in TAPR#10. TX-SAFETY note: the
+logs `tx: request two-tone=…` and the KEY line says `KEY 2T`. **VOICE
+live 19:47-19:49 the same evening ("otestována i řeč"):** five SSB overs at
+drive 23 / 26 / 30 / 36 / 38 (voice peaks 11 / 19 / 31 / 48 / 62 W) — **52 of
+64 calibrations accepted** (the night before: 0 of 36), CORRECTING reached in
+every over and held (never three rejections in a row, so no LRESET); all 12
+rejections are `cos=0x2` = the PHASE builder's fit-quality gate, the magnitude
+builder (`mag`) passes every time — the same residual the offline replay
+showed (82/87, rest in the phase builders). Auto-att followed the level both
+ways (21→16→18, 18→15, 15→31→20 dB). Still owed: ONE voice over at drive ~60
+with `SDRFL_PS_DUMP` on (restart needed — the dump captures the first keyed
+feedback) for the gain-vs-power question in TAPR#10. TX-SAFETY note: the
 correction is bounded to the low-level part of the curve, peak pinned at 1.0,
 all upstream fit-quality gates unchanged. Step 4: drop the patch + gate +
 VENDOR.md section in one commit once TAPR#10 is resolved.
