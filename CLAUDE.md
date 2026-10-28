@@ -965,7 +965,8 @@ first start. Safety chain unchanged: same `[0, pa_watts]` clamp, same
 `tx_calc_drive_byte(drive_w, pa_cal[band])`.
 
 **★ ISSUE #46 — TCI transport: Unix socket + optional TCP, DONE IN CODE
-2026-10-27 (`needs-live-check`):** one lws context with two explicit vhosts
+2026-10-27, LIVE-VERIFIED + CLOSED 2026-10-28 (see the end of this entry):**
+one lws context with two explicit vhosts
 sharing the protocol table, the service thread and the 500 ms state tick —
 a **Unix socket** for local clients (default on,
 `$XDG_RUNTIME_DIR/sdr-for-linux/tci.sock`, directory 0700 + file 0600,
@@ -1000,10 +1001,25 @@ under development (socket + 127.0.0.1:40123). Offline: 14 gates green;
 broadway lab: the TCI page renders, no GTK criticals (⛔ the lab must
 isolate `XDG_STATE_HOME` too — the first run rotated Richard's real run
 logs); the server itself never starts in the lab (discovery fails before
-`tci_apply`). ⛔ Live still owed (Richard, after skimmer#39 / log#32 land):
-skimmer + log over the socket with TCP off (`ss -ltn` without 40001), a
-remote skimmer over TCP on all interfaces, IQ stream rate on the socket.
-TX path untouched.
+`tci_apply`). TX path untouched. **Live 2026-10-28, server side, on
+Richard's running instance (build-release of 5a9a31e):** log-for-linux#32
+landed (23cf6c3, closed the same day) and its session did TCP off → the
+server rebound the socket alone (run log 15:33:25), the log reconnected over
+it, `ss -ltn` without 40001; 15:34:44 both listeners back, the log stayed on
+the socket. Then a scratch lws IQ client (`iq_start:0;` only — ⛔ never send
+`iq_samplerate` to a live server, it is sticky + persisted) 10 s per
+transport: unix 192 012 Hz measured vs TCP 191 992 Hz, both 937 blocks /
+15 411 776 B / max inter-block gap ~12 ms, Send-Q 0 on the socket; handshake
++ `start;` round-trip over the socket, 127.0.0.1 and the LAN address
+192.168.1.12 (the run log names each peer); gate 149/0. Not covered: a
+skimmer over the socket — the client does not exist yet (skimmer-for-linux#39
+is untouched; its ticket text still says "path with +", which is wrong — the
+`+` goes in the lws ADDRESS; correcting it needs Richard's separate OK) and
+no second machine for a truly remote TCP client (the all-interfaces bind is
+unchanged behaviour, gate-checked by raw connects to the LAN address).
+Richard's call: closed, the skimmer check is #39's deliverable. ⚠ Tooling
+trap: `sdrfl-tci-send -h` with no host argument falls through — "-h" becomes
+a TCI command and the tool dials the live instance on 127.0.0.1 for 2 s.
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
