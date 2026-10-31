@@ -5925,6 +5925,24 @@ static void on_pref_phrot_hz(GtkRange *r, gpointer data) {
 static void on_pref_phrot_auto(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
   (void)ps; App *app = (App *)data;
   app->phrot_auto = adw_switch_row_get_active(r) ? 1 : 0;
+  if (!app->phrot_auto && app->tx_ready) {
+    /* Auto switched off mid-search: adopt the corner WDSP is running right
+     * now. app->phrot_hz still holds the seed (the tick mirrors the search
+     * into the slider only), so pushing it would snap the filter back to the
+     * seed with a reset — exactly what the cache is there to avoid — and the
+     * slider would disagree with what the operator hears. ts.phrot_on = the
+     * engine has pushed this state at least once (else WDSP still sits on
+     * the create default and the operator's seed must win). */
+    tx_run_status ts; tx_run_get_status(&ts);
+    if (ts.phrot_on && ts.phrot_fc >= PHROT_HZ_MIN && ts.phrot_fc <= PHROT_HZ_MAX) {
+      app->phrot_hz = ts.phrot_fc;
+      if (app->phrot_scale) {
+        app->phrot_scale_guard = 1;
+        gtk_range_set_value(GTK_RANGE(app->phrot_scale), app->phrot_hz);
+        app->phrot_scale_guard = 0;
+      }
+    }
+  }
   if (app->phrot_scale) { gtk_widget_set_sensitive(app->phrot_scale, !app->phrot_auto); }
   tx_push_cfg(app); schedule_save(app);
 }
