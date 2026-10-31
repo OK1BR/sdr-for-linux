@@ -1053,10 +1053,15 @@ TCI retunes (±5 kHz via `vfo`) each produced exactly ONE boundary block
 (offsets 596 and 1232 frames, new centre right) — the retune reached the
 stamps 10 ms after the `dds:` text; RX audio 281 / 188 blocks counted from 0
 with no gap, 9–15 zero. The installed skimmer-for-linux (layout 1, TCP)
-connected and logged `IQ stream up … centre stamps on`. ⛔ NOT exercised
-live: the RX-audio restart on a real TX/RX switch and the TX_CHRONO count
-(both need keying — gate-covered only); the skimmer's waterfall was not
-looked at (Richard's eyes).
+connected and logged `IQ stream up … centre stamps on`. **22:12–22:17, the
+RX-audio restart on a REAL TX/RX switch:** the same client on `audio_start`
+for 5 min while Richard keyed TUNE twice at drive 0 — all four `trx:`
+notifications (true/false/true/false) were followed by an RX-audio block
+with count 0 (2280→0, 93→0, 46→0, 69→0), 14 063 blocks otherwise gapless,
+9–15 zero; the skimmer froze its decoder (`TX hold`) 283 ms after KEY, i.e.
+the `trx:` broadcast arrives with the reporter tick. ⛔ Still NOT exercised
+live: the TX_CHRONO count (needs a TCI-audio TX client keying — gate-covered
+only); the skimmer's waterfall was not looked at (Richard's eyes).
 
 **★ ISSUE #30 — SAM mode (WDSP synchronous AM), DONE + LIVE-VERIFIED +
 CLOSED 2026-10-31 (same evening, Richard on the G2E, 49/41 m broadcast:
