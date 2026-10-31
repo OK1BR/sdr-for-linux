@@ -114,7 +114,9 @@ typedef struct {
   double lvlr_gain; /* leveler makeup gain, dB (0..+8; valid only with PROC on) */
   /* TX phase rotator (#23) — live whenever the TX channel exists: */
   int    phrot_on;   /* the rotator is switched on (last push = this voice over) */
-  double phrot_in;   /* waveform asymmetry BEFORE the rotator, 0..1 (30 s EMA)   */
+  double phrot_in;   /* waveform asymmetry BEFORE the rotator, 0..1 — WDSP's 30 s
+                        EMA corrected for its fill since key-on; −1 = no reading
+                        yet (first second of an over) or not keyed               */
   double phrot_out;  /* … AFTER it — the Guide's verification: out < in          */
   double phrot_fc;   /* corner in use, Hz (moves under the optimizer)            */
   double phrot_step; /* optimizer: 0 = off, −1 = converged (locked), else Hz     */

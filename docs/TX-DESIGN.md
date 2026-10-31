@@ -517,6 +517,23 @@ What landed (⚠ = regression tripwire — do not undo casually):
   3–5 min calibration over into the dummy load does). Display: TX HUD line
   `Asym in N % out M %  fc F Hz · auto/locked` (teal when out < in − 2 pts),
   the UNKEY over line `tx: over phase rotator — asymmetry in/out, corner`.
+  Both readouts are corrected for the EMA's fill since key-on (WDSP's 30 s
+  asymmetry EMA is flushed at every unkey, so a raw value 10 s into an over
+  is ~28 % of the truth; `TX_PHROT_ASYM_EMA_S`); the first second of an over
+  reads "--". **Live result 2026-10-31 (OK1BR, Neumann TLM 103 + SPL Channel
+  One, 38.7 s of speech in four PTT overs at drive 0, replayed offline through
+  the real chain at 15 corners 50–2000 Hz):** the rotator brings NOTHING for
+  this voice — the input is already nearly symmetric (on-air pos/neg 5.7 %
+  without it), the default 338 Hz makes it 29 % asymmetric, WDSP's own in/out
+  readout says out > in at every corner (live HUD/log and offline agree),
+  and the average power at the same 99.99-percentile SSB envelope peak moves
+  −0.24…+0.15 dB on the clean chain and −0.55…−0.01 dB with PROC 5.9 dB on
+  (WDSP's COMP already converts peaks into average power; a lower crest in
+  front of it means less clipping, not more power). Richard's call: leave it
+  OFF; the feature stays (default off) for voices the Guide describes
+  (10–25 % input asymmetry). Scratch harness: `/var/tmp/phrot-sweep/sweep.c`
+  (replays `mic48k.f32` through tx_dsp_* at a corner list) — trashed with
+  the session; the recording stays in `/var/tmp/ok1br-run-2026-10-31/txdump`.
 
 **Contest-earned tripwires (2026-07-11, first contest deployment — ~130 CW
 QSOs):**

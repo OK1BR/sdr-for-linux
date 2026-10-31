@@ -1593,14 +1593,19 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
    * "auto" = the optimizer is searching, "locked" = it converged. */
   if (ts->phrot_on) {
     double in = 100.0 * ts->phrot_in, out = 100.0 * ts->phrot_out;
+    int valid = ts->phrot_in >= 0.0;          /* −1 = first second of the over */
     const char *opt = ts->phrot_step < 0.0 ? " · locked"
                     : ts->phrot_step > 0.0 ? " · auto" : "";
-    snprintf(lbl, sizeof lbl, "Asym in %.0f %%  out %.0f %%   fc %.0f Hz%s",
-             in, out, ts->phrot_fc, opt);
+    if (valid) {
+      snprintf(lbl, sizeof lbl, "Asym in %.0f %%  out %.0f %%   fc %.0f Hz%s",
+               in, out, ts->phrot_fc, opt);
+    } else {
+      snprintf(lbl, sizeof lbl, "Asym in --  out --   fc %.0f Hz%s", ts->phrot_fc, opt);
+    }
     cairo_set_font_size(cr, 12.0);
     cairo_text_extents(cr, lbl, &ex);
-    if (out < in - 2.0) { cairo_set_source_rgba(cr, 0.35, 0.85, 0.80, 0.95); }
-    else                { cairo_set_source_rgba(cr, 0.72, 0.80, 0.92, 0.85); }
+    if (valid && out < in - 2.0) { cairo_set_source_rgba(cr, 0.35, 0.85, 0.80, 0.95); }
+    else                         { cairo_set_source_rgba(cr, 0.72, 0.80, 0.92, 0.85); }
     cairo_move_to(cr, bx + bw - ex.width, ay + h_alc + 36); cairo_show_text(cr, lbl);
   }
 }

@@ -49,6 +49,10 @@ static int lat_on(void) {
 
 #define TX_MODE_IS_CW(m)   ((m) == DEMOD_CWL || (m) == DEMOD_CWU)
 #define TX_MODE_IS_RTTY(m) ((m) == DEMOD_RTTY)
+/* WDSP's phase-rotator asymmetry readout is a 30 s EMA (phrot.c
+ * PHROT_ASYM_SECS) that every unkey flushes to zero — 10 s into an over the
+ * raw value is ~28 % of the truth. We divide by its fill since key-on. */
+#define TX_PHROT_ASYM_EMA_S 30.0
 /* CW carrier amplitude: on P2 the TXA chain's compensating CFIR attenuates a
  * DC signal to 0.896 of full scale, so the direct-synthesized carrier must
  * match it (piHPSDR transmitter.c:1737-1747). P1 has no CFIR → 1.0 (:1722-32). */
@@ -669,7 +673,11 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
            * the UNKEY flush (which zeroes WDSP's envelopes) for the over line */
         int pr; double pi, po, pf, pst;
         tx_dsp_get_phrot(&pr, &pi, &po, &pf, &pst);
-        if (pr) { over_ph_on = 1; over_ph_in = pi; over_ph_out = po; over_ph_fc = pf; }
+        double tph = (double)(g_get_monotonic_time() - over_key_us) * 1e-6;
+        if (pr && tph >= 1.0) {   /* EMA-fill corrected (see TX_PHROT_ASYM_EMA_S) */
+          double fill = 1.0 - exp(-tph / TX_PHROT_ASYM_EMA_S);
+          over_ph_on = 1; over_ph_in = pi / fill; over_ph_out = po / fill; over_ph_fc = pf;
+        }
       }
       if (!s_p1) {
         if (t.exciter_raw < over_ex_min) { over_ex_min = t.exciter_raw; }
@@ -743,7 +751,25 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   st.swr       = tx_meter_swr();
   if (keyed) { tx_dsp_get_meters(&st.mic_pk, &st.alc_gain, &st.lvlr_gain); }  /* live WDSP TX level */
   else       { st.mic_pk = -99.0; st.alc_gain = 0.0; st.lvlr_gain = 0.0; }
-  tx_dsp_get_phrot(&st.phrot_on, &st.phrot_in, &st.phrot_out, &st.phrot_fc, &st.phrot_step);
+  {
+    /* Phase rotator readout (#23): WDSP's in/out asymmetry is a 30 s EMA that
+     * every unkey flushes, so the raw value early in an over is a fraction of
+     * the truth (live 2026-10-31: 10 s overs read 2–6 % in / 5–16 % out for
+     * ~12–20 % / ~40 %+ real). Divide by the EMA's fill since key-on,
+     * 1 − exp(−t/30), for an unbiased running estimate; the first second is
+     * detector warm-up → −1 = no reading. Display-only; the optimizer inside
+     * WDSP runs on its own 1 s EMA and is untouched. */
+    double pin, pout;
+    tx_dsp_get_phrot(&st.phrot_on, &pin, &pout, &st.phrot_fc, &st.phrot_step);
+    double tph = keyed ? (double)(g_get_monotonic_time() - over_key_us) * 1e-6 : 0.0;
+    if (keyed && st.phrot_on && tph >= 1.0) {
+      double fill = 1.0 - exp(-tph / TX_PHROT_ASYM_EMA_S);
+      st.phrot_in  = pin  / fill;
+      st.phrot_out = pout / fill;
+    } else {
+      st.phrot_in = st.phrot_out = -1.0;
+    }
+  }
   if (st.alc_gain > -100.0 && st.alc_gain < s_alc_min_over) {   /* over-stats; the
        meter reads log(0) garbage before the first block flows — ignore it */
     s_alc_min_over = st.alc_gain;

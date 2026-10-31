@@ -1123,6 +1123,28 @@ listening check that the audio stays clean. Peak-to-average numbers would
 need 1–2 min of speech recorded with `SDRFL_TX_DUMP` while keyed into the
 load, then a replay harness (gate_replay.c from issue #1 is gone;
 `/var/tmp/ps-replay` is the pattern).
+**LIVE + OFFLINE RESULT THE SAME EVENING — #23 CLOSED 2026-10-31 (Richard's
+"ano"):** his instance restarted onto the new build (20:22), four PTT overs
+at drive 0 with the rotator on: HUD/log asymmetry out 2.5–3.4× IN (in 2–6 %,
+out 5–16 % raw; the 30 s EMA understates short overs, fixed the same evening
+by the fill correction `TX_PHROT_ASYM_EMA_S` — −1/"--" in the first second).
+Then a 38.7 s mic recording (`SDRFL_TX_DUMP`, four overs, kept in
+`/var/tmp/ok1br-run-2026-10-31/txdump`, his voice, stays local) replayed
+offline through the real chain at 15 corners (scratch
+`/var/tmp/phrot-sweep/sweep.c`, trashed): **no benefit at any corner** for
+his Neumann + SPL chain — on-air pos/neg asymmetry 5.7 % without the rotator
+vs 29 % at 338 Hz, average power at the same 99.99-percentile envelope peak
+−0.24…+0.15 dB on the clean chain and −0.55…−0.01 dB with his PROC 5.9 dB
+(COMP already turns peaks into average; a lower crest ahead of it clips less).
+WDSP's in/out metric, the live log and the offline replay agree, so the
+feature works as designed and its readout tells the truth; the Guide's
+premise (asymmetric speech, 10–25 %) simply does not hold for this chain.
+Richard's call: rotator OFF for him, the feature stays default-off. Auto
+corner was never exercised live (nothing to find). Lesson for the family:
+the SSB quantity that matters is the analytic ENVELOPE peak, not the real
+waveform's pos/neg — a single-sample envelope max suggested +1 dB at 1 kHz,
+the 99.99-percentile peak said ±0.1 dB. The dump stays active in his running
+instance until its next restart.
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
