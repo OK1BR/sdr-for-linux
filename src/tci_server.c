@@ -79,8 +79,14 @@ typedef struct {
   double     *iq_out;        /* resampler output (heap while subscribed)     */
   float       iq_blk[2 * 2048];  /* IQ frames accumulated for one block      */
   int         iq_fill;       /* frames in iq_blk                             */
+  /* Stream packet counters — TCI 2.1 header word 8 `count` (see s_stamp) */
+  uint32_t    iq_count;      /* IQ blocks since iq_start                     */
+  uint32_t    au_count;      /* RX-audio blocks since audio_start / trx edge */
+  uint32_t    chrono_count;  /* TX_CHRONO frames since this client took TX   */
   /* IQ centre stamps (family extension, see stamp_note_freq) */
-  int         iq_stamp;      /* iq_stamp:1 — the client wants them           */
+  int         iq_stamp;      /* header layout the client asked for: 0 none,
+                              * 1 legacy (stamps at 8–10, no counter),
+                              * 2 TCI 2.1 (counter at 8, stamps at 9–11)     */
   unsigned    stamp_seen;    /* label events consumed (ring position)        */
   long long   stamp_cur;     /* centre in effect at the frame being filled   */
   long long   stamp_hz0;     /* centre at the block's first frame            */
@@ -132,19 +138,44 @@ static double           iq_ring[2 * IQ_RING];
 static _Atomic unsigned iq_head, iq_tail;
 static _Atomic int      s_iq_active;      /* # of iq_start'ed clients         */
 static _Atomic int      s_iq_in_rate;     /* engine rate seen by the pusher   */
-/* IQ centre stamps — family extension for skimmer-for-linux (M8 waterfall).
- * A client that sent `iq_stamp:1;` gets, in the otherwise-zero reserved
- * words of every IQ Stream header: h[8] = DDC centre (Hz) of the block's
- * FIRST frame, h[9] = frame offset at which the centre changed inside the
- * block (0 = it did not), h[10] = the centre from that frame on. The
- * boundary is the DDC-rate frame index the capture clock (see s_clock_lock)
- * gives for the moment the frequency changed (the P2 High-Priority kick has
- * just left) plus the radio's own DDC→wire latency (SDRFL_DDC_LAT_MS,
- * default 1.0 ms), mapped through the client's resampler
- * ratio. Unstamped clients get byte-identical blocks to before (ExpertSDR
- * leaves the words zero; SDC/CW Skimmer never read them — unverified, hence
- * opt-in). Why: the dds label rides the control channel and lands ±1 IQ
- * block away from the samples it describes, so a waterfall drawn in
+/* Stream header words 8–15 (TCI 2.1, issue #43).
+ *
+ * TCI Protocol 2.1 (Expert Electronics, Oct 2026, p. 10) turns the first of
+ * the words reserved since 1.8 into `uint32_t count`: "a packet counter
+ * incremented for each packet within a stream … kept separately for the RX
+ * audio stream and the TX_CHRONO stream and is reset when switching between
+ * TX and RX. The header is still 64 bytes." We fill it on every stream:
+ *   - IQ:       counts from 0 at iq_start, continuous through our own TX
+ *               (the DDC stream keeps flowing — a loss detector wants no
+ *               artificial restart); an iq_samplerate change does not reset it;
+ *   - RX audio: counts from 0 at a fresh audio_start and restarts with every
+ *               `trx:` notification (stream_counters_trx — the server learns
+ *               of a GUI/pedal key only through the reporter's poll, so the
+ *               restart is tied to the notification a client can see);
+ *   - TX_CHRONO: counts from 0 when a client takes TX (`trx:0,true,tci`),
+ *               i.e. per over, since tx_owner clears at every unkey.
+ * piHPSDR 3.1 (tci_audio.c) and the pre-#43 server leave the word zero.
+ *
+ * IQ centre stamps — family extension for skimmer-for-linux (M8 waterfall).
+ * A client that sent `iq_stamp:N;` picks the layout of words 8–11 of every
+ * IQ Stream header; the server echoes the layout it serves:
+ *   0 (default)  h[8] = count, h[9..15] = 0 — a stock 2.1 wire image;
+ *   1 (legacy)   h[8] = centre, h[9] = offset, h[10] = new centre, NO
+ *                counter — byte-identical to the pre-2.1 stamps so a
+ *                skimmer-for-linux built before its #38 keeps reading them;
+ *                kept for one release after #43, then dropped;
+ *   2 (TCI 2.1)  h[8] = count, h[9] = centre, h[10] = offset, h[11] = new
+ *                centre. An N > 2 is served (and echoed) as 2.
+ * The stamps: the DDC centre (Hz) of the block's FIRST frame, the frame
+ * offset at which the centre changed inside the block (0 = it did not), and
+ * the centre from that frame on. The boundary is the DDC-rate frame index the
+ * capture clock (see s_clock_lock) gives for the moment the frequency changed
+ * (the P2 High-Priority kick has just left) plus the radio's own DDC→wire
+ * latency (SDRFL_DDC_LAT_MS, default 1.0 ms), mapped through the client's
+ * resampler ratio. Clients that never ask get the stock image (ExpertSDR
+ * leaves the stamp words zero; SDC/CW Skimmer never read them — unverified,
+ * hence opt-in). Why: the dds label rides the control channel and lands ±1
+ * IQ block away from the samples it describes, so a waterfall drawn in
  * absolute frequency put whole rows one tuning step off (skimmer live,
  * 2026-09-05 — spikes both ways on every wheel notch). Two changes inside
  * one block report the FIRST offset with the FINAL centre (approximation). */
@@ -244,6 +275,22 @@ static void tci_broadcastf(const char *fmt, ...) {
   tci_broadcast(buf);
 }
 
+/* TCI 2.1: the RX-audio packet counter "is reset when switching between TX
+ * and RX". The server sees a GUI/pedal key only through the reporter's poll,
+ * so the restart rides the `trx:` notification itself — a client that reads
+ * `trx:` knows word 8 of the next RX-audio block starts over. Idempotent on
+ * the state: the trx handler and the reporter both announce the same edge.
+ * Call BEFORE the broadcast is queued (any thread; takes s_lock). */
+static int s_count_trx = -1;
+static void stream_counters_trx(int on) {
+  g_mutex_lock(&s_lock);
+  if (on != s_count_trx) {
+    s_count_trx = on;
+    for (int i = 0; i < TCI_MAX_CLIENTS; i++) { s_cli[i].au_count = 0; }
+  }
+  g_mutex_unlock(&s_lock);
+}
+
 /* ---- state snapshot + reporter (main thread) ------------------------------ */
 
 /* Broadcast every state item that changed since the last look. This is how
@@ -327,6 +374,7 @@ static gboolean tci_reporter(gpointer data) {
     tci_broadcastf("rx_filter_band:0,%d,%d;", lo, hi);
   }
   if (!s_last.valid || trx != s_last.trx) {
+    stream_counters_trx(trx);
     tci_broadcastf("trx:0,%s;", trx ? "true" : "false");
     if (!trx) {              /* unkeyed from ANY path — forget the TCI keyer */
       g_mutex_lock(&s_lock);
@@ -577,7 +625,7 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
           for (int i = 0; i < TCI_MAX_CLIENTS; i++) {
             if (s_cli[i].inuse && s_cli[i].tx_owner && &s_cli[i] != c) { busy = 1; }
           }
-          if (!busy) { c->tx_owner = 1; }
+          if (!busy) { c->tx_owner = 1; c->chrono_count = 0; }   /* chrono count restarts with the over */
           g_mutex_unlock(&s_lock);
           if (busy) {
             fprintf(stderr, "tci: trx tci refused — another client owns TX audio\n");
@@ -604,7 +652,7 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
         g_mutex_unlock(&s_lock);
         if (was) { s_ops.set_tx_source_tci(0); }
       }
-      tci_broadcastf("trx:0,%s;", s_ops.get_trx() ? "true" : "false");
+      { const int now = s_ops.get_trx(); stream_counters_trx(now); tci_broadcastf("trx:0,%s;", now ? "true" : "false"); }
     } else {
       tci_sendf(c, "trx:0,%s;", s_ops.get_trx() ? "true" : "false");
     }
@@ -741,6 +789,7 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
        * each time chops 20-40 ms out of the running stream — enough to
        * break FT4/FT8 decodes of weak signals (live-diagnosed 2026-07-12). */
       c->au_acc = 0; c->au_acccnt = 0; c->au_fill = 0;
+      c->au_count = 0;                   /* TCI 2.1 count: 0 at start         */
       fprintf(stderr, "tci: audio_start — %d Hz, fmt %d, %d ch, block %d\n",
               c->au_rate, c->au_fmt, c->au_ch, c->au_block);
     }
@@ -828,6 +877,7 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
     g_mutex_lock(&s_lock);
     if (!c->iq_sub) { c->iq_sub = 1; atomic_fetch_add(&s_iq_active, 1); }
     c->iq_fill = 0;
+    c->iq_count = 0;                          /* TCI 2.1 count: 0 at start   */
     g_mutex_lock(&s_stamp_lock);              /* stamps start from NOW       */
     c->stamp_seen = s_stamp_n;
     g_mutex_unlock(&s_stamp_lock);
@@ -837,10 +887,17 @@ static void tci_exec(Client *c, char *name, char **av, int ac) {
     fprintf(stderr, "tci: iq_start — %d Hz float32\n", c->iq_rate);
     tci_sendf(c, "iq_start:0;");
   } else if (strcmp(name, "iq_stamp") == 0) {
-    /* family extension: centre stamps in the IQ Stream header (see s_stamp) */
+    /* family extension: centre stamps in the IQ Stream header (see s_stamp).
+     * The argument is the layout version; the echo is the layout SERVED
+     * (0 / 1 / 2 — anything above 2 is served as 2), so a client reads the
+     * words the echo promises. The flag flips under s_lock BEFORE the echo
+     * is queued: every block queued after the echo already has the new
+     * layout (the FIFO carries text and binary in order). */
     if (ac > 0 && av[0][0]) {
+      int v = atoi(av[0]);
+      v = v < 0 ? 0 : v > 2 ? 2 : v;
       g_mutex_lock(&s_lock);
-      c->iq_stamp = atoi(av[0]) != 0;
+      c->iq_stamp = v;
       g_mutex_unlock(&s_lock);
     }
     tci_sendf(c, "iq_stamp:%d;", c->iq_stamp);
@@ -869,7 +926,7 @@ static gboolean tx_owner_lost_idle(gpointer data) {
   if (s_run) {
     s_ops.set_trx(0);
     s_ops.set_tx_source_tci(0);
-    tci_broadcastf("trx:0,%s;", s_ops.get_trx() ? "true" : "false");
+    { const int now = s_ops.get_trx(); stream_counters_trx(now); tci_broadcastf("trx:0,%s;", now ? "true" : "false"); }
     fprintf(stderr, "tci: keying TCI client disconnected — unkeyed\n");
   }
   return G_SOURCE_REMOVE;
@@ -1113,6 +1170,7 @@ static void au_emit(Client *c) {
   h[5] = (uint32_t)scalars;       /* length: scalar sample count             */
   h[6] = TCI_RX_AUDIO;
   h[7] = (uint32_t)c->au_ch;
+  h[8] = c->au_count++;           /* TCI 2.1 packet counter                  */
   if (c->au_fmt == TCI_FMT_INT16) {
     int16_t *p = (int16_t *)(blk + TCI_HDR_U32S * 4);
     for (int i = 0; i < frames; i++) {
@@ -1180,10 +1238,22 @@ static void iq_emit(Client *c) {
   h[5] = (uint32_t)(frames * 2);  /* length: scalar sample count             */
   h[6] = TCI_IQ_STREAM;
   h[7] = 2;                       /* I + Q                                   */
-  if (c->iq_stamp) {              /* family extension — see s_stamp          */
+  /* word 8 = TCI 2.1 packet counter, family stamps at 9–11 under layout 2;
+   * layout 1 is the pre-2.1 wire image (stamps at 8–10, NO counter) — see
+   * s_stamp. The counter runs under every layout so a client that switches
+   * 1 → 2 sees it continue. */
+  const uint32_t cnt = c->iq_count++;
+  if (c->iq_stamp == 1) {
     h[8]  = (uint32_t)c->stamp_hz0;
     h[9]  = (uint32_t)c->stamp_off;
     h[10] = (uint32_t)c->stamp_hz1;
+  } else {
+    h[8] = cnt;
+    if (c->iq_stamp == 2) {
+      h[9]  = (uint32_t)c->stamp_hz0;
+      h[10] = (uint32_t)c->stamp_off;
+      h[11] = (uint32_t)c->stamp_hz1;
+    }
   }
   memcpy(blk + TCI_HDR_U32S * 4, c->iq_blk, (size_t)frames * 2 * sizeof(float));
   cli_send_msg(c, 1, blk, len);
@@ -1360,6 +1430,7 @@ void tci_server_tx_chrono(int nsamples) {
   g_mutex_lock(&s_lock);
   for (int i = 0; i < TCI_MAX_CLIENTS; i++) {
     if (s_cli[i].inuse && s_cli[i].tx_owner) {
+      hdr[8] = s_cli[i].chrono_count++;  /* TCI 2.1 count: per owner, per over */
       cli_send_msg(&s_cli[i], 1, hdr, sizeof(hdr));
     }
   }
@@ -1391,6 +1462,7 @@ int tci_server_start(const TciListen *listen, const TciOps *ops) {
   s_ops = *ops;
   memset(&s_cli, 0, sizeof(s_cli));
   s_trx_client = -1;
+  s_count_trx = -1;
   memset(&s_last, 0, sizeof(s_last));
   s_cw_delay_ms = 10;
   s_debug = g_getenv("SDRFL_TCI_DEBUG") != NULL;

@@ -219,6 +219,43 @@ static int rx_contains(const char *needle) {
   return hit;
 }
 
+/* How many times the server has said `needle` so far (echoes repeat). */
+static int rx_count(const char *needle) {
+  int n = 0;
+  g_mutex_lock(&c_lock);
+  for (const char *q = c_rx->str; (q = strstr(q, needle)) != NULL; q += strlen(needle)) { n++; }
+  g_mutex_unlock(&c_lock);
+  return n;
+}
+
+/* Pump until the server has said `needle` more than `base` times (≤ ms). */
+static int wait_echo(const char *needle, int base, int ms) {
+  for (int t = 0; t < ms; t += 10) {
+    while (g_main_context_iteration(NULL, FALSE)) {}
+    if (rx_count(needle) > base) { return 1; }
+    g_usleep(10 * 1000);
+  }
+  return rx_count(needle) > base;
+}
+
+/* TCI 2.1 `count` (issue #43): walk the fixed-size Stream blocks captured in
+ * c_bin — *first = word 8 of block 0, *n = block count; returns 1 when word 8
+ * counts up by one per block and words zlo..zhi are zero in every block. */
+static int bin_counts(size_t blk, guint32 *first, int *n, int zlo, int zhi) {
+  int ok = 1;
+  *first = 0;
+  g_mutex_lock(&c_lock);
+  *n = (int)(c_bin->len / blk);
+  for (int b = 0; b < *n; b++) {
+    guint32 hh[16]; memcpy(hh, c_bin->data + (size_t)b * blk, sizeof hh);
+    if (b == 0) { *first = hh[8]; }
+    if (hh[8] != *first + (guint32)b) { ok = 0; }
+    for (int w = zlo; w <= zhi; w++) { if (hh[w] != 0) { ok = 0; } }
+  }
+  g_mutex_unlock(&c_lock);
+  return ok;
+}
+
 /* Pump the GLib main context (server command dispatch) until cond() or timeout. */
 static int wait_for(int (*cond)(void), int ms) {
   for (int i = 0; i < ms; i++) {
@@ -266,6 +303,12 @@ static int cond_chrono(void) {
     const guint32 *h = (const guint32 *)c_bin->data;
     hit = (h[6] == 3 && h[5] == 512);            /* TX_CHRONO for 512 samples */
   }
+  g_mutex_unlock(&c_lock);
+  return hit;
+}
+static int cond_chrono2(void) {           /* two TX_CHRONO frames captured */
+  g_mutex_lock(&c_lock);
+  int hit = c_bin->len >= 128;
   g_mutex_unlock(&c_lock);
   return hit;
 }
@@ -567,6 +610,42 @@ static int run_suite(const char *label, const TciListen *l, const char *addr, in
     checks += 5; fails += 5;
     printf("  FAIL stream header checks skipped (no audio arrived)\n");
   }
+  /* ---- TCI 2.1 packet counter (issue #43): word 8 of the RX-audio blocks
+   * counts from 0 at audio_start (words 9–15 stay zero) and restarts with
+   * every `trx:` notification — the spec resets it "when switching between
+   * TX and RX" and the server ties that to the notification a client can
+   * see. The pushes are ours: nothing is emitted between a key and the
+   * clear that follows it, so the first block after the clear is the first
+   * block after the switch. */
+  {
+    const size_t ablk = 64 + 512 * 4;
+    #define AU_PUSH_BLOCKS(n) do { \
+      int ok_ = 0; \
+      for (int ms_ = 0; ms_ < 3000 && !ok_; ms_ += 10) { \
+        tci_server_audio_push(ramp, 480); \
+        while (g_main_context_iteration(NULL, FALSE)) {} \
+        g_mutex_lock(&c_lock); ok_ = c_bin->len >= (n) * ablk; g_mutex_unlock(&c_lock); \
+        g_usleep(10 * 1000); \
+      } } while (0)
+    #define AU_CLEAR() do { g_mutex_lock(&c_lock); g_byte_array_set_size(c_bin, 0); g_mutex_unlock(&c_lock); } while (0)
+    guint32 first; int n;
+    AU_PUSH_BLOCKS(3);
+    int ok = bin_counts(ablk, &first, &n, 9, 15);
+    check("count: RX-audio word 8 counts from 0 at audio_start, +1 per block, words 9–15 zero",
+          n >= 3 && ok && first == 0);
+    client_send("trx:0,true;");
+    check("count: key (trx:0,true) while the audio streams", wait_for(cond_trx_on, 2000));
+    AU_CLEAR(); AU_PUSH_BLOCKS(2);
+    ok = bin_counts(ablk, &first, &n, 9, 15);
+    check("count: the RX-audio count restarts at 0 with the trx:true notification", n >= 2 && ok && first == 0);
+    client_send("trx:0,false;");
+    check("count: unkey lands", wait_for(cond_trx_off, 2000));
+    AU_CLEAR(); AU_PUSH_BLOCKS(2);
+    ok = bin_counts(ablk, &first, &n, 9, 15);
+    check("count: … and again with trx:false", n >= 2 && ok && first == 0);
+    #undef AU_CLEAR
+    #undef AU_PUSH_BLOCKS
+  }
   client_send("audio_stop:0;");
   int got_stop_ack = 0;
   for (int ms = 0; ms < 1000 && !got_stop_ack; ms += 10) {
@@ -691,14 +770,22 @@ static int run_suite(const char *label, const TciListen *l, const char *addr, in
     check("accepted iq_samplerate sticks as the device default", sticky);
   }
 
-  /* ---- IQ centre stamps (family extension for skimmer-for-linux M8): a
-   * client that sent iq_stamp:1 gets the DDC centre of the block's first
-   * frame in h[8]; a retune INSIDE a block puts the frame offset in h[9] and
-   * the new centre in h[10] — placed by the server's capture clock (built
-   * from the pushes) + SDRFL_DDC_LAT_MS, mapped through the ÷4 decimation.
-   * Unstamped clients keep all-zero reserved words. The stream must RUN
-   * continuously through all of it (the listener never pauses live): a
-   * pusher thread feeds 1920 frames of silence every 10 ms of real time. */
+  /* ---- Stream word 8 + IQ centre stamps (TCI 2.1 `count`, issue #43; the
+   * family extension for skimmer-for-linux M8). Word 8 of every IQ block is
+   * the packet counter: 0 at iq_start, +1 per block, continuous across
+   * layout changes. `iq_stamp:N` picks the layout of words 8–11 and the
+   * server echoes the layout it SERVES — 0 = count only; 1 = the legacy
+   * image (centre at 8, offset at 9, new centre at 10, NO counter: what a
+   * skimmer-for-linux before its #38 reads); 2 = count at 8, stamps at
+   * 9–11; N > 2 is served as 2. A retune INSIDE a block puts the frame
+   * offset and the new centre in the stamps — placed by the server's
+   * capture clock (built from the pushes) + SDRFL_DDC_LAT_MS, mapped through
+   * the decimation. The stream must RUN continuously through all of it (the
+   * listener never pauses live): a pusher thread feeds 1920 frames of
+   * silence every 10 ms of real time. The layout flag flips under s_lock
+   * BEFORE the echo is queued and the per-client FIFO carries text and
+   * binary in order, so the first block captured after the echo already
+   * carries the new layout — the checks are strict about that. */
   {
     const size_t blk = 64 + 2048 * 2 * sizeof(float);
     #define CLEAR_BIN() do { g_mutex_lock(&c_lock); g_byte_array_set_size(c_bin, 0); g_mutex_unlock(&c_lock); } while (0)
@@ -711,6 +798,7 @@ static int run_suite(const char *label, const TciListen *l, const char *addr, in
         g_usleep(5 * 1000); \
       } } while (0)
     const long long f0 = S.freq;
+    guint32 first; int n, ok;
     /* the IQ section above ended with iq_stop — subscribe again, then stream */
     client_send("iq_start:0;");
     for (int ms = 0; ms < 2000 && !rx_contains("iq_stop:0;iq_start:0;"); ms += 10) {
@@ -719,39 +807,48 @@ static int run_suite(const char *label, const TciListen *l, const char *addr, in
     }
     g_atomic_int_set(&pusher_run, 1);
     GThread *pt = g_thread_new("iq-pusher", pusher_thread, NULL);
-    /* 1. not opted in: reserved words zero (and a block DID arrive) */
-    CLEAR_BIN(); WAIT_BLOCKS(1);
-    guint32 h0[16] = { 0 }; int have0 = 0;
-    g_mutex_lock(&c_lock);
-    if (c_bin->len >= blk) { memcpy(h0, c_bin->data, sizeof h0); have0 = 1; }
-    g_mutex_unlock(&c_lock);
-    check("stamps: an unstamped client's reserved words are zero", have0 && h0[8] == 0 && h0[9] == 0 && h0[10] == 0);
-    /* 2. opt in: the next block carries the current centre, no boundary */
+    /* 1. a stock client: word 8 counts from 0, words 9–15 zero */
+    CLEAR_BIN(); WAIT_BLOCKS(3);
+    ok = bin_counts(blk, &first, &n, 9, 15);
+    check("count: a stock client's IQ word 8 counts from 0 at iq_start, +1 per block, words 9–15 zero",
+          n >= 3 && ok && first == 0);
+    const guint32 cnt_before = first + (guint32)n;      /* the count keeps running from here */
+    /* 2. layout 1 (legacy): centre at 8, 0 at 9–10, no counter, 11–15 zero —
+     * byte-identical to the pre-2.1 stamps the live skimmer reads */
+    int b1 = rx_count("iq_stamp:1;");
     client_send("iq_stamp:1;");
-    int got_echo = 0;
-    for (int ms = 0; ms < 2000 && !got_echo; ms += 10) {
-      while (g_main_context_iteration(NULL, FALSE)) {}
-      got_echo = rx_contains("iq_stamp:1;");
-      g_usleep(10 * 1000);
-    }
-    check("stamps: iq_stamp:1 echoes back", got_echo);
-    /* blocks already queued for the socket when the flag flipped are still
-     * unstamped: the first stamped block must come within four, and every
-     * block after it is stamped with the centre and no boundary */
+    check("stamps: iq_stamp:1 echoes back", wait_echo("iq_stamp:1;", b1, 2000));
     CLEAR_BIN(); WAIT_BLOCKS(6);
-    int on_first = -1, on_bad = 0, on_n = 0;
+    int l1_n = 0, l1_bad = 0;
     g_mutex_lock(&c_lock);
-    on_n = (int)(c_bin->len / blk);
-    for (int b = 0; b < on_n; b++) {
+    l1_n = (int)(c_bin->len / blk);
+    for (int b = 0; b < l1_n; b++) {
       guint32 hh[16]; memcpy(hh, c_bin->data + (size_t)b * blk, sizeof hh);
-      if (on_first < 0) { if (hh[8] != 0) { on_first = b; } }
-      if (on_first >= 0 && (hh[8] != (guint32)f0 || hh[9] != 0 || hh[10] != 0)) { on_bad++; }
+      if (hh[8] != (guint32)f0 || hh[9] != 0 || hh[10] != 0) { l1_bad++; }
+      for (int w = 11; w < 16; w++) { if (hh[w] != 0) { l1_bad++; } }
     }
     g_mutex_unlock(&c_lock);
-    check("stamps: h[8] = the centre of the block's first frame, h[9] = 0 (from within four blocks on)",
-          on_first >= 0 && on_first <= 3 && on_bad == 0);
-    /* 3. a retune over TCI mid-stream: exactly one block carries the
-     * boundary (offset inside the block, new centre in h[10]) — or, if the
+    check("stamps: layout 1 = centre at 8, 0 at 9–10, no counter, 11–15 zero — from the first block after the echo",
+          l1_n >= 6 && l1_bad == 0);
+    /* 3. layout 2 (TCI 2.1): count at 8 — continuing, not restarted — and
+     * the stamps at 9–11 */
+    int b2 = rx_count("iq_stamp:2;");
+    client_send("iq_stamp:2;");
+    check("stamps: iq_stamp:2 echoes back", wait_echo("iq_stamp:2;", b2, 2000));
+    CLEAR_BIN(); WAIT_BLOCKS(6);
+    ok = bin_counts(blk, &first, &n, 12, 15);
+    check("count: word 8 keeps counting across the layout changes (consecutive, > the count before, 12–15 zero)",
+          n >= 6 && ok && first > cnt_before);
+    int l2_bad = 0;
+    g_mutex_lock(&c_lock);
+    for (int b = 0; b < n; b++) {
+      guint32 hh[16]; memcpy(hh, c_bin->data + (size_t)b * blk, sizeof hh);
+      if (hh[9] != (guint32)f0 || hh[10] != 0 || hh[11] != 0) { l2_bad++; }
+    }
+    g_mutex_unlock(&c_lock);
+    check("stamps: layout 2 = centre at 9, 0 at 10–11 — from the first block after the echo", n >= 6 && l2_bad == 0);
+    /* 4. a retune over TCI mid-stream under layout 2: exactly one block
+     * carries the boundary (offset at 10, new centre at 11) — or, if the
      * boundary fell on a block edge, the first block simply starts on the
      * new centre — and every block after it starts on the new centre. The
      * boundary must land within the first two blocks (≤ 85 ms): the capture
@@ -767,38 +864,46 @@ static int run_suite(const char *label, const TciListen *l, const char *addr, in
     nblk = (int)(c_bin->len / blk);
     for (int b = 0; b < nblk; b++) {
       guint32 hh[16]; memcpy(hh, c_bin->data + (size_t)b * blk, sizeof hh);
-      if (first_new < 0 && (hh[8] == (guint32)f1 || hh[9] != 0)) {
+      if (first_new < 0 && (hh[9] == (guint32)f1 || hh[10] != 0)) {
         first_new = b;
-        if (hh[9] != 0) { boundary_blk = b; off = (int)hh[9]; hz1 = hh[10]; }
+        if (hh[10] != 0) { boundary_blk = b; off = (int)hh[10]; hz1 = hh[11]; }
       } else if (first_new >= 0 && b > first_new) {
-        if (hh[8] != (guint32)f1 || hh[9] != 0) { bad_after++; }
+        if (hh[9] != (guint32)f1 || hh[10] != 0) { bad_after++; }
       }
     }
     g_mutex_unlock(&c_lock);
-    printf("  note  retune: %d blocks, first on the new centre = #%d, boundary block = #%d (offset %d, h[10] %u)\n",
+    printf("  note  retune: %d blocks, first on the new centre = #%d, boundary block = #%d (offset %d, h[11] %u)\n",
            nblk, first_new, boundary_blk, off, hz1);
     check("stamps: a retune shows up within the first two blocks", first_new >= 0 && first_new <= 1);
-    check("stamps: a mid-block boundary carries 0 < h[9] < 2048 and h[10] = the new centre",
+    check("stamps: a mid-block boundary carries 0 < h[10] < 2048 and h[11] = the new centre",
           boundary_blk < 0 || (off > 0 && off < 2048 && hz1 == (guint32)f1));
     check("stamps: every block after the retune starts on the new centre", first_new >= 0 && bad_after == 0);
-    /* 4. opt out again: zeros */
+    ok = bin_counts(blk, &first, &n, 12, 15);
+    check("count: word 8 counted straight through the retune", n >= 4 && ok);
+    /* 5. an unknown higher layout is served — and echoed — as 2 */
+    int b3 = rx_count("iq_stamp:2;");
+    client_send("iq_stamp:3;");
+    check("stamps: iq_stamp:3 is answered iq_stamp:2 (the layout actually served)",
+          wait_echo("iq_stamp:2;", b3, 2000) && rx_count("iq_stamp:3;") == 0);
+    /* 6. opt out again: the count stays at 8, 9–15 zero */
+    int b0 = rx_count("iq_stamp:0;");
     client_send("iq_stamp:0;");
-    for (int ms = 0; ms < 2000 && !rx_contains("iq_stamp:0;"); ms += 10) {
-      while (g_main_context_iteration(NULL, FALSE)) {}
-      g_usleep(10 * 1000);
-    }
+    check("stamps: iq_stamp:0 echoes back", wait_echo("iq_stamp:0;", b0, 2000));
     CLEAR_BIN(); WAIT_BLOCKS(6);
-    int off_first = -1, off_bad = 0, off_n = 0;
-    g_mutex_lock(&c_lock);
-    off_n = (int)(c_bin->len / blk);
-    for (int b = 0; b < off_n; b++) {
-      guint32 hh[16]; memcpy(hh, c_bin->data + (size_t)b * blk, sizeof hh);
-      if (off_first < 0) { if (hh[8] == 0) { off_first = b; } }
-      if (off_first >= 0 && (hh[8] != 0 || hh[9] != 0 || hh[10] != 0)) { off_bad++; }
-    }
-    g_mutex_unlock(&c_lock);
-    check("stamps: iq_stamp:0 turns them off again (zeros from within four blocks on)",
-          off_first >= 0 && off_first <= 3 && off_bad == 0);
+    ok = bin_counts(blk, &first, &n, 9, 15);
+    check("stamps: iq_stamp:0 leaves the count at 8 and zeros 9–15 — from the first block after the echo",
+          n >= 6 && ok && first > cnt_before);
+    /* 7. iq_stop + iq_start: the count restarts at 0 */
+    int bs = rx_count("iq_stop:0;");
+    client_send("iq_stop:0;");
+    check("count: iq_stop echoes back", wait_echo("iq_stop:0;", bs, 2000));
+    CLEAR_BIN();
+    int bt = rx_count("iq_start:0;");
+    client_send("iq_start:0;");
+    check("count: iq_start echoes back", wait_echo("iq_start:0;", bt, 2000));
+    WAIT_BLOCKS(2);
+    ok = bin_counts(blk, &first, &n, 9, 15);
+    check("count: iq_start restarts word 8 at 0", n >= 2 && ok && first == 0);
     g_atomic_int_set(&pusher_run, 0);
     g_thread_join(pt);
     client_send("iq_stop:0;");                /* leave the stream as we found it */
@@ -861,6 +966,23 @@ static int run_suite(const char *label, const TciListen *l, const char *addr, in
   g_mutex_unlock(&c_lock);
   tci_server_tx_chrono(512);                    /* the TX feed thread's clock */
   check("TX_CHRONO frame reaches the TX owner", wait_for(cond_chrono, 2000));
+  /* TCI 2.1 count (issue #43): word 8 of the TX_CHRONO frames counts from 0
+   * when the client takes TX, +1 per frame, and starts over with the next over */
+  {
+    guint32 h1[16] = { 0 }; int have1 = 0;
+    g_mutex_lock(&c_lock);
+    if (c_bin->len >= 64) { memcpy(h1, c_bin->data, 64); have1 = 1; }
+    g_mutex_unlock(&c_lock);
+    check("count: the first TX_CHRONO of an over carries 0 in word 8 (9–15 zero)",
+          have1 && h1[8] == 0 && h1[9] == 0 && h1[15] == 0);
+    tci_server_tx_chrono(512);
+    int have2 = wait_for(cond_chrono2, 2000);
+    guint32 h2[16] = { 0 };
+    g_mutex_lock(&c_lock);
+    if (c_bin->len >= 128) { memcpy(h2, c_bin->data + 64, 64); }
+    g_mutex_unlock(&c_lock);
+    check("count: the second TX_CHRONO carries 1", have2 && h2[6] == 3 && h2[5] == 512 && h2[8] == 1);
+  }
   {
     uint32_t hdr[16];
     float pay[512];
@@ -875,6 +997,23 @@ static int run_suite(const char *label, const TciListen *l, const char *addr, in
   check("TX_AUDIO block lands in the exciter ring", wait_for(cond_txa, 3000));
   client_send("trx:0,false;");
   check("unkey reverts the TX source to mic", wait_for(cond_tci_unkeyed, 2000));
+  /* the next over: the TX_CHRONO count starts over */
+  client_send("trx:0,true,tci;");
+  check("count: a second over keys with source tci", wait_for(cond_tci_keyed, 2000));
+  g_mutex_lock(&c_lock);
+  g_byte_array_set_size(c_bin, 0);
+  g_mutex_unlock(&c_lock);
+  tci_server_tx_chrono(512);
+  {
+    int got = wait_for(cond_chrono, 2000);
+    guint32 h3[16] = { 0 };
+    g_mutex_lock(&c_lock);
+    if (c_bin->len >= 64) { memcpy(h3, c_bin->data, 64); }
+    g_mutex_unlock(&c_lock);
+    check("count: the next over's first TX_CHRONO carries 0 again", got && h3[8] == 0);
+  }
+  client_send("trx:0,false;");
+  check("count: the second over unkeys", wait_for(cond_tci_unkeyed, 2000));
 
   (void)ct; (void)cctx;
   client_stop();

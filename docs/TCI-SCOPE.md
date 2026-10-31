@@ -14,7 +14,12 @@ LINE_OUT stream and live callsign correction in `cw_msg`.
 Source of truth: **"TCI Protocol.pdf" ver. 2.0, 12 Jan 2024**, Expert
 Electronics, github.com/ExpertSDR3/TCI (MIT). Read in full 2026-07-10; the
 local copy lives outside the repo (452 kB, 41 pp) — re-download from upstream
-if needed.
+if needed. **"TCI Protocol 2.1.pdf" (September 2026, 50 pp; repo commit
+6cbccdd7 of 2026-10-22)** supersedes it: `CHANNEL_COUNT` → `CHANNELS_COUNT`
+(the old name is still accepted), a `count` word in the Stream header (done,
+issue #43 — "Streams" below and the "Family extension" paragraph), new
+notifications and controls (issues #44, #45). Audited 2026-10-24; the Stream
+chapter re-read first-hand 2026-10-31.
 
 - **Transport:** WebSocket server (full duplex over TCP). *Text frames* carry
   ASCII commands `name:arg1,arg2;` (case-insensitive, reserved chars `:,;`);
@@ -47,7 +52,11 @@ if needed.
   callsign is on air, then `callsign_send:<final>;`), `$2` = repeat callsign.
   CW_MSG preempts CW_MACROS; the CW queue and speed belong to the server.
 - **Streams (binary):** fixed header `{u32 receiver, sample_rate, format,
-  codec=0, crc=0, length /*samples*/, type, channels, reserv[8]}` + payload.
+  codec=0, crc=0, length /*samples*/, type, channels, count, reserv[7]}` +
+  payload (2.1: `count` is "a packet counter incremented for each packet
+  within a stream … kept separately for the RX audio stream and the TX_CHRONO
+  stream and is reset when switching between TX and RX. The header is still
+  64 bytes"; before 2.1 the word was the first of `reserv[8]`).
   `type`: IQ=0, RX_AUDIO=1, TX_AUDIO=2, **TX_CHRONO=3**, LINEOUT=4.
   RX audio duplicates IQ flow but with client-set rate/format/blocksize; in
   DIGL/DIGU 2 ch = complex, 1 ch = real. **TX audio is server-paced:** the
@@ -277,22 +286,54 @@ tick (gate: a `vfo` set from a TCP client is broadcast to a socket client).
   when its TCI mode is RTTY; keys the direct-FSK generator through the
   same tx_gate as everything else.
 
+  **Stream header word 8 = TCI 2.1 `count` (issue #43, 2026-10-31).** Every
+  stream the server emits carries the packet counter the 2.1 spec defines
+  (p. 10): **IQ** counts from 0 at `iq_start`, +1 per block, and runs
+  straight through our own TX (the DDC stream keeps flowing — a loss
+  detector wants no artificial restart) and through an `iq_samplerate`
+  change; **RX audio** counts from 0 at a fresh `audio_start` (a Decodium
+  retry does not reset it, exactly like the accumulator) and restarts with
+  every `trx:` notification — the spec resets it "when switching between TX
+  and RX", and the server sees a GUI/pedal key only through the reporter's
+  poll, so the restart is tied to the notification a client can see
+  (`stream_counters_trx()`, idempotent, at all three `trx:` broadcast
+  sites); **TX_CHRONO** counts from 0 when a client takes TX
+  (`trx:0,true,tci`), i.e. per over. Words 9–15 stay zero unless the client
+  asked for stamps. piHPSDR 3.1 (tci_audio.c) and every sdr-for-linux
+  before #43 leave word 8 zero; ExpertSDR3's own start value is unknown
+  (closed source) — a client should check consecutiveness, not the value.
+
   **Family extension — IQ centre stamps (2026-09-05, for skimmer-for-linux
-  M8):** a client that sends `iq_stamp:1;` (echoed) gets three of the
-  otherwise-zero reserved header words filled on every IQ block: `h[8]` =
-  DDC centre (Hz) of the block's first frame, `h[9]` = frame offset at
-  which the centre changed inside the block (0 = it did not), `h[10]` = the
-  centre from that frame on. The boundary is the DDC-ring sample index at
+  M8; layouts since #43):** `iq_stamp:N;` picks the layout of words 8–11 of
+  every IQ block and the server echoes the layout it **serves**, so a client
+  reads the words the echo promises:
+  - `0` (default) — `h[8]` = count, 9–15 zero: a stock 2.1 wire image;
+  - `1` (legacy) — `h[8]` = centre, `h[9]` = offset, `h[10]` = new centre,
+    **no counter**: byte-identical to the pre-2.1 stamps, so a
+    skimmer-for-linux built before its #38 keeps reading them. ⛔ Kept for
+    ONE release after the one that ships #43, then dropped (the echo will
+    then say `2`);
+  - `2` (TCI 2.1) — `h[8]` = count, `h[9]` = centre, `h[10]` = offset,
+    `h[11]` = new centre. `N > 2` is served and echoed as `2`.
+  The stamps: the DDC centre (Hz) of the block's first frame, the frame
+  offset at which the centre changed inside the block (0 = it did not), and
+  the centre from that frame on. The boundary is the DDC-ring sample index at
   the moment of the change (the P2 High-Priority kick has just left) plus
   the radio's own DDC→wire latency (`SDRFL_DDC_LAT_MS`, default 1.0 ms) — placed by the server's capture clock (least-delayed push of the last two seconds), not by the frames ringed so far, so the listener's socket backlog cannot shift it — mapped
   through the client's resampler ratio; two changes in one block report the
-  first offset with the final centre. Off by default and off for every
-  client that never asks — SDC / CW Skimmer see byte-identical blocks
-  (whether they tolerate non-zero reserved words is unverified, hence
-  opt-in). Reason: the `dds:` label rides the control channel and lands ±1
-  IQ block away from the samples it describes; a waterfall drawn in
-  absolute frequency placed whole rows one tuning step off (live, spikes on
-  every wheel notch). Gate: sdrfl-tci-test "stamps" section.
+  first offset with the final centre. The layout flag flips under `s_lock`
+  BEFORE the echo is queued and the per-client FIFO carries text and binary
+  in order, so the first block after the echo already has the new layout
+  (the gate asserts exactly that). Stamps are off for every client that
+  never asks — SDC / CW Skimmer see a stock image (whether they tolerate
+  non-zero stamp words is unverified, hence opt-in). Reason: the `dds:`
+  label rides the control channel and lands ±1 IQ block away from the
+  samples it describes; a waterfall drawn in absolute frequency placed whole
+  rows one tuning step off (live, spikes on every wheel notch). Gate:
+  sdrfl-tci-test "count" + "stamps" checks (191 checks since #43, both
+  transports; the pre-#43 server fails 28 of them and passes the layout-1
+  ones). Sibling: skimmer-for-linux#38 (ask for `2`, read `1` or `2` as
+  echoed, use the count for loss detection) — both land in one release.
 
 ## Safety (unchanged, non-negotiable)
 

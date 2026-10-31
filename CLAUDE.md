@@ -1021,6 +1021,29 @@ Richard's call: closed, the skimmer check is #39's deliverable. ⚠ Tooling
 trap: `sdrfl-tci-send -h` with no host argument falls through — "-h" becomes
 a TCI command and the tool dials the live instance on 127.0.0.1 for 2 s.
 
+**★ ISSUE #43 — TCI 2.1 Stream header `count`, DONE 2026-10-31 (gate-verified,
+closed with the commit; the live "skimmer decodes with the new pair" check is
+skimmer-for-linux#38's deliverable — the #46/#39 precedent, accepted by
+Richard):** word 8 of every Stream header is the TCI 2.1 packet counter (spec
+2.1 p. 10, read first-hand: "incremented for each packet within a stream …
+kept separately for the RX audio stream and the TX_CHRONO stream and is reset
+when switching between TX and RX"). IQ counts from 0 at `iq_start` and runs
+straight through our own TX and through `iq_samplerate` changes; RX audio
+counts from 0 at a fresh `audio_start` and restarts with every `trx:`
+notification (the server sees a GUI/pedal key only through the reporter's
+poll, so the restart is tied to the notification a client can see —
+`stream_counters_trx()`, idempotent, at all three `trx:` broadcast sites);
+TX_CHRONO counts from 0 when a client takes TX (`trx:0,true,tci`), per over.
+`iq_stamp:N` is a LAYOUT version now, echoed as served: 0 = count only, 1 =
+the legacy image (stamps at 8–10, NO counter — byte-identical to what the
+live skimmer reads; ⛔ drop it one release after the one that ships #43), 2 =
+count at 8 + stamps at 9–11, N > 2 served as 2. piHPSDR 3.1 leaves word 8
+zero. `sdrfl-tci-test` 149 → 191 checks (both transports; strict: the first
+block after an `iq_stamp` echo already carries the new layout — flag under
+s_lock before the echo, FIFO order), stable over four runs, negative-checked
+against the pre-#43 server (28 new checks fail, the layout-1 checks pass);
+all 14 CI gates green. TCI-SCOPE "Streams" + "Family extension" rewritten.
+
 **★ ISSUE #30 — SAM mode (WDSP synchronous AM), DONE + LIVE-VERIFIED +
 CLOSED 2026-10-31 (same evening, Richard on the G2E, 49/41 m broadcast:
 SAM beats beyond ±2 kHz where AM does not and relocks inside; Both / LSB
