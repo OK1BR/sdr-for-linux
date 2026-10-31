@@ -1043,6 +1043,20 @@ block after an `iq_stamp` echo already carries the new layout — flag under
 s_lock before the echo, FIFO order), stable over four runs, negative-checked
 against the pre-#43 server (28 new checks fail, the layout-1 checks pass);
 all 14 CI gates green. TCI-SCOPE "Streams" + "Family extension" rewritten.
+**Live look the same evening (22:03–22:05, Richard: "spusť upravenou binárku
+a ověřit co server posílá"):** the new build started against the G2E
+(14.333 MHz, 1536 k), a scratch lws client (`iq_stamp:2;iq_start:0;`, never
+`iq_samplerate`) over the unix socket AND over 127.0.0.1:40001, 12 s IQ at
+192 k + audio each: 1125 IQ blocks counted 0..1124 with no gap on both
+transports, words 12–15 zero, word 9 = `dds:` at every settled block, two
+TCI retunes (±5 kHz via `vfo`) each produced exactly ONE boundary block
+(offsets 596 and 1232 frames, new centre right) — the retune reached the
+stamps 10 ms after the `dds:` text; RX audio 281 / 188 blocks counted from 0
+with no gap, 9–15 zero. The installed skimmer-for-linux (layout 1, TCP)
+connected and logged `IQ stream up … centre stamps on`. ⛔ NOT exercised
+live: the RX-audio restart on a real TX/RX switch and the TX_CHRONO count
+(both need keying — gate-covered only); the skimmer's waterfall was not
+looked at (Richard's eyes).
 
 **★ ISSUE #30 — SAM mode (WDSP synchronous AM), DONE + LIVE-VERIFIED +
 CLOSED 2026-10-31 (same evening, Richard on the G2E, 49/41 m broadcast:
