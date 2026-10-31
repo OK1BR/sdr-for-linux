@@ -19,6 +19,8 @@
  * the DUC output rate (192 kHz on P2, 48 kHz on P1). Called from whatever thread
  * feeds the mic.
  */
+#include "eq.h"   /* EqProfile — the TX equalizer's band table (issue #48) */
+
 typedef void (*tx_iq_cb)(const double *iq, int n_pairs, void *user);
 
 /*
@@ -86,6 +88,16 @@ void tx_dsp_set_gate_depth(double depth_db);
  * envelopes, Corner also restarts a running search. tx_run re-pushes every
  * slot (~20 Hz), so this applies ON CHANGE ONLY — the gate_apply idiom.
  */
+/* TX parametric pre-EQ (issue #48): the WDSP TXA equalizer between the gate
+ * and the leveler, driven by the band model in eq.h. `on` is the CALLER's
+ * decision — tx_run passes tx_voice_proc_active() (voice mode + live mic +
+ * MOX, never TUNE / two-tone / CW / RTTY / digi / TCI audio: the clean-chain
+ * rule). The table is cached, the WDSP profile pushed on change only (every
+ * push rebuilds a 16384-tap impulse), re-applied when the channel is created. */
+void tx_dsp_set_eq(int on, const EqProfile *p);
+int  tx_dsp_eq_active(void);    /* the TXA EQ runs right now (last push) */
+long tx_dsp_eq_pushes(void);    /* WDSP profile pushes so far (gate tripwire) */
+
 void tx_dsp_set_phrot(int on, double corner_hz, int automode);
 /* Restart the optimizer search from the 338 Hz default (SetTXAPHROTAutoReset). */
 void tx_dsp_phrot_reset(void);

@@ -150,6 +150,12 @@ int settings_load(Settings *s) {
       s->sam_sb = g_key_file_get_integer(kf, GROUP_RX, "sam_sb", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "am_fade", NULL))
       s->am_fade = g_key_file_get_integer(kf, GROUP_RX, "am_fade", NULL);
+    if (g_key_file_has_key(kf, GROUP_RX, "eq", NULL))
+      s->rx_eq = g_key_file_get_integer(kf, GROUP_RX, "eq", NULL);
+    if (g_key_file_has_key(kf, GROUP_RX, "eq_bands", NULL)) {
+      char *v = g_key_file_get_string(kf, GROUP_RX, "eq_bands", NULL);
+      if (v) { g_strlcpy(s->rx_eq_bands, v, sizeof(s->rx_eq_bands)); g_free(v); }
+    }
     if (g_key_file_has_key(kf, GROUP_RX, "mode_filters", NULL)) {
       char *mf = g_key_file_get_string(kf, GROUP_RX, "mode_filters", NULL);
       if (mf) { g_strlcpy(s->mode_filt, mf, sizeof(s->mode_filt)); g_free(mf); }
@@ -196,6 +202,12 @@ int settings_load(Settings *s) {
       s->tx_phrot_hz = g_key_file_get_double(kf, GROUP_TX, "phrot_hz", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "phrot_auto", NULL))
       s->tx_phrot_auto = g_key_file_get_integer(kf, GROUP_TX, "phrot_auto", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "eq", NULL))
+      s->tx_eq = g_key_file_get_integer(kf, GROUP_TX, "eq", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "eq_bands", NULL)) {
+      char *v = g_key_file_get_string(kf, GROUP_TX, "eq_bands", NULL);
+      if (v) { g_strlcpy(s->tx_eq_bands, v, sizeof(s->tx_eq_bands)); g_free(v); }
+    }
     if (g_key_file_has_key(kf, GROUP_TX, "ptt_pedal", NULL))
       s->tx_ptt = g_key_file_get_integer(kf, GROUP_TX, "ptt_pedal", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "ptt_tip", NULL))
@@ -366,6 +378,8 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_RX,    "binaural", s->binaural);
   g_key_file_set_integer(kf, GROUP_RX,    "sam_sb",   s->sam_sb);
   g_key_file_set_integer(kf, GROUP_RX,    "am_fade",  s->am_fade);
+  g_key_file_set_integer(kf, GROUP_RX,    "eq",       s->rx_eq);
+  g_key_file_set_string (kf, GROUP_RX,    "eq_bands", s->rx_eq_bands);
   g_key_file_set_string (kf, GROUP_RX,    "mode_filters", s->mode_filt);
   g_key_file_set_string (kf, GROUP_RX,    "var_filters",  s->var_filt);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "fps",   s->fps);
@@ -413,6 +427,8 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_TX,     "phrot",     s->tx_phrot);
   g_key_file_set_double (kf, GROUP_TX,     "phrot_hz",  s->tx_phrot_hz);
   g_key_file_set_integer(kf, GROUP_TX,     "phrot_auto", s->tx_phrot_auto);
+  g_key_file_set_integer(kf, GROUP_TX,     "eq",         s->tx_eq);
+  g_key_file_set_string (kf, GROUP_TX,     "eq_bands",   s->tx_eq_bands);
   g_key_file_set_integer(kf, GROUP_TX,     "ptt_pedal", s->tx_ptt);
   g_key_file_set_integer(kf, GROUP_TX,     "ptt_tip",   s->tx_ptt_tip);
   g_key_file_set_integer(kf, GROUP_DEBUG,  "log",       s->debug_log);

@@ -90,6 +90,7 @@ executable('sdr-for-linux',
     'src/transport.c',
     'src/engine/analyzer.c',
     'src/engine/demod.c',
+    'src/engine/eq.c',        # parametric EQ band model → WDSP profile (issue #48)
     'src/engine/audio_pw.c',
     'src/engine/mic_pw.c',    # PipeWire mic capture — SSB TX (F6c)
     'src/engine/tx.c',        # WDSP TX DSP channel (F2)
@@ -254,7 +255,7 @@ executable('sdrfl-panprobe',
 # WDSP TX channel and checks the SSB IQ output + the 24-bit encoder + the framer.
 # Links WDSP (GNU dialect). NO radio, NO socket.
 executable('sdrfl-txdsp-test',
-  ['src/txdsp_test.c', 'src/engine/tx.c'] + engine_sources,
+  ['src/txdsp_test.c', 'src/engine/tx.c', 'src/engine/eq.c'] + engine_sources,
   include_directories : [vendor_inc, src_inc, engine_inc],
   dependencies : engine_deps + [wdsp_dep, m_dep],
   override_options : ['c_std=gnu11'],
@@ -267,6 +268,20 @@ executable('sdrfl-txdsp-test',
 executable('sdrfl-nnr-test',
   ['src/nnr_test.c'],
   dependencies : [glib_dep, wdsp_dep, m_dep],
+  override_options : ['c_std=gnu11'],
+  install : false,
+)
+
+# Offline equalizer gate (issue #48): the band model (RBJ shapes, the WDSP grid,
+# persistence), the shared voice-processing predicate, and the REALIZED response
+# of the real RX path (demod.c, 48/96/192 kHz AF) and TX path (tx.c, 96 kHz dsp)
+# against the analytic curve, plus the apply-on-change tripwires and the digi /
+# NNR-CW bypass states. Links WDSP (GNU dialect). NO radio, NO audio device
+# (demod.c's sink output is unused; the 48 k TCI tap is the measuring point).
+executable('sdrfl-eq-test',
+  ['src/eq_test.c', 'src/engine/eq.c', 'src/engine/demod.c', 'src/engine/tx.c'] + engine_sources,
+  include_directories : [vendor_inc, src_inc, engine_inc],
+  dependencies : engine_deps + [wdsp_dep, m_dep],
   override_options : ['c_std=gnu11'],
   install : false,
 )
@@ -333,7 +348,7 @@ executable('sdrfl-txgate-test',
 # piHPSDR disconnected, operator present. Safe defaults: PA off, drive 0. Links the
 # TX DSP + metering + safety gate + band plan + engine + WDSP.
 executable('sdrfl-txkey',
-  ['src/txkey_main.c', 'src/engine/tx.c', 'src/engine/tx_meter.c',
+  ['src/txkey_main.c', 'src/engine/tx.c', 'src/engine/eq.c', 'src/engine/tx_meter.c',
    'src/engine/tx_gate.c', 'src/bandplan.c'] + engine_sources,
   include_directories : [vendor_inc, src_inc, engine_inc],
   dependencies : engine_deps + [wdsp_dep, m_dep],
@@ -344,7 +359,7 @@ executable('sdrfl-txkey',
 # Headless Protocol-2 RX -> WDSP demod -> PipeWire audio. Milestone-2 gate.
 # TAKES THE RADIO. SDRFL_TONE=1 plays a test tone with no radio.
 executable('sdrfl-audioprobe',
-  ['src/audioprobe_main.c', 'src/engine/demod.c', 'src/engine/audio_pw.c'] + engine_sources,
+  ['src/audioprobe_main.c', 'src/engine/demod.c', 'src/engine/eq.c', 'src/engine/audio_pw.c'] + engine_sources,
   include_directories : [vendor_inc, src_inc, engine_inc],
   dependencies : engine_deps + [wdsp_dep, m_dep, pipewire_dep],
   override_options : ['c_std=gnu11'],

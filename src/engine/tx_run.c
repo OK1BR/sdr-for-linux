@@ -133,6 +133,8 @@ typedef struct {
   int    phrot_on;         /* TX phase rotator (#23; see tx_run_cfg) */
   double phrot_hz;
   int    phrot_auto;
+  int    eq_on;            /* TX equalizer (#48; see tx_run_cfg) */
+  EqProfile eq;
 } tx_cfg_i;
 
 static GThread          *s_thread;
@@ -535,6 +537,9 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     tx_dsp_set_phrot(tx_phrot_active(cfg.phrot_on, cfg.mode, g_atomic_int_get(&s_ext_src),
                                      r.state.mox, r.state.tune, tt_want_now),
                      cfg.phrot_hz > 0.0 ? cfg.phrot_hz : TX_PHROT_HZ_DFLT, cfg.phrot_auto);
+    /* TX equalizer (#48): the same predicate; tx.c pushes the table on change. */
+    tx_dsp_set_eq(tx_voice_proc_active(cfg.eq_on, cfg.mode, g_atomic_int_get(&s_ext_src),
+                                       r.state.mox, r.state.tune, tt_want_now), &cfg.eq);
     tx_dsp_set_mode(wmode, flo, fhi);
     tx_dsp_tune_tone(r.state.tune ? 1 : 0, 0.0);   /* TUNE = post-gen carrier */
     if (tt_want_now) { tx_dsp_two_tone(1, tt_sign * 700.0, tt_sign * 1937.0); }
@@ -703,6 +708,8 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
       tx_dsp_set_phrot(tx_phrot_active(cfg.phrot_on, cfg.mode, g_atomic_int_get(&s_ext_src),
                                        r.state.mox, r.state.tune, tt_want_now),
                        cfg.phrot_hz > 0.0 ? cfg.phrot_hz : TX_PHROT_HZ_DFLT, cfg.phrot_auto);
+      tx_dsp_set_eq(tx_voice_proc_active(cfg.eq_on, cfg.mode, g_atomic_int_get(&s_ext_src),
+                                         r.state.mox, r.state.tune, tt_want_now), &cfg.eq);
     }
     if (tt_want_now != tt_applied) {       /* two-tone toggled mid-over */
       tx_dsp_two_tone(tt_want_now, tt_sign * 700.0, tt_sign * 1937.0);
@@ -751,6 +758,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   st.swr       = tx_meter_swr();
   if (keyed) { tx_dsp_get_meters(&st.mic_pk, &st.alc_gain, &st.lvlr_gain); }  /* live WDSP TX level */
   else       { st.mic_pk = -99.0; st.alc_gain = 0.0; st.lvlr_gain = 0.0; }
+  st.eq_on = keyed ? tx_dsp_eq_active() : 0;   /* TX EQ acting in this over (#48) */
   {
     /* Phase rotator readout (#23): WDSP's in/out asymmetry is a 30 s EMA that
      * every unkey flushes, so the raw value early in an over is a fraction of
@@ -1260,6 +1268,8 @@ void tx_run_set_cfg(const tx_run_cfg *cfg) {
   s_cfg.phrot_on       = cfg->phrot_on;
   s_cfg.phrot_hz       = cfg->phrot_hz;
   s_cfg.phrot_auto     = cfg->phrot_auto;
+  s_cfg.eq_on          = cfg->eq_on;
+  s_cfg.eq             = cfg->eq;
   g_strlcpy(s_cfg.country_key, cfg->country_key ? cfg->country_key : "", sizeof s_cfg.country_key);
   for (int i = 0; i < 11; i++) { s_cfg.pa_trim[i] = cfg->pa_trim[i]; }
   g_mutex_unlock(&s_cfg_lock);

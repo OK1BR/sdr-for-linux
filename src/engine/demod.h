@@ -8,6 +8,8 @@
 #ifndef SDRFL_ENGINE_DEMOD_H
 #define SDRFL_ENGINE_DEMOD_H
 
+#include "eq.h"   /* EqProfile — the RX equalizer's band table (issue #48) */
+
 /* WDSP mode ids (match wdsp/RXA.h and piHPSDR mode.h). */
 /* Mode ids == WDSP RXA/TXA mode enum (RXA.h): LSB 0, USB 1, DSB 2, CWL 3,
  * CWU 4, FM 5, AM 6, DIGU 7, SPEC 8, DIGL 9, SAM 10, DRM 11.
@@ -87,6 +89,20 @@ void demod_set_anf(int on);
  *    default is ON and so was ours before this knob existed. */
 void demod_set_sam_sideband(int sb);
 void demod_set_am_fade(int on);
+
+/* Parametric RX equalizer (issue #48) — the WDSP continuous-gain EQ ahead of
+ * the AGC, driven by the band model in eq.h. `on` and the band table are
+ * cached before the channel exists, the WDSP profile is pushed on change only
+ * (every push rebuilds a 16384-tap impulse) and re-applied when the channel is
+ * re-created. Bypassed by us in DIGU / DIGL / RTTY — decoders on the TCI
+ * RX-audio stream get unshaped audio (the data-mode rule, mirrored from TX);
+ * not computed by WDSP while NNR runs a CW model, i.e. our CW modes with NNR
+ * on (Guide §5.3.20). Live, thread-safe.
+ * demod_eq_state: 0 off / 1 acting / 2 bypassed (digi mode) / 3 switched on
+ * but not computed (NNR CW model). */
+void demod_set_eq(int on, const EqProfile *p);
+int  demod_eq_state(void);
+long demod_eq_pushes(void);   /* WDSP profile pushes so far (gate tripwire) */
 
 /* Binaural stereo audio: 0 = mono (L=R), 1 = binaural (L=I, R=Q). Live. */
 void demod_set_binaural(int on);

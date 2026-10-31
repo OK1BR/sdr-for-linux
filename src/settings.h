@@ -78,6 +78,8 @@ typedef struct {
   int       binaural;    /* binaural stereo audio output on-off                  */
   int       sam_sb;      /* SAM sideband: 0 both / 1 LSB only / 2 USB only (#30) */
   int       am_fade;     /* AM/SAM carrier levelling on-off; -1 = unset (→ on)   */
+  int       rx_eq;       /* RX parametric equalizer on-off (issue #48)            */
+  char      rx_eq_bands[256]; /* its bands, "type:f:g:q;…" (eq_profile_format)   */
   char      mode_filt[128]; /* per-mode filter memory, "modeid=idx;..."          */
   char      var_filt[512];  /* Var1/Var2 per mode, "modeid/v1lo/v1hi/v2lo/v2hi;.."*/
   /* TX (F6a) — persistent; PA-enable mirrors piHPSDR's persistent PA setting. */
@@ -99,6 +101,8 @@ typedef struct {
   int       tx_phrot;   /* TX phase rotator (WDSP PHROT) on/off (issue #23)       */
   double    tx_phrot_hz;/* rotator corner, Hz (0/unset → default 338)             */
   int       tx_phrot_auto; /* corner optimizer on/off                             */
+  int       tx_eq;      /* TX parametric pre-EQ on/off (issue #48)                */
+  char      tx_eq_bands[256]; /* its bands, "type:f:g:q;…"                        */
   int       tx_ptt;     /* footswitch: radio PTT input keys like MOX (0/1)        */
   int       tx_ptt_tip; /* PTT contact on mic-jack tip (0 = ring, Apache default) */
   int       debug_log;  /* [debug] log: write the run log (opt-in, restart to apply)  */

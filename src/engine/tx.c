@@ -10,6 +10,8 @@
 #include <glib.h>
 #include <math.h>
 
+#include <string.h>
+
 #include "wdsp.h"
 #include "tx.h"
 
@@ -71,6 +73,32 @@ static int       t_ap_run = -1;
                                   bounds are written for four stages */
 static int       t_ap_ph_run = -1, t_ap_ph_auto = -1;
 
+/* TX pre-EQ (#48) — the band model is eq.h's; here only the push into the
+ * TXA continuous-gain EQ. Same apply-on-change discipline: SetTXAEQProfile
+ * recomputes a 16384-tap impulse and swaps the fircore on every call, and
+ * tx_run re-pushes the table from its ~20 Hz slot. t_eq_n / t_eq_run = −1
+ * mark a fresh channel so the first apply always pushes. */
+static int       t_dsp_rate = 96000;   /* the TXA dsp rate the EQ grid is built for */
+static EqProfile t_eq;
+static int       t_eq_on;
+static double    t_eq_F[EQ_MAX_POINTS + 1], t_eq_G[EQ_MAX_POINTS + 1];
+static int       t_eq_n = -1, t_eq_run = -1;
+static long      t_eq_pushes;
+static void eq_apply(void) {   /* t_lock held, channel open */
+  double F[EQ_MAX_POINTS + 1], G[EQ_MAX_POINTS + 1];
+  int n = eq_profile_grid(&t_eq, t_dsp_rate, F, G);
+  if (n != t_eq_n || memcmp(F, t_eq_F, (size_t)(n + 1) * sizeof F[0]) != 0 ||
+      memcmp(G, t_eq_G, (size_t)(n + 1) * sizeof G[0]) != 0) {
+    SetTXAEQProfile(t_id, n, F, G);
+    memcpy(t_eq_F, F, (size_t)(n + 1) * sizeof F[0]);
+    memcpy(t_eq_G, G, (size_t)(n + 1) * sizeof G[0]);
+    t_eq_n = n;
+    t_eq_pushes++;
+  }
+  int run = (t_eq_on && t_eq.n > 0) ? 1 : 0;
+  if (run != t_eq_run) { SetTXAEQRun(t_id, run); t_eq_run = run; }
+}
+
 /* Push the stored gate state into the DEXP (call with t_lock held, t_ready).
  * The DEXP runs on the RAW mic input (pre TXA panel), but the operator sets
  * the threshold in the dBFS he can SEE — the Mic meter, which WDSP taps AFTER
@@ -95,6 +123,7 @@ int tx_dsp_create(int mode, double flo, double fhi, int p1, tx_iq_cb cb, void *u
    * TX FIFO — hence the bigger input block, not a bigger output one). */
   int dsp_rate = p1 ? 48000 : 96000;
   int out_rate = p1 ? 48000 : 192000;
+  t_dsp_rate    = dsp_rate;
   t_in_size     = p1 ? 1024 : 512;
   t_id          = TX_CHANNEL;
   t_out_samples = t_in_size * (out_rate / TX_IN_RATE);
@@ -131,6 +160,7 @@ int tx_dsp_create(int mode, double flo, double fhi, int p1, tx_iq_cb cb, void *u
   SetTXAMode(t_id, mode);
   SetTXAPHROTNstages(t_id, TX_PHROT_NSTAGES);   /* rotator stays OFF (create default)
                                                    until tx_dsp_set_phrot (#23) */
+  t_eq_n = t_eq_run = -1; eq_apply();           /* pre-EQ (#48): the cached table, fresh channel */
   /* Mic noise gate = WDSP DEXP, OUTSIDE the TXA chain, in-place on t_mic just
    * before fexchange0 — piHPSDR parity (transmitter.c:1272 args, :1664 call
    * site). A true downward expander (attack 25 ms / release 100 ms / HOLD
@@ -285,6 +315,16 @@ static double phrot_current_fc(void) {
   GetTXAPHROTAsymmetry(t_id, &ip, &in_, &ir, &op, &on_, &or_, &fc, &st);
   return fc;
 }
+
+void tx_dsp_set_eq(int on, const EqProfile *p) {
+  g_mutex_lock(&t_lock);
+  t_eq_on = on ? 1 : 0;
+  if (p) { t_eq = *p; }
+  if (t_ready) { eq_apply(); }
+  g_mutex_unlock(&t_lock);
+}
+int  tx_dsp_eq_active(void) { return t_eq_run > 0; }
+long tx_dsp_eq_pushes(void) { return t_eq_pushes; }
 
 void tx_dsp_set_phrot(int on, double corner_hz, int automode) {
   g_mutex_lock(&t_lock);

@@ -13,6 +13,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "wdsp.h"
 #include "demod.h"
@@ -82,6 +83,38 @@ static int d_am_fade = 1;   /* carrier levelling on/off (AM + SAM)    */
 static void apply_amd(void) {
   SetRXAAMDSBMode(d_id, d_sam_sb);
   SetRXAAMDFadeLevel(d_id, d_am_fade);
+}
+
+/* RX equalizer (#48) — the band model is eq.h's; here only the push into the
+ * WDSP continuous-gain EQ (RXA eqp, ahead of the AGC). ⛔ Pushed on change
+ * only: SetRXAEQProfile recomputes a 16384-tap impulse and swaps the fircore
+ * every time (the DEXP / PHROT setter class), and the GUI re-pushes the table
+ * on every drag step and mode change. d_eq_n / d_eq_run = −1 mark a fresh
+ * channel (WDSP's own defaults inside) so the first apply always pushes.
+ * The run flag carries OUR bypass (digi modes); WDSP adds its own (not
+ * computed while NNR runs a CW model, Guide §5.3.20 — the setting is kept
+ * and resumes). Caller holds d_lock with d_ready. */
+static EqProfile d_eq;
+static int    d_eq_on;
+static double d_eq_F[EQ_MAX_POINTS + 1], d_eq_G[EQ_MAX_POINTS + 1];   /* last grid pushed */
+static int    d_eq_n = -1, d_eq_run = -1;
+static long   d_eq_pushes;
+static int eq_mode_bypassed(int mode) {
+  return mode == DEMOD_DIGU || mode == DEMOD_DIGL || mode == DEMOD_RTTY;
+}
+static void apply_eq(void) {
+  double F[EQ_MAX_POINTS + 1], G[EQ_MAX_POINTS + 1];
+  int n = eq_profile_grid(&d_eq, d_arate, F, G);
+  if (n != d_eq_n || memcmp(F, d_eq_F, (size_t)(n + 1) * sizeof F[0]) != 0 ||
+      memcmp(G, d_eq_G, (size_t)(n + 1) * sizeof G[0]) != 0) {
+    SetRXAEQProfile(d_id, n, F, G);
+    memcpy(d_eq_F, F, (size_t)(n + 1) * sizeof F[0]);
+    memcpy(d_eq_G, G, (size_t)(n + 1) * sizeof G[0]);
+    d_eq_n = n;
+    d_eq_pushes++;
+  }
+  int run = (d_eq_on && d_eq.n > 0 && !eq_mode_bypassed(d_mode)) ? 1 : 0;
+  if (run != d_eq_run) { SetRXAEQRun(d_id, run); d_eq_run = run; }
 }
 
 /* CW BFO offset (piHPSDR rx_set_offset @2312 + receiver.c:1481-1488): in CW
@@ -260,6 +293,7 @@ int demod_create(int id, int in_rate, int mode, double flo, double fhi, double v
   SetRXAMode(id, wdsp_mode_of(mode));
   d_mode = mode; d_flo = flo; d_fhi = fhi;
   apply_amd();                          /* SAM sideband + AM/SAM carrier levelling */
+  d_eq_n = d_eq_run = -1; apply_eq();   /* RX EQ (#48): fresh channel → push the grid */
   apply_passband();                     /* passband + CW BFO offset            */
   apply_agc();                          /* AGC character + threshold (d_agc_mode/d_agc_top) */
   setup_noise();                        /* NR/NB/ANF params + on-off flags */
@@ -459,6 +493,7 @@ void demod_set_mode(int mode, double flo, double fhi) {
     apply_nnr();                        /* CW ↔ voice NNR model follows the mode */
     SetRXAMode(d_id, wdsp_mode_of(mode));
     apply_amd();
+    apply_eq();                         /* the digi bypass follows the mode (#48) */
     apply_passband();
   }
   g_mutex_unlock(&d_lock);
@@ -478,6 +513,21 @@ void demod_set_am_fade(int on) {        /* carrier levelling, AM + SAM */
 }
 
 /* CW sidetone pitch = the CW BFO offset (live; re-shifts a running CW RX). */
+void demod_set_eq(int on, const EqProfile *p) {
+  g_mutex_lock(&d_lock);
+  d_eq_on = on ? 1 : 0;
+  if (p) { d_eq = *p; }
+  if (d_ready) { apply_eq(); }
+  g_mutex_unlock(&d_lock);
+}
+int demod_eq_state(void) {   /* display-only; plain reads, no lock (ints written under d_lock) */
+  if (!d_eq_on || d_eq.n <= 0) { return 0; }
+  if (eq_mode_bypassed(d_mode)) { return 2; }
+  if (d_nr == 3 && (d_mode == DEMOD_CWU || d_mode == DEMOD_CWL)) { return 3; }
+  return 1;
+}
+long demod_eq_pushes(void) { return d_eq_pushes; }
+
 void demod_set_cw_pitch(int hz) {
   g_mutex_lock(&d_lock);
   d_cw_pitch = hz < 200 ? 200 : (hz > 1200 ? 1200 : hz);

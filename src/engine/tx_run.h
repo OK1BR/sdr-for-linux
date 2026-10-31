@@ -28,6 +28,7 @@
 #define SDRFL_ENGINE_TX_RUN_H
 
 #include "demod.h"   /* DEMOD_* for the pure mode predicates below */
+#include "eq.h"      /* EqProfile — the TX equalizer's band table (issue #48) */
 
 /* TX phase rotator corner (issue #23): the WDSP PHROT range and default. */
 #define TX_PHROT_HZ_MIN   50.0
@@ -45,14 +46,19 @@ static inline int tx_mode_is_voice(int mode) {
          mode != DEMOD_DIGU && mode != DEMOD_DIGL;
 }
 
-/* Pure, gate-tested: does the phase rotator run for this keying state?
- * Switched on, a voice mode, the live mic (not TCI audio), MOX keyed, and
- * neither TUNE nor two-tone — the PostGen replaces the chain output in
- * those, but the rotator would still be fed room noise and its optimizer
- * would step on it. */
+/* Pure, gate-tested: does an optional voice-chain processor (phase rotator,
+ * TX equalizer) run for this keying state? Switched on, a voice mode, the
+ * live mic (not TCI audio), MOX keyed, and neither TUNE nor two-tone — the
+ * PostGen replaces the chain output in those, but the processors would still
+ * be fed room noise (and the rotator's optimizer would step on it). ONE
+ * predicate for the family (#23 wrote it for the rotator, #48 shares it). */
+static inline int tx_voice_proc_active(int enabled, int mode, int ext_src,
+                                       int mox, int tune, int two_tone) {
+  return enabled && tx_mode_is_voice(mode) && !ext_src && mox && !tune && !two_tone;
+}
 static inline int tx_phrot_active(int enabled, int mode, int ext_src,
                                   int mox, int tune, int two_tone) {
-  return enabled && tx_mode_is_voice(mode) && !ext_src && mox && !tune && !two_tone;
+  return tx_voice_proc_active(enabled, mode, ext_src, mox, tune, two_tone);
 }
 
 /* Operator-set TX configuration (persisted by the GUI; snapshotted internally). */
@@ -92,6 +98,10 @@ typedef struct {
   int         phrot_on;        /* WDSP PHROT on/off                                */
   double      phrot_hz;        /* corner, Hz (0 = default 338)                     */
   int         phrot_auto;      /* WDSP's A/B optimizer owns the corner             */
+  /* TX parametric pre-EQ (issue #48) — the same voice + live-mic rule
+   * (tx_voice_proc_active); the band model is eq.h's. */
+  int         eq_on;           /* TX equalizer on/off                              */
+  EqProfile   eq;              /* its bands (copied by value with the cfg)         */
 } tx_run_cfg;
 
 /* Live status for the meter / UI (thread-safe snapshot). */
@@ -120,6 +130,7 @@ typedef struct {
   double phrot_out;  /* … AFTER it — the Guide's verification: out < in          */
   double phrot_fc;   /* corner in use, Hz (moves under the optimizer)            */
   double phrot_step; /* optimizer: 0 = off, −1 = converged (locked), else Hz     */
+  int    eq_on;      /* TX equalizer acting in this over (#48; 0 when not keyed) */
   /* PureSignal (F7/PS-2; zeros when the setting is off): */
   int    ps_on;         /* PS enabled                                           */
   int    ps_correcting; /* correction applied right now (GetPSInfo[14])         */

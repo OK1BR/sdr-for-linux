@@ -414,6 +414,9 @@ int main(void) {
     ok("policy: TUNE / two-tone → off",        !tx_phrot_active(1, DEMOD_USB, 0, 1, 1, 0) &&
                                                !tx_phrot_active(1, DEMOD_USB, 0, 1, 0, 1), "");
     ok("policy: not keyed → off",              tx_phrot_active(1, DEMOD_USB, 0, 0, 0, 0) == 0, "");
+    ok("policy: the EQ shares the predicate (#48)",   /* tx_voice_proc_active = the family's one rule */
+       tx_voice_proc_active(1, DEMOD_USB, 0, 1, 0, 0) == 1 && !tx_voice_proc_active(1, DEMOD_DIGU, 0, 1, 0, 0) &&
+       !tx_voice_proc_active(1, DEMOD_USB, 1, 1, 0, 0) && !tx_voice_proc_active(1, DEMOD_USB, 0, 1, 1, 0), "");
     ok("mode table: voice = not CW/RTTY/DIGU/DIGL",
        tx_mode_is_voice(DEMOD_USB) && tx_mode_is_voice(DEMOD_LSB) && tx_mode_is_voice(DEMOD_AM) &&
        tx_mode_is_voice(DEMOD_SAM) && !tx_mode_is_voice(DEMOD_CWL) && !tx_mode_is_voice(DEMOD_CWU) &&
