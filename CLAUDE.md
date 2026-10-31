@@ -1189,7 +1189,8 @@ the 99.99-percentile peak said ±0.1 dB. The dump stays active in his running
 instance until its next restart.
 
 **★ ISSUE #48 — RX + TX PARAMETRIC EQUALIZER (the 2026-08-01 milestone), DONE
-IN CODE 2026-10-31/11-01, `needs-live-check` + `at-the-radio`:** the band model
+IN CODE 2026-10-31/11-01, LIVE-VERIFIED + CLOSED 2026-11-01 (see the end of
+this entry):** the band model
 (frequency / gain / Q; peak, low shelf, high shelf = the RBJ Audio-EQ-Cookbook
 analog prototypes) lives in `src/engine/eq.[ch]`, NOT in WDSP — the TAPR 2.11
 equalizer is a continuous-gain FIR fed by a ≤ 256-point frequency/gain profile
@@ -1235,11 +1236,19 @@ both persistence paths proven; an AdwDialog keeps its grown height when rows
 go away (coordinates stay valid after removals, shift after additions); the
 rebuilt rows showed −/+ and chevron icons only on the LAST row — most likely a
 broadway icon-texture artifact, ⛔ look at the rows live. 15 offline gates
-green. **Live protocol:** RX by ear on SSB (a presence lift / low cut) and CW
-(the NNR-CW note), the `· EQ` tag; TX into the dummy load with `SDRFL_TX_DUMP`
-and the spectra compared EQ off vs on, the HUD `EQ` tag, no effect in digi /
-TUNE / 2T (TX-SAFETY consent for the TX half). Not done: the by-ear A/B on a
-real signal, the TX half entirely.
+green. **Live 2026-10-31 23:52–2026-11-01 00:05 (Richard on the G2E, his
+instance restarted onto the installed build by script — SIGTERM, 6 s, setsid
+launch with `SDRFL_RADIO_IP`):** the dialog opens by icon and `e`, bands
+add/drag/remove on the curve, RX EQ audibly shapes the audio ("vypadá to, že
+EQ funguje"; a deep low cut: "hloubky to usekne skoro jistě… pěkný"), TX pre-EQ
+acted in two MOX overs at drive 0 with three bands ("jo asi to i funguje"),
+both profiles persisted in his config. **CLOSED** with his "ano" (closing
+comment on the issue; the 2026-10-27 hygiene rule: not held open for
+by-opportunity checks). Left to opportunity: a careful by-ear A/B on a strong
+clean station (none was on the band at midnight) and the TX spectra EQ off vs
+on from a dummy-load over — a finding becomes a new issue. Deviation from the
+issue text: no Delete key, removal is right-click or the row button. The
+broadway row-icon artifact was not reported live.
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
