@@ -221,6 +221,24 @@ typedef struct {
   guint       agc_tick;      /* meter refresh source while the dialog is open        */
   int         agc_syncing;   /* dialog widgets being set from state → ignore signals */
   GtkWidget  *agct_scale;    /* footer AGC-T slider (synced from the dialog)         */
+  /* Equalizer dialog (issue #48) — RX (side 0) and TX (side 1) parametric EQ. */
+  EqProfile   eq_prof[2];    /* the bands, persisted ([rx]/[tx] eq_bands)             */
+  int         eq_on[2];      /* on/off per side, persisted ([rx]/[tx] eq)             */
+  AdwDialog  *eq_dlg;        /* dialog while open (NULL when closed)                 */
+  int         eq_side;       /* page shown: 0 RX, 1 TX                               */
+  GtkWidget  *eq_side_btn[2];/* linked RX | TX toggles in the header bar             */
+  GtkWidget  *eq_switch;     /* AdwSwitchRow: the shown side on/off                  */
+  GtkWidget  *eq_graph;      /* the curve (GtkDrawingArea)                           */
+  GtkWidget  *eq_rows;       /* GtkListBox: one row per band                         */
+  GtkWidget  *eq_row_type[EQ_MAX_BANDS], *eq_row_f[EQ_MAX_BANDS];
+  GtkWidget  *eq_row_g[EQ_MAX_BANDS],    *eq_row_q[EQ_MAX_BANDS];
+  GtkWidget  *eq_note;       /* state line: acting / bypassed / not computed         */
+  GtkWidget  *eq_add_btn;    /* "Add band" (insensitive at EQ_MAX_BANDS)             */
+  guint       eq_tick;       /* 4 Hz refresh of the note + passband shading          */
+  guint       eq_apply_src;  /* debounce timer: engine push during a drag            */
+  int         eq_syncing;    /* dialog widgets being set from state → ignore signals */
+  int         eq_drag;       /* band being dragged, −1 none                          */
+  int         eq_hover;      /* band under the pointer, −1 none                      */
   gint64      ovl0_until;    /* ADC0-overload badge lit until (monotonic µs)   */
   gint64      ovl1_until;    /* ADC1-overload badge lit until (monotonic µs)   */
   int         tlm_valid;     /* HP-status telemetry seen at least once          */
@@ -1404,6 +1422,7 @@ static void draw_vfo_readout(cairo_t *cr, App *app, int w, const char *bandinfo)
                                                       passband stays) — the only place it shows (#30) */
       g_strlcat(pb, app->sam_sb == 1 ? "  ·  LSB only" : "  ·  USB only", sizeof pb);
     }
+    if (demod_eq_state() == 1) { g_strlcat(pb, "  ·  EQ", sizeof pb); }   /* RX EQ acting (#48) */
     snprintf(agct, sizeof agct, "AGC %s", agc_label(app->agc));
     const char *sep = "  ·  ";
     const double by = RO_TOP + 76.0 * RO_L;
@@ -1581,6 +1600,7 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
     snprintf(lbl, sizeof lbl, "Mic %+.0f   Lev +%.0f   ALC %.0f dB",
              app->txm_txt_mic, app->txm_txt_lvl, -app->txm_txt_alc);
   }
+  if (ts->eq_on) { g_strlcat(lbl, "  ·  EQ", sizeof lbl); }   /* the TX pre-EQ acts in this over (#48) */
   cairo_set_font_size(cr, 15.0);
   cairo_text_extents_t ex; cairo_text_extents(cr, lbl, &ex);
   cairo_set_source_rgba(cr, 0.95, 0.86, 0.62, 0.92);
@@ -3004,6 +3024,8 @@ static void app_to_settings(const App *app, Settings *s) {
   s->tx_phrot      = app->phrot_on;
   s->tx_phrot_hz   = app->phrot_hz;
   s->tx_phrot_auto = app->phrot_auto;
+  s->rx_eq = app->eq_on[0]; eq_profile_format(&app->eq_prof[0], s->rx_eq_bands, sizeof s->rx_eq_bands);   /* #48 */
+  s->tx_eq = app->eq_on[1]; eq_profile_format(&app->eq_prof[1], s->tx_eq_bands, sizeof s->tx_eq_bands);
   s->cw_wpm     = app->cw_wpm;
   s->cw_pitch   = app->cw_pitch;
   s->cw_st_db   = app->cw_st_db;
@@ -3220,6 +3242,8 @@ static void tx_push_cfg(App *app) {
   c.phrot_on       = app->phrot_on;
   c.phrot_hz       = app->phrot_hz;
   c.phrot_auto     = app->phrot_auto;
+  c.eq_on          = app->eq_on[1];           /* TX pre-EQ (#48): tx_run keys it under tx_voice_proc_active */
+  c.eq             = app->eq_prof[1];
   for (int i = 0; i < 11; i++) { c.pa_trim[i] = app->pa_trim[i]; }
   tx_run_set_cfg(&c);
 }
@@ -3486,6 +3510,7 @@ static void on_filter_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data);  
 static void filter_apply_var_edges(App *app, int lo, int hi);                    /* below */
 static void filter_dialog_open(App *app);                                       /* below */
 static void agc_dialog_open(App *app);                                          /* below */
+static void eq_dialog_open(App *app);                                           /* below (#48) */
 static void agc_widgets_sync(App *app);                                         /* below */
 static void on_drag_begin(GtkGestureDrag *g, double x, double y, gpointer data) {
   App *app = (App *)data;
@@ -3859,6 +3884,11 @@ static gboolean on_key(GtkEventControllerKey *ctl, guint keyval, guint keycode,
   if (gdk_keyval_to_lower(keyval) == GDK_KEY_b &&
       !(state & (GDK_CONTROL_MASK | GDK_ALT_MASK))) {       /* b = A/B swap (SDR-19) */
     vfo_swap(app);
+    return TRUE;
+  }
+  if (gdk_keyval_to_lower(keyval) == GDK_KEY_e &&
+      !(state & (GDK_CONTROL_MASK | GDK_ALT_MASK))) {       /* e = Equalizer dialog (#48) */
+    eq_dialog_open(app);
     return TRUE;
   }
   int mode;
@@ -4567,6 +4597,555 @@ static void agc_dialog_open(App *app) {
 static void act_agc(GSimpleAction *a, GVariant *param, gpointer data) {
   (void)a; (void)param;
   agc_dialog_open((App *)data);
+}
+
+/* ============================================================================
+ * Equalizer dialog (issue #48) — the RX and the TX parametric EQ on a drawn,
+ * draggable response curve. State: app->eq_prof[side] + app->eq_on[side]
+ * (0 = RX, 1 = TX). The engine gets the RX table through demod_set_eq (it
+ * applies on change and decides the digi bypass itself) and the TX table
+ * through tx_push_cfg (tx_run keys the pre-EQ under tx_voice_proc_active).
+ * ONE path for every editor — a node drag, a wheel on a node, a row spin,
+ * add / remove / reset — all end in eq_changed(), which pushes, persists and
+ * re-syncs the other editors. Drags push debounced (WDSP Guide §10.6: every
+ * profile push rebuilds a 16384-tap impulse) and once more on release.
+ * ========================================================================== */
+#define EQ_GRAPH_W 560
+#define EQ_GRAPH_H 250
+#define EQ_DB_SPAN (EQ_GAIN_MAX + 3.0)    /* ±18 dB on the axis: ±15 dB nodes stay inside */
+#define EQ_HIT_PX  12.0
+
+static double eq_fx(double f, int w) {
+  return (log(f) - log(EQ_F_MIN)) / (log(EQ_F_MAX) - log(EQ_F_MIN)) * w;
+}
+static double eq_xf(double x, int w) {
+  return exp(log(EQ_F_MIN) + x / w * (log(EQ_F_MAX) - log(EQ_F_MIN)));
+}
+static double eq_gy(double g, double top, double bot) {
+  return top + (EQ_DB_SPAN - g) / (2.0 * EQ_DB_SPAN) * (bot - top);
+}
+static double eq_yg(double y, double top, double bot) {
+  return EQ_DB_SPAN - (y - top) / (bot - top) * 2.0 * EQ_DB_SPAN;
+}
+static void eq_graph_band(int h, double *top, double *bot) { *top = 8.0; *bot = h - 18.0; }
+static void eq_side_rgb(int side, double *r, double *g, double *b) {
+  if (side) { *r = 1.00; *g = 0.36; *b = 0.30; }     /* COL_TX_EDGE */
+  else      { *r = 0.36; *g = 0.92; *b = 0.52; }     /* COL_RX_EDGE */
+}
+
+static void eq_rows_rebuild(App *app);
+static void eq_rows_sync(App *app);
+static void eq_note_sync(App *app);
+
+static void eq_engine_push(App *app, int side) {
+  if (side == 0) { demod_set_eq(app->eq_on[0], &app->eq_prof[0]); }
+  else           { tx_push_cfg(app); }          /* carries eq_on + the table into tx_run */
+}
+static gboolean eq_apply_cb(gpointer data) {
+  App *app = (App *)data;
+  app->eq_apply_src = 0;
+  eq_engine_push(app, app->eq_side);
+  return G_SOURCE_REMOVE;
+}
+/* Every editor ends here. structural = a band was added/removed (rows are
+ * rebuilt); live = mid-drag (engine push debounced, no save yet). */
+static void eq_changed(App *app, int side, int structural, int live) {
+  if (live) {
+    if (!app->eq_apply_src) { app->eq_apply_src = g_timeout_add(60, eq_apply_cb, app); }
+  } else {
+    if (app->eq_apply_src) { g_source_remove(app->eq_apply_src); app->eq_apply_src = 0; }
+    eq_engine_push(app, side);
+    schedule_save(app);
+  }
+  if (app->eq_dlg && side == app->eq_side) {
+    if (structural) { eq_rows_rebuild(app); } else { eq_rows_sync(app); }
+    if (app->eq_graph) { gtk_widget_queue_draw(app->eq_graph); }
+    eq_note_sync(app);
+  }
+  if (app->area) { gtk_widget_queue_draw(app->area); }   /* the readout's EQ tag */
+}
+static void eq_band_add(App *app, int side, double f, double g, int type) {
+  EqProfile *p = &app->eq_prof[side];
+  if (p->n >= EQ_MAX_BANDS) { return; }
+  EqBand b = { type, f, g, type == EQ_PEAK ? EQ_Q_DFLT_PEAK : EQ_Q_DFLT_SHELF };
+  eq_band_clamp(&b);
+  p->b[p->n++] = b;
+  eq_changed(app, side, 1, 0);
+}
+static void eq_band_remove(App *app, int side, int i) {
+  EqProfile *p = &app->eq_prof[side];
+  if (i < 0 || i >= p->n) { return; }
+  memmove(&p->b[i], &p->b[i + 1], (size_t)(p->n - i - 1) * sizeof p->b[0]);
+  p->n--;
+  app->eq_hover = app->eq_drag = -1;
+  eq_changed(app, side, 1, 0);
+}
+
+/* ---- the graph ------------------------------------------------------------ */
+static int eq_hit(App *app, double x, double y) {
+  if (!app->eq_graph) { return -1; }
+  int w = gtk_widget_get_width(app->eq_graph), h = gtk_widget_get_height(app->eq_graph);
+  double top, bot; eq_graph_band(h, &top, &bot);
+  const EqProfile *p = &app->eq_prof[app->eq_side];
+  int best = -1; double bd = EQ_HIT_PX;
+  for (int i = 0; i < p->n; i++) {
+    double dx = eq_fx(p->b[i].f, w) - x, dy = eq_gy(p->b[i].g, top, bot) - y;
+    double d = sqrt(dx * dx + dy * dy);
+    if (d <= bd) { bd = d; best = i; }
+  }
+  return best;
+}
+static void eq_graph_draw(GtkDrawingArea *da, cairo_t *cr, int w, int h, gpointer data) {
+  (void)da;
+  App *app = (App *)data;
+  int side = app->eq_side;
+  const EqProfile *p = &app->eq_prof[side];
+  int on = app->eq_on[side];
+  double top, bot; eq_graph_band(h, &top, &bot);
+  double cr_, cg_, cb_; eq_side_rgb(side, &cr_, &cg_, &cb_);
+  cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.55);
+  cairo_rectangle(cr, 0, 0, w, h); cairo_fill(cr);
+  /* what the chain passes: the RX filter (display/audio Hz) or the TX passband */
+  {
+    double lo, hi;
+    if (side == 0) { filt_disp(app, app->flo, app->fhi, &lo, &hi); }
+    else           { lo = app->tx_flo; hi = app->tx_fhi; }
+    if (lo < 0.0) { lo = 0.0; }                     /* AM/RTTY straddle: audio 0..hi */
+    if (lo < EQ_F_MIN) { lo = EQ_F_MIN; }
+    if (hi > EQ_F_MAX) { hi = EQ_F_MAX; }
+    if (hi > lo) {
+      cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.07);
+      cairo_rectangle(cr, eq_fx(lo, w), top, eq_fx(hi, w) - eq_fx(lo, w), bot - top); cairo_fill(cr);
+    }
+  }
+  cairo_select_font_face(cr, FONT_UI, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_set_font_size(cr, 10.0);
+  cairo_set_line_width(cr, 1.0);
+  for (int db = -12; db <= 12; db += 6) {           /* dB grid */
+    double y = floor(eq_gy(db, top, bot)) + 0.5;
+    cairo_set_source_rgba(cr, 1, 1, 1, db == 0 ? 0.30 : 0.10);
+    cairo_move_to(cr, 0, y); cairo_line_to(cr, w, y); cairo_stroke(cr);
+    char t[8]; snprintf(t, sizeof t, "%+d", db);
+    cairo_set_source_rgba(cr, 1, 1, 1, 0.65);
+    cairo_move_to(cr, 3, y - 3); cairo_show_text(cr, t);
+  }
+  { static const double marks[] = { 50, 100, 200, 500, 1000, 2000, 5000, 10000 };   /* f grid */
+    static const char *const ml[] = { "50", "100", "200", "500", "1k", "2k", "5k", "10k" };
+    for (unsigned i = 0; i < G_N_ELEMENTS(marks); i++) {
+      double x = floor(eq_fx(marks[i], w)) + 0.5;
+      cairo_set_source_rgba(cr, 1, 1, 1, 0.10);
+      cairo_move_to(cr, x, top); cairo_line_to(cr, x, bot); cairo_stroke(cr);
+      cairo_text_extents_t e; cairo_text_extents(cr, ml[i], &e);
+      double lx = x - e.width / 2; if (lx + e.width > w - 2) { lx = w - 2 - e.width; }
+      cairo_set_source_rgba(cr, 1, 1, 1, 0.75);
+      cairo_move_to(cr, lx, h - 5); cairo_show_text(cr, ml[i]);
+    } }
+  /* faint per-band bells, then the summed response */
+  double alpha = on ? 1.0 : 0.45;
+  for (int i = 0; i < p->n; i++) {
+    cairo_set_source_rgba(cr, cr_, cg_, cb_, 0.22 * alpha);
+    cairo_set_line_width(cr, 1.0);
+    for (int x = 0; x <= w; x += 2) {
+      double y = eq_gy(eq_band_db(&p->b[i], eq_xf(x, w)), top, bot);
+      if (x == 0) { cairo_move_to(cr, x, y); } else { cairo_line_to(cr, x, y); }
+    }
+    cairo_stroke(cr);
+  }
+  cairo_set_source_rgba(cr, cr_, cg_, cb_, 0.95 * alpha);
+  cairo_set_line_width(cr, 2.0);
+  for (int x = 0; x <= w; x++) {
+    double g = eq_profile_db(p, eq_xf(x, w));
+    if (g >  EQ_DB_SPAN) { g =  EQ_DB_SPAN; }
+    if (g < -EQ_DB_SPAN) { g = -EQ_DB_SPAN; }
+    double y = eq_gy(g, top, bot);
+    if (x == 0) { cairo_move_to(cr, x, y); } else { cairo_line_to(cr, x, y); }
+  }
+  cairo_stroke(cr);
+  /* nodes; the hovered / dragged one carries its values */
+  for (int i = 0; i < p->n; i++) {
+    double x = eq_fx(p->b[i].f, w), y = eq_gy(p->b[i].g, top, bot);
+    int hot = i == app->eq_drag || i == app->eq_hover;
+    cairo_set_source_rgba(cr, cr_, cg_, cb_, alpha);
+    cairo_arc(cr, x, y, hot ? 8.0 : 6.0, 0, 2 * M_PI); cairo_fill(cr);
+    cairo_set_source_rgba(cr, 1, 1, 1, 0.9 * alpha);
+    cairo_set_line_width(cr, 1.2);
+    cairo_arc(cr, x, y, hot ? 8.0 : 6.0, 0, 2 * M_PI); cairo_stroke(cr);
+    if (hot) {
+      char t[64];
+      snprintf(t, sizeof t, "%s  %.0f Hz  %+.1f dB  Q %.2f", eq_type_name(p->b[i].type), p->b[i].f, p->b[i].g, p->b[i].q);
+      cairo_set_font_size(cr, 11.0);
+      cairo_text_extents_t e; cairo_text_extents(cr, t, &e);
+      double lx = x + 12, ly = y - 10;
+      if (lx + e.width > w - 4) { lx = x - 12 - e.width; }
+      if (ly - e.height < top) { ly = y + 20; }
+      cairo_set_source_rgba(cr, 0, 0, 0, 0.6);
+      cairo_rectangle(cr, lx - 3, ly - e.height - 2, e.width + 6, e.height + 5); cairo_fill(cr);
+      cairo_set_source_rgba(cr, 1, 1, 1, 0.95);
+      cairo_move_to(cr, lx, ly); cairo_show_text(cr, t);
+    }
+  }
+  if (!on) {
+    cairo_select_font_face(cr, FONT_UI, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size(cr, 14.0);
+    cairo_set_source_rgba(cr, 1, 1, 1, 0.6);
+    cairo_move_to(cr, w - 40, top + 16); cairo_show_text(cr, "OFF");
+  }
+}
+static void on_eq_drag_begin(GtkGestureDrag *g, double x, double y, gpointer data) {
+  (void)g;
+  App *app = (App *)data;
+  app->eq_drag = eq_hit(app, x, y);
+  if (app->eq_graph) { gtk_widget_queue_draw(app->eq_graph); }
+}
+static void on_eq_drag_update(GtkGestureDrag *g, double ox, double oy, gpointer data) {
+  App *app = (App *)data;
+  if (app->eq_drag < 0 || !app->eq_graph) { return; }
+  double sx, sy; gtk_gesture_drag_get_start_point(g, &sx, &sy);
+  int w = gtk_widget_get_width(app->eq_graph), h = gtk_widget_get_height(app->eq_graph);
+  double top, bot; eq_graph_band(h, &top, &bot);
+  EqBand *b = &app->eq_prof[app->eq_side].b[app->eq_drag];
+  b->f = eq_xf(sx + ox, w);
+  b->g = eq_yg(sy + oy, top, bot);
+  eq_band_clamp(b);
+  eq_changed(app, app->eq_side, 0, 1);
+}
+static void on_eq_drag_end(GtkGestureDrag *g, double ox, double oy, gpointer data) {
+  (void)g; (void)ox; (void)oy;
+  App *app = (App *)data;
+  if (app->eq_drag < 0) { return; }
+  app->eq_drag = -1;
+  eq_changed(app, app->eq_side, 0, 0);            /* final push + save */
+}
+static void on_eq_motion(GtkEventControllerMotion *c, double x, double y, gpointer data) {
+  (void)c;
+  App *app = (App *)data;
+  int hv = eq_hit(app, x, y);
+  if (hv != app->eq_hover) { app->eq_hover = hv; if (app->eq_graph) { gtk_widget_queue_draw(app->eq_graph); } }
+}
+static void on_eq_leave(GtkEventControllerMotion *c, gpointer data) {
+  (void)c;
+  App *app = (App *)data;
+  if (app->eq_hover >= 0) { app->eq_hover = -1; if (app->eq_graph) { gtk_widget_queue_draw(app->eq_graph); } }
+}
+static gboolean on_eq_scroll(GtkEventControllerScroll *c, double dx, double dy, gpointer data) {
+  (void)c; (void)dx;
+  App *app = (App *)data;
+  int i = app->eq_drag >= 0 ? app->eq_drag : app->eq_hover;
+  if (i < 0 || i >= app->eq_prof[app->eq_side].n) { return FALSE; }
+  EqBand *b = &app->eq_prof[app->eq_side].b[i];
+  b->q *= pow(1.12, -dy);                         /* wheel up = narrower */
+  eq_band_clamp(b);
+  eq_changed(app, app->eq_side, 0, 0);
+  return TRUE;
+}
+static void on_eq_click(GtkGestureClick *g, int n_press, double x, double y, gpointer data) {
+  App *app = (App *)data;
+  if (!app->eq_graph) { return; }
+  guint button = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(g));
+  int hit = eq_hit(app, x, y);
+  if (button == 3) {                               /* right-click a node: remove it */
+    if (hit >= 0) { eq_band_remove(app, app->eq_side, hit); }
+    return;
+  }
+  if (button == 1 && n_press == 2 && hit < 0) {    /* double-click the plane: a band there */
+    int w = gtk_widget_get_width(app->eq_graph), h = gtk_widget_get_height(app->eq_graph);
+    double top, bot; eq_graph_band(h, &top, &bot);
+    eq_band_add(app, app->eq_side, eq_xf(x, w), eq_yg(y, top, bot), EQ_PEAK);
+  }
+}
+
+/* ---- the rows under the graph ---------------------------------------------- */
+static void on_eq_row_type(GtkDropDown *dd, GParamSpec *ps, gpointer data) {
+  (void)ps;
+  App *app = (App *)data;
+  if (app->eq_syncing) { return; }
+  int i = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(dd), "idx"));
+  EqProfile *p = &app->eq_prof[app->eq_side];
+  if (i < 0 || i >= p->n) { return; }
+  int t = (int)gtk_drop_down_get_selected(dd);
+  if (t == p->b[i].type) { return; }
+  double old_dflt = p->b[i].type == EQ_PEAK ? EQ_Q_DFLT_PEAK : EQ_Q_DFLT_SHELF;
+  p->b[i].type = t;
+  if (fabs(p->b[i].q - old_dflt) < 1e-9) {        /* an untouched Q follows the type */
+    p->b[i].q = t == EQ_PEAK ? EQ_Q_DFLT_PEAK : EQ_Q_DFLT_SHELF;
+  }
+  eq_band_clamp(&p->b[i]);
+  eq_changed(app, app->eq_side, 0, 0);
+}
+static void on_eq_row_spin(GtkSpinButton *sb, gpointer data) {
+  App *app = (App *)data;
+  if (app->eq_syncing) { return; }
+  int i    = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(sb), "idx"));
+  int what = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(sb), "what"));
+  EqProfile *p = &app->eq_prof[app->eq_side];
+  if (i < 0 || i >= p->n) { return; }
+  double v = gtk_spin_button_get_value(sb);
+  if      (what == 0) { p->b[i].f = v; }
+  else if (what == 1) { p->b[i].g = v; }
+  else                { p->b[i].q = v; }
+  eq_band_clamp(&p->b[i]);
+  eq_changed(app, app->eq_side, 0, 0);
+}
+static void on_eq_row_remove(GtkButton *b, gpointer data) {
+  App *app = (App *)data;
+  eq_band_remove(app, app->eq_side, GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "idx")));
+}
+static GtkWidget *eq_spin(App *app, int i, int what, double lo, double hi, double step, int digits, const char *tip) {
+  GtkWidget *sb = gtk_spin_button_new_with_range(lo, hi, step);
+  gtk_spin_button_set_digits(GTK_SPIN_BUTTON(sb), (guint)digits);
+  gtk_widget_set_tooltip_text(sb, tip);
+  gtk_widget_set_valign(sb, GTK_ALIGN_CENTER);
+  g_object_set_data(G_OBJECT(sb), "idx", GINT_TO_POINTER(i));
+  g_object_set_data(G_OBJECT(sb), "what", GINT_TO_POINTER(what));
+  g_signal_connect(sb, "value-changed", G_CALLBACK(on_eq_row_spin), app);
+  return sb;
+}
+static void eq_rows_rebuild(App *app) {
+  if (!app->eq_rows) { return; }
+  gtk_list_box_remove_all(GTK_LIST_BOX(app->eq_rows));
+  const EqProfile *p = &app->eq_prof[app->eq_side];
+  for (int i = 0; i < p->n; i++) {
+    GtkWidget *hb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_margin_top(hb, 4); gtk_widget_set_margin_bottom(hb, 4);
+    gtk_widget_set_margin_start(hb, 10); gtk_widget_set_margin_end(hb, 6);
+    GtkStringList *m = gtk_string_list_new((const char *[]){ "Peak", "Low shelf", "High shelf", NULL });
+    GtkWidget *dd = gtk_drop_down_new(G_LIST_MODEL(m), NULL);
+    gtk_widget_set_valign(dd, GTK_ALIGN_CENTER);
+    g_object_set_data(G_OBJECT(dd), "idx", GINT_TO_POINTER(i));
+    g_signal_connect(dd, "notify::selected", G_CALLBACK(on_eq_row_type), app);
+    app->eq_row_type[i] = dd;
+    app->eq_row_f[i] = eq_spin(app, i, 0, EQ_F_MIN, EQ_F_MAX, 10.0, 0, "frequency, Hz");
+    app->eq_row_g[i] = eq_spin(app, i, 1, -EQ_GAIN_MAX, EQ_GAIN_MAX, 0.5, 1, "gain, dB");
+    app->eq_row_q[i] = eq_spin(app, i, 2, EQ_Q_MIN, EQ_Q_MAX, 0.1, 2, "Q: peak = fc / bandwidth at half gain; shelf 0.71 = flat knee");
+    GtkWidget *rm = gtk_button_new_from_icon_name("list-remove-symbolic");
+    gtk_widget_add_css_class(rm, "flat");
+    gtk_widget_set_tooltip_text(rm, "Remove this band");
+    gtk_widget_set_valign(rm, GTK_ALIGN_CENTER);
+    g_object_set_data(G_OBJECT(rm), "idx", GINT_TO_POINTER(i));
+    g_signal_connect(rm, "clicked", G_CALLBACK(on_eq_row_remove), app);
+    GtkWidget *lf = gtk_label_new("Hz"), *lg = gtk_label_new("dB"), *lq = gtk_label_new("Q");
+    gtk_widget_add_css_class(lf, "dim"); gtk_widget_add_css_class(lg, "dim"); gtk_widget_add_css_class(lq, "dim");
+    gtk_box_append(GTK_BOX(hb), dd);
+    gtk_box_append(GTK_BOX(hb), app->eq_row_f[i]); gtk_box_append(GTK_BOX(hb), lf);
+    gtk_box_append(GTK_BOX(hb), app->eq_row_g[i]); gtk_box_append(GTK_BOX(hb), lg);
+    gtk_box_append(GTK_BOX(hb), app->eq_row_q[i]); gtk_box_append(GTK_BOX(hb), lq);
+    gtk_widget_set_hexpand(rm, TRUE); gtk_widget_set_halign(rm, GTK_ALIGN_END);
+    gtk_box_append(GTK_BOX(hb), rm);
+    GtkWidget *row = gtk_list_box_row_new();
+    gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
+    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), hb);
+    gtk_list_box_append(GTK_LIST_BOX(app->eq_rows), row);
+  }
+  gtk_widget_set_visible(app->eq_rows, p->n > 0);
+  if (app->eq_add_btn) { gtk_widget_set_sensitive(app->eq_add_btn, p->n < EQ_MAX_BANDS); }
+  eq_rows_sync(app);
+}
+static void eq_rows_sync(App *app) {
+  if (!app->eq_rows) { return; }
+  const EqProfile *p = &app->eq_prof[app->eq_side];
+  app->eq_syncing = 1;
+  for (int i = 0; i < p->n; i++) {
+    if (!app->eq_row_type[i]) { continue; }
+    gtk_drop_down_set_selected(GTK_DROP_DOWN(app->eq_row_type[i]), (guint)p->b[i].type);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(app->eq_row_f[i]), p->b[i].f);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(app->eq_row_g[i]), p->b[i].g);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(app->eq_row_q[i]), p->b[i].q);
+  }
+  app->eq_syncing = 0;
+}
+
+/* ---- state line, switch, side toggles, dialog -------------------------------- */
+static void eq_note_sync(App *app) {
+  if (!app->eq_note) { return; }
+  int side = app->eq_side;
+  const EqProfile *p = &app->eq_prof[side];
+  const char *t;
+  if (!app->eq_on[side]) {
+    t = "Off.";
+  } else if (p->n == 0) {
+    t = "On, with no bands yet — double-click the curve to add one.";
+  } else if (side == 0) {
+    switch (demod_eq_state()) {
+      case 2:  t = "Switched on, but bypassed in DIGU / DIGL / RTTY — decoders get unshaped audio."; break;
+      case 3:  t = "Switched on, but WDSP does not compute it while NNR runs a CW model (CW modes with NNR on)."; break;
+      default: t = "Acting on the RX audio, ahead of the AGC — it shapes, the AGC levels."; break;
+    }
+  } else {
+    int acting = 0;
+    if (app->tx_ready) { tx_run_status ts; tx_run_get_status(&ts); acting = ts.eq_on; }
+    t = acting ? "Acting on the mic now."
+               : "Acts on the live mic in voice modes while keyed — never TUNE, two-tone, CW, RTTY, digi or TCI audio.";
+  }
+  gtk_label_set_text(GTK_LABEL(app->eq_note), t);
+}
+static gboolean eq_tick_cb(gpointer data) {
+  App *app = (App *)data;
+  eq_note_sync(app);                                  /* mode / NR / keying may have moved */
+  if (app->eq_graph) { gtk_widget_queue_draw(app->eq_graph); }   /* the passband shading follows the filter */
+  return G_SOURCE_CONTINUE;
+}
+static void on_eq_switch(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps;
+  App *app = (App *)data;
+  if (app->eq_syncing) { return; }
+  app->eq_on[app->eq_side] = adw_switch_row_get_active(r) ? 1 : 0;
+  eq_changed(app, app->eq_side, 0, 0);
+}
+static void eq_widgets_sync(App *app);
+static void on_eq_side_toggled(GtkToggleButton *b, gpointer data) {
+  App *app = (App *)data;
+  if (app->eq_syncing || !gtk_toggle_button_get_active(b)) { return; }
+  app->eq_side = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "side"));
+  app->eq_hover = app->eq_drag = -1;
+  eq_widgets_sync(app);
+}
+static void on_eq_add(GtkButton *b, gpointer data) {
+  (void)b;
+  App *app = (App *)data;
+  /* a new band where none sits yet: the first free spot of a 1-octave ladder */
+  static const double ladder[] = { 1000, 500, 2000, 250, 4000, 125, 8000, 60 };
+  const EqProfile *p = &app->eq_prof[app->eq_side];
+  double f = ladder[0];
+  for (unsigned k = 0; k < G_N_ELEMENTS(ladder); k++) {
+    int taken = 0;
+    for (int i = 0; i < p->n; i++) { if (fabs(log(p->b[i].f / ladder[k])) < 0.2) { taken = 1; } }
+    if (!taken) { f = ladder[k]; break; }
+  }
+  eq_band_add(app, app->eq_side, f, 0.0, EQ_PEAK);
+}
+static void on_eq_reset(GtkButton *b, gpointer data) {
+  (void)b;
+  App *app = (App *)data;
+  app->eq_prof[app->eq_side].n = 0;
+  app->eq_hover = app->eq_drag = -1;
+  eq_changed(app, app->eq_side, 1, 0);
+}
+static void on_eq_dialog_closed(AdwDialog *d, gpointer data) {
+  (void)d;
+  App *app = (App *)data;
+  if (app->eq_tick) { g_source_remove(app->eq_tick); app->eq_tick = 0; }
+  if (app->eq_apply_src) { g_source_remove(app->eq_apply_src); app->eq_apply_src = 0; eq_engine_push(app, app->eq_side); schedule_save(app); }
+  app->eq_dlg = NULL; app->eq_graph = NULL; app->eq_rows = NULL; app->eq_note = NULL;
+  app->eq_switch = NULL; app->eq_add_btn = NULL;
+  app->eq_side_btn[0] = app->eq_side_btn[1] = NULL;
+  for (int i = 0; i < EQ_MAX_BANDS; i++) { app->eq_row_type[i] = app->eq_row_f[i] = app->eq_row_g[i] = app->eq_row_q[i] = NULL; }
+  app->eq_drag = app->eq_hover = -1;
+}
+static void eq_dialog_build(App *app) {
+  AdwDialog *dlg = adw_dialog_new();
+  adw_dialog_set_title(dlg, "Equalizer");
+  adw_dialog_set_content_width(dlg, EQ_GRAPH_W + 36);
+  GtkWidget *tv = adw_toolbar_view_new();
+  GtkWidget *hb = adw_header_bar_new();
+  GtkWidget *sides = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_add_css_class(sides, "linked");
+  { static const char *const SN[2] = { "RX", "TX" };
+    GtkWidget *grp = NULL;
+    for (int s = 0; s < 2; s++) {
+      GtkWidget *b = gtk_toggle_button_new_with_label(SN[s]);
+      g_object_set_data(G_OBJECT(b), "side", GINT_TO_POINTER(s));
+      if (!grp) { grp = b; } else { gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(b), GTK_TOGGLE_BUTTON(grp)); }
+      g_signal_connect(b, "toggled", G_CALLBACK(on_eq_side_toggled), app);
+      app->eq_side_btn[s] = b;
+      gtk_box_append(GTK_BOX(sides), b);
+    } }
+  adw_header_bar_pack_start(ADW_HEADER_BAR(hb), sides);
+  adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(tv), hb);
+  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+  gtk_widget_set_margin_top(box, 6); gtk_widget_set_margin_bottom(box, 18);
+  gtk_widget_set_margin_start(box, 18); gtk_widget_set_margin_end(box, 18);
+
+  GtkWidget *sw_list = gtk_list_box_new();
+  gtk_list_box_set_selection_mode(GTK_LIST_BOX(sw_list), GTK_SELECTION_NONE);
+  gtk_widget_add_css_class(sw_list, "boxed-list");
+  app->eq_switch = g_object_new(ADW_TYPE_SWITCH_ROW, "title", "RX equalizer", NULL);
+  g_signal_connect(app->eq_switch, "notify::active", G_CALLBACK(on_eq_switch), app);
+  gtk_list_box_append(GTK_LIST_BOX(sw_list), app->eq_switch);
+  gtk_box_append(GTK_BOX(box), sw_list);
+
+  app->eq_graph = gtk_drawing_area_new();
+  gtk_widget_set_size_request(app->eq_graph, EQ_GRAPH_W, EQ_GRAPH_H);
+  gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(app->eq_graph), eq_graph_draw, app, NULL);
+  { GtkGesture *drag = gtk_gesture_drag_new();
+    g_signal_connect(drag, "drag-begin",  G_CALLBACK(on_eq_drag_begin),  app);
+    g_signal_connect(drag, "drag-update", G_CALLBACK(on_eq_drag_update), app);
+    g_signal_connect(drag, "drag-end",    G_CALLBACK(on_eq_drag_end),    app);
+    gtk_widget_add_controller(app->eq_graph, GTK_EVENT_CONTROLLER(drag));
+    GtkGesture *click = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), 0);          /* any button */
+    g_signal_connect(click, "pressed", G_CALLBACK(on_eq_click), app);
+    gtk_widget_add_controller(app->eq_graph, GTK_EVENT_CONTROLLER(click));
+    GtkEventController *mo = gtk_event_controller_motion_new();
+    g_signal_connect(mo, "motion", G_CALLBACK(on_eq_motion), app);
+    g_signal_connect(mo, "leave",  G_CALLBACK(on_eq_leave),  app);
+    gtk_widget_add_controller(app->eq_graph, mo);
+    GtkEventController *sc = gtk_event_controller_scroll_new(GTK_EVENT_CONTROLLER_SCROLL_VERTICAL);
+    g_signal_connect(sc, "scroll", G_CALLBACK(on_eq_scroll), app);
+    gtk_widget_add_controller(app->eq_graph, sc); }
+  gtk_box_append(GTK_BOX(box), app->eq_graph);
+
+  GtkWidget *hint = gtk_label_new("Drag a node: frequency and gain · wheel on a node: Q · "
+                                  "double-click the plane: add a band · right-click a node: remove it");
+  gtk_widget_add_css_class(hint, "dim");
+  gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
+  gtk_label_set_xalign(GTK_LABEL(hint), 0.0);
+  gtk_box_append(GTK_BOX(box), hint);
+
+  app->eq_rows = gtk_list_box_new();
+  gtk_list_box_set_selection_mode(GTK_LIST_BOX(app->eq_rows), GTK_SELECTION_NONE);
+  gtk_widget_add_css_class(app->eq_rows, "boxed-list");
+  gtk_box_append(GTK_BOX(box), app->eq_rows);
+
+  GtkWidget *btns = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+  app->eq_add_btn = gtk_button_new_with_label("Add band");
+  g_signal_connect(app->eq_add_btn, "clicked", G_CALLBACK(on_eq_add), app);
+  GtkWidget *reset = gtk_button_new_with_label("Reset");
+  gtk_widget_set_tooltip_text(reset, "Remove every band of this side");
+  g_signal_connect(reset, "clicked", G_CALLBACK(on_eq_reset), app);
+  gtk_widget_set_hexpand(reset, TRUE); gtk_widget_set_halign(reset, GTK_ALIGN_END);
+  gtk_box_append(GTK_BOX(btns), app->eq_add_btn);
+  gtk_box_append(GTK_BOX(btns), reset);
+  gtk_box_append(GTK_BOX(box), btns);
+
+  app->eq_note = gtk_label_new("");
+  gtk_widget_add_css_class(app->eq_note, "dim");
+  gtk_label_set_wrap(GTK_LABEL(app->eq_note), TRUE);
+  gtk_label_set_xalign(GTK_LABEL(app->eq_note), 0.0);
+  gtk_box_append(GTK_BOX(box), app->eq_note);
+
+  adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(tv), box);
+  adw_dialog_set_child(dlg, tv);
+  g_signal_connect(dlg, "closed", G_CALLBACK(on_eq_dialog_closed), app);
+  app->eq_dlg = dlg;
+  app->eq_drag = app->eq_hover = -1;
+  app->eq_tick = g_timeout_add(250, eq_tick_cb, app);
+}
+/* Dialog widgets ← state (signals muted meanwhile). */
+static void eq_widgets_sync(App *app) {
+  if (!app->eq_dlg) { return; }
+  int side = app->eq_side;
+  app->eq_syncing = 1;
+  if (app->eq_side_btn[side]) { gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->eq_side_btn[side]), TRUE); }
+  g_object_set(app->eq_switch,
+      "title", side ? "TX equalizer" : "RX equalizer",
+      "subtitle", side ? "pre-EQ ahead of PROC · live mic in voice modes only · persisted"
+                       : "ahead of the AGC · bypassed in digi modes · persisted", NULL);
+  adw_switch_row_set_active(ADW_SWITCH_ROW(app->eq_switch), app->eq_on[side] ? TRUE : FALSE);
+  app->eq_syncing = 0;
+  eq_rows_rebuild(app);
+  if (app->eq_graph) { gtk_widget_queue_draw(app->eq_graph); }
+  eq_note_sync(app);
+}
+static void eq_dialog_open(App *app) {
+  if (!app->win) { return; }
+  if (app->eq_dlg) { eq_widgets_sync(app); return; }
+  eq_dialog_build(app);
+  eq_widgets_sync(app);
+  adw_dialog_present(app->eq_dlg, GTK_WIDGET(app->win));
+}
+static void act_eq(GSimpleAction *a, GVariant *param, gpointer data) {
+  (void)a; (void)param;
+  eq_dialog_open((App *)data);
 }
 
 static void on_agc_changed(GtkDropDown *dd, GParamSpec *ps, gpointer data) {
@@ -6350,7 +6929,7 @@ static AdwDialog *build_prefs(App *app) {
   g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP,
       "title", "Transmit",
       "description", "Voice chain in order: mic → mic gain → noise gate → phase rotator → "
-                     "PROC → TX bandpass → ALC limiter. Applies to the live mic in voice "
+                     "EQ (Equalizer dialog) → PROC → TX bandpass → ALC limiter. Applies to the live mic in voice "
                      "modes only — digi/TCI audio bypasses everything (clean "
                      "chain). Base level on the preamp; target = Mic bar peaks "
                      "−6..0 dBFS on the TX HUD.", NULL));
@@ -6714,6 +7293,14 @@ static void on_activate(GtkApplication *gtkapp, gpointer data) {
     gtk_widget_set_tooltip_text(gb, "AGC: character, AGC-T, live gain");
     gtk_actionable_set_action_name(GTK_ACTIONABLE(gb), "app.agc");
     adw_header_bar_pack_end(ADW_HEADER_BAR(header), gb);
+    GSimpleAction *ea = g_simple_action_new("eq", NULL);          /* Equalizer dialog (#48) */
+    g_signal_connect(ea, "activate", G_CALLBACK(act_eq), app);
+    g_action_map_add_action(G_ACTION_MAP(gtkapp), G_ACTION(ea));
+    g_object_unref(ea);
+    GtkWidget *eb = gtk_button_new_from_icon_name("sdrfl-eq-symbolic");
+    gtk_widget_set_tooltip_text(eb, "Equalizer: RX and TX parametric EQ (e)");
+    gtk_actionable_set_action_name(GTK_ACTIONABLE(eb), "app.eq");
+    adw_header_bar_pack_end(ADW_HEADER_BAR(header), eb);
   }
 
   GtkWidget *tv = adw_toolbar_view_new();
@@ -6949,6 +7536,7 @@ static void start_radio(App *app) {
   app->am_fade = st.am_fade < 0 ? 1 : (st.am_fade ? 1 : 0);
   demod_set_sam_sideband(app->sam_sb);
   demod_set_am_fade(app->am_fade);
+  demod_set_eq(app->eq_on[0], &app->eq_prof[0]);   /* cached; applied at demod_create (#48) */
   app->binaural = st.binaural ? 1 : 0;
   /* TX (F6a): PA-enable persists (mirrors piHPSDR). Clamp the rest to safe
    * ranges. G2E-profile defaults here; once discovery identifies the radio the
@@ -6983,6 +7571,11 @@ static void start_radio(App *app) {
   app->phrot_hz      = (st.tx_phrot_hz < PHROT_HZ_MIN || st.tx_phrot_hz > PHROT_HZ_MAX)
                        ? PHROT_HZ_DFLT : st.tx_phrot_hz;       /* 0/unset → default */
   app->phrot_auto    = st.tx_phrot_auto ? 1 : 0;
+  app->eq_on[0]      = st.rx_eq ? 1 : 0;      /* equalizer (#48): bands parsed + clamped */
+  app->eq_on[1]      = st.tx_eq ? 1 : 0;
+  eq_profile_parse(st.rx_eq_bands, &app->eq_prof[0]);
+  eq_profile_parse(st.tx_eq_bands, &app->eq_prof[1]);
+  app->eq_drag = app->eq_hover = -1;
   app->cw_wpm        = st.cw_wpm   < 5   ? 5   : (st.cw_wpm   > 60   ? 60   : st.cw_wpm);
   app->cw_pitch      = st.cw_pitch < 200 ? 200 : (st.cw_pitch > 1200 ? 1200 : st.cw_pitch);
   app->cw_st_db      = st.cw_st_db < CW_ST_DB_MIN ? CW_ST_DB_MIN : (st.cw_st_db > CW_ST_DB_MAX ? CW_ST_DB_MAX : st.cw_st_db);

@@ -37,6 +37,13 @@ does the heavy lifting.
   Low/High rows; AGC Off/Long/Slow/Med/Fast with a live gain bar and the
   AGC-T threshold. Any preset's edges also drag right on the spectrum
   (a dragged preset becomes Var1); LSB-family filters read as audio Hz
+- **Parametric equalizer** (header-bar icon or `e`): up to eight bands per
+  side — peak, low shelf, high shelf with frequency, gain and Q — edited on
+  a drawn response curve (drag a node, wheel for Q, double-click to add,
+  right-click to remove) with a row per band; one profile for RX (ahead of
+  the AGC, bypassed in digi modes so decoders hear the raw audio) and one
+  for TX (the pre-EQ ahead of PROC, live mic in voice modes only). The curve
+  is computed here and realized by WDSP's continuous-gain FIR equalizer
 - **Two VFOs**: A/B swap and A=B, the other VFO shown under the frequency
   readout, free across bands; **CTUN**: drag pans the spectrum while the
   dial stays put — the green passband is the tuning handle
@@ -53,7 +60,8 @@ does the heavy lifting.
 - MOX / TUNE with separate drive levels, per-band PA calibration,
   true-PEP wattmeter, SWR metering with automatic drive-drop protection
 - Mic via PipeWire with mic gain / noise gate / phase rotator (WDSP PHROT,
-  with its auto-optimizer and asymmetry readout) / speech processor controls
+  with its auto-optimizer and asymmetry readout) / parametric pre-EQ /
+  speech processor controls
   (digi audio stays a bit-exact clean chain, enforced by the engine),
   faithful TX monitor (plays the processed on-air audio), footswitch PTT
 - CW keying with clean first-dit and contest-grade latency (TCI→RF
@@ -200,8 +208,8 @@ Settings persist in `~/.config/sdr-for-linux/config.ini`.
 (with CTUN on, the spectrum pans and the dial stays — drag the passband to
 tune); right-drag = zoom; drag a passband edge to reshape the filter; drag
 the spectrum/waterfall separator to resize (double-click resets). Keys:
-`u`/`l`/`c`/`a`/`r` = USB/LSB/CW/AM/RTTY (`a` again = SAM), `b` = VFO A/B, `Esc` = leave
-select mode / abort a TX over.
+`u`/`l`/`c`/`a`/`r` = USB/LSB/CW/AM/RTTY (`a` again = SAM), `b` = VFO A/B, `e` =
+Equalizer dialog, `Esc` = leave select mode / abort a TX over.
 
 **Display rendering** is chosen automatically: on GTK ≥ 4.22 the app uses
 GTK's GPU (GL) renderer — the waterfall history is scaled by the graphics

@@ -5,5 +5,6 @@
   <gresource prefix="/cz/ok1br/sdr_for_linux/icons/scalable/actions">
     <file alias="sdrfl-filter-symbolic.svg">icons/sdrfl-filter-symbolic.svg</file>
     <file alias="sdrfl-agc-symbolic.svg">icons/sdrfl-agc-symbolic.svg</file>
+    <file alias="sdrfl-eq-symbolic.svg">icons/sdrfl-eq-symbolic.svg</file>
   </gresource>
 </gresources>

@@ -1188,6 +1188,55 @@ waveform's pos/neg — a single-sample envelope max suggested +1 dB at 1 kHz,
 the 99.99-percentile peak said ±0.1 dB. The dump stays active in his running
 instance until its next restart.
 
+**★ ISSUE #48 — RX + TX PARAMETRIC EQUALIZER (the 2026-08-01 milestone), DONE
+IN CODE 2026-10-31/11-01, `needs-live-check` + `at-the-radio`:** the band model
+(frequency / gain / Q; peak, low shelf, high shelf = the RBJ Audio-EQ-Cookbook
+analog prototypes) lives in `src/engine/eq.[ch]`, NOT in WDSP — the TAPR 2.11
+equalizer is a continuous-gain FIR fed by a ≤ 256-point frequency/gain profile
+and has no Q anywhere (Thetis got one only by forking its `eq.c`; piHPSDR 3.1
+drives ten points linearly from spin buttons). The app evaluates the analytic
+curve on an ADAPTIVE grid (log seed + each band's centre/half-bandwidth points,
+then the interval with the largest linear-interpolation error is split until
+all are within 0.01 dB or the cap; 0 Hz first, Nyquist last so WDSP's 4th-power
+cutoff never engages — `ctfmode 1` is documented but not coded) and pushes it
+as a plain `SetRXAEQProfile` / `SetTXAEQProfile`; `vendor/wdsp` untouched. ⛔
+Pushed on change only (every push rebuilds a 16384-tap impulse — the DEXP/PHROT
+class); re-pushed when the channel is re-created. RX: ahead of the AGC,
+bypassed by us in DIGU/DIGL/RTTY (TCI RX-audio decoders get raw audio), not
+computed by WDSP while NNR runs a CW model (Guide §5.3.20) — `demod_eq_state()`
+0/1/2/3 drives the dialog's state line and the readout's `· EQ` tag. TX: the
+pre-EQ between the gate and the leveler under the shared predicate
+`tx_voice_proc_active()` (= the rotator's rule; `tx_phrot_active` is its
+alias), `EQ` tag on the TX HUD line while it acts. **Equalizer dialog**
+(header-bar icon `sdrfl-eq-symbolic`, `app.eq`, key `e`): RX | TX pages,
+on/off switch row, the curve on a log axis 20 Hz–10 kHz / ±18 dB with the
+chain's passband shaded, faint per-band bells + the summed response (RX green,
+TX red), draggable nodes (drag = f + gain, wheel = Q, double-click = add,
+right-click = remove), one row per band (type / Hz / dB / Q / remove), Add
+band + Reset, a 4 Hz state line. Persisted `[rx] eq` + `eq_bands`, `[tx]` the
+same ("type:f:g:q;…", locale-safe); one profile per side, per-mode profiles out
+of scope. Gate `sdrfl-eq-test` (87 checks, in CI; `SDRFL_WISDOM_DIR=
+~/.config/sdr-for-linux/wisdom/` = a 2 s run): shapes, grid, persistence, the
+predicate table, and the REALIZED response of the real RX path (demod.c at
+48/96/192 kHz AF, within 0.1 dB of the curve at every tone) and TX path (tx.c,
+within 0.04 dB), apply-on-change tripwires, bypass states. ⛔ Two gate
+lessons: (1) the RX tones must go in as (cos, −sin) — the HPSDR wire IQ is
+spectrally inverted; with (cos, +sin) only −100 dBFS of stopband leakage
+reached the tap and it STILL tracked the EQ curve to 0.2 dB, so a ratio check
+alone proves nothing without an absolute level check; (2) `SDRFL_WISDOM_DIR`
+without the `wisdom/` subdir rebuilt a stray 8-min `wdspWisdom01` in
+`~/.config/sdr-for-linux/` (trashed). Broadway lab (5 rounds, CDP driver
+extended with dbl/rclick/drag/wheelat + `LAB_SEED_SED`): every gesture and
+both persistence paths proven; an AdwDialog keeps its grown height when rows
+go away (coordinates stay valid after removals, shift after additions); the
+rebuilt rows showed −/+ and chevron icons only on the LAST row — most likely a
+broadway icon-texture artifact, ⛔ look at the rows live. 15 offline gates
+green. **Live protocol:** RX by ear on SSB (a presence lift / low cut) and CW
+(the NNR-CW note), the `· EQ` tag; TX into the dummy load with `SDRFL_TX_DUMP`
+and the spectra compared EQ off vs on, the HUD `EQ` tag, no effect in digi /
+TUNE / 2T (TX-SAFETY consent for the TX half). Not done: the by-ear A/B on a
+real signal, the TX half entirely.
+
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
 red TX filter footprint, AF true mute, 60 m USB, SDR-15 discovery dedup,
