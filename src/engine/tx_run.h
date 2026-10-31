@@ -27,6 +27,34 @@
 #ifndef SDRFL_ENGINE_TX_RUN_H
 #define SDRFL_ENGINE_TX_RUN_H
 
+#include "demod.h"   /* DEMOD_* for the pure mode predicates below */
+
+/* TX phase rotator corner (issue #23): the WDSP PHROT range and default. */
+#define TX_PHROT_HZ_MIN   50.0
+#define TX_PHROT_HZ_MAX 2000.0
+#define TX_PHROT_HZ_DFLT 338.0
+
+/* Pure, gate-tested (sdrfl-txdsp-test): the modes whose TX source is the
+ * MIC — i.e. where the voice chain (mic gain, gate, PROC, phase rotator) may
+ * act. CW and RTTY key their generators, DIGU/DIGL carry TCI audio untouched
+ * (⛔ the digi clean-chain rule). RTTY (mode 12, ours) MUST be named here: it
+ * is not a WDSP mode and would otherwise fall through as voice and open the
+ * mic path (the is_voice tripwire, RTTY-SCOPE §6). */
+static inline int tx_mode_is_voice(int mode) {
+  return mode != DEMOD_CWL && mode != DEMOD_CWU && mode != DEMOD_RTTY &&
+         mode != DEMOD_DIGU && mode != DEMOD_DIGL;
+}
+
+/* Pure, gate-tested: does the phase rotator run for this keying state?
+ * Switched on, a voice mode, the live mic (not TCI audio), MOX keyed, and
+ * neither TUNE nor two-tone — the PostGen replaces the chain output in
+ * those, but the rotator would still be fed room noise and its optimizer
+ * would step on it. */
+static inline int tx_phrot_active(int enabled, int mode, int ext_src,
+                                  int mox, int tune, int two_tone) {
+  return enabled && tx_mode_is_voice(mode) && !ext_src && mox && !tune && !two_tone;
+}
+
 /* Operator-set TX configuration (persisted by the GUI; snapshotted internally). */
 typedef struct {
   int         pa_enabled;      /* PA-enable setting (RF impossible when 0)         */
@@ -59,6 +87,11 @@ typedef struct {
   double      gate_db;         /* gate threshold, Mic-METER dBFS (0 = default −45,
                                   the live-validated value; −30 provably chopped)  */
   double      gate_depth_db;   /* below-threshold attenuation dB (0 = default 10)  */
+  /* TX phase rotator (issue #23) — the same voice + live-mic rule, and off in
+   * TUNE / two-tone overs (tx_phrot_active). */
+  int         phrot_on;        /* WDSP PHROT on/off                                */
+  double      phrot_hz;        /* corner, Hz (0 = default 338)                     */
+  int         phrot_auto;      /* WDSP's A/B optimizer owns the corner             */
 } tx_run_cfg;
 
 /* Live status for the meter / UI (thread-safe snapshot). */
@@ -79,6 +112,12 @@ typedef struct {
   double mic_pk;    /* mic-input peak, dBFS (≤ 0; -99 floor); valid while keyed */
   double alc_gain;  /* ALC gain reduction, dB (0 = none, negative = clamping)   */
   double lvlr_gain; /* leveler makeup gain, dB (0..+8; valid only with PROC on) */
+  /* TX phase rotator (#23) — live whenever the TX channel exists: */
+  int    phrot_on;   /* the rotator is switched on (last push = this voice over) */
+  double phrot_in;   /* waveform asymmetry BEFORE the rotator, 0..1 (30 s EMA)   */
+  double phrot_out;  /* … AFTER it — the Guide's verification: out < in          */
+  double phrot_fc;   /* corner in use, Hz (moves under the optimizer)            */
+  double phrot_step; /* optimizer: 0 = off, −1 = converged (locked), else Hz     */
   /* PureSignal (F7/PS-2; zeros when the setting is off): */
   int    ps_on;         /* PS enabled                                           */
   int    ps_correcting; /* correction applied right now (GetPSInfo[14])         */
@@ -140,6 +179,10 @@ void tx_run_set_comp(int on, double gain_db);
 
 /* Mic noise gate (downward expander; see tx_dsp_set_gate). Safe if TX isn't up. */
 void tx_run_set_gate(int on, double thresh_db);
+
+/* Phase rotator (#23): restart the optimizer search from the 338 Hz default.
+ * Safe if TX isn't up. */
+void tx_run_phrot_reset(void);
 
 /* TX monitor (self-listen): while keyed, feed the TX audio (voice/digi) or a
  * sidetone shaped by the CW envelope into the host audio via

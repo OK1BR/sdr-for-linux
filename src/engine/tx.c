@@ -58,6 +58,19 @@ static double    t_mic_gain_db;   /* mirrors SetTXAPanelGain1, for the gate resc
 static double    t_ap_ratio = -1.0, t_ap_thresh = -1.0;
 static int       t_ap_run = -1;
 
+/* Phase rotator (issue #23) — the same apply-on-change discipline, for the
+ * same reason: SetTXAPHROTCorner / Nstages decalc+calc (the all-pass history
+ * is freed and re-allocated → a discontinuity on every call, and a running
+ * optimizer search restarts from the pushed corner), SetTXAPHROTRun(1)
+ * flushes the asymmetry envelopes. Pushed unconditionally from the ~20 Hz
+ * slot the rotator would click 20×/s and the optimizer could never measure
+ * anything. */
+#define TX_PHROT_NSTAGES 4     /* WDSP Guide 2.1.1 default (TXA.c creates 8,
+                                  piHPSDR runs 2 at 600 Hz); the Guide's
+                                  200–400 Hz guidance and the optimizer's
+                                  bounds are written for four stages */
+static int       t_ap_ph_run = -1, t_ap_ph_auto = -1;
+
 /* Push the stored gate state into the DEXP (call with t_lock held, t_ready).
  * The DEXP runs on the RAW mic input (pre TXA panel), but the operator sets
  * the threshold in the dBFS he can SEE — the Mic meter, which WDSP taps AFTER
@@ -116,6 +129,8 @@ int tx_dsp_create(int mode, double flo, double fhi, int p1, tx_iq_cb cb, void *u
   SetTXAPanelSelect(t_id, 2);           /* use the Mic-I sample */
   SetTXAPanelGain1(t_id, 1.0);          /* mic gain 0 dB */
   SetTXAMode(t_id, mode);
+  SetTXAPHROTNstages(t_id, TX_PHROT_NSTAGES);   /* rotator stays OFF (create default)
+                                                   until tx_dsp_set_phrot (#23) */
   /* Mic noise gate = WDSP DEXP, OUTSIDE the TXA chain, in-place on t_mic just
    * before fexchange0 — piHPSDR parity (transmitter.c:1272 args, :1664 call
    * site). A true downward expander (attack 25 ms / release 100 ms / HOLD
@@ -152,6 +167,7 @@ int tx_dsp_create(int mode, double flo, double fhi, int p1, tx_iq_cb cb, void *u
    * operator state once (one benign reset at session start, none after). */
   t_ap_ratio = t_ap_thresh = -1.0;
   t_ap_run = -1;
+  t_ap_ph_run = t_ap_ph_auto = -1;   /* fresh channel: rotator off, corner 338, auto off */
   t_ready = 1;
   g_mutex_unlock(&t_lock);
   return 0;
@@ -258,6 +274,61 @@ void tx_dsp_set_compressor(int on, double gain_db) {
     SetTXACompressorRun(t_id, on ? 1 : 0);
   }
   g_mutex_unlock(&t_lock);
+}
+
+/* ---- TX phase rotator (WDSP TXA PHROT, issue #23) ------------------------ */
+
+/* The corner WDSP runs right now — under the optimizer it moves by itself.
+ * Call with t_lock held, t_ready. */
+static double phrot_current_fc(void) {
+  double ip, in_, ir, op, on_, or_, fc, st;
+  GetTXAPHROTAsymmetry(t_id, &ip, &in_, &ir, &op, &on_, &or_, &fc, &st);
+  return fc;
+}
+
+void tx_dsp_set_phrot(int on, double corner_hz, int automode) {
+  g_mutex_lock(&t_lock);
+  if (t_ready) {
+    int run = on ? 1 : 0;
+    int am  = (on && automode) ? 1 : 0;
+    /* The operator's corner applies while the optimizer is NOT searching, plus
+     * once as the seed when a search is switched on. Under Auto the corner
+     * belongs to WDSP: SetTXAPHROTCorner restarts the search from the pushed
+     * value, and a GUI value that merely lags one A/B step would do that at
+     * every step. Compared against the corner WDSP actually runs, not just our
+     * last push — the optimizer may have left it elsewhere, and the GUI
+     * writing a converged corner back must not reset the all-pass history. */
+    if (!am || t_ap_ph_auto != am) {
+      if (fabs(corner_hz - phrot_current_fc()) > 0.01) { SetTXAPHROTCorner(t_id, corner_hz); }
+    }
+    if (am  != t_ap_ph_auto) { SetTXAPHROTAutoMode(t_id, am); t_ap_ph_auto = am; }
+    if (run != t_ap_ph_run)  { SetTXAPHROTRun(t_id, run);     t_ap_ph_run  = run; }
+  }
+  g_mutex_unlock(&t_lock);
+}
+
+void tx_dsp_phrot_reset(void) {
+  g_mutex_lock(&t_lock);
+  if (t_ready) { SetTXAPHROTAutoReset(t_id); }   /* corner → 338, search state cleared;
+                                                    autoMode itself is untouched */
+  g_mutex_unlock(&t_lock);
+}
+
+void tx_dsp_get_phrot(int *run, double *in_ratio, double *out_ratio,
+                      double *fc, double *auto_step) {
+  int r = 0;
+  double ip = 0.0, in_ = 0.0, ir = 0.0, op = 0.0, on_ = 0.0, or_ = 0.0, f = 0.0, st = 0.0;
+  g_mutex_lock(&t_lock);
+  if (t_ready) {
+    GetTXAPHROTAsymmetry(t_id, &ip, &in_, &ir, &op, &on_, &or_, &f, &st);
+    r = t_ap_ph_run > 0;
+  }
+  g_mutex_unlock(&t_lock);
+  if (run)       { *run       = r; }
+  if (in_ratio)  { *in_ratio  = ir; }
+  if (out_ratio) { *out_ratio = or_; }
+  if (fc)        { *fc        = f; }
+  if (auto_step) { *auto_step = st; }
 }
 
 /* Two-tone test generator (PureSignal calibration / IMD check; piHPSDR

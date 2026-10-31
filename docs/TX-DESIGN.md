@@ -486,6 +486,38 @@ What landed (⚠ = regression tripwire — do not undo casually):
   bounded manual carrier). Prefs → TX "Digi max drive", persisted
   `[tx] drive_digi_max`, default 100 = uncapped.
 
+- **TX phase rotator** (issue #23, 2026-10-31) — `tx_dsp_set_phrot()`: the
+  WDSP TXA PHROT, four first-order all-pass stages right after the mic gain
+  (xtxa: panel → phrot → mic meter → DEXP → … → leveler → COMP → ALC). Flat
+  amplitude, differential phase across the audio band → a symmetric speech
+  waveform → lower peak-to-average, so the ALC runs a higher average level at
+  the same peak (WDSP Guide 2.1.1 §6.3.10 / §12.2). Operator: Preferences →
+  Audio → Transmit "Phase rotator" (default off), "Rotator corner" 50–2000 Hz
+  (default 338), "Auto corner" (WDSP's A/B optimizer: a step every 15 s of fed
+  speech, locks at a 5 Hz step, 3–5 min from cold; the slider follows it and
+  the locked corner is persisted), "Reset optimizer". Stage count 4 is set
+  explicitly at create (the Guide's documented default; TXA.c creates 8,
+  piHPSDR runs 2 at 600 Hz — the Guide's 200–400 Hz guidance is written for
+  four). Applies via the pure `tx_phrot_active()` (tx_run.h, gate-pinned):
+  voice mode + live mic + MOX, never TUNE / two-tone (the PostGen replaces the
+  output there, but the rotator would still be fed room noise and its
+  optimizer would step on it) — the digi/TCI clean-chain rule holds. ⛔ **The
+  PHROT setters are NOT no-ops on unchanged values**, the DEXP class of bug:
+  `SetTXAPHROTCorner` / `Nstages` free + re-allocate the all-pass history
+  (a transient on every call, and a running search restarts from the pushed
+  corner), `SetTXAPHROTRun(1)` zeroes the asymmetry envelopes. tx.c applies
+  on change only (`t_ap_ph_*`), compares the corner against the one WDSP
+  actually runs (the optimizer moves it), and under Auto does not push the
+  operator corner at all (it would restart the search at every A/B step);
+  `sdrfl-txdsp-test` carries the slot-style re-apply tripwire plus flatness
+  (±0.05 dB), asymmetry reduction on a 4-harmonic cosine-phase test waveform
+  and the mode/keying policy table. Known upstream behaviour: every unkey
+  flushes the TXA chain → the optimizer's 15 s counter restarts, so it only
+  steps inside overs longer than 15 s (contest-length overs never step; a
+  3–5 min calibration over into the dummy load does). Display: TX HUD line
+  `Asym in N % out M %  fc F Hz · auto/locked` (teal when out < in − 2 pts),
+  the UNKEY over line `tx: over phase rotator — asymmetry in/out, corner`.
+
 **Contest-earned tripwires (2026-07-11, first contest deployment — ~130 CW
 QSOs):**
 - ⚠ **The TCI IQ stream keeps carrying the real signal during CW TX** (the
@@ -720,3 +752,12 @@ behaviour exactly: mic gain 0, PROC off, gate ON at −45 dBFS. All live
 digi/TCI clean-chain rule is now enforced in the ENGINE, not the GUI: the
 knobs act on the live mic in voice modes only — with an external TX-audio
 source or in DIGU/DIGL, mic gain forces 0 and gate/PROC force off.
+
+**Phase rotator rows (2026-10-31, issue #23):** between the gate rows and
+PROC, in signal order (the DEXP gate runs ahead of the WDSP chain, the
+rotator sits inside it right after the mic gain): "Phase rotator" switch
+(default off), "Rotator corner" slider 50–2000 Hz (default 338; read-only and
+following the optimizer while Auto is on), "Auto corner" switch (default
+off), "Reset optimizer" button. Persisted `[tx] phrot / phrot_hz /
+phrot_auto`. Same voice + live-mic rule, additionally off in TUNE / two-tone
+overs (§8).

@@ -52,7 +52,8 @@ does the heavy lifting.
 **Transmit** (SSB voice, CW, RTTY, digi via TCI)
 - MOX / TUNE with separate drive levels, per-band PA calibration,
   true-PEP wattmeter, SWR metering with automatic drive-drop protection
-- Mic via PipeWire with mic gain / noise gate / speech processor controls
+- Mic via PipeWire with mic gain / noise gate / phase rotator (WDSP PHROT,
+  with its auto-optimizer and asymmetry readout) / speech processor controls
   (digi audio stays a bit-exact clean chain, enforced by the engine),
   faithful TX monitor (plays the processed on-air audio), footswitch PTT
 - CW keying with clean first-dit and contest-grade latency (TCI→RF

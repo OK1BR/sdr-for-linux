@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "tx.h"
+#include "tx_run.h"    /* TX_PHROT_HZ_* + the pure tx_phrot_active / tx_mode_is_voice (#23) */
 #include "protocol2.h"
 
 #define TXTEST_USB 1   /* WDSP/DEMOD mode integer for USB */
@@ -115,6 +116,65 @@ static int run_tone_p(int mode, int p1, double amp, int blocks, int comp,
 static int run_tone(int mode, double amp, int blocks, int comp, double comp_db,
                     double *m_plus, double *m_minus, double *m_junk, double *m_env) {
   return run_tone_p(mode, 0, amp, blocks, comp, comp_db, m_plus, m_minus, m_junk, m_env);
+}
+
+/* ---- 1d. TX phase rotator (WDSP PHROT, issue #23) ------------------------ */
+static int    g_ph_on, g_ph_auto, g_ph_reapply;
+static double g_ph_hz = TX_PHROT_HZ_DFLT;
+#define PH_BLOCKS 188          /* ≈ 2 s of mic at 48 k */
+#define PH_TAIL   38400        /* 200 ms at 192 k = 60 cycles of 300 Hz: every
+                                  harmonic below is an integer number of cycles
+                                  in the window, so cmag_at reads them leak-free */
+/* A deliberately ASYMMETRIC "voice": harmonics 300/600/900/1200 Hz in cosine
+ * phase (the positive peaks pile up, the negative ones do not), amplitude well
+ * below the ALC. Two tones would prove nothing — an all-pass only time-shifts a
+ * two-tone envelope; from three components on, the envelope and the waveform
+ * asymmetry depend on the relative phases, which is exactly what the rotator
+ * moves. USB on the P2 chain; the rotator's own readout comes back too. */
+static int run_harmonics(double *in_ratio, double *out_ratio, double *fc, double *step) {
+  g_np = 0;
+  tx_dsp_create(TXTEST_USB, 150.0, 2850.0, 0, on_tx_iq, NULL);
+  tx_dsp_set_compressor(0, 0.0);
+  tx_dsp_set_mic_gain(0.0);
+  tx_dsp_set_gate_depth(20.0);
+  tx_dsp_set_gate(0, -35.0);
+  tx_dsp_set_phrot(g_ph_on, g_ph_hz, g_ph_auto);
+  tx_dsp_run(1);
+  static const double f[4] = { 300.0, 600.0, 900.0, 1200.0 };
+  double ph[4] = { 0.0, 0.0, 0.0, 0.0 };
+  float mic[512];
+  for (int b = 0; b < PH_BLOCKS; b++) {
+    for (int i = 0; i < 512; i++) {
+      double s = 0.0;
+      for (int k = 0; k < 4; k++) { s += 0.08 * cos(ph[k]); ph[k] += 2.0 * M_PI * f[k] / 48000.0; }
+      mic[i] = (float)s;
+    }
+    tx_dsp_feed_mic(mic, 512);
+    if (g_ph_reapply) { tx_dsp_set_phrot(g_ph_on, g_ph_hz, g_ph_auto); }   /* the live slot pattern */
+  }
+  int run = 0;
+  tx_dsp_get_phrot(&run, in_ratio, out_ratio, fc, step);
+  int err = tx_dsp_last_error();
+  tx_dsp_destroy();
+  return err;
+}
+/* Waveform asymmetry of Re(IQ) over the settled tail — for USB that is the
+ * on-air audio itself (the TX dump's txre.f32 convention): |pos−neg|/(pos+neg). */
+static double re_asym(const double *iq, int n, double *pos, double *neg) {
+  double p = 0.0, m = 0.0;
+  for (int k = 0; k < n; k++) {
+    double v = iq[2 * k];
+    if (v > p)  { p = v; }
+    if (-v > m) { m = -v; }
+  }
+  if (pos) { *pos = p; }
+  if (neg) { *neg = m; }
+  return (p + m) > 1e-12 ? fabs(p - m) / (p + m) : 0.0;
+}
+static double env_rms(const double *iq, int n) {
+  double s = 0.0;
+  for (int k = 0; k < n; k++) { s += iq[2 * k] * iq[2 * k] + iq[2 * k + 1] * iq[2 * k + 1]; }
+  return sqrt(s / n);
 }
 
 /* ---- 2. RX-side decode (mirror of decode_iq, np.c:2446) ------------------ */
@@ -265,6 +325,99 @@ int main(void) {
     ok("slot-style re-apply is transparent (no state reset)",
        fabs(reap / once - 1.0) < 0.01, det);
     g_gate_on = 0;
+  }
+
+  /* ---- 1d. TX phase rotator (WDSP PHROT, issue #23) ---------------------- */
+  printf("\n[phrot] TX phase rotator (all-pass cascade after the mic gain):\n");
+  {
+    double in_r, out_r, fc, step, pos, neg;
+    /* OFF = the reference. */
+    g_ph_on = 0; g_ph_auto = 0; g_ph_reapply = 0;
+    ok("harmonics, rotator off: fexchange0 ok", run_harmonics(&in_r, &out_r, &fc, &step) == 0, "");
+    int a0 = g_np - PH_TAIL;
+    double asym_off = re_asym(g_iq + 2 * a0, PH_TAIL, &pos, &neg);
+    double env_off  = env_peak(g_iq + 2 * a0, PH_TAIL);
+    double rms_off  = env_rms(g_iq + 2 * a0, PH_TAIL);
+    /* Components sit on the −f side of the WDSP baseband for USB (section 1's
+     * convention; the DUC flips them on air). */
+    double m300_off = cmag_at(g_iq + 2 * a0, PH_TAIL, -300.0, 192000.0);
+    double m900_off = cmag_at(g_iq + 2 * a0, PH_TAIL, -900.0, 192000.0);
+    ok("off: components on the USB side (premise)", m300_off > 0.05 && m900_off > 0.05, "");
+    snprintf(det, sizeof det, "pos=%.4f neg=%.4f asym=%.3f crest=%.2f step=%.0f",
+             pos, neg, asym_off, env_off / rms_off, step);
+    ok("off: test waveform is asymmetric (premise)", asym_off > 0.15, det);
+    ok("off: optimizer reports 0 (not running)", step == 0.0, "");
+
+    /* ON at the default corner. */
+    g_ph_on = 1;
+    ok("harmonics, rotator on: fexchange0 ok", run_harmonics(&in_r, &out_r, &fc, &step) == 0, "");
+    a0 = g_np - PH_TAIL;
+    double asym_on = re_asym(g_iq + 2 * a0, PH_TAIL, &pos, &neg);
+    double env_on  = env_peak(g_iq + 2 * a0, PH_TAIL);
+    double rms_on  = env_rms(g_iq + 2 * a0, PH_TAIL);
+    double m300_on = cmag_at(g_iq + 2 * a0, PH_TAIL, -300.0, 192000.0);
+    double m900_on = cmag_at(g_iq + 2 * a0, PH_TAIL, -900.0, 192000.0);
+    snprintf(det, sizeof det, "asym off=%.3f on=%.3f (pos=%.4f neg=%.4f)", asym_off, asym_on, pos, neg);
+    ok("on: on-air waveform more symmetric", asym_on < 0.7 * asym_off, det);
+    snprintf(det, sizeof det, "WDSP in=%.3f out=%.3f fc=%.0f Hz step=%.0f", in_r, out_r, fc, step);
+    ok("on: WDSP asymmetry readout out < in", out_r < in_r && in_r > 0.0, det);
+    ok("on: corner reads the 338 Hz default", fabs(fc - TX_PHROT_HZ_DFLT) < 0.01, det);
+    ok("on: optimizer still off (step 0)", step == 0.0, det);
+    double d300 = 20.0 * log10(m300_on / m300_off), d900 = 20.0 * log10(m900_on / m900_off);
+    snprintf(det, sizeof det, "300 Hz %+.3f dB, 900 Hz %+.3f dB", d300, d900);
+    ok("on: amplitude response flat (all-pass)", fabs(d300) < 0.05 && fabs(d900) < 0.05, det);
+    snprintf(det, sizeof det, "rms off=%.4f on=%.4f (%+.3f dB)", rms_off, rms_on, 20.0 * log10(rms_on / rms_off));
+    ok("on: same power (no gain change)", fabs(20.0 * log10(rms_on / rms_off)) < 0.05, det);
+    printf("        (SSB envelope peak/RMS: off %.3f, on %.3f — informative; real speech decides)\n",
+           env_off / rms_off, env_on / rms_on);
+
+    /* ⛔ Slot-style re-apply must be transparent — the cache tripwire (TX-DESIGN
+     * §8): without tx.c's apply-on-change cache every block would re-run
+     * SetTXAPHROTCorner (all-pass history freed → a transient per block, so
+     * the output waveform changes) and Run(1) (the asymmetry envelopes zeroed
+     * → WDSP's out ratio collapses to one block's worth, ~1/375 of this).
+     * The output IQ is delivered in order and is bit-exact between runs; the
+     * WDSP metric readout is not — WDSP runs the TXA chain in its own thread
+     * and the last block may still be in flight when we read, so that one
+     * gets a few per cent of slack. */
+    g_ph_reapply = 1;
+    double in_1 = in_r, out_1 = out_r;
+    ok("harmonics, rotator re-applied per block: ok", run_harmonics(&in_r, &out_r, &fc, &step) == 0, "");
+    g_ph_reapply = 0;
+    a0 = g_np - PH_TAIL;
+    double asym_re = re_asym(g_iq + 2 * a0, PH_TAIL, NULL, NULL);
+    snprintf(det, sizeof det, "asym single=%.6f reapplied=%.6f; WDSP out single=%.5f reapplied=%.5f",
+             asym_on, asym_re, out_1, out_r);
+    ok("slot-style re-apply is transparent (no state reset)",
+       fabs(asym_re - asym_on) < 1e-6 && fabs(out_r / out_1 - 1.0) < 0.05 && fabs(in_r / in_1 - 1.0) < 0.05, det);
+
+    /* Auto: the optimizer is armed (its step stays at the initial 50 Hz until
+     * the first 15 s A/B window — far longer than this feed). */
+    g_ph_auto = 1;
+    ok("harmonics, auto corner: ok", run_harmonics(&in_r, &out_r, &fc, &step) == 0, "");
+    snprintf(det, sizeof det, "step=%.0f Hz fc=%.0f", step, fc);
+    ok("auto: optimizer armed (step > 0, not locked)", step > 0.0, det);
+    g_ph_auto = 0; g_ph_on = 0;
+
+    /* The engine-side policy, pure (tx_run.h): where the rotator may act. */
+    ok("policy: USB + MOX + live mic → on",     tx_phrot_active(1, DEMOD_USB, 0, 1, 0, 0) == 1, "");
+    ok("policy: LSB / AM / SAM → on",          tx_phrot_active(1, DEMOD_LSB, 0, 1, 0, 0) &&
+                                               tx_phrot_active(1, DEMOD_AM,  0, 1, 0, 0) &&
+                                               tx_phrot_active(1, DEMOD_SAM, 0, 1, 0, 0), "");
+    ok("policy: switched off → off",           tx_phrot_active(0, DEMOD_USB, 0, 1, 0, 0) == 0, "");
+    ok("policy: TCI audio source → off",       tx_phrot_active(1, DEMOD_USB, 1, 1, 0, 0) == 0, "");
+    ok("policy: DIGU / DIGL → off (clean chain)", !tx_phrot_active(1, DEMOD_DIGU, 0, 1, 0, 0) &&
+                                               !tx_phrot_active(1, DEMOD_DIGL, 0, 1, 0, 0), "");
+    ok("policy: CW / RTTY → off",              !tx_phrot_active(1, DEMOD_CWU,  0, 1, 0, 0) &&
+                                               !tx_phrot_active(1, DEMOD_CWL,  0, 1, 0, 0) &&
+                                               !tx_phrot_active(1, DEMOD_RTTY, 0, 1, 0, 0), "");
+    ok("policy: TUNE / two-tone → off",        !tx_phrot_active(1, DEMOD_USB, 0, 1, 1, 0) &&
+                                               !tx_phrot_active(1, DEMOD_USB, 0, 1, 0, 1), "");
+    ok("policy: not keyed → off",              tx_phrot_active(1, DEMOD_USB, 0, 0, 0, 0) == 0, "");
+    ok("mode table: voice = not CW/RTTY/DIGU/DIGL",
+       tx_mode_is_voice(DEMOD_USB) && tx_mode_is_voice(DEMOD_LSB) && tx_mode_is_voice(DEMOD_AM) &&
+       tx_mode_is_voice(DEMOD_SAM) && !tx_mode_is_voice(DEMOD_CWL) && !tx_mode_is_voice(DEMOD_CWU) &&
+       !tx_mode_is_voice(DEMOD_RTTY) && !tx_mode_is_voice(DEMOD_DIGU) && !tx_mode_is_voice(DEMOD_DIGL), "");
   }
 
   /* ---- 2. encoder: hand values + round-trip --------------------------- */

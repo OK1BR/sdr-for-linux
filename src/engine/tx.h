@@ -72,6 +72,35 @@ void tx_dsp_set_gate(int on, double thresh_db);
 void tx_dsp_set_gate_depth(double depth_db);
 
 /*
+ * TX phase rotator — WDSP TXA PHROT (issue #23): a cascade of identical
+ * first-order all-pass stages right after the mic gain (TXA.c xtxa: panel →
+ * phrot → mic meter → … → leveler → COMP → ALC). Flat amplitude response, so
+ * the spectrum does not change; the differential phase across the audio band
+ * makes the speech waveform symmetric → lower peak-to-average → the ALC can
+ * run a higher average level at the same peak limit (WDSP Guide 2.1.1
+ * §6.3.10 / §12.2). `corner_hz` = the 90°-per-stage frequency, 50–2000
+ * (WDSP clamps); `automode` hands the corner to WDSP's A/B optimizer, which
+ * steps every 15 s of fed audio and locks once its step falls to 5 Hz.
+ * ⛔ The PHROT setters are NOT no-ops on unchanged values: Corner and Nstages
+ * free + re-allocate the all-pass history, Run(1) zeroes the asymmetry
+ * envelopes, Corner also restarts a running search. tx_run re-pushes every
+ * slot (~20 Hz), so this applies ON CHANGE ONLY — the gate_apply idiom.
+ */
+void tx_dsp_set_phrot(int on, double corner_hz, int automode);
+/* Restart the optimizer search from the 338 Hz default (SetTXAPHROTAutoReset). */
+void tx_dsp_phrot_reset(void);
+/*
+ * Rotator readout (GetTXAPHROTAsymmetry): `run` = the rotator is switched on;
+ * `in_ratio` / `out_ratio` = waveform asymmetry |pos−neg|/(pos+neg) before /
+ * after it (0..1, a 30 s EMA inside WDSP, zeroed at every channel stop);
+ * `fc` = the corner in use (moves under the optimizer); `auto_step` 0 =
+ * optimizer off, −1 = converged (locked), else the current search step in Hz.
+ * NULL args are skipped; all zero before tx_dsp_create.
+ */
+void tx_dsp_get_phrot(int *run, double *in_ratio, double *out_ratio,
+                      double *fc, double *auto_step);
+
+/*
  * The WDSP TX channel's mic input rate (Hz). The mic capture must deliver samples
  * at exactly this rate — feed_mic → fexchange0 assumes it. Exposed so the GUI can
  * open the PipeWire capture at the right rate without hard-coding 48000.

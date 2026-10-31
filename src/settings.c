@@ -190,6 +190,12 @@ int settings_load(Settings *s) {
       s->tx_gate_db = g_key_file_get_double(kf, GROUP_TX, "gate_db", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "gate_depth", NULL))
       s->tx_gate_depth = g_key_file_get_double(kf, GROUP_TX, "gate_depth", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "phrot", NULL))
+      s->tx_phrot = g_key_file_get_integer(kf, GROUP_TX, "phrot", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "phrot_hz", NULL))
+      s->tx_phrot_hz = g_key_file_get_double(kf, GROUP_TX, "phrot_hz", NULL);
+    if (g_key_file_has_key(kf, GROUP_TX, "phrot_auto", NULL))
+      s->tx_phrot_auto = g_key_file_get_integer(kf, GROUP_TX, "phrot_auto", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "ptt_pedal", NULL))
       s->tx_ptt = g_key_file_get_integer(kf, GROUP_TX, "ptt_pedal", NULL);
     if (g_key_file_has_key(kf, GROUP_TX, "ptt_tip", NULL))
@@ -404,6 +410,9 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_TX,     "gate",      s->tx_gate);
   g_key_file_set_double (kf, GROUP_TX,     "gate_db",   s->tx_gate_db);
   g_key_file_set_double (kf, GROUP_TX,     "gate_depth", s->tx_gate_depth);
+  g_key_file_set_integer(kf, GROUP_TX,     "phrot",     s->tx_phrot);
+  g_key_file_set_double (kf, GROUP_TX,     "phrot_hz",  s->tx_phrot_hz);
+  g_key_file_set_integer(kf, GROUP_TX,     "phrot_auto", s->tx_phrot_auto);
   g_key_file_set_integer(kf, GROUP_TX,     "ptt_pedal", s->tx_ptt);
   g_key_file_set_integer(kf, GROUP_TX,     "ptt_tip",   s->tx_ptt_tip);
   g_key_file_set_integer(kf, GROUP_DEBUG,  "log",       s->debug_log);

@@ -1071,6 +1071,59 @@ key cycled the modes, the Audio page shows the switch ON, no GTK criticals.
 AM (no beat inside ±2 kHz, no hum on fades), LSB only / USB only audibly
 drop one side, levelling on/off on a fading signal.
 
+**★ ISSUE #23 — TX phase rotator (WDSP PHROT), DONE IN CODE 2026-10-31,
+`needs-live-check` + `at-the-radio` (Richard's "dobre" on the design and the
+row placement):** the WDSP TXA phase rotator — four first-order all-pass
+stages right after the mic gain, flat amplitude, differential phase →
+symmetric speech waveform → lower peak-to-average, so the ALC runs a higher
+average level at the same peak (Guide 2.1.1 §6.3.10 / §12.2). Engine:
+`tx_dsp_set_phrot()` / `tx_dsp_phrot_reset()` / `tx_dsp_get_phrot()` in
+tx.c with an apply-on-change cache; applied from both tx_run knob sites via
+the pure `tx_phrot_active()` (tx_run.h: voice mode + live mic + MOX, never
+TUNE / two-tone — the PostGen replaces the output there, but the rotator
+would optimize on room noise); `tx_mode_is_voice()` is now the one voice
+table (is_voice in tx_run uses it). Preferences → Audio → Transmit, after
+Gate depth: "Phase rotator" (default off), "Rotator corner" 50–2000 Hz
+(default 338; read-only and following the optimizer while Auto is on),
+"Auto corner" (WDSP A/B optimizer, locks → the corner is written back and
+persisted; the search restarts at each start), "Reset optimizer".
+Persisted `[tx] phrot / phrot_hz / phrot_auto`. TX HUD line `Asym in N %
+out M %  fc F Hz · auto/locked` (teal when out < in − 2 pts), UNKEY over
+line with asymmetry in/out + corner. Stage count 4 set explicitly (the
+Guide's documented default; TXA.c creates 8, piHPSDR runs 2 at 600 Hz and
+never uses the optimizer). ⛔ **Three things learned:** (1) the PHROT
+setters are NOT no-ops on unchanged values (Corner / Nstages free +
+re-allocate the all-pass history, Run(1) zeroes the asymmetry envelopes) —
+the DEXP bug class; tx.c pushes on change only and under Auto never pushes
+the cfg corner (it would restart the search at every A/B step); the gate's
+re-apply tripwire catches a missing cache (negative-tested: Run or Corner
+per block → different waveform, WDSP metrics collapse); (2) the WDSP TXA
+output puts USB on the −f side of the complex baseband (section 1 of the
+gate knew; the DUC flips it) — measure components at −f; (3) WDSP runs the
+TXA chain in its own thread (fexchange0 only queues), so a metric read right
+after the last block may miss it → 5 % slack on the WDSP readout in the gate,
+the output IQ itself is bit-exact. Upstream behaviour worth knowing: every
+unkey flushes the TXA chain → the optimizer's 15 s counter restarts, it
+steps only inside overs longer than 15 s (contest overs never move it; a
+3–5 min calibration over into the dummy load does). **Offline:** 14 gates
+green; `sdrfl-txdsp-test` 48 checks: a 4-harmonic cosine-phase test wave
+goes from asymmetry 0.446 to 0.065 (WDSP's own in/out readout agrees),
+amplitude flat to 0.000 dB, RMS unchanged, re-apply transparent, optimizer
+armed under Auto, the mode/keying policy table. Broadway lab (seeded
+config): the four rows render in order, 1/300/1 round-trips, Auto switch +
+Reset work (Reset also moved the slider → the weak `phrot_scale` pointer is
+valid); slider dimming under Auto and the live-follow were NOT seen (trough
+clicks do not register in the lab). `~/.local` refreshed (19:41). **Not
+verified at all: the effect on speech** — no mic recording exists on the
+machine (`mic48k.f32` nowhere), so the ticket's replay step waits for one.
+**Live protocol (Guide §6.3.10):** SSB into the dummy load with the rotator
+on → the HUD `Asym in/out` must show out < in; then Auto corner with 3–5 min
+of speech in ONE over → "locked", the slider adopts the corner; off-air
+listening check that the audio stays clean. Peak-to-average numbers would
+need 1–2 min of speech recorded with `SDRFL_TX_DUMP` while keyed into the
+load, then a replay harness (gate_replay.c from issue #1 is gone;
+`/var/tmp/ps-replay` is the pattern).
+
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
 red TX filter footprint, AF true mute, 60 m USB, SDR-15 discovery dedup,

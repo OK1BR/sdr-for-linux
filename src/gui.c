@@ -357,6 +357,13 @@ typedef struct {
   int         gate_on;
   double      gate_db;
   double      gate_depth_db;
+  int         phrot_on;      /* TX phase rotator (#23; persisted; voice + live mic) */
+  double      phrot_hz;      /* rotator corner, Hz (persisted; the optimizer's result
+                                is written back here once it locks)                 */
+  int         phrot_auto;    /* corner optimizer (persisted)                        */
+  GtkWidget  *phrot_scale;   /* Preferences corner slider (weak ptr; follows the
+                                optimizer while it runs)                            */
+  int         phrot_scale_guard; /* our own write to that slider, not the operator */
   int         cw_wpm;        /* CW keyer speed, WPM (persisted, F6d-1c)             */
   int         cw_pitch;      /* CW sidetone pitch, Hz (persisted)                   */
   double      cw_st_db;      /* CW sidetone level, dBFS (persisted)                 */
@@ -1578,6 +1585,24 @@ static void draw_tx_level_meter(cairo_t *cr, App *app, int w, const tx_run_statu
   cairo_text_extents_t ex; cairo_text_extents(cr, lbl, &ex);
   cairo_set_source_rgba(cr, 0.95, 0.86, 0.62, 0.92);
   cairo_move_to(cr, bx + bw - ex.width, ay + h_alc + 20); cairo_show_text(cr, lbl);
+
+  /* Phase rotator (#23) — the Guide's own verification: waveform asymmetry
+   * before (in) and after (out) the rotator, a 30 s EMA inside WDSP so it
+   * needs no ballistics here; teal once the output is meaningfully more
+   * symmetric than the input (the Thetis panel's idiom), neutral otherwise.
+   * "auto" = the optimizer is searching, "locked" = it converged. */
+  if (ts->phrot_on) {
+    double in = 100.0 * ts->phrot_in, out = 100.0 * ts->phrot_out;
+    const char *opt = ts->phrot_step < 0.0 ? " · locked"
+                    : ts->phrot_step > 0.0 ? " · auto" : "";
+    snprintf(lbl, sizeof lbl, "Asym in %.0f %%  out %.0f %%   fc %.0f Hz%s",
+             in, out, ts->phrot_fc, opt);
+    cairo_set_font_size(cr, 12.0);
+    cairo_text_extents(cr, lbl, &ex);
+    if (out < in - 2.0) { cairo_set_source_rgba(cr, 0.35, 0.85, 0.80, 0.95); }
+    else                { cairo_set_source_rgba(cr, 0.72, 0.80, 0.92, 0.85); }
+    cairo_move_to(cr, bx + bw - ex.width, ay + h_alc + 36); cairo_show_text(cr, lbl);
+  }
 }
 
 /* CW TX HUD (contest note #7) — in CW modes the Mic/Lev/ALC meter reads
@@ -1753,6 +1778,9 @@ static void draw_tx_digi_meter(cairo_t *cr, App *app, int w, const tx_run_status
 #define COMP_DB_MIN    0.0     /* PROC compression, dB (piHPSDR range)           */
 #define COMP_DB_MAX   20.0
 #define COMP_DB_DFLT  10.0
+#define PHROT_HZ_MIN  TX_PHROT_HZ_MIN   /* TX phase rotator corner (#23; tx_run.h) */
+#define PHROT_HZ_MAX  TX_PHROT_HZ_MAX
+#define PHROT_HZ_DFLT TX_PHROT_HZ_DFLT
 
 /* TX display span (Hz): the RX span (rate/zoom), capped at what the TX IQ holds. */
 static double tx_span_hz(App *app) {
@@ -2808,6 +2836,23 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
           app->ps_att = ts.ps_att;
           schedule_save(app);
         }
+        /* Phase rotator optimizer (#23): the Preferences slider mirrors the
+         * corner WDSP is running (ts.phrot_on = the engine has pushed this
+         * over's state, so the readout is the search, not the create default);
+         * once the search has locked, adopt + persist that corner. The engine
+         * ignores the cfg corner while Auto is on, so this cannot restart it. */
+        if (app->phrot_on && app->phrot_auto && ts.phrot_on) {
+          if (ts.phrot_step < 0.0 && fabs(ts.phrot_fc - app->phrot_hz) > 0.5) {
+            app->phrot_hz = ts.phrot_fc;
+            schedule_save(app);
+          }
+          if (app->phrot_scale &&
+              fabs(gtk_range_get_value(GTK_RANGE(app->phrot_scale)) - ts.phrot_fc) > 0.5) {
+            app->phrot_scale_guard = 1;
+            gtk_range_set_value(GTK_RANGE(app->phrot_scale), ts.phrot_fc);
+            app->phrot_scale_guard = 0;
+          }
+        }
         /* Same pop-back for the two-tone toggle — its key intent must not
          * outlive a trip/refusal (the handler then clears the engine flag). */
         if (app->tt_btn && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(app->tt_btn))
@@ -2951,6 +2996,9 @@ static void app_to_settings(const App *app, Settings *s) {
   s->tx_gate    = app->gate_on;
   s->tx_gate_db = app->gate_db;
   s->tx_gate_depth = app->gate_depth_db;
+  s->tx_phrot      = app->phrot_on;
+  s->tx_phrot_hz   = app->phrot_hz;
+  s->tx_phrot_auto = app->phrot_auto;
   s->cw_wpm     = app->cw_wpm;
   s->cw_pitch   = app->cw_pitch;
   s->cw_st_db   = app->cw_st_db;
@@ -3164,6 +3212,9 @@ static void tx_push_cfg(App *app) {
   c.gate_on        = app->gate_on;
   c.gate_db        = app->gate_db;
   c.gate_depth_db  = app->gate_depth_db;
+  c.phrot_on       = app->phrot_on;
+  c.phrot_hz       = app->phrot_hz;
+  c.phrot_auto     = app->phrot_auto;
   for (int i = 0; i < 11; i++) { c.pa_trim[i] = app->pa_trim[i]; }
   tx_run_set_cfg(&c);
 }
@@ -5856,6 +5907,38 @@ static void on_pref_comp_db(GtkRange *r, gpointer data) {
   app->comp_db = gtk_range_get_value(r);
   tx_push_cfg(app); schedule_save(app);
 }
+/* TX phase rotator (#23) — same live contract. The corner slider is read-only
+ * while the optimizer owns the corner (it follows the search from the GUI
+ * tick; the engine ignores the cfg corner under Auto), so the operator seeds a
+ * search by setting the corner first and switching Auto on. */
+static void on_pref_phrot(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->phrot_on = adw_switch_row_get_active(r) ? 1 : 0;
+  tx_push_cfg(app); schedule_save(app);
+}
+static void on_pref_phrot_hz(GtkRange *r, gpointer data) {
+  App *app = (App *)data;
+  if (app->phrot_scale_guard) { return; }   /* the tick mirroring the optimizer, not the operator */
+  app->phrot_hz = gtk_range_get_value(r);
+  tx_push_cfg(app); schedule_save(app);
+}
+static void on_pref_phrot_auto(AdwSwitchRow *r, GParamSpec *ps, gpointer data) {
+  (void)ps; App *app = (App *)data;
+  app->phrot_auto = adw_switch_row_get_active(r) ? 1 : 0;
+  if (app->phrot_scale) { gtk_widget_set_sensitive(app->phrot_scale, !app->phrot_auto); }
+  tx_push_cfg(app); schedule_save(app);
+}
+static void on_pref_phrot_reset(GtkButton *b, gpointer data) {
+  (void)b; App *app = (App *)data;
+  app->phrot_hz = PHROT_HZ_DFLT;
+  if (app->phrot_scale) {
+    app->phrot_scale_guard = 1;
+    gtk_range_set_value(GTK_RANGE(app->phrot_scale), PHROT_HZ_DFLT);
+    app->phrot_scale_guard = 0;
+  }
+  if (app->tx_ready) { tx_run_phrot_reset(); }   /* WDSP: corner 338 + search state cleared */
+  tx_push_cfg(app); schedule_save(app);
+}
 /* Per-band PA calibration (F6b): band index carried on the row. Clamped to the
  * safe [38.8,70.0] range; re-pushed so the current band's drive byte updates. */
 static void on_pref_pacal(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
@@ -5932,6 +6015,18 @@ static GtkWidget *pref_slider(const char *title, const char *subtitle,
   adw_action_row_add_suffix(ADW_ACTION_ROW(row), sc);
   adw_action_row_add_suffix(ADW_ACTION_ROW(row), lbl);
   return row;
+}
+
+/* The GtkScale inside a pref_slider row (first one found, depth-first) — for
+ * the rows a live value has to be mirrored into (the rotator corner, #23). */
+static GtkWidget *pref_slider_scale(GtkWidget *w) {
+  if (!w) { return NULL; }
+  if (GTK_IS_SCALE(w)) { return w; }
+  for (GtkWidget *c = gtk_widget_get_first_child(w); c; c = gtk_widget_get_next_sibling(c)) {
+    GtkWidget *r = pref_slider_scale(c);
+    if (r) { return r; }
+  }
+  return NULL;
 }
 
 /* One per-band PA-calibration spin row (dB), band index stored for the callback. */
@@ -6231,8 +6326,8 @@ static AdwDialog *build_prefs(App *app) {
    * nothing hidden to mis-set; level is made on the preamp. */
   g = ADW_PREFERENCES_GROUP(g_object_new(ADW_TYPE_PREFERENCES_GROUP,
       "title", "Transmit",
-      "description", "Voice chain in order: mic → mic gain → noise gate → PROC → "
-                     "TX bandpass → ALC limiter. Applies to the live mic in voice "
+      "description", "Voice chain in order: mic → mic gain → noise gate → phase rotator → "
+                     "PROC → TX bandpass → ALC limiter. Applies to the live mic in voice "
                      "modes only — digi/TCI audio bypasses everything (clean "
                      "chain). Base level on the preamp; target = Mic bar peaks "
                      "−6..0 dBFS on the TX HUD.", NULL));
@@ -6262,6 +6357,41 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, pref_slider("Gate depth",
       "dB cut below the threshold · 10 ducks room noise gently, 20 = hard gate (piHPSDR) · live",
       GATE_DEPTH_MIN, GATE_DEPTH_MAX, app->gate_depth_db, "%.0f dB", G_CALLBACK(on_pref_gate_depth), app));
+  /* TX phase rotator (#23) — WDSP PHROT, in chain order: after the gate (which
+   * runs ahead of the WDSP chain), before PROC. Asymmetry IN/OUT shows on the
+   * TX HUD while keyed. */
+  adw_preferences_group_add(g, pref_switch("Phase rotator",
+      "all-pass cascade after the mic gain: makes the speech waveform symmetric, so the "
+      "ALC runs a higher average level at the same peak — more average power, spectrum "
+      "unchanged · voice modes + live mic only · live",
+      app->phrot_on, G_CALLBACK(on_pref_phrot), app));
+  {
+    GtkWidget *row = pref_slider("Rotator corner",
+        "Hz · 90° of phase per stage here; the optimum is broad, 200–400 for most voices "
+        "(WDSP Guide) · live",
+        PHROT_HZ_MIN, PHROT_HZ_MAX, app->phrot_hz, "%.0f Hz", G_CALLBACK(on_pref_phrot_hz), app);
+    app->phrot_scale = pref_slider_scale(row);
+    if (app->phrot_scale) {
+      /* the dialog is rebuilt on every open — never keep a dangling slider */
+      g_object_add_weak_pointer(G_OBJECT(app->phrot_scale), (gpointer *)&app->phrot_scale);
+      gtk_widget_set_sensitive(app->phrot_scale, !app->phrot_auto);
+    }
+    adw_preferences_group_add(g, row);
+  }
+  adw_preferences_group_add(g, pref_switch("Auto corner",
+      "WDSP optimizer: A/B steps every 15 s of speech, 3–5 min from cold, then it locks "
+      "and the corner is saved; the slider follows it and is read-only meanwhile; the "
+      "search restarts at each start · live",
+      app->phrot_auto, G_CALLBACK(on_pref_phrot_auto), app));
+  {
+    GtkWidget *row = g_object_new(ADW_TYPE_ACTION_ROW, "title", "Reset optimizer",
+        "subtitle", "restart the search from the 338 Hz default — after a mic or room change", NULL);
+    GtkWidget *btn = gtk_button_new_with_label("Reset");
+    gtk_widget_set_valign(btn, GTK_ALIGN_CENTER);
+    g_signal_connect(btn, "clicked", G_CALLBACK(on_pref_phrot_reset), app);
+    adw_action_row_add_suffix(ADW_ACTION_ROW(row), btn);
+    adw_preferences_group_add(g, row);
+  }
   adw_preferences_group_add(g, pref_switch("Speech processor (PROC)",
       "WDSP COMP + auto-leveler (CESSB above 5.5 dB) — the chain's only makeup gain · live",
       app->comp_on, G_CALLBACK(on_pref_comp), app));
@@ -6710,6 +6840,7 @@ static void start_radio(App *app) {
                   .mic_gain = 0.0, .tx_comp = 0, .tx_comp_db = COMP_DB_DFLT,
                   .tx_gate = 1, .tx_gate_db = GATE_DB_DFLT,
                   .tx_gate_depth = GATE_DEPTH_DFLT,
+                  .tx_phrot = 0, .tx_phrot_hz = PHROT_HZ_DFLT, .tx_phrot_auto = 0,   /* #23 */
                   /* PS defaults: continuous automode + Thetis-style Auto
                    * attenuate on (Richard's call 2026-07-11 v2, after the
                    * three-way audit; piHPSDR variant = tag ps-auto-att-pihpsdr).
@@ -6825,6 +6956,10 @@ static void start_radio(App *app) {
   app->gate_db       = st.tx_gate_db < GATE_DB_MIN ? GATE_DB_MIN : (st.tx_gate_db > GATE_DB_MAX ? GATE_DB_MAX : st.tx_gate_db);
   app->gate_depth_db = (st.tx_gate_depth < GATE_DEPTH_MIN || st.tx_gate_depth > GATE_DEPTH_MAX)
                        ? GATE_DEPTH_DFLT : st.tx_gate_depth;   /* 0/unset → default */
+  app->phrot_on      = st.tx_phrot ? 1 : 0;
+  app->phrot_hz      = (st.tx_phrot_hz < PHROT_HZ_MIN || st.tx_phrot_hz > PHROT_HZ_MAX)
+                       ? PHROT_HZ_DFLT : st.tx_phrot_hz;       /* 0/unset → default */
+  app->phrot_auto    = st.tx_phrot_auto ? 1 : 0;
   app->cw_wpm        = st.cw_wpm   < 5   ? 5   : (st.cw_wpm   > 60   ? 60   : st.cw_wpm);
   app->cw_pitch      = st.cw_pitch < 200 ? 200 : (st.cw_pitch > 1200 ? 1200 : st.cw_pitch);
   app->cw_st_db      = st.cw_st_db < CW_ST_DB_MIN ? CW_ST_DB_MIN : (st.cw_st_db > CW_ST_DB_MAX ? CW_ST_DB_MAX : st.cw_st_db);

@@ -96,6 +96,9 @@ typedef struct {
   int       tx_gate;    /* mic noise gate (DEXP) on/off                           */
   double    tx_gate_db; /* gate threshold (Mic-meter dBFS; −45 = validated dflt)  */
   double    tx_gate_depth; /* below-threshold cut, dB (0/unset → default 10)      */
+  int       tx_phrot;   /* TX phase rotator (WDSP PHROT) on/off (issue #23)       */
+  double    tx_phrot_hz;/* rotator corner, Hz (0/unset → default 338)             */
+  int       tx_phrot_auto; /* corner optimizer on/off                             */
   int       tx_ptt;     /* footswitch: radio PTT input keys like MOX (0/1)        */
   int       tx_ptt_tip; /* PTT contact on mic-jack tip (0 = ring, Apache default) */
   int       debug_log;  /* [debug] log: write the run log (opt-in, restart to apply)  */

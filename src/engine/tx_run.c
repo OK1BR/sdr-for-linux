@@ -126,6 +126,9 @@ typedef struct {
   int    gate_on;
   double gate_db;
   double gate_depth_db;
+  int    phrot_on;         /* TX phase rotator (#23; see tx_run_cfg) */
+  double phrot_hz;
+  int    phrot_auto;
 } tx_cfg_i;
 
 static GThread          *s_thread;
@@ -358,9 +361,9 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
    * on a digi frequency). Same intent OR as the GUI button; tx_gate still
    * decides whether it actually keys. ⛔ RTTY must be excluded here explicitly
    * — without it the mode-12 id would fall through as "voice" and open the
-   * mic path (the is_voice tripwire, RTTY-SCOPE §6). */
-  int is_voice  = !is_cw && !is_rtty &&
-                  cfg.mode != DEMOD_DIGU && cfg.mode != DEMOD_DIGL;
+   * mic path (the is_voice tripwire, RTTY-SCOPE §6). The table itself is
+   * the pure tx_mode_is_voice (tx_run.h), pinned by sdrfl-txdsp-test. */
+  int is_voice  = tx_mode_is_voice(cfg.mode);
   int ptt_raw   = cfg.ptt_enabled && is_voice &&
                   (s_p1 ? p1_ptt_get() : p2_ptt_get());
   /* ⛔ Freshness guard (TX-SAFETY "Footswitch PTT"): on P2 the pedal counts
@@ -497,6 +500,8 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   static double over_iq_min, over_iq_max;    /* slot IQ RMS min / slot IQ peak max, dBFS */
   static int    over_mute_n;                 /* slots with the RF mute engaged */
   static int    over_ex_min, over_ex_max;    /* exciter sensor word, raw */
+  static int    over_ph_on;                  /* phase rotator ran in this over (#23) */
+  static double over_ph_in, over_ph_out, over_ph_fc;   /* its last asymmetry readout */
   static int    over_fwd_n;
   double tt_sign = (wmode == DEMOD_LSB || wmode == DEMOD_DIGL) ? -1.0 : 1.0;
   int tt_want_now = want_tt && keyed && r.state.mox && !r.state.tune && !gen_key;
@@ -521,6 +526,11 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     tx_dsp_set_gate_depth(cfg.gate_depth_db > 0.0 ? cfg.gate_depth_db : 10.0);
     tx_dsp_set_gate(voice_mic && cfg.gate_on,
                     cfg.gate_db != 0.0 ? cfg.gate_db : -45.0);
+    /* Phase rotator (#23): voice + live mic like the knobs above, and never
+     * in a TUNE / two-tone over (tx_phrot_active). tx.c applies on change. */
+    tx_dsp_set_phrot(tx_phrot_active(cfg.phrot_on, cfg.mode, g_atomic_int_get(&s_ext_src),
+                                     r.state.mox, r.state.tune, tt_want_now),
+                     cfg.phrot_hz > 0.0 ? cfg.phrot_hz : TX_PHROT_HZ_DFLT, cfg.phrot_auto);
     tx_dsp_set_mode(wmode, flo, fhi);
     tx_dsp_tune_tone(r.state.tune ? 1 : 0, 0.0);   /* TUNE = post-gen carrier */
     if (tt_want_now) { tx_dsp_two_tone(1, tt_sign * 700.0, tt_sign * 1937.0); }
@@ -577,6 +587,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
     over_mic_min = 1e9; over_mic_max = -1e9; over_lvl_max = -1e9;
     over_iq_min = 1e9; over_iq_max = -1e9; over_mute_n = 0;
     over_ex_min = 1 << 30; over_ex_max = -1;
+    over_ph_on = 0; over_ph_in = over_ph_out = over_ph_fc = 0.0;
     s_iqlvl_sum2 = 0.0; s_iqlvl_pk2 = 0.0; s_iqlvl_n = 0;
   } else if (!keyed && *prev_keyed) {
     /* KEY OFF (operator release OR protection trip): drop MOX first, stop the
@@ -629,6 +640,10 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
                 over_mic_min <= over_mic_max ? over_mic_max : -99.0, over_lvl_max,
                 over_iq_min, over_iq_max, over_mute_n, over_fwd_n, over_ex_min, over_ex_max);
       }
+      if (over_ph_on) {   /* #23 — the Guide's check: OUT asymmetry below IN */
+        fprintf(stderr, "tx: over phase rotator — asymmetry in %.1f %% → out %.1f %%, corner %.0f Hz\n",
+                100.0 * over_ph_in, 100.0 * over_ph_out, over_ph_fc);
+      }
 
       if (s_dump_mic) { fflush(s_dump_mic); }
       if (s_dump_tx)  { fflush(s_dump_tx); }
@@ -650,6 +665,12 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
       }
       if (lvl > over_lvl_max) { over_lvl_max = lvl; }
       if (s_rf_mute) { over_mute_n++; }
+      {   /* phase rotator asymmetry — the last reading of the over survives
+           * the UNKEY flush (which zeroes WDSP's envelopes) for the over line */
+        int pr; double pi, po, pf, pst;
+        tx_dsp_get_phrot(&pr, &pi, &po, &pf, &pst);
+        if (pr) { over_ph_on = 1; over_ph_in = pi; over_ph_out = po; over_ph_fc = pf; }
+      }
       if (!s_p1) {
         if (t.exciter_raw < over_ex_min) { over_ex_min = t.exciter_raw; }
         if (t.exciter_raw > over_ex_max) { over_ex_max = t.exciter_raw; }
@@ -671,6 +692,9 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
       tx_dsp_set_gate_depth(cfg.gate_depth_db > 0.0 ? cfg.gate_depth_db : 10.0);
       tx_dsp_set_gate(voice_mic && cfg.gate_on,
                       cfg.gate_db != 0.0 ? cfg.gate_db : -45.0);
+      tx_dsp_set_phrot(tx_phrot_active(cfg.phrot_on, cfg.mode, g_atomic_int_get(&s_ext_src),
+                                       r.state.mox, r.state.tune, tt_want_now),
+                       cfg.phrot_hz > 0.0 ? cfg.phrot_hz : TX_PHROT_HZ_DFLT, cfg.phrot_auto);
     }
     if (tt_want_now != tt_applied) {       /* two-tone toggled mid-over */
       tx_dsp_two_tone(tt_want_now, tt_sign * 700.0, tt_sign * 1937.0);
@@ -719,6 +743,7 @@ static int gate_slot(int *prev_keyed, int *prev_want, const float *silence,
   st.swr       = tx_meter_swr();
   if (keyed) { tx_dsp_get_meters(&st.mic_pk, &st.alc_gain, &st.lvlr_gain); }  /* live WDSP TX level */
   else       { st.mic_pk = -99.0; st.alc_gain = 0.0; st.lvlr_gain = 0.0; }
+  tx_dsp_get_phrot(&st.phrot_on, &st.phrot_in, &st.phrot_out, &st.phrot_fc, &st.phrot_step);
   if (st.alc_gain > -100.0 && st.alc_gain < s_alc_min_over) {   /* over-stats; the
        meter reads log(0) garbage before the first block flows — ignore it */
     s_alc_min_over = st.alc_gain;
@@ -1206,6 +1231,9 @@ void tx_run_set_cfg(const tx_run_cfg *cfg) {
   s_cfg.gate_on        = cfg->gate_on;
   s_cfg.gate_db        = cfg->gate_db;
   s_cfg.gate_depth_db  = cfg->gate_depth_db;
+  s_cfg.phrot_on       = cfg->phrot_on;
+  s_cfg.phrot_hz       = cfg->phrot_hz;
+  s_cfg.phrot_auto     = cfg->phrot_auto;
   g_strlcpy(s_cfg.country_key, cfg->country_key ? cfg->country_key : "", sizeof s_cfg.country_key);
   for (int i = 0; i < 11; i++) { s_cfg.pa_trim[i] = cfg->pa_trim[i]; }
   g_mutex_unlock(&s_cfg_lock);
@@ -1340,6 +1368,8 @@ void tx_run_set_mic_gain(double db) { tx_dsp_set_mic_gain(db); }   /* tx_dsp loc
 void tx_run_set_comp(int on, double gain_db) { tx_dsp_set_compressor(on, gain_db); }
 
 void tx_run_set_gate(int on, double thresh_db) { tx_dsp_set_gate(on, thresh_db); }
+
+void tx_run_phrot_reset(void) { tx_dsp_phrot_reset(); }   /* #23; tx_dsp locks internally */
 
 void tx_run_set_monitor(int on) { g_atomic_int_set(&s_monitor, on ? 1 : 0); }
 void tx_run_set_monitor_raw(int on) { g_atomic_int_set(&s_mon_raw, on ? 1 : 0); }
