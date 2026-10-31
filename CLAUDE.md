@@ -1021,8 +1021,20 @@ Richard's call: closed, the skimmer check is #39's deliverable. ⚠ Tooling
 trap: `sdrfl-tci-send -h` with no host argument falls through — "-h" becomes
 a TCI command and the tool dials the live instance on 127.0.0.1 for 2 s.
 
-**★ ISSUE #30 — SAM mode (WDSP synchronous AM), DONE IN CODE 2026-10-31,
-`needs-live-check` + `at-the-radio`:** `DEMOD_SAM = 10` (= WDSP RXA_SAM /
+**★ ISSUE #30 — SAM mode (WDSP synchronous AM), DONE + LIVE-VERIFIED +
+CLOSED 2026-10-31 (same evening, Richard on the G2E, 49/41 m broadcast:
+SAM beats beyond ±2 kHz where AM does not and relocks inside; Both / LSB
+only / USB only audibly differ on the 5 kHz raster and with a 6.6k/5.2k
+filter the side away from the louder neighbour leaves only the station's
+own noise; restart came back in SAM + USB only + 10k + 7.265 MHz; carrier
+levelling not A/B'd by ear — inaudible on strong Europeans, by
+opportunity on a fading DX signal, not held open. Lesson from the same
+evening: "no radio found" was the PC sitting behind a SECOND router on
+10.0.0.x — the G2E answers ping through it but no UDP discovery, directed
+or broadcast, and the P2 stream needs fixed UDP ports anyway: the PC must
+be on the radio's L2 segment, 192.168.1.x; the picker's "IP address (other
+subnet)" field is the directed probe for routed radios and `SDRFL_RADIO_IP`
+skips the picker):** `DEMOD_SAM = 10` (= WDSP RXA_SAM /
 TXA_SAM) is back in the mode strip after AM (the strip grew 390 → 437 px in
 the 1900-px lab; the window minimum is not a topic, the number is just on
 record). SAM shares the AM filter table (piHPSDR filterSAM = filterAM, default
