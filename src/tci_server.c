@@ -140,7 +140,7 @@ static _Atomic int      s_iq_active;      /* # of iq_start'ed clients         */
 static _Atomic int      s_iq_in_rate;     /* engine rate seen by the pusher   */
 /* Stream header words 8–15 (TCI 2.1, issue #43).
  *
- * TCI Protocol 2.1 (Expert Electronics, Oct 2026, p. 10) turns the first of
+ * TCI Protocol 2.1 (Expert Electronics, September 2026, p. 10) turns the first of
  * the words reserved since 1.8 into `uint32_t count`: "a packet counter
  * incremented for each packet within a stream … kept separately for the RX
  * audio stream and the TX_CHRONO stream and is reset when switching between
