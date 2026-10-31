@@ -141,20 +141,29 @@ int eq_profile_grid(const EqProfile *p, double fs, double *F, double *G) {
   for (int i = 1; i <= n; i++) { G[i] = eq_profile_db(p, F[i]); }
   /* refine: split the interval with the largest interpolation error until
    * all are within GRID_TOL or the WDSP cap is reached. The first interval
-   * (0 Hz .. 20 Hz) is left alone: nothing audible lives there. */
+   * (0 Hz .. 20 Hz) is left alone: nothing audible lives there. Interval
+   * errors are cached (err[i] belongs to [F[i], F[i+1]]) and only the two
+   * intervals a split creates are re-probed — this runs under the RX/TX
+   * chain lock at every drag step, and the rescan-everything version cost
+   * 7.5 ms for eight bands (sdrfl-eq-test reports the number). */
+  double err[EQ_MAX_POINTS + 1], at[EQ_MAX_POINTS + 1];
+  err[1] = -1.0; at[1] = 0.0;
+  for (int i = 2; i < n; i++) { err[i] = interval_err(p, F[i], G[i], F[i + 1], G[i + 1], &at[i]); }
   while (n < EQ_MAX_POINTS) {
-    double worst = -1.0, at = 0.0; int wi = -1;
-    for (int i = 2; i < n; i++) {
-      double a = 0.0; double e = interval_err(p, F[i], G[i], F[i + 1], G[i + 1], &a);
-      if (e > worst) { worst = e; at = a; wi = i; }
-    }
+    int wi = -1; double worst = -1.0;
+    for (int i = 2; i < n; i++) { if (err[i] > worst) { worst = err[i]; wi = i; } }
     if (wi < 0 || worst <= GRID_TOL) { break; }
-    if (at <= F[wi] || at >= F[wi + 1]) { at = 0.5 * (F[wi] + F[wi + 1]); }
-    memmove(&F[wi + 2], &F[wi + 1], (size_t)(n - wi) * sizeof F[0]);
-    memmove(&G[wi + 2], &G[wi + 1], (size_t)(n - wi) * sizeof G[0]);
-    F[wi + 1] = at;
-    G[wi + 1] = eq_profile_db(p, at);
+    double f = at[wi];
+    if (f <= F[wi] || f >= F[wi + 1]) { f = 0.5 * (F[wi] + F[wi + 1]); }
+    memmove(&F[wi + 2],   &F[wi + 1],   (size_t)(n - wi) * sizeof F[0]);
+    memmove(&G[wi + 2],   &G[wi + 1],   (size_t)(n - wi) * sizeof G[0]);
+    memmove(&err[wi + 2], &err[wi + 1], (size_t)(n - wi) * sizeof err[0]);
+    memmove(&at[wi + 2],  &at[wi + 1],  (size_t)(n - wi) * sizeof at[0]);
+    F[wi + 1] = f;
+    G[wi + 1] = eq_profile_db(p, f);
     n++;
+    err[wi]     = interval_err(p, F[wi],     G[wi],     F[wi + 1], G[wi + 1], &at[wi]);
+    err[wi + 1] = interval_err(p, F[wi + 1], G[wi + 1], F[wi + 2], G[wi + 2], &at[wi + 1]);
   }
   F[0] = 0.0;
   G[0] = 0.0;                                 /* preamp: level is made elsewhere */

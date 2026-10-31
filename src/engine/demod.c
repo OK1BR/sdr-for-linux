@@ -96,20 +96,29 @@ static void apply_amd(void) {
  * and resumes). Caller holds d_lock with d_ready. */
 static EqProfile d_eq;
 static int    d_eq_on;
-static double d_eq_F[EQ_MAX_POINTS + 1], d_eq_G[EQ_MAX_POINTS + 1];   /* last grid pushed */
+static double d_eq_tF[EQ_MAX_POINTS + 1], d_eq_tG[EQ_MAX_POINTS + 1];  /* TARGET grid: the
+                                                                           profile at d_arate */
+static int    d_eq_tn;
+static double d_eq_F[EQ_MAX_POINTS + 1], d_eq_G[EQ_MAX_POINTS + 1];    /* last grid PUSHED */
 static int    d_eq_n = -1, d_eq_run = -1;
 static long   d_eq_pushes;
 static int eq_mode_bypassed(int mode) {
   return mode == DEMOD_DIGU || mode == DEMOD_DIGL || mode == DEMOD_RTTY;
 }
-static void apply_eq(void) {
-  double F[EQ_MAX_POINTS + 1], G[EQ_MAX_POINTS + 1];
-  int n = eq_profile_grid(&d_eq, d_arate, F, G);
-  if (n != d_eq_n || memcmp(F, d_eq_F, (size_t)(n + 1) * sizeof F[0]) != 0 ||
-      memcmp(G, d_eq_G, (size_t)(n + 1) * sizeof G[0]) != 0) {
-    SetRXAEQProfile(d_id, n, F, G);
-    memcpy(d_eq_F, F, (size_t)(n + 1) * sizeof F[0]);
-    memcpy(d_eq_G, G, (size_t)(n + 1) * sizeof G[0]);
+/* Build the target grid for `p` at `rate` — OUTSIDE the lock (the refinement
+ * is ~0.1–0.5 ms, but the RX feed must never wait on it); the caller copies
+ * the result into d_eq_t* under d_lock. All EQ setters run on the GUI thread. */
+static int eq_target_build(const EqProfile *p, int rate, double *F, double *G) {
+  return eq_profile_grid(p, (double)rate, F, G);
+}
+static void apply_eq(void) {   /* d_lock held, d_ready: compare target vs pushed */
+  int n = d_eq_tn;
+  if (n < 4) { return; }                            /* no target yet (never built) */
+  if (n != d_eq_n || memcmp(d_eq_tF, d_eq_F, (size_t)(n + 1) * sizeof d_eq_F[0]) != 0 ||
+      memcmp(d_eq_tG, d_eq_G, (size_t)(n + 1) * sizeof d_eq_G[0]) != 0) {
+    SetRXAEQProfile(d_id, n, d_eq_tF, d_eq_tG);
+    memcpy(d_eq_F, d_eq_tF, (size_t)(n + 1) * sizeof d_eq_F[0]);
+    memcpy(d_eq_G, d_eq_tG, (size_t)(n + 1) * sizeof d_eq_G[0]);
     d_eq_n = n;
     d_eq_pushes++;
   }
@@ -277,7 +286,13 @@ int demod_create(int id, int in_rate, int mode, double flo, double fhi, double v
   d_dbg_blocks = 0;
   d_dbg_pk = 0.0;
 
+  /* RX EQ (#48): the target grid for this channel's rate, built before the lock. */
+  double eqF[EQ_MAX_POINTS + 1], eqG[EQ_MAX_POINTS + 1];
+  int eqn = eq_target_build(&d_eq, d_arate, eqF, eqG);
   g_mutex_lock(&d_lock);
+  memcpy(d_eq_tF, eqF, (size_t)(eqn + 1) * sizeof eqF[0]);
+  memcpy(d_eq_tG, eqG, (size_t)(eqn + 1) * sizeof eqG[0]);
+  d_eq_tn = eqn;
   /* Channel opens already running (state=1). */
   OpenChannel(id, D_BUFSIZE, D_DSPSIZE, in_rate, d_arate, d_arate,
               0, 1, 0.010, 0.025, 0.0, 0.010, 1);
@@ -514,14 +529,22 @@ void demod_set_am_fade(int on) {        /* carrier levelling, AM + SAM */
 
 /* CW sidetone pitch = the CW BFO offset (live; re-shifts a running CW RX). */
 void demod_set_eq(int on, const EqProfile *p) {
+  double F[EQ_MAX_POINTS + 1], G[EQ_MAX_POINTS + 1];
+  int n = 0;
+  if (p) { n = eq_target_build(p, d_arate, F, G); }   /* the slow part, unlocked */
   g_mutex_lock(&d_lock);
   d_eq_on = on ? 1 : 0;
-  if (p) { d_eq = *p; }
+  if (p) {
+    d_eq = *p;
+    memcpy(d_eq_tF, F, (size_t)(n + 1) * sizeof F[0]);
+    memcpy(d_eq_tG, G, (size_t)(n + 1) * sizeof G[0]);
+    d_eq_tn = n;
+  }
   if (d_ready) { apply_eq(); }
   g_mutex_unlock(&d_lock);
 }
 int demod_eq_state(void) {   /* display-only; plain reads, no lock (ints written under d_lock) */
-  if (!d_eq_on || d_eq.n <= 0) { return 0; }
+  if (!d_ready || !d_eq_on || d_eq.n <= 0) { return 0; }   /* no channel = nothing acts */
   if (eq_mode_bypassed(d_mode)) { return 2; }
   if (d_nr == 3 && (d_mode == DEMOD_CWU || d_mode == DEMOD_CWL)) { return 3; }
   return 1;

@@ -174,6 +174,19 @@ static void test_grid(void) {
     snprintf(det, sizeof det, "fs %d: worst %.4f dB at %.0f Hz", (int)fs, worst, wf);
     ok("linear interpolation within 0.1 dB of the curve", worst < 0.1, det);
   }
+  /* build cost — the grid is computed under the RX/TX chain lock on every
+   * (debounced) drag step; report it so a stall would be seen here first */
+  {
+    gint64 t0 = g_get_monotonic_time();
+    for (int k = 0; k < 20; k++) { eq_profile_grid(&full, 48000.0, F, G); }
+    double ms8 = (g_get_monotonic_time() - t0) / 1e3 / 20.0;
+    EqProfile one1 = { 1, { { EQ_PEAK, 1000.0, 6.0, 1.4 } } };
+    t0 = g_get_monotonic_time();
+    for (int k = 0; k < 20; k++) { eq_profile_grid(&one1, 48000.0, F, G); }
+    double ms1 = (g_get_monotonic_time() - t0) / 1e3 / 20.0;
+    snprintf(det, sizeof det, "8 bands %.2f ms, 1 band %.2f ms per grid", ms8, ms1);
+    ok("grid build cost under 2 ms (8 bands)", ms8 < 2.0, det);
+  }
   EqProfile narrow = { 1, { { EQ_PEAK, 1000.0, 12.0, EQ_Q_MAX } } };
   int n = eq_profile_grid(&narrow, 48000.0, F, G);
   int within = 0; for (int i = 1; i <= n; i++) { if (F[i] > 1000.0 / 1.1 && F[i] < 1000.0 * 1.1) { within++; } }

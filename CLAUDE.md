@@ -1201,7 +1201,11 @@ all are within 0.01 dB or the cap; 0 Hz first, Nyquist last so WDSP's 4th-power
 cutoff never engages — `ctfmode 1` is documented but not coded) and pushes it
 as a plain `SetRXAEQProfile` / `SetTXAEQProfile`; `vendor/wdsp` untouched. ⛔
 Pushed on change only (every push rebuilds a 16384-tap impulse — the DEXP/PHROT
-class); re-pushed when the channel is re-created. RX: ahead of the AGC,
+class); re-pushed when the channel is re-created. The grid is built OUTSIDE
+`d_lock` / `t_lock` (target vs pushed arrays; the refinement caches interval
+errors and re-probes only the two intervals a split creates — the first cut
+rescanned everything and cost 7.5 ms per 8-band grid under the chain lock, now
+0.23 ms; the gate reports the number). RX: ahead of the AGC,
 bypassed by us in DIGU/DIGL/RTTY (TCI RX-audio decoders get raw audio), not
 computed by WDSP while NNR runs a CW model (Guide §5.3.20) — `demod_eq_state()`
 0/1/2/3 drives the dialog's state line and the readout's `· EQ` tag. TX: the

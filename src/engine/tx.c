@@ -81,17 +81,21 @@ static int       t_ap_ph_run = -1, t_ap_ph_auto = -1;
 static int       t_dsp_rate = 96000;   /* the TXA dsp rate the EQ grid is built for */
 static EqProfile t_eq;
 static int       t_eq_on;
-static double    t_eq_F[EQ_MAX_POINTS + 1], t_eq_G[EQ_MAX_POINTS + 1];
+static double    t_eq_tF[EQ_MAX_POINTS + 1], t_eq_tG[EQ_MAX_POINTS + 1];   /* TARGET grid */
+static int       t_eq_tn;
+static double    t_eq_F[EQ_MAX_POINTS + 1], t_eq_G[EQ_MAX_POINTS + 1];     /* last PUSHED */
 static int       t_eq_n = -1, t_eq_run = -1;
 static long      t_eq_pushes;
+/* The grid is built OUTSIDE t_lock (the mic feed must not wait on it) and
+ * copied in under the lock; eq_apply then only compares and pushes. */
 static void eq_apply(void) {   /* t_lock held, channel open */
-  double F[EQ_MAX_POINTS + 1], G[EQ_MAX_POINTS + 1];
-  int n = eq_profile_grid(&t_eq, t_dsp_rate, F, G);
-  if (n != t_eq_n || memcmp(F, t_eq_F, (size_t)(n + 1) * sizeof F[0]) != 0 ||
-      memcmp(G, t_eq_G, (size_t)(n + 1) * sizeof G[0]) != 0) {
-    SetTXAEQProfile(t_id, n, F, G);
-    memcpy(t_eq_F, F, (size_t)(n + 1) * sizeof F[0]);
-    memcpy(t_eq_G, G, (size_t)(n + 1) * sizeof G[0]);
+  int n = t_eq_tn;
+  if (n < 4) { return; }
+  if (n != t_eq_n || memcmp(t_eq_tF, t_eq_F, (size_t)(n + 1) * sizeof t_eq_F[0]) != 0 ||
+      memcmp(t_eq_tG, t_eq_G, (size_t)(n + 1) * sizeof t_eq_G[0]) != 0) {
+    SetTXAEQProfile(t_id, n, t_eq_tF, t_eq_tG);
+    memcpy(t_eq_F, t_eq_tF, (size_t)(n + 1) * sizeof t_eq_F[0]);
+    memcpy(t_eq_G, t_eq_tG, (size_t)(n + 1) * sizeof t_eq_G[0]);
     t_eq_n = n;
     t_eq_pushes++;
   }
@@ -124,6 +128,8 @@ int tx_dsp_create(int mode, double flo, double fhi, int p1, tx_iq_cb cb, void *u
   int dsp_rate = p1 ? 48000 : 96000;
   int out_rate = p1 ? 48000 : 192000;
   t_dsp_rate    = dsp_rate;
+  double eqF[EQ_MAX_POINTS + 1], eqG[EQ_MAX_POINTS + 1];          /* pre-EQ target grid (#48) */
+  int eqn = eq_profile_grid(&t_eq, (double)t_dsp_rate, eqF, eqG);  /* at this chain's rate */
   t_in_size     = p1 ? 1024 : 512;
   t_id          = TX_CHANNEL;
   t_out_samples = t_in_size * (out_rate / TX_IN_RATE);
@@ -137,6 +143,9 @@ int tx_dsp_create(int mode, double flo, double fhi, int p1, tx_iq_cb cb, void *u
   t_blocks = 0;
 
   g_mutex_lock(&t_lock);
+  memcpy(t_eq_tF, eqF, (size_t)(eqn + 1) * sizeof eqF[0]);
+  memcpy(t_eq_tG, eqG, (size_t)(eqn + 1) * sizeof eqG[0]);
+  t_eq_tn = eqn;
   /* type=1 (transmit), state=0 (created stopped — tx_dsp_run starts it). */
   OpenChannel(t_id, t_in_size, TX_DSPSIZE, TX_IN_RATE, dsp_rate, out_rate,
               1, 0, 0.010, 0.025, 0.0, 0.010, 1);
@@ -317,9 +326,19 @@ static double phrot_current_fc(void) {
 }
 
 void tx_dsp_set_eq(int on, const EqProfile *p) {
+  double F[EQ_MAX_POINTS + 1], G[EQ_MAX_POINTS + 1];
+  int n = 0;
+  /* Skip the build when the table is unchanged — this is the ~20 Hz slot path. */
+  int same = p && eq_profile_equal(p, &t_eq) && t_eq_tn >= 4;
+  if (p && !same) { n = eq_profile_grid(p, (double)t_dsp_rate, F, G); }   /* unlocked */
   g_mutex_lock(&t_lock);
   t_eq_on = on ? 1 : 0;
-  if (p) { t_eq = *p; }
+  if (p && !same) {
+    t_eq = *p;
+    memcpy(t_eq_tF, F, (size_t)(n + 1) * sizeof F[0]);
+    memcpy(t_eq_tG, G, (size_t)(n + 1) * sizeof G[0]);
+    t_eq_tn = n;
+  }
   if (t_ready) { eq_apply(); }
   g_mutex_unlock(&t_lock);
 }
