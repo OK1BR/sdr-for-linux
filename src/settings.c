@@ -146,6 +146,10 @@ int settings_load(Settings *s) {
       s->nnr_floor = g_key_file_get_integer(kf, GROUP_RX, "nnr_floor", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "binaural", NULL))
       s->binaural = g_key_file_get_integer(kf, GROUP_RX, "binaural", NULL);
+    if (g_key_file_has_key(kf, GROUP_RX, "sam_sb", NULL))
+      s->sam_sb = g_key_file_get_integer(kf, GROUP_RX, "sam_sb", NULL);
+    if (g_key_file_has_key(kf, GROUP_RX, "am_fade", NULL))
+      s->am_fade = g_key_file_get_integer(kf, GROUP_RX, "am_fade", NULL);
     if (g_key_file_has_key(kf, GROUP_RX, "mode_filters", NULL)) {
       char *mf = g_key_file_get_string(kf, GROUP_RX, "mode_filters", NULL);
       if (mf) { g_strlcpy(s->mode_filt, mf, sizeof(s->mode_filt)); g_free(mf); }
@@ -354,6 +358,8 @@ int settings_save(const Settings *s) {
   g_key_file_set_integer(kf, GROUP_RX,    "nnr_model", s->nnr_model);
   g_key_file_set_integer(kf, GROUP_RX,    "nnr_floor", s->nnr_floor);
   g_key_file_set_integer(kf, GROUP_RX,    "binaural", s->binaural);
+  g_key_file_set_integer(kf, GROUP_RX,    "sam_sb",   s->sam_sb);
+  g_key_file_set_integer(kf, GROUP_RX,    "am_fade",  s->am_fade);
   g_key_file_set_string (kf, GROUP_RX,    "mode_filters", s->mode_filt);
   g_key_file_set_string (kf, GROUP_RX,    "var_filters",  s->var_filt);
   g_key_file_set_integer(kf, GROUP_DISPLAY, "fps",   s->fps);

@@ -71,6 +71,19 @@ static int      d_rtty_pitch = 800;   /* RTTY audio pair centre, Hz (715/885 —
  * apply_passband still knows it is RTTY. */
 static int wdsp_mode_of(int mode) { return mode == DEMOD_RTTY ? DEMOD_DIGL : mode; }
 
+/* AM/SAM demodulator options (issue #30, WDSP Guide §5.3.8). Both setters are
+ * plain field writes on the AMD struct (amd.c SetRXAAMDSBMode/FadeLevel) —
+ * no decalc, no state reset — so re-applying them after every SetRXAMode is
+ * free and keeps the channel's AMD in step with the cached values whichever
+ * mode it is in (the sideband choice only acts while the mode is SAM).
+ * Defaults = WDSP's create_amd: levelfade 1, sbmode 0. Caller holds d_lock. */
+static int d_sam_sb  = 0;   /* 0 both / 1 LSB only / 2 USB only (SAM) */
+static int d_am_fade = 1;   /* carrier levelling on/off (AM + SAM)    */
+static void apply_amd(void) {
+  SetRXAAMDSBMode(d_id, d_sam_sb);
+  SetRXAAMDFadeLevel(d_id, d_am_fade);
+}
+
 /* CW BFO offset (piHPSDR rx_set_offset @2312 + receiver.c:1481-1488): in CW
  * the dial reads the CARRIER — shift the spectrum by the sidetone pitch and
  * move the passband along, so a station exactly on the dial is heard AT the
@@ -246,6 +259,7 @@ int demod_create(int id, int in_rate, int mode, double flo, double fhi, double v
   SetRXAPanelBinaural(id, d_binaural);   /* copy=1 (L=R, mono) off / copy=0 (L=I,R=Q) on */
   SetRXAMode(id, wdsp_mode_of(mode));
   d_mode = mode; d_flo = flo; d_fhi = fhi;
+  apply_amd();                          /* SAM sideband + AM/SAM carrier levelling */
   apply_passband();                     /* passband + CW BFO offset            */
   apply_agc();                          /* AGC character + threshold (d_agc_mode/d_agc_top) */
   setup_noise();                        /* NR/NB/ANF params + on-off flags */
@@ -444,8 +458,22 @@ void demod_set_mode(int mode, double flo, double fhi) {
   if (d_ready) {
     apply_nnr();                        /* CW ↔ voice NNR model follows the mode */
     SetRXAMode(d_id, wdsp_mode_of(mode));
+    apply_amd();
     apply_passband();
   }
+  g_mutex_unlock(&d_lock);
+}
+
+void demod_set_sam_sideband(int sb) {   /* 0 both / 1 LSB / 2 USB */
+  g_mutex_lock(&d_lock);
+  d_sam_sb = sb < 0 ? 0 : (sb > 2 ? 2 : sb);
+  if (d_ready) { apply_amd(); }
+  g_mutex_unlock(&d_lock);
+}
+void demod_set_am_fade(int on) {        /* carrier levelling, AM + SAM */
+  g_mutex_lock(&d_lock);
+  d_am_fade = on ? 1 : 0;
+  if (d_ready) { apply_amd(); }
   g_mutex_unlock(&d_lock);
 }
 

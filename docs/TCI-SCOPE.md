@@ -270,7 +270,10 @@ tick (gate: a `vfo` set from a TCP client is broadcast to a socket client).
   `rtty_macros:<trx>,<text>;` (same escaping + leading-space word-gap
   semantics as `cw_macros`) and `rtty_macros_stop;`; `modulations_list`
   gains `rtty` appended LAST (unknown-name risk for third-party clients —
-  the existing get_mode echo keeps them consistent). Sent by log-for-linux
+  the existing get_mode echo keeps them consistent). `sam` (issue #30,
+  2026-10-31) is a standard ExpertSDR3 modulation name (piHPSDR advertises
+  SAM too) and sits right after `am`; the SAM sideband choice and the AM/SAM
+  carrier levelling have no TCI command (none exists in the spec). Sent by log-for-linux
   when its TCI mode is RTTY; keys the direct-FSK generator through the
   same tx_gate as everything else.
 

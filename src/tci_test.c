@@ -247,6 +247,7 @@ static int cond_bc_b_alias(void) { return rx_contains("vfo:0,1,7030000;") && S.f
 static int cond_if_set(void)   { return S.freq == 7021000 && rx_contains("vfo:0,0,7021000;"); }
 static int cond_dds_set(void)  { return S.centre == 7040000 && S.freq == 7040000 && rx_contains("dds:0,7040000;"); }
 static int cond_mode(void)    { return strcmp(S.mode, "cw") == 0; }
+static int cond_mode_sam(void) { return strcmp(S.mode, "sam") == 0 && rx_contains("modulation:0,sam;"); }
 static int cond_drive(void)   { return (int)(S.drive + 0.5) == 42; }
 static int cond_wpm(void)     { return S.wpm == 31; }
 static int cond_cwtext(void)  { return strstr(S.cw_text, "TEST: DE OK1BR") != NULL; }
@@ -491,6 +492,10 @@ static int run_suite(const char *label, const TciListen *l, const char *addr, in
   check("drive set lands (42)", wait_for(cond_drive, 1000));
   check("cw speed set lands (31 WPM)", wait_for(cond_wpm, 1000));
   check("server broadcasts the new state back", wait_for(cond_bc, 2000));
+  client_send("modulation:0,SAM;");                   /* issue #30: SAM round-trips like any mode */
+  check("modulation set lands (sam) + is echoed", wait_for(cond_mode_sam, 1000));
+  client_send("modulation:0,CW;");
+  check("back to cw", wait_for(cond_mode, 1000));
 
   client_send("cw_macros:0,TEST^ DE OK1BR;");
   check("cw_macros queues text with ^ unescaped to :", wait_for(cond_cwtext, 2000));
@@ -516,8 +521,8 @@ static int run_suite(const char *label, const TciListen *l, const char *addr, in
   client_send("dds:0,7040000;");
   check("dds:0 goes through set_centre (centre + dial, Model-A stub) and echoes dds", wait_for(cond_dds_set, 2000));
 
-  check("handshake advertises rtty appended LAST",
-        rx_contains("modulations_list:am,lsb,usb,cw,cwl,cwu,digu,digl,rtty;"));
+  check("handshake advertises sam after am, rtty appended LAST",
+        rx_contains("modulations_list:am,sam,lsb,usb,cw,cwl,cwu,digu,digl,rtty;"));
   client_send("rtty_macros:0,UR 599~ 001;");
   check("rtty_macros queues text with ~ unescaped to ,", wait_for(cond_rttytext, 2000));
   client_send("rtty_macros_stop;");

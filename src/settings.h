@@ -76,6 +76,8 @@ typedef struct {
   int       nnr_model;   /* NNR model 0 Standard / 1 Premium; -1 = unset (→ Premium) */
   int       nnr_floor;   /* NNR mask floor dB (−50..−10); 0 = unset (→ −25)         */
   int       binaural;    /* binaural stereo audio output on-off                  */
+  int       sam_sb;      /* SAM sideband: 0 both / 1 LSB only / 2 USB only (#30) */
+  int       am_fade;     /* AM/SAM carrier levelling on-off; -1 = unset (→ on)   */
   char      mode_filt[128]; /* per-mode filter memory, "modeid=idx;..."          */
   char      var_filt[512];  /* Var1/Var2 per mode, "modeid/v1lo/v1hi/v2lo/v2hi;.."*/
   /* TX (F6a) — persistent; PA-enable mirrors piHPSDR's persistent PA setting. */

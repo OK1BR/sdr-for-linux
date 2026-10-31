@@ -1021,6 +1021,44 @@ Richard's call: closed, the skimmer check is #39's deliverable. ⚠ Tooling
 trap: `sdrfl-tci-send -h` with no host argument falls through — "-h" becomes
 a TCI command and the tool dials the live instance on 127.0.0.1 for 2 s.
 
+**★ ISSUE #30 — SAM mode (WDSP synchronous AM), DONE IN CODE 2026-10-31,
+`needs-live-check` + `at-the-radio`:** `DEMOD_SAM = 10` (= WDSP RXA_SAM /
+TXA_SAM) is back in the mode strip after AM (the strip grew 390 → 437 px in
+the 1900-px lab; the window minimum is not a topic, the number is just on
+record). SAM shares the AM filter table (piHPSDR filterSAM = filterAM, default
+6.6k) and the AM AGC group; key `a` cycles AM → SAM → AM. **Sideband select**
+(WDSP `SetRXAAMDSBMode`, Guide §5.3.8: both / LSB only / USB only — a phasing
+selector inside the detector, NOT a filter, the station need not be centred)
+is a linked toggle row in the **Filter dialog**, visible in SAM only, persisted
+`[rx] sam_sb`; the readout passband line carries a "· LSB only / · USB only"
+tag; no sideband geometry on the spectrum (flo/fhi untouched). **Carrier
+levelling** (`SetRXAAMDFadeLevel`, the WDSP "fade leveler") is a switch in
+Preferences → Audio → Receive, applies to AM AND SAM, default ON = WDSP's own
+default = what AM did before the switch existed; `[rx] am_fade` (absent → on).
+Engine: `apply_amd()` re-applies both after every `SetRXAMode` (plain field
+writes in amd.c, no reset) — `demod_set_sam_sideband()` / `demod_set_am_fade()`,
+cached before the channel exists. ⛔ PLL capture is ±2 kHz about the dial
+(create_amd fmin/fmax, no setter): tune within 2 kHz of the carrier or SAM
+beats; CTUN is fine (the shifter brings the dial to 0 first). **TX in SAM =
+AM TX** by parity (TXA.c `SetTXAMode`: TXA_SAM runs the AM modulator; piHPSDR
+transmitter.c:2222 groups modeSAM with modeAM) → `tx_passband` (−high, +high);
+`mode_is_voice()` includes SAM — ⛔ it must agree with tx_run's exclusion-based
+`is_voice`, else MOX keys with no mic capture (a carrier-only over). TCI: `sam`
+is a standard ExpertSDR3 name (piHPSDR advertises SAM) → `modulations_list:
+am,sam,lsb,…,rtty` (rtty stays LAST), `modulation:0,sam` round-trips;
+log-for-linux maps unknown names to NULL, so a SAM QSO does not auto-set AM in
+the log (one-line sibling ticket, not filed). Gates: `sdrfl-tci-test` (+2 per
+transport), `sdrfl-settings-test` (+2: absent keys keep the caller's defaults,
+sam_sb/am_fade round-trip); 14 offline gates green. Broadway lab (persistent
+headless Chrome over CDP connected BEFORE the app starts — the one-shot recipe
+gave a 1024-px broadway screen; `[debug] log=0` in the scratch config or the
+output vanishes into the isolated run log): SAM restored from `mode=10`, the
+sideband row shows in SAM only, "USB only" persisted as `sam_sb=2`, the `a`
+key cycled the modes, the Audio page shows the switch ON, no GTK criticals.
+**Live protocol (closes the issue):** an AM broadcast carrier — SAM lock vs
+AM (no beat inside ±2 kHz, no hum on fades), LSB only / USB only audibly
+drop one side, levelling on/off on a fading signal.
+
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
 red TX filter footprint, AF true mute, 60 m USB, SDR-15 discovery dedup,

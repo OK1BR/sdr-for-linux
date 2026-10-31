@@ -25,9 +25,13 @@ does the heavy lifting.
   quantisation, one column per display pixel (up to 8192, so a wide window
   gets a sharper waterfall, not a stretched one); trace resolution
   adjustable; 6 colour palettes, adjustable averaging & FPS
-- SSB / CW / AM / DIGU / DIGL / RTTY demodulation with piHPSDR filter
+- SSB / CW / AM / SAM / DIGU / DIGL / RTTY demodulation with piHPSDR filter
   presets, passband drawn on the spectrum (RTTY: dial = FSK pair centre,
-  audio pitch adjustable — 800 Hz by default, 2210 = the classic 2125/2295)
+  audio pitch adjustable — 800 Hz by default, 2210 = the classic 2125/2295).
+  SAM = WDSP synchronous AM: PLL-locked carrier (capture ±2 kHz about the
+  dial), both sidebands or LSB/USB only (a phasing selector in the Filter
+  dialog, not a filter — QRM on one side goes away without re-tuning), and
+  carrier levelling against fading for AM and SAM (Preferences → Audio)
 - **Filter and AGC dialogs** behind two header-bar icons: a passband graph
   you drag (edges or the whole band), the mode's presets + Var1/Var2,
   Low/High rows; AGC Off/Long/Slow/Med/Fast with a live gain bar and the
@@ -195,7 +199,7 @@ Settings persist in `~/.config/sdr-for-linux/config.ini`.
 (with CTUN on, the spectrum pans and the dial stays — drag the passband to
 tune); right-drag = zoom; drag a passband edge to reshape the filter; drag
 the spectrum/waterfall separator to resize (double-click resets). Keys:
-`u`/`l`/`c`/`a`/`r` = USB/LSB/CW/AM/RTTY, `b` = VFO A/B, `Esc` = leave
+`u`/`l`/`c`/`a`/`r` = USB/LSB/CW/AM/RTTY (`a` again = SAM), `b` = VFO A/B, `Esc` = leave
 select mode / abort a TX over.
 
 **Display rendering** is chosen automatically: on GTK ≥ 4.22 the app uses

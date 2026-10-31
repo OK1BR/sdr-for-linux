@@ -19,7 +19,13 @@
  * branch — sweep with `grep -ni digu` (case-insensitive: the C identifiers,
  * not just the name strings) when touching mode logic. */
 enum { DEMOD_LSB = 0, DEMOD_USB = 1, DEMOD_CWL = 3, DEMOD_CWU = 4, DEMOD_AM = 6,
-       DEMOD_DIGU = 7, DEMOD_DIGL = 9, DEMOD_RTTY = 12 };
+       DEMOD_DIGU = 7, DEMOD_DIGL = 9, DEMOD_SAM = 10, DEMOD_RTTY = 12 };
+/* DEMOD_SAM = WDSP RXA_SAM (issue #30): the same AMD demodulator as AM run as a
+ * PLL-locked synchronous detector (carrier capture ±2 kHz about the dial,
+ * amd.c create_amd fmin/fmax — no setter), with an optional single-sideband
+ * output that is NOT a filter (sideband separation by phasing). TX in SAM is
+ * AM: WDSP TXA_SAM runs the AM modulator (TXA.c SetTXAMode), piHPSDR
+ * transmitter.c groups modeSAM with modeAM for the TX passband too. */
 #define DEMOD_NMODES 13   /* size for mode-indexed tables (ids are sparse) */
 
 /*
@@ -71,6 +77,16 @@ void demod_set_nr(int mode);
 void demod_set_nnr(int model, double floor_db);
 void demod_set_nb(int mode);
 void demod_set_anf(int on);
+
+/* AM/SAM demodulator options (WDSP Guide §5.3.8; live, thread-safe, cached
+ * before the channel exists and re-applied after every mode change):
+ *  - SAM sideband: 0 both / 1 LSB only / 2 USB only (SetRXAAMDSBMode — SAM
+ *    only; a phasing selector, the station need not be centred);
+ *  - carrier levelling ("fade leveler", SetRXAAMDFadeLevel): the fading
+ *    carrier is stripped and a steady one inserted — AM and SAM; WDSP's
+ *    default is ON and so was ours before this knob existed. */
+void demod_set_sam_sideband(int sb);
+void demod_set_am_fade(int on);
 
 /* Binaural stereo audio: 0 = mono (L=R), 1 = binaural (L=I, R=Q). Live. */
 void demod_set_binaural(int on);

@@ -92,7 +92,11 @@ static void tx_passband(int mode, double lo, double hi, double *flo, double *fhi
                                                            first — belt & braces) */
   case DEMOD_CWL:
   case DEMOD_CWU:  *flo = -150.0; *fhi = 150.0; break;
-  case DEMOD_AM:   *flo = -hi;    *fhi = hi;    break;  /* carrier ± high */
+  case DEMOD_AM:
+  case DEMOD_SAM:  *flo = -hi;    *fhi = hi;    break;  /* carrier ± high; SAM TX = AM
+                                                           (piHPSDR transmitter.c:2222
+                                                           modeSAM with modeAM; WDSP
+                                                           TXA_SAM = the AM modulator) */
   default:         *flo = lo;     *fhi = hi;    break;  /* USB + DIGU     */
   }
 }

@@ -118,6 +118,8 @@ typedef struct {
   int         nnr_model;    /* NNR (NR slot 3) model: 0 Standard / 1 Premium     */
   int         nnr_floor;    /* NNR mask floor, dB (−50..−10)                     */
   int         binaural;     /* binaural stereo audio output on-off             */
+  int         sam_sb;       /* SAM sideband 0 both / 1 LSB only / 2 USB only (#30) */
+  int         am_fade;      /* AM/SAM carrier levelling (WDSP fade leveler) on-off */
   int         fps;          /* panadapter frame rate                          */
   int         latency;      /* audio target latency (ms)                      */
   int         audio_rate;   /* shared audio sample rate (RX out + TX mic), Hz  */
@@ -200,6 +202,8 @@ typedef struct {
   GtkWidget  *filt_low_row;  /* AdwSpinRow: low edge (Hz)                         */
   GtkWidget  *filt_high_row; /* AdwSpinRow: high edge (Hz)                        */
   GtkWidget  *filt_mode_lbl; /* popover title: the mode                           */
+  GtkWidget  *filt_sb_box;   /* SAM sideband toggles row (visible in SAM only)    */
+  GtkWidget  *filt_sb_btn[3];/* … Both / LSB only / USB only, index = sam_sb      */
   int         filt_syncing;  /* popover widgets being set from state → ignore signals */
   int         filt_drag;     /* graph drag: 0 none, 1 low edge, 2 high edge, 3 shift */
   int         filt_drag_lo, filt_drag_hi;   /* passband at graph drag-begin (Hz)   */
@@ -810,7 +814,8 @@ static const FilterPreset *mode_filters(int mode, int *n, int *deflt) {
     case DEMOD_USB:  *deflt = 5; return FILT_USB;   /* 2.7k */
     case DEMOD_CWL:
     case DEMOD_CWU:  *deflt = 4; return FILT_CW;    /* 500  */
-    case DEMOD_AM:   *deflt = 4; return FILT_AM;    /* 6.6k */
+    case DEMOD_AM:
+    case DEMOD_SAM:  *deflt = 4; return FILT_AM;    /* 6.6k (piHPSDR filterSAM = filterAM) */
     case DEMOD_DIGU: *deflt = 2; return FILT_USB;   /* 3.8k — FT8 slots up to ~3.1 kHz */
     case DEMOD_DIGL: *deflt = 2; return FILT_LSB;   /* 3.8k mirrored                   */
     case DEMOD_RTTY: *deflt = 5; return FILT_RTTY;  /* 500 — the contest default       */
@@ -836,7 +841,8 @@ static const char *mode_label(int mode) {
   switch (mode) {
   case DEMOD_LSB:  return "LSB";  case DEMOD_USB:  return "USB";
   case DEMOD_CWL:  return "CWL";  case DEMOD_CWU:  return "CWU";
-  case DEMOD_AM:   return "AM";   case DEMOD_DIGU: return "DIGU";
+  case DEMOD_AM:   return "AM";   case DEMOD_SAM:  return "SAM";
+  case DEMOD_DIGU: return "DIGU";
   case DEMOD_DIGL: return "DIGL"; case DEMOD_RTTY: return "RTTY";
   default:         return "?";
   }
@@ -860,13 +866,14 @@ static void filter_width_label(App *app, char *buf, size_t n) {
   else              { snprintf(buf, n, "%d", (int)lrint(wd)); }
 }
 
-/* Parse a mode name (USB/LSB/CWU/CWL/AM) to a DEMOD_* id; -1 if unknown/NULL. */
+/* Parse a mode name (USB/LSB/CWU/CWL/AM/SAM/DIGU/DIGL/RTTY) to a DEMOD_* id; -1 if unknown/NULL. */
 static int mode_from_name(const char *m) {
   if      (m && !strcasecmp(m, "usb"))  return DEMOD_USB;
   else if (m && !strcasecmp(m, "lsb"))  return DEMOD_LSB;
   else if (m && !strcasecmp(m, "cwu"))  return DEMOD_CWU;
   else if (m && !strcasecmp(m, "cwl"))  return DEMOD_CWL;
   else if (m && !strcasecmp(m, "am"))   return DEMOD_AM;
+  else if (m && !strcasecmp(m, "sam"))  return DEMOD_SAM;
   else if (m && !strcasecmp(m, "digu")) return DEMOD_DIGU;
   else if (m && !strcasecmp(m, "digl")) return DEMOD_DIGL;
   else if (m && !strcasecmp(m, "rtty")) return DEMOD_RTTY;
@@ -1380,12 +1387,16 @@ static void draw_vfo_readout(cairo_t *cr, App *app, int w, const char *bandinfo)
    * passband is what the green edges draw, Hz relative to the carrier; Var
    * edges dragged live update it too. */
   {
-    char wl[16], pb[48], agct[24];
+    char wl[16], pb[64], agct[24];
     filter_width_label(app, wl, sizeof wl);
     int lo = (int)lrint(app->flo), hi = (int)lrint(app->fhi);
     if      (lo >= 0 && hi >= 0) { snprintf(pb, sizeof pb, "%d – %d Hz (%s)", lo, hi, wl); }   /* spaced dash: Sans sets it too tight */
     else if (lo < 0 && hi <= 0)  { snprintf(pb, sizeof pb, "%d – %d Hz (%s)", -hi, -lo, wl); } /* LSB family: audio Hz */
     else                         { snprintf(pb, sizeof pb, "%+d…%+d Hz (%s)", lo, hi, wl); }  /* straddling (AM, RTTY) */
+    if (app->mode == DEMOD_SAM && app->sam_sb) {   /* SAM sideband select is NOT a filter (the
+                                                      passband stays) — the only place it shows (#30) */
+      g_strlcat(pb, app->sam_sb == 1 ? "  ·  LSB only" : "  ·  USB only", sizeof pb);
+    }
     snprintf(agct, sizeof agct, "AGC %s", agc_label(app->agc));
     const char *sep = "  ·  ";
     const double by = RO_TOP + 76.0 * RO_L;
@@ -2923,6 +2934,8 @@ static void app_to_settings(const App *app, Settings *s) {
   s->ps_auto    = app->ps_auto;
   s->nnr_model  = app->nnr_model;
   s->nnr_floor  = app->nnr_floor;
+  s->sam_sb     = app->sam_sb;
+  s->am_fade    = app->am_fade;
   s->tx_ant   = app->tx_antenna;
   s->tx_drive = app->tx_drive_w;
   s->tx_digi_max = app->tx_digi_max_w;
@@ -3048,10 +3061,12 @@ static void schedule_save(App *app) {
 }
 
 /* Voice/phone modes need the mic; CW and data modes do not. WDSP mode ids — kept
- * broad so future FM/DSB/SAM count as voice the moment they're wired. */
+ * broad so future FM/DSB count as voice the moment they're wired. ⛔ Must agree
+ * with tx_run's is_voice (which is by EXCLUSION of CW/RTTY/DIGU/DIGL): a mode
+ * voice there but not here keys MOX with no mic capture = a carrier-only over. */
 static int mode_is_voice(int mode) {
   switch (mode) {
-    case DEMOD_LSB: case DEMOD_USB: case DEMOD_AM:   /* + future FM/DSB/SAM */
+    case DEMOD_LSB: case DEMOD_USB: case DEMOD_AM: case DEMOD_SAM:   /* + future FM/DSB */
       return 1;
     default:                                         /* CWL/CWU + data modes */
       return 0;
@@ -3795,7 +3810,7 @@ static gboolean on_key(GtkEventControllerKey *ctl, guint keyval, guint keycode,
     case GDK_KEY_u: mode = DEMOD_USB;  break;
     case GDK_KEY_l: mode = DEMOD_LSB;  break;
     case GDK_KEY_c: mode = DEMOD_CWU;  break;
-    case GDK_KEY_a: mode = DEMOD_AM;   break;
+    case GDK_KEY_a: mode = app->mode == DEMOD_AM ? DEMOD_SAM : DEMOD_AM; break;  /* a = AM, a again = SAM (#30) */
     case GDK_KEY_r: mode = DEMOD_RTTY; break;
     default: return FALSE;
   }
@@ -4032,6 +4047,23 @@ static void on_filt_preset_toggled(GtkToggleButton *b, gpointer data) {
   if (app->filt_syncing || !gtk_toggle_button_get_active(b)) { return; }
   filter_select(app, GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "idx")));
 }
+/* SAM sideband (#30, WDSP Guide §5.3.8): one path for the dialog toggles and
+ * the restore at start — the engine setter is live and cached before the
+ * channel exists. A phasing selector inside the synchronous detector, NOT a
+ * filter: flo/fhi are untouched, the readout line carries the tag. */
+static void sam_sb_set(App *app, int sb) {
+  if (sb < 0 || sb > 2) { return; }
+  app->sam_sb = sb;
+  demod_set_sam_sideband(sb);
+  filter_widgets_sync(app);
+  schedule_save(app);
+  if (app->area) { gtk_widget_queue_draw(app->area); }
+}
+static void on_filt_sb_toggled(GtkToggleButton *b, gpointer data) {
+  App *app = (App *)data;
+  if (app->filt_syncing || !gtk_toggle_button_get_active(b)) { return; }
+  sam_sb_set(app, GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "sb")));
+}
 static void on_filt_edge_changed(AdwSpinRow *r, GParamSpec *ps, gpointer data) {
   (void)r; (void)ps;
   App *app = (App *)data;
@@ -4057,6 +4089,8 @@ static void on_filt_dialog_closed(AdwDialog *d, gpointer data) {
   App *app = (App *)data;          /* widgets die with the dialog */
   app->filt_dlg = NULL; app->filt_graph = NULL; app->filt_mode_lbl = NULL;
   app->filt_low_row = app->filt_high_row = NULL;
+  app->filt_sb_box = NULL;
+  for (int i = 0; i < 3; i++) { app->filt_sb_btn[i] = NULL; }
   for (int i = 0; i < NPRESET + 2; i++) { app->filt_btn[i] = NULL; }
   app->filt_drag = 0;
 }
@@ -4104,6 +4138,25 @@ static void filter_dialog_build(App *app) {
   }
   gtk_box_append(GTK_BOX(box), grid);
 
+  /* SAM sideband select (#30): both / LSB only / USB only — SAM only, shown by
+   * filter_widgets_sync. Not a bandpass: the station need not be centred and
+   * the passband above stays as drawn (WDSP Guide §5.3.8). */
+  app->filt_sb_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_add_css_class(app->filt_sb_box, "linked");
+  gtk_box_set_homogeneous(GTK_BOX(app->filt_sb_box), TRUE);
+  { static const char *const SB[3] = { "Both sidebands", "LSB only", "USB only" };
+    GtkWidget *sg = NULL;
+    for (int i = 0; i < 3; i++) {
+      GtkWidget *b = gtk_toggle_button_new_with_label(SB[i]);
+      g_object_set_data(G_OBJECT(b), "sb", GINT_TO_POINTER(i));
+      if (!sg) { sg = b; } else { gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(b), GTK_TOGGLE_BUTTON(sg)); }
+      g_signal_connect(b, "toggled", G_CALLBACK(on_filt_sb_toggled), app);
+      app->filt_sb_btn[i] = b;
+      gtk_box_append(GTK_BOX(app->filt_sb_box), b);
+    } }
+  gtk_widget_set_visible(app->filt_sb_box, FALSE);
+  gtk_box_append(GTK_BOX(box), app->filt_sb_box);
+
   GtkWidget *rows = gtk_list_box_new();
   gtk_list_box_set_selection_mode(GTK_LIST_BOX(rows), GTK_SELECTION_NONE);
   gtk_widget_add_css_class(rows, "boxed-list");
@@ -4133,6 +4186,10 @@ static void filter_widgets_sync(App *app) {
   }
   if (app->filter_idx >= 0 && app->filter_idx < NPRESET + 2) {
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->filt_btn[app->filter_idx]), TRUE);
+  }
+  gtk_widget_set_visible(app->filt_sb_box, app->mode == DEMOD_SAM);   /* SAM sideband row (#30) */
+  if (app->sam_sb >= 0 && app->sam_sb <= 2) {
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->filt_sb_btn[app->sam_sb]), TRUE);
   }
   { double lo, hi; filt_disp(app, app->flo, app->fhi, &lo, &hi);   /* display (audio) Hz */
     adw_spin_row_set_value(ADW_SPIN_ROW(app->filt_low_row),  lo);
@@ -4184,13 +4241,13 @@ static void populate_filter_dd(App *app) {
 
 /* Per-mode-group AGC memory (contest note #8: a slow AGC left over from SSB
  * cost missed characters in CW — each group keeps its own AGC character).
- * Groups: SSB {LSB,USB}, CW {CWL,CWU}, AM, digi {DIGU,DIGL,RTTY} (RTTY joins
+ * Groups: SSB {LSB,USB}, CW {CWL,CWU}, AM {AM,SAM}, digi {DIGU,DIGL,RTTY} (RTTY joins
  * the existing digi group — no 5th group, RTTY-SCOPE §2). */
 enum { AGCG_SSB = 0, AGCG_CW = 1, AGCG_AM = 2, AGCG_DIGI = 3 };
 static int agc_group_of(int mode) {
   switch (mode) {
     case DEMOD_CWL: case DEMOD_CWU:   return AGCG_CW;
-    case DEMOD_AM:                    return AGCG_AM;
+    case DEMOD_AM: case DEMOD_SAM:    return AGCG_AM;
     case DEMOD_DIGU: case DEMOD_DIGL:
     case DEMOD_RTTY:                  return AGCG_DIGI;
     default:                          return AGCG_SSB;   /* LSB/USB */
@@ -4579,9 +4636,9 @@ static GtkWidget *build_controls(App *app) {
 
   /* Mode — segmented, grouped; keep a handle per DEMOD id for key sync. */
   static const int         mids[]   = {DEMOD_USB, DEMOD_LSB, DEMOD_CWL, DEMOD_CWU, DEMOD_AM,
-                                       DEMOD_DIGU, DEMOD_DIGL, DEMOD_RTTY};
-  static const char *const mlabels[] = {"USB", "LSB", "CWL", "CWU", "AM", "DIGU", "DIGL",
-                                        "RTTY"};
+                                       DEMOD_SAM, DEMOD_DIGU, DEMOD_DIGL, DEMOD_RTTY};
+  static const char *const mlabels[] = {"USB", "LSB", "CWL", "CWU", "AM", "SAM", "DIGU",
+                                        "DIGL", "RTTY"};
   GtkWidget *modebox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_widget_add_css_class(modebox, "linked");
   GtkWidget *group = NULL;
@@ -5320,6 +5377,12 @@ static void on_pref_nnr_floor(AdwSpinRow *r, GParamSpec *p, gpointer data) {
   demod_set_nnr(app->nnr_model, app->nnr_floor);
   schedule_save(app);
 }
+static void on_pref_am_fade(AdwSwitchRow *r, GParamSpec *p, gpointer data) {
+  (void)p; App *app = (App *)data;
+  app->am_fade = adw_switch_row_get_active(r) ? 1 : 0;
+  demod_set_am_fade(app->am_fade);
+  schedule_save(app);
+}
 static void on_pref_ps_auto(AdwSwitchRow *r, GParamSpec *p, gpointer data) {
   (void)p; App *app = (App *)data;
   app->ps_auto = adw_switch_row_get_active(r) ? 1 : 0;
@@ -5400,6 +5463,7 @@ static const char *tci_get_mode(void) {
     case DEMOD_CWL:  return "cwl";
     case DEMOD_CWU:  return "cw";    /* ExpertSDR calls the USB-side CW "cw" */
     case DEMOD_AM:   return "am";
+    case DEMOD_SAM:  return "sam";   /* standard ExpertSDR3 name (#30) */
     case DEMOD_DIGU: return "digu";
     case DEMOD_DIGL: return "digl";
     case DEMOD_RTTY: return "rtty";  /* family extension — ExpertSDR3 has no
@@ -5414,6 +5478,7 @@ static int tci_set_mode(const char *m) {
   else if (strcmp(m, "cw") == 0 || strcmp(m, "cwu") == 0) { mode = DEMOD_CWU; }
   else if (strcmp(m, "cwl") == 0) { mode = DEMOD_CWL; }
   else if (strcmp(m, "am") == 0)  { mode = DEMOD_AM; }
+  else if (strcmp(m, "sam") == 0) { mode = DEMOD_SAM; }
   else if (strcmp(m, "digu") == 0) { mode = DEMOD_DIGU; }
   else if (strcmp(m, "digl") == 0) { mode = DEMOD_DIGL; }
   else if (strcmp(m, "rtty") == 0) { mode = DEMOD_RTTY; }
@@ -6151,6 +6216,14 @@ static AdwDialog *build_prefs(App *app) {
   adw_preferences_group_add(g, pref_spin("NNR floor",
       "dB · deepest attenuation the neural mask may apply (−50..−10) · live",
       -50, -10, app->nnr_floor, G_CALLBACK(on_pref_nnr_floor), app));
+  /* AM/SAM carrier levelling (#30; WDSP Guide §5.3.8 "fade leveler"): the
+   * fading carrier is stripped and a steady one inserted. ON = WDSP's own
+   * default = what AM did before this switch existed. The SAM sideband
+   * choice lives in the Filter dialog (an operating control). */
+  adw_preferences_group_add(g, pref_switch("AM carrier levelling",
+      "AM and SAM · the fading carrier is replaced by a steady one (WDSP fade "
+      "leveler) · live",
+      app->am_fade, G_CALLBACK(on_pref_am_fade), app));
   adw_preferences_page_add(p, g);
 
   /* Transmit — everything you SAY into the radio. The chain itself is fixed
@@ -6643,6 +6716,7 @@ static void start_radio(App *app) {
                    * STBL went with PS 3.0 (WDSP 2.11, issue #22). */
                   .ps_setpk = 0.2899, .ps_auto = 1,
                   .nnr_model = -1, .nnr_floor = 0,   /* unset → Premium / −25 dB */
+                  .sam_sb = 0, .am_fade = -1,        /* #30: both sidebands, levelling on */
                   .cw_wpm = CW_WPM_DFLT, .cw_pitch = CW_PITCH_DFLT,
                   .cw_st_db = CW_ST_DB_DFLT, .cw_hang = CW_HANG_DFLT,
                   .rtty_pitch = RTTY_PITCH_DFLT, .rtty_mon_db = RTTY_MON_DB_DFLT,
@@ -6715,6 +6789,12 @@ static void start_radio(App *app) {
   app->nnr_floor = st.nnr_floor == 0 ? -25
                  : (st.nnr_floor < -50 ? -50 : (st.nnr_floor > -10 ? -10 : st.nnr_floor));
   demod_set_nnr(app->nnr_model, app->nnr_floor);   /* cached; applied at demod_create */
+  /* AM/SAM (#30): sideband 0..2, carrier levelling defaults ON (WDSP's own
+   * default = what AM did before the switch). Cached; applied at demod_create. */
+  app->sam_sb  = st.sam_sb < 0 ? 0 : (st.sam_sb > 2 ? 2 : st.sam_sb);
+  app->am_fade = st.am_fade < 0 ? 1 : (st.am_fade ? 1 : 0);
+  demod_set_sam_sideband(app->sam_sb);
+  demod_set_am_fade(app->am_fade);
   app->binaural = st.binaural ? 1 : 0;
   /* TX (F6a): PA-enable persists (mirrors piHPSDR). Clamp the rest to safe
    * ranges. G2E-profile defaults here; once discovery identifies the radio the

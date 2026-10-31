@@ -423,9 +423,10 @@ static gboolean send_initial_idle(gpointer data) {
   cli_send(c, "vfo_limits:0,61440000;");
   g_mutex_unlock(&s_lock);
   tci_sendf(c, "if_limits:-%d,%d;", s_ops.get_rate() / 2, s_ops.get_rate() / 2);
-  /* `rtty` is a family extension appended LAST — a third-party client that
-   * rejects unknown names sees the standard list first (RTTY-SCOPE §6). */
-  tci_sendf(c, "modulations_list:am,lsb,usb,cw,cwl,cwu,digu,digl,rtty;");
+  /* `sam` is a standard ExpertSDR3 name (piHPSDR advertises SAM too; issue
+   * #30). `rtty` is a family extension appended LAST — a third-party client
+   * that rejects unknown names sees the standard list first (RTTY-SCOPE §6). */
+  tci_sendf(c, "modulations_list:am,sam,lsb,usb,cw,cwl,cwu,digu,digl,rtty;");
   tci_sendf(c, "mute:%s;", s_ops.get_mute() ? "true" : "false");
   tci_sendf(c, "volume:%d;", (int)(s_ops.get_volume() - 0.5));
   tci_sendf(c, "dds:0,%lld;", centre());

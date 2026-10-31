@@ -94,7 +94,10 @@ int main(void) {
   /* ---- 2. migration: pre-#47 file, scalar only ------------------------ */
   write_file(path, "[radio]\nip=192.0.2.1\n[tx]\npa_enable=1\ndrive_w=40\ntune_w=15\n");
   Settings s = fresh();
+  s.am_fade = -1;                                /* the GUI's "unset" sentinel (#30) */
   CHECK(settings_load(&s) == 1, "settings_load parsed the pre-#47 file");
+  CHECK(s.am_fade == -1 && s.sam_sb == 0,
+        "#30 keys absent → the caller's defaults survive (am_fade %d, sam_sb %d)", s.am_fade, s.sam_sb);
   CHECK(eq(s.tx_drive, 40.0) && eq(s.tx_tune, 15.0), "scalars read: %g / %g", s.tx_drive, s.tx_tune);
   CHECK(s.drive_w_band[0] == '\0' && s.tune_w_band[0] == '\0', "no table in a pre-#47 file");
   double bd[NB], bt[NB];
@@ -110,9 +113,12 @@ int main(void) {
   settings_band_table_format(s.drive_w_band, sizeof s.drive_w_band, KEYS, NB, bd);
   settings_band_table_format(s.tune_w_band,  sizeof s.tune_w_band,  KEYS, NB, bt);
   g_strlcpy(s.ip, "192.0.2.1", sizeof s.ip);
+  s.sam_sb = 2; s.am_fade = 1;                   /* #30: USB only, levelling on */
   CHECK(settings_save(&s) == 0, "settings_save (G2E, [tx])");
   Settings r = fresh();
+  r.am_fade = -1;
   CHECK(settings_load(&r) == 1, "reload");
+  CHECK(r.sam_sb == 2 && r.am_fade == 1, "#30 sam_sb / am_fade round-trip: %d / %d", r.sam_sb, r.am_fade);
   settings_band_table_parse(r.drive_w_band, KEYS, NB, r.tx_drive, 0.0, 100.0, bd);
   settings_band_table_parse(r.tune_w_band,  KEYS, NB, r.tx_tune,  0.0, 100.0, bt);
   CHECK(eq(bd[B20], 60.0) && eq(bt[B20], 5.0),   "20 m after reload: %g / %g", bd[B20], bt[B20]);
