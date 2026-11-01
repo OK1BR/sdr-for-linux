@@ -396,7 +396,7 @@ typedef struct {
   GtkWidget  *mox_btn;       /* MOX toggle (disabled until F6c)                     */
   GtkWidget  *ps_btn;        /* PureSignal toggle (header bar, after MOX)           */
   GtkWidget  *tt_btn;        /* two-tone test toggle (header bar; KEYS → .txkey)    */
-  GtkWidget  *tx_label;      /* live TX power/SWR + refusal reason readout          */
+  int         tx_alert_shown;/* TX alert line armed at the last tick (clear-redraw)  */
   char        tx_reason[64]; /* last refusal/trip reason to flash                   */
   gint64      tx_reason_until;/* monotonic µs until which to show tx_reason         */
   int         tx_keyed_shown;/* last keyed state pushed to the label (repaint gate) */
@@ -1482,6 +1482,22 @@ static void draw_vfo_readout(cairo_t *cr, App *app, int w, const char *bandinfo)
     app->ro_aeb_x0 = b[1].x; app->ro_aeb_x1 = b[1].x + bw;
     app->ro_btn_y0 = bty;    app->ro_btn_y1 = bty + bh;
     if (b[1].x + bw > xmax) { xmax = b[1].x + bw; }
+  }
+  /* 5 (transient): a TX refusal, a protection trip or "radio link lost" as
+   * one more line of the block, in its own typography — the UI face at the
+   * lines' size, TX red, no badge, no icon — for the seconds tx_reason is
+   * armed. Richard, 2026-11-01, after the first live link-loss test: the
+   * GtkLabel that used to flash this in the top strip behind MON was easy to
+   * miss, a red badge over the spectrum was "pěst na oko", a toast "still
+   * not it"; this line he approved from a mockup. The tick keeps the display
+   * redrawing while the line is armed: during a link loss no analyzer frame
+   * arrives, and the frames are what otherwise drive the redraws. */
+  if (app->tx_reason[0] && g_get_monotonic_time() < app->tx_reason_until) {
+    cairo_select_font_face(cr, FONT_UI, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+    cairo_set_font_size(cr, 15.0 * RO_S);
+    cairo_set_source_rgba(cr, COL_TX_EDGE, 0.95);
+    cairo_move_to(cr, x, RO_TOP + 124.0 * RO_L); cairo_show_text(cr, app->tx_reason);
+    cairo_text_extents(cr, app->tx_reason, &e); if (x + e.x_advance > xmax) { xmax = x + e.x_advance; }
   }
   /* The block's extent (spot labels steer around it; the OVL badge sits right of it). */
   app->ro_x0 = x - 6.0; app->ro_y0 = RO_TOP; app->ro_x1 = xmax + 6.0; app->ro_y1 = RO_TOP + RO_H;
@@ -2734,21 +2750,6 @@ static void update_volt_label(App *app);   /* fwd: defined with the footer contr
 static void update_temp_label(App *app);   /* fwd: the P1/HL2 twin (same footer slot) */
 static void on_zoom_changed(GtkRange *r, gpointer data);   /* fwd: footer zoom slider */
 
-/* TX readout (F6a): ONLY a refusal/trip reason, flashed red for a few seconds —
- * the live power/SWR live big on the TX panadapter + the power meter, so this no
- * longer duplicates them (and shows nothing when idle). Called each tick. */
-static void update_tx_label(App *app, const tx_run_status *ts, gint64 now) {
-  (void)ts;
-  if (!app->tx_label) { return; }
-  if (app->tx_reason[0] && now < app->tx_reason_until) {
-    char m[160];
-    snprintf(m, sizeof m, "<span foreground='#f2413d'><b>⚠ %s</b></span>", app->tx_reason);
-    gtk_label_set_markup(GTK_LABEL(app->tx_label), m);
-  } else {
-    gtk_label_set_text(GTK_LABEL(app->tx_label), "");
-  }
-}
-
 /* Analyzer columns follow the display width in DEVICE pixels (issue #15): one
  * column per pixel, so the waterfall and the trace are never stretched. The
  * request is debounced — WDSP restarts its dispatcher on every SetAnalyzer —
@@ -2893,7 +2894,7 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
         if (ts.link_release_seq != app->link_release_seen) {
           app->link_release_seen = ts.link_release_seq;
           if (app->link_release_seen) {
-            g_strlcpy(app->tx_reason, "radio link lost — TX released, key again", sizeof app->tx_reason);
+            g_strlcpy(app->tx_reason, "TX released — radio link lost, key again", sizeof app->tx_reason);
             app->tx_reason_until = now + 6 * G_USEC_PER_SEC;
             if (app->tune_btn) { gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->tune_btn), FALSE); }
             if (app->mox_btn)  { gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->mox_btn),  FALSE); }
@@ -2935,7 +2936,12 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock, gpointer data) 
           app->tx_settle_until = 0;
         }
         app->tx_display = ts.keyed;
-        update_tx_label(app, &ts, now);
+        /* TX alert line (draw_vfo_readout, line 5): redraw while a reason is armed,
+         * and once more when it expires so it clears — during a link loss no
+         * analyzer frame arrives, and the frames otherwise drive the redraws. */
+        int alert = app->tx_reason[0] && now < app->tx_reason_until;
+        if (alert || app->tx_alert_shown) { gtk_widget_queue_draw(widget); }
+        app->tx_alert_shown = alert;
       }
       if (app->tx_display) {
         tick_tx(app, widget);       /* transmitted spectrum, full area */
@@ -5392,10 +5398,6 @@ static GtkWidget *build_controls(App *app) {
   g_signal_connect(mon_b, "toggled", G_CALLBACK(on_mon_toggled), app);
   gtk_box_append(GTK_BOX(txbox), mon_b);
   gtk_box_append(GTK_BOX(mid), txbox);
-
-  app->tx_label = gtk_label_new("");   /* only flashes a refusal/trip reason; empty otherwise */
-  gtk_widget_add_css_class(app->tx_label, "span");
-  gtk_box_append(GTK_BOX(mid), app->tx_label);
 
   gtk_center_box_set_center_widget(GTK_CENTER_BOX(bar), mid);
 
