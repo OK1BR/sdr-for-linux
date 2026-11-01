@@ -6,17 +6,17 @@ user interface.**
 
 `sdr-for-linux` is a GPLv3 fork-in-spirit of
 [piHPSDR](https://github.com/dl1ycf/pihpsdr): it reuses piHPSDR's excellent
-*engine* — the HPSDR Protocol 2 radio link and the WDSP DSP library — and
+*engine* — the HPSDR Protocol 1 and 2 radio links and the WDSP DSP library — and
 replaces the front-end with a native GTK4/libadwaita control surface and a
 full-resolution floating-point panadapter. **No DSP is reimplemented**; WDSP
 does the heavy lifting.
 
 > **Status: 0.x — young but real.** Everything below is implemented and
 > verified live on an Apache Labs **ANAN G2E**, an **ANAN 10E** and a
-> **Hermes Lite 2** (all RX + TX), including a full CW contest deployment;
+> **Hermes Lite 2** (all RX + TX), including CW and RTTY contest deployments;
 > see [Supported hardware](#supported-hardware).
 
-![SDR for Linux — 20 m USB on the ANAN G2E](docs/img/main-window.png)
+![SDR for Linux — 80 m LSB on the ANAN G2E](docs/img/main-window.png)
 
 ## Features
 
@@ -44,6 +44,8 @@ does the heavy lifting.
   the AGC, bypassed in digi modes so decoders hear the raw audio) and one
   for TX (the pre-EQ ahead of PROC, live mic in voice modes only). The curve
   is computed here and realized by WDSP's continuous-gain FIR equalizer
+
+  ![Equalizer dialog — RX, three bands on the response curve](docs/img/equalizer.png)
 - **Two VFOs**: A/B swap and A=B, the other VFO shown under the frequency
   readout, free across bands; **CTUN**: drag pans the spectrum while the
   dial stays put — the green passband is the tuning handle
@@ -51,7 +53,7 @@ does the heavy lifting.
   reduction: two built-in models, the CW-trained ones switched in
   automatically in CW modes; model and mask floor in Preferences → Audio)
   and NR4 (libspecbleach); noise blanker (ANB, NB2), auto-notch (ANF),
-  binaural mode
+  binaural mode — the NR and NB buttons cycle through the algorithms
 - Low-latency native **PipeWire** audio (~15 ms), 48/96/192 kHz; the AF
   slider's floor is a true mute
 - Scroll/drag/click-to-tune, octave-snap zoom, draggable spectrum/waterfall
@@ -79,7 +81,8 @@ does the heavy lifting.
   the skimmer for decode
 - **PureSignal** linearization with Thetis-style auto-attenuate — calibrates
   continuously on voice, converges in seconds after drive/band changes
-  (G2E and Hermes Lite 2; not available on old Hermes-class P2 firmware —
+  (G2E, G2 and Hermes Lite 2; on the G2E it needs the WDSP patch listed
+  under Known limitations; not available on old Hermes-class P2 firmware —
   see the hardware table)
 - TX panadapter + waterfall of the transmitted spectrum, with the TX
   filter footprint drawn in red (the display's colour language: RX green,
@@ -131,7 +134,7 @@ band's two values.
 
 ## Requirements
 
-- A supported ANAN radio on your LAN (see above)
+- A supported HPSDR radio on your LAN — ANAN or Hermes Lite 2 (see above)
 - Linux with **PipeWire** as the sound server (standard on 2024+ distros)
 - For the AppImage: glibc ≥ 2.43 (Ubuntu 26.04+, Fedora 44+, Arch, …)
 - To build from source: **GTK ≥ 4.12** (enforced by meson) and
@@ -208,9 +211,10 @@ sudo meson install -C build      # install binary + desktop integration
    data link takes the in-subnet one); pick yours, or add by IP for a
    different subnet. One client owns the radio at a time — close
    piHPSDR/Thetis first.
-3. **Transmit is conservative by default:** PA drive starts at zero and TX
-   is gated (out-of-band, high SWR, or missing prerequisites refuse to key).
-   Check *Preferences → TX* before your first transmission.
+3. **Transmit is conservative by default:** the PA is disabled until you
+   enable it in *Preferences → TX*, and TX is gated (out-of-band, high SWR,
+   or missing prerequisites refuse to key). Check *Preferences → TX* before
+   your first transmission.
 
 Settings persist in `~/.config/sdr-for-linux/config.ini`.
 
@@ -276,7 +280,7 @@ default** — nothing is written unless you switch it on.
 ## Architecture
 
 ```
-  Radio (ANAN G2E / 10E — P2, Hermes Lite 2 — P1)
+  Radio (ANAN G2E / G2 / 10E — P2, Hermes Lite 2 — P1)
         │  Ethernet (raw IQ)
         ▼
   sdr-for-linux  (single GTK4 process)
@@ -287,9 +291,10 @@ default** — nothing is written unless you switch it on.
   └─ GTK4/libadwaita UI: panadapter, waterfall, controls   (new)
 ```
 
-Design notes live in [`docs/`](docs/) — engine import scope, TX safety
-rules ([`docs/TX-SAFETY.md`](docs/TX-SAFETY.md)), PureSignal scope, TCI
-scope, band plans.
+Design notes live in [`docs/`](docs/) — the TX safety rules
+([`docs/TX-SAFETY.md`](docs/TX-SAFETY.md)) and TX design, the per-radio
+scope ([`docs/RADIOS-SCOPE.md`](docs/RADIOS-SCOPE.md)), PureSignal, TCI,
+RTTY, Protocol 1/2, rendering, band plans.
 
 ## Credits
 
