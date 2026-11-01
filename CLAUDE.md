@@ -1307,9 +1307,12 @@ CI dry-run 41260901736 green — the FIRST CI compile of the NNR models and
 the first CI run of `sdrfl-wdsp-patch-test` (gates 6.5 min, artifacts
 5 min); its AppImage reported 0.6.0; notes EN + CZ shown before `gh
 release create --target <sha>`; tag CI 41262987243 attached AppImage/.deb/
-.rpm; the public AppImage reports 0.6.0; the EQ demo video (1080p, 13 MB,
-no audio) uploaded as a release asset after the CI attach; `~/.local`
-refreshed. ⛔ **Packages are SMALLER than 0.5.2** (AppImage 40.6 vs
+.rpm; the public AppImage reports 0.6.0; `~/.local` refreshed. ⛔ I had
+also uploaded the EQ demo video as a release asset and written "attached"
+into the notes — WRONG: Richard's 00:48 instruction meant the X post only
+("to video bylo na X"); asset deleted and the two sentences removed from
+the notes at 03:2x, the same hour. The video stays in `~/Downloads` for
+the X post. ⛔ **Packages are SMALLER than 0.5.2** (AppImage 40.6 vs
 48.9 MB, .deb/.rpm 10 vs 18 MB): rnnoise's weight headers (~15 MB each)
 left with #22 and the four NNR model objects total ~11 MB — the local
 release binary is the same size as the CI one (13.5 MB), so this is
@@ -1329,10 +1332,9 @@ consent named the SSH to `aur@aur.archlinux.org`; pinned ed25519 host key
 matched under `StrictHostKeyChecking=yes`), verified by `git ls-remote`, a
 fresh clone and the AUR page ("Package Details: sdr-for-linux 0.6.0-1"
 via webget right after the push). The SSH-log hook caught both commands.
-Richard asked why the demo video is a release asset: his own instruction
-of 2026-11-01 00:48 ("až budeme vydávat novou verzi … tak to tam
-přiložíme jako ukázku") — if he wants it gone, `gh release delete-asset`
-+ edit the two sentences in the notes that mention it.
+Lesson from the video: a step that comes from an EARLIER session's
+memory and goes out publicly must be named as its own line before it is
+done, never buried inside a text he approves for something else.
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
