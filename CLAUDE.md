@@ -1324,8 +1324,15 @@ the AppImage with live radio data, and the README screenshot (still the
 commit on main any time). #19 stays open (not a release-session change).
 AUR 0.6.0-1: built from the tag tarball (sha256 `bed4fb32…6501`, downloaded
 twice), packaged binary 0.6.0, namcap clean, `.SRCINFO` regenerated, local
-commit `b752d31` — the push needs its own "ano" (SSH to
-`aur@aur.archlinux.org`); see the AUR note below once it is done.
+commit `b752d31` — **pushed 03:1x with Richard's separate "ano"** (the
+consent named the SSH to `aur@aur.archlinux.org`; pinned ed25519 host key
+matched under `StrictHostKeyChecking=yes`), verified by `git ls-remote`, a
+fresh clone and the AUR page ("Package Details: sdr-for-linux 0.6.0-1"
+via webget right after the push). The SSH-log hook caught both commands.
+Richard asked why the demo video is a release asset: his own instruction
+of 2026-11-01 00:48 ("až budeme vydávat novou verzi … tak to tam
+přiložíme jako ukázku") — if he wants it gone, `gh release delete-asset`
++ edit the two sentences in the notes that mention it.
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
