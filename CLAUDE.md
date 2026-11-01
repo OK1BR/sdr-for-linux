@@ -1250,6 +1250,45 @@ on from a dummy-load over — a finding becomes a new issue. Deviation from the
 issue text: no Delete key, removal is right-click or the row button. The
 broadway row-icon artifact was not reported live.
 
+**★ ISSUES #16 + #17 LIVE-VERIFIED + CLOSED 2026-11-01 (01:16–01:53, Richard
+on the G2E; #18 stays open — "by ear, another time"):** the link loss was
+SIMULATED from the PC, nothing physical: a scratch script waits for the `KEY`
+line in the run log, then an nftables table (`inet sdrfl_linkloss`, input
+chain, `ip saddr 192.168.1.247 drop`) drops every inbound packet from the
+radio for 10 s and is deleted (trap on every exit; `sudo -n` works without a
+password here, no other firewall) — HP-status + IQ stop while our sender keeps
+running = exactly the guard's stimulus; the radio keeps streaming, so the
+stream resumes with one DDC sequence jump, and the listener logs `no packets
+from the radio for 3 s` and survives. Richard just sits with the pedal.
+Results (the #16 closing comment has the log excerpts): a pedal-keyed over
+dropped 0.64 s into the outage (`footswitch ignored — no radio status for
+0,5 s`), the pedal release during the outage was invisible to the host and the
+first real status packet decided (`footswitch live again (pedal released)`,
+no re-key); TUNE released at 1.0 s (`radio link lost while keyed`), the
+button popped, no re-key, three identical runs. ⛔ The `radio link lost` line
+does NOT appear in the pedal case — the 0.5 s guard unkeys before the 1 s
+release can fire. **Finding → fixed the same hour (6331c4f):** the reason text
+flashed in a GtkLabel in the top strip behind MON and Richard did not see it; a
+red badge drawn over the spectrum was "pěst na oko", a libadwaita toast
+(mockup) "still not it" — what he approved, from a mockup, is a FIFTH LINE of
+the readout block in the block's own typography (FONT_UI 15·RO_S), TX red, no
+icon, the same 4–6 s. ⛔ Two lessons: (1) during a link loss NO analyzer frame
+arrives and the frames drive the redraws — anything drawn in the display for
+that window needs the tick to `queue_draw` while armed (+ once more to clear);
+(2) for anything visual show Richard a MOCKUP first (grim screenshot of his
+window + a PIL composite → `~/Downloads`, opened with `xdg-open` under the
+app's own environ) and touch the source only after his "ano". #17: six TUNE
+overs on 20 m at 17–38 W on the real antenna, SWR 1.02–1.07 / 1.00, "chová se
+to normálně"; the high-SWR trip half not tried (no mismatched load here,
+never an open antenna on purpose; gate-covered). #4: a third no-reproduce
+(three dry-key TUNEs on 10-31, zero GTK warnings in the run log). TAPR
+firmware#4 and wdsp#10 still without a reply. Side facts: Hyprland tiles the
+window at 1257 px, below GTK's 1534 minimum, so the strip and footer are
+clipped (not a topic, on record); a restart that works from a Bash tool =
+`mapfile -d '' ENVS < /proc/$PID/environ; env -i "${ENVS[@]}" setsid -f
+~/.local/bin/sdr-for-linux` after SIGTERM + 6 s — the auto-mode classifier
+blocked it once when chained after a build, so run it alone, after his "ano".
+
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
 red TX filter footprint, AF true mute, 60 m USB, SDR-15 discovery dedup,
