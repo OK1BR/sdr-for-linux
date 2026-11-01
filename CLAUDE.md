@@ -1289,6 +1289,44 @@ clipped (not a topic, on record); a restart that works from a Bash tool =
 ~/.local/bin/sdr-for-linux` after SIGTERM + 6 s — the auto-mode classifier
 blocked it once when chained after a build, so run it alone, after his "ano".
 
+**★ RELEASED 2026-11-01: v0.6.0 — the equalizer release on WDSP 2.11**
+(tag on `daebd96`, 67 commits after 0.5.2; Richard's "ano, vydej to" at
+02:54 covered the notes AND the publication in one go). Content: #22 WDSP
+2.11 + NNR, #48 parametric EQ, #30 SAM, #46 TCI Unix socket, #43 TCI 2.1
+counter, #47 per-band drive, #23 phase rotator (default off), #16/#17
+footswitch guard + SWR floor, #18 gate hold, run log (#20 closed by the
+README commit), the calcc.c PS patch, `sendto` recovery. Checklist walked
+in one session (scratch `/var/tmp/rel060`): 14 CI gates from
+`build-release` all PASS; **first-start lab without a wisdom cache** on
+the 0.6.0 binary (broadway, isolated XDG config + state, no radio): the
+progress window came up, `wdspWisdom01` was built in ~7.5 min, the main
+window followed and About read 0.6.0, a second `sdrfl-wisdom-test` against
+that cache imported in 0.0 s; `makepkg -C -f` from a `git archive` of the
+bump commit = a real 303-step build, packaged binary 0.6.0, namcap clean;
+CI dry-run 41260901736 green — the FIRST CI compile of the NNR models and
+the first CI run of `sdrfl-wdsp-patch-test` (gates 6.5 min, artifacts
+5 min); its AppImage reported 0.6.0; notes EN + CZ shown before `gh
+release create --target <sha>`; tag CI 41262987243 attached AppImage/.deb/
+.rpm; the public AppImage reports 0.6.0; the EQ demo video (1080p, 13 MB,
+no audio) uploaded as a release asset after the CI attach; `~/.local`
+refreshed. ⛔ **Packages are SMALLER than 0.5.2** (AppImage 40.6 vs
+48.9 MB, .deb/.rpm 10 vs 18 MB): rnnoise's weight headers (~15 MB each)
+left with #22 and the four NNR model objects total ~11 MB — the local
+release binary is the same size as the CI one (13.5 MB), so this is
+expected, not a missing component. README: issue #20 text (run log
+paragraph, G2E gateware row, 10E/HL2 "last live run on 0.5.x"), the
+wisdom rebuild after the update, the PS patch + piHPSDR 3.1 mismatch under
+Known limitations. **Not done this time:** the headless GNOME Shell lab on
+the artifact (GTK 4.22 → GL unchanged since 0.5.2, judged not worth it),
+the AppImage with live radio data, and the README screenshot (still the
+0.5.1 one — two candidates cut from the EQ demo recording wait in
+`~/Downloads/sdr-0.6.0-readme-*.png`, Richard did not answer; a docs
+commit on main any time). #19 stays open (not a release-session change).
+AUR 0.6.0-1: built from the tag tarball (sha256 `bed4fb32…6501`, downloaded
+twice), packaged binary 0.6.0, namcap clean, `.SRCINFO` regenerated, local
+commit `b752d31` — the push needs its own "ano" (SSH to
+`aur@aur.archlinux.org`); see the AUR note below once it is done.
+
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
 red TX filter footprint, AF true mute, 60 m USB, SDR-15 discovery dedup,
