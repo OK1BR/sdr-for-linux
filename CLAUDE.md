@@ -1306,7 +1306,7 @@ bump commit = a real 303-step build, packaged binary 0.6.0, namcap clean;
 CI dry-run 41260901736 green — the FIRST CI compile of the NNR models and
 the first CI run of `sdrfl-wdsp-patch-test` (gates 6.5 min, artifacts
 5 min); its AppImage reported 0.6.0; notes EN + CZ shown before `gh
-release create --target <sha>`; tag CI 41262987243 attached AppImage/.deb/
+release create`; tag CI 41262987243 attached AppImage/.deb/
 .rpm; the public AppImage reports 0.6.0; `~/.local` refreshed. ⛔ I had
 also uploaded the EQ demo video as a release asset and written "attached"
 into the notes — WRONG: Richard's 00:48 instruction meant the X post only
@@ -1334,7 +1334,14 @@ fresh clone and the AUR page ("Package Details: sdr-for-linux 0.6.0-1"
 via webget right after the push). The SSH-log hook caught both commands.
 Lesson from the video: a step that comes from an EARLIER session's
 memory and goes out publicly must be named as its own line before it is
-done, never buried inside a text he approves for something else.
+done, never buried inside a text he approves for something else. ⛔
+**`gh release create --target main`, never a commit SHA:** I created
+v0.6.0 with `--target <sha>` and the release page lost its "N commits to
+main since this release" line (GitHub takes the branch from
+`target_commitish`; a SHA names no branch) — Richard noticed at 03:2x,
+`gh release edit v0.6.0 --target main` brought it back ("5 commits to
+main since this release" within two minutes; the tag stays on daebd96).
+Every earlier release was created with `--target main`.
 
 **★ RELEASED 2026-09-12: v0.5.1 — the control-surface release.** Two
 VFOs (A/B, A=B), CTUN, the Filter/AGC dialogs, the draggable divider, the
