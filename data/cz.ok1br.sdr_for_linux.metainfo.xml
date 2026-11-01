@@ -37,6 +37,32 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.6.0" date="2026-11-01">
+      <description>
+        <p>
+          The DSP library moves to WDSP 2.11: the third noise-reduction slot
+          is now WDSP's neural noise reduction (NNR, two built-in models,
+          CW-trained models switched in automatically in CW modes), PureSignal
+          3.0, and a one-time rebuild of the FFTW wisdom cache on the first
+          start after the update (about eight minutes, shown by a progress
+          window). New: a parametric equalizer for RX and TX — up to eight
+          bands with frequency, gain and Q, edited on a drawn, draggable
+          response curve; synchronous AM (SAM) with sideband select and
+          carrier levelling; a TX phase rotator (off by default); drive and
+          TUNE power remembered per band; the TCI server also listens on a
+          Unix socket for local clients, TCP is optional or localhost-only,
+          and the stream headers carry the TCI 2.1 packet counter. Transmit
+          safety: the footswitch counts only while the radio's status packets
+          are live, a link loss while keyed releases TX, SWR protection acts
+          only above 5 % of the PA rating, and a failed send no longer tears
+          the radio link down. An opt-in run log (Preferences → TCI →
+          Diagnostics). On the ANAN G2E, PureSignal 3.0 calibrates with a
+          local one-line patch to the vendored WDSP (reported upstream), and
+          gateware 11.0.5 is recommended: 11.1.0 was measured to put about
+          1.4 W on the antenna during SSB pauses.
+        </p>
+      </description>
+    </release>
     <release version="0.5.2" date="2026-09-28">
       <description>
         <p>

@@ -47,7 +47,11 @@ does the heavy lifting.
 - **Two VFOs**: A/B swap and A=B, the other VFO shown under the frequency
   readout, free across bands; **CTUN**: drag pans the spectrum while the
   dial stays put — the green passband is the tuning handle
-- Noise reduction (ANR), noise blanker (ANB), auto-notch (ANF), binaural mode
+- Noise reduction — ANR (LMS), NR2 (spectral), **NNR** (WDSP's neural noise
+  reduction: two built-in models, the CW-trained ones switched in
+  automatically in CW modes; model and mask floor in Preferences → Audio)
+  and NR4 (libspecbleach); noise blanker (ANB, NB2), auto-notch (ANF),
+  binaural mode
 - Low-latency native **PipeWire** audio (~15 ms), 48/96/192 kHz; the AF
   slider's floor is a true mute
 - Scroll/drag/click-to-tune, octave-snap zoom, draggable spectrum/waterfall
@@ -64,6 +68,9 @@ does the heavy lifting.
   speech processor controls
   (digi audio stays a bit-exact clean chain, enforced by the engine),
   faithful TX monitor (plays the processed on-air audio), footswitch PTT
+  (the pedal counts only while the radio's status packets are live, and a
+  radio-link loss while keyed releases TX — the host never re-keys by
+  itself); Drive and TUNE power remembered per band
 - CW keying with clean first-dit and contest-grade latency (TCI→RF
   ~35 ms, turnaround ~200 ms), adjustable WPM / sidetone / break-in hang;
   mode-aware TX HUD (CW/RTTY sent-text with playhead, digi TX level)
@@ -81,7 +88,8 @@ does the heavy lifting.
 **Integration**
 - **TCI server** (ExpertSDR3-compatible): control, CW macros,
   RX audio, TX audio (digimodes), wideband IQ with optional per-block
-  centre stamps for skimmers, spots — verified live with **SDC**,
+  centre stamps for skimmers (TCI 2.1 stream headers with the per-stream
+  packet counter), spots — verified live with **SDC**,
   **CW Skimmer** and **Decodium** (complete FT8 QSOs on the air); `dds`/`vfo`
   go out on every tuning step. Two listeners, each with its own switch
   (Preferences → TCI): a **Unix socket** for clients on the same machine
@@ -107,9 +115,9 @@ radio picker rather than left to luck.
 
 | Radio | Protocol | Status |
 |---|---|---|
-| Apache Labs **ANAN G2E** | HPSDR Protocol 2 | ✅ supported, developed & verified on this radio |
-| Apache Labs **ANAN 10E / 100B** (Hermes) | HPSDR Protocol 2 | ✅ supported — RX + TX live-verified (fw 10.3); per-radio PA calibration & 10 W scale. **PureSignal disabled**: the old Hermes firmware locks up on the P2 feedback-DDC switch mid-TX (power-cycle recovery); details in `docs/TX-DESIGN.md` §9 |
-| **Hermes Lite 2** | HPSDR Protocol 1 | ✅ supported — **RX + TX + PureSignal live-verified** (gw 73.2): panadapter, audio, LNA gain (−12..+48 dB), N2ADR filter-board band switching, die temperature + 60 °C thermal TX trip, ADC-overload badge, TCI/SDC skimming, 5 W PA with per-band calibration (20 m calibrated, other bands under-drive until walked in), CW/voice, PureSignal over P1 (RX3/RX4 feedback; PS needs a sample rate ≤ 192 kHz). Rates 48–384 kHz, 0–38.4 MHz |
+| Apache Labs **ANAN G2E** | HPSDR Protocol 2 | ✅ supported, developed & verified on this radio. **Gateware 11.0.5 recommended**: 11.1.0 was measured here (A/B flash, 2026-10-24) to put about 1.4 W of RF on the antenna whenever the DUC data is non-zero — i.e. during SSB pauses — which also makes an auto-tuner re-tune between words; 11.0.5 gives 0 W in the same condition. Reported as [TAPR/OpenHPSDR-Firmware#4](https://github.com/TAPR/OpenHPSDR-Firmware/issues/4). PureSignal 3.0 (WDSP 2.11) calibrates on this radio only with the local WDSP patch described under Known limitations |
+| Apache Labs **ANAN 10E / 100B** (Hermes) | HPSDR Protocol 2 | ✅ supported — RX + TX live-verified (fw 10.3; last live run on 0.5.x, before the WDSP 2.11 re-sync); per-radio PA calibration & 10 W scale. **PureSignal disabled**: the old Hermes firmware locks up on the P2 feedback-DDC switch mid-TX (power-cycle recovery); details in `docs/TX-DESIGN.md` §9 |
+| **Hermes Lite 2** | HPSDR Protocol 1 | ✅ supported — **RX + TX + PureSignal live-verified** (gw 73.2; last live run on 0.5.x, before the WDSP 2.11 re-sync): panadapter, audio, LNA gain (−12..+48 dB), N2ADR filter-board band switching, die temperature + 60 °C thermal TX trip, ADC-overload badge, TCI/SDC skimming, 5 W PA with per-band calibration (20 m calibrated, other bands under-drive until walked in), CW/voice, PureSignal over P1 (RX3/RX4 feedback; PS needs a sample rate ≤ 192 kHz). Rates 48–384 kHz, 0–38.4 MHz |
 | Apache Labs **ANAN G2** (Saturn) | HPSDR Protocol 2 | 🟢 **RX + TX + PureSignal — live-tested by an external operator (W1IZZ, issue #3, two rounds, 2026-08-22/24): RX probes clean, per-band PA calibration against an LP-100A with our wattmeter within 1–2 W, SWR tracking, a voice QSO; PureSignal correcting with the feedback inside its target window; the per-model supply readout confirmed on his radio.** We still do not own a G2: the per-device values (two Alex boards, two ADCs, DDC2, ANAN-7000 band-pass knees and wattmeter constants, `ps_setpk` 0.6121) come from piHPSDR, pinned by an offline byte gate, and are confirmed by one operator's runs, not calibrated by us. It starts safe — PA off, ANT1, 1 W, no stored PA calibration — so ⛔ **your first transmission still belongs into a dummy load**: dry key, then 1 W, then walk the calibration up per band while watching the SWR (his numbers landed at 43–53 dB). Step-by-step in `docs/RADIOS-SCOPE.md` §7 (§7.1–7.2 = what his runs showed) |
 | Other ANAN / Hermes P2 boards (ORION2: 7000/8000/DLE 7000) | Protocol 2 | ⛔ blocked until tested — the Saturn work above already carries their wire bytes, so this is mostly a whitelist + live test away; open an issue if you can lend hardware + a dummy load |
 | Older P1 boards (HL1, Metis…) | Protocol 1 | ⛔ blocked until tested |
@@ -188,11 +196,13 @@ sudo meson install -C build      # install binary + desktop integration
 
 ## First run
 
-1. **FFTW wisdom build (~6 minutes, once).** On first start the app plans
+1. **FFTW wisdom build (~8 minutes, once).** On first start the app plans
    FFTW transforms for every panadapter FFT size (a progress window shows
-   the state) and caches them in `~/.config/sdr-for-linux/`. Every later
-   start imports the cache instantly. Without this, deep zoom would freeze
-   for up to half a minute at a time — same approach as piHPSDR and Thetis.
+   the state) and caches them in `~/.config/sdr-for-linux/wisdom/`. Every
+   later start imports the cache instantly. Without this, deep zoom would
+   freeze for up to half a minute at a time — same approach as piHPSDR and
+   Thetis. **Updating from 0.5.x to 0.6.0 rebuilds the cache once** (WDSP
+   2.11 plans one more transform per size and names the cache differently).
 2. **Radio picker.** The app broadcast-discovers HPSDR radios on the LAN
    (one entry per radio even when it answers on several interfaces; the
    data link takes the in-subnet one); pick yours, or add by IP for a
@@ -236,6 +246,14 @@ your graphics stack. Details in [`docs/RENDERING.md`](docs/RENDERING.md).
   distribution) the display stays on the CPU Cairo renderer (set
   `GSK_RENDERER` yourself to override — see
   [`docs/RENDERING.md`](docs/RENDERING.md))
+- **PureSignal 3.0 on the ANAN G2E** calibrates only with a one-line local
+  patch to the vendored WDSP 2.11 (`PS_NF_MAG_PREFILT_YMAX` 1.8 → 4.0 in
+  `calcc.c`; what, why and the measurements in `vendor/wdsp/VENDOR.md`,
+  reported upstream as
+  [TAPR/OpenHPSDR-wdsp#10](https://github.com/TAPR/OpenHPSDR-wdsp/issues/10)).
+  Every build and package of this project carries the patch
+- The `--server` remote head speaks the piHPSDR **3.0** client/server
+  protocol; a piHPSDR 3.1 server refuses the connection
 
 ## Reporting a bug
 
@@ -244,7 +262,16 @@ the debug info from the app: **menu → About → Troubleshooting →
 Debugging Information → Copy Text**.
 It carries the app version, the GTK/libadwaita/WDSP/FFTW/PipeWire versions
 actually in use, the active renderer, the connected radio and protocol, and
-the config paths — which is most of what a diagnosis needs.
+the config and log paths — which is most of what a diagnosis needs.
+
+**Run log.** For anything that happened during operation (a stuck TX, a
+lost radio link, a TCI client misbehaving), switch the run log on first:
+**Preferences → TCI → Diagnostics → Run log** (restart to apply), or start
+the app with `SDRFL_LOG=1`. The app then writes
+`~/.local/state/sdr-for-linux/sdr-for-linux.log` (the last five runs are
+kept, every line stamped with the time of day so it lines up with
+`journalctl`); the path is shown in the debug info above. It is **off by
+default** — nothing is written unless you switch it on.
 
 ## Architecture
 
